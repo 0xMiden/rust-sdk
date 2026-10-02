@@ -5,16 +5,16 @@ use protox::file::{
     IncludeFileResolver,
 };
 
-/// The schemas of the values this store keeps. All of them are in the `miden.client.store` package,
-/// so they generate one Rust module.
-const STORE_PROTO_FILES: &[&str] = &[
-    "proto/store/input_note.proto",
-    "proto/store/output_note.proto",
-    "proto/store/protocol.proto",
-    "proto/store/transaction.proto",
+/// The schemas of the miden-client types. Each file has its own `client.*` package, so it generates
+/// one Rust module.
+const PROTO_FILES: &[&str] = &[
+    "proto/client/input_note.proto",
+    "proto/client/output_note.proto",
+    "proto/client/protocol.proto",
+    "proto/client/transaction.proto",
 ];
 
-/// Generates the Rust protobuf bindings for the values this store keeps.
+/// Generates the Rust protobuf bindings for the miden-client types.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo::rerun-if-changed=proto");
 
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     resolver.add(GoogleFileResolver::new());
 
     let mut compiler = protox::Compiler::with_file_resolver(resolver);
-    compiler.include_imports(true).open_files(STORE_PROTO_FILES)?;
+    compiler.include_imports(true).open_files(PROTO_FILES)?;
 
     // The object schemas resolve to the types that `miden-objects` defines, so its conversions
     // apply to them.

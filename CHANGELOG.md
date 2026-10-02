@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
 * [BREAKING][behavior][rust,store] Account note tags are derived from the addresses of native accounts instead of being stored. `Store::get_note_tags` returns only the stored tags, the new provided `Store::get_account_note_tags` returns the account tags, and `get_unique_note_tags` returns both sets. `add_note_tag` and `apply_transaction` reject account-source tags with the new `StoreError::AccountNoteTagNotStorable`. A SQLite migration removes the stored account tags ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId` ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 
@@ -29,6 +30,7 @@
 ### Enhancements
 
 * [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
+* [FEATURE][arch][rust] Added the `miden-client-proto` crate with the protobuf schemas and conversions of the miden-client types. `decode` runs all checks and `decode_unchecked` may skip the expensive ones for bytes from a trusted source. Output note states can include their note scripts or omit them when a store keeps scripts separately. `miden-client-sqlite-store` uses it for its stored values ([#2652](https://github.com/0xMiden/rust-sdk/pull/2652)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ### Fixes
@@ -171,6 +173,17 @@
 * [FIX][test] The integration tests run again on a chain that charges no fee. A `--funders` path (`MIDEN_FUNDER_ACCOUNTS_DIR`) that is unset, empty, missing, or holds no `.mac` file now leaves the run without funders instead of failing, which is all a fee-free genesis needs, since it declares no wallets for the path to hold. A `.mac` file that is present but unusable stays a hard error ([#2481](https://github.com/0xMiden/rust-sdk/pull/2481)).
 * [FIX][rust] `VerifyingRpcClient::sync_nullifiers` now rejects an update stamped outside the requested `block_from`/`block_to` window with `RpcError::InvalidResponse`, in the same pass that checks the nullifier prefixes. `GrpcClient` rejects a page whose cursor ends past the requested `block_to` with `RpcError::PaginationError`, which covers every block-paginated method. Note blocks and transaction records were already range-checked by the sync ([#2503](https://github.com/0xMiden/rust-sdk/pull/2503)).
 * [FIX][store] `set_setting` and `remove_setting` return an error when the number of affected rows does not match the expected count ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).
+
+## 0.16.1 (2026-09-10)
+
+### Changes
+
+* [FEATURE][rust] New `miden-web3signer-authenticator` crate provides `Web3SignerAuthenticator`, which allows a Miden client to sign transactions with `EcdsaK256Keccak` keys held in a Web3Signer instance ([#2501](https://github.com/0xMiden/rust-sdk/pull/2501)).
+* Updated workspace version to 0.16.1 ([#2526](https://github.com/0xMiden/rust-sdk/pull/2526)).
+
+### Fixes
+
+* [FIX][rust] `ForeignAccount` gained the `Prefetched(AccountInputs)` variant: a request can carry a foreign account's state and inclusion witness, and nothing is fetched for that account at execution time. `Client::get_foreign_account_inputs` is now public and fetches inputs for a set of declarations at a given block. Together they let a transaction pinned to an older block execute after the node stopped serving account state there. Exhaustive matches on `ForeignAccount` must handle the new variant. Requests without prefetched accounts keep their serialized format ([#2524](https://github.com/0xMiden/rust-sdk/issues/2524)).
 
 ## 0.16.0 (2026-09-07)
 

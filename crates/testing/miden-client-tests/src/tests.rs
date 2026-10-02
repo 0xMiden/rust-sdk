@@ -1066,11 +1066,6 @@ async fn import_processing_note_returns_error() {
     ));
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). The
-// `send_notes_script.rs::move_asset_to_note_body` helper only emits the `pad(21)->pad(16)` stack
-// reduction inside the per-asset loop, so a zero-asset output note created from a basic wallet
-// returns at stack depth 21 and the VM rejects the transaction with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn note_without_asset() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
@@ -4430,11 +4425,6 @@ async fn removing_user_tag_keeps_equal_account_tag() {
     assert!(client.get_note_tags().await.unwrap().contains(&account_record));
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). Creating the zero-asset
-// output note from a basic wallet hits `send_notes_script.rs::move_asset_to_note_body`, whose
-// `pad(21)->pad(16)` stack reduction only runs inside the per-asset loop; with no assets the tx
-// script returns at stack depth 21 and the VM rejects it with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn consume_note_with_custom_script() {
     let (mut client, mock_rpc_api) = create_test_client().await;

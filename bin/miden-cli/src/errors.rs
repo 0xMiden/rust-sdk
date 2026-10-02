@@ -91,8 +91,6 @@ pub enum CliError {
     #[error("io error")]
     #[diagnostic(code(cli::io_error))]
     IO(#[from] std::io::Error),
-    #[error("internal error")]
-    Internal(#[source] SourceError),
     #[error("keystore error")]
     #[diagnostic(code(cli::keystore_error))]
     KeyStore(#[source] KeyStoreError),

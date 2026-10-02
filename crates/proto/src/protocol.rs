@@ -1,5 +1,4 @@
-//! The store keeps these protocol values in their own columns. Most of them use the messages that
-//! `miden-objects` defines.
+//! Protocol values. Most of them use the messages that `miden-objects` defines.
 
 use std::string::ToString;
 use std::sync::Arc;
@@ -7,6 +6,7 @@ use std::vec::Vec;
 
 use miden_objects::{DecodeMessageExt, proto as objects};
 use miden_protocol::account::{AccountCode, AccountProcedureRoot};
+use miden_protocol::assembly::mast::UntrustedMastForest;
 use miden_protocol::block::BlockHeader;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPeaks};
@@ -22,7 +22,8 @@ use miden_protocol::transaction::TransactionScript;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{MastForest, MastNodeId, Word};
 
-use crate::proto::{self, ProtoDecodeError, ProtobufValue, required};
+use crate as proto;
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for AccountCode {
     type Message = proto::AccountCode;
@@ -35,15 +36,26 @@ impl ProtobufValue for AccountCode {
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        let mast = trusted_mast(message.mast, "account code")?;
-        let procedures = message
-            .procedure_roots
-            .into_iter()
-            .map(|root| Word::try_from(root).map(AccountProcedureRoot::from_raw))
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::from_parts(mast, procedures)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+        account_code(message, true)
     }
+
+    fn from_proto_unchecked(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        account_code(message, false)
+    }
+}
+
+fn account_code(
+    message: proto::AccountCode,
+    checked: bool,
+) -> Result<AccountCode, ProtoDecodeError> {
+    let mast = read_mast(message.mast, "account code", checked)?;
+    let procedures = message
+        .procedure_roots
+        .into_iter()
+        .map(|root| Word::try_from(root).map(AccountProcedureRoot::from_raw))
+        .collect::<Result<Vec<_>, _>>()?;
+    AccountCode::from_parts(mast, procedures)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 impl ProtobufValue for TransactionScript {
@@ -57,12 +69,23 @@ impl ProtobufValue for TransactionScript {
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        let mast = trusted_mast(message.mast, "transaction script")?;
-        let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
-        Self::from_parts(mast, entrypoint)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+        transaction_script(message, true)
     }
+
+    fn from_proto_unchecked(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        transaction_script(message, false)
+    }
+}
+
+fn transaction_script(
+    message: proto::TransactionScript,
+    checked: bool,
+) -> Result<TransactionScript, ProtoDecodeError> {
+    let mast = read_mast(message.mast, "transaction script", checked)?;
+    let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+    TransactionScript::from_parts(mast, entrypoint)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 impl ProtobufValue for NoteScript {
@@ -76,12 +99,20 @@ impl ProtobufValue for NoteScript {
     }
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        let mast = trusted_mast(message.mast, "note script")?;
-        let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
-        Self::from_parts(mast, entrypoint)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+        note_script(message, true)
     }
+
+    fn from_proto_unchecked(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        note_script(message, false)
+    }
+}
+
+fn note_script(message: proto::NoteScript, checked: bool) -> Result<NoteScript, ProtoDecodeError> {
+    let mast = read_mast(message.mast, "note script", checked)?;
+    let entrypoint = MastNodeId::from_u32_safe(message.entrypoint, &mast)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+    NoteScript::from_parts(mast, entrypoint)
+        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 impl From<&MastForest> for proto::MastForest {
@@ -90,16 +121,23 @@ impl From<&MastForest> for proto::MastForest {
     }
 }
 
-/// Reads a MAST forest without a check of its node hashes. The store only keeps forests that the
-/// client verified or assembled before it wrote them.
-fn trusted_mast(
+/// Reads a MAST forest. When `checked` is false, the structure and node hashes are not verified.
+fn read_mast(
     mast: Option<proto::MastForest>,
     message: &'static str,
+    checked: bool,
 ) -> Result<Arc<MastForest>, ProtoDecodeError> {
     let mast = required(mast, message, "mast")?;
-    MastForest::read_from_bytes(&mast.encoded)
-        .map(Arc::new)
-        .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    let forest = if checked {
+        UntrustedMastForest::read_from_bytes(&mast.encoded)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?
+            .validate()
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?
+    } else {
+        MastForest::read_from_bytes(&mast.encoded)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?
+    };
+    Ok(Arc::new(forest))
 }
 
 impl ProtobufValue for NoteAttachments {
@@ -150,8 +188,8 @@ impl ProtobufValue for AccountWitness {
     }
 }
 
-/// The store only keeps headers that it received from the node or built from them, so a stored
-/// header is not verified again when it is read.
+/// A header alone does not have the data to verify its parent linkage or signatures. The caller
+/// must authenticate a header from a source that is not trusted.
 impl ProtobufValue for BlockHeader {
     type Message = objects::blockchain::BlockHeader;
 
@@ -237,7 +275,7 @@ impl TryFrom<proto::NoteInclusionProof> for NoteInclusionProof {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{decode, encode};
+    use crate::{decode, encode};
 
     #[test]
     fn mast_values_round_trip() {

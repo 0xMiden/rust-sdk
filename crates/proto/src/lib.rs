@@ -15,8 +15,11 @@ use miden_client::utils::DeserializationError;
 use miden_objects::ConversionError;
 
 mod input_note;
+mod note_transport;
 mod output_note;
 mod protocol;
+mod pswap;
+mod rpc;
 mod transaction;
 
 pub use output_note::{
@@ -39,19 +42,31 @@ mod generated {
     pub mod input_note {
         include!(concat!(env!("OUT_DIR"), "/client.input_note.rs"));
     }
+    pub mod note_transport {
+        include!(concat!(env!("OUT_DIR"), "/client.note_transport.rs"));
+    }
     pub mod output_note {
         include!(concat!(env!("OUT_DIR"), "/client.output_note.rs"));
     }
     pub mod protocol {
         include!(concat!(env!("OUT_DIR"), "/client.protocol.rs"));
     }
+    pub mod pswap {
+        include!(concat!(env!("OUT_DIR"), "/client.pswap.rs"));
+    }
+    pub mod rpc {
+        include!(concat!(env!("OUT_DIR"), "/client.rpc.rs"));
+    }
     pub mod transaction {
         include!(concat!(env!("OUT_DIR"), "/client.transaction.rs"));
     }
 }
 pub use generated::input_note::*;
+pub use generated::note_transport::*;
 pub use generated::output_note::*;
 pub use generated::protocol::*;
+pub use generated::pswap::*;
+pub use generated::rpc::*;
 pub use generated::transaction::*;
 
 // PROTOBUF VALUE

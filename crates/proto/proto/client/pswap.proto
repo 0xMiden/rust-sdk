@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+// PSWAP values. Field numbers are part of the encoded format, so a released number must keep its
+// meaning. Add fields, do not renumber or reuse them.
+package client.pswap;
+
+import "account.proto";
+import "note.proto";
+import "primitives.proto";
+
+// Chain state of one PSWAP order.
+message PswapLineageRecord {
+  // Id of the depth-0 PSWAP note.
+  note.NoteId original_note_id = 1;
+  primitives.Felt order_id = 2;
+  account.AccountId creator_account_id = 3;
+  // Id of the current tip note.
+  note.NoteId current_tip_note_id = 4;
+  uint32 current_depth = 5;
+  uint64 remaining_offered = 6;
+  uint64 remaining_requested = 7;
+  PswapLineageState state = 8;
+}
+
+// Lifecycle state of a PSWAP order.
+enum PswapLineageState {
+  // The state is absent. Decoding rejects a record with this state.
+  PSWAP_LINEAGE_STATE_UNSPECIFIED = 0;
+  PSWAP_LINEAGE_STATE_ACTIVE = 1;
+  PSWAP_LINEAGE_STATE_FULLY_FILLED = 2;
+  PSWAP_LINEAGE_STATE_RECLAIMED = 3;
+}

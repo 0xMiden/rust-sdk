@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+// Note transport values. Field numbers are part of the encoded format, so a released number must
+// keep its meaning. Add fields, do not renumber or reuse them.
+package client.note_transport;
+
+// Position in the stored-note sequence of the note transport service.
+message NoteTransportCursor {
+  message Position {
+    uint64 nonce = 1;
+    uint64 sequence = 2;
+  }
+
+  // An absent position is the cursor that starts from the first retained note.
+  Position position = 1;
+}
+
+// A set of note tags.
+message NoteTags {
+  repeated fixed32 tags = 1;
+}

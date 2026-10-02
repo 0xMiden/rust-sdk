@@ -100,6 +100,36 @@ pub struct TransactionEncryptionKey {
 }
 
 impl TransactionEncryptionKey {
+    /// Builds a cached key from its parts. A store uses this to rebuild a key that it persisted in
+    /// its own format.
+    ///
+    /// The parts are not attested. The constructor checks the scheme and the key ID length, as
+    /// deserialization does.
+    pub fn from_parts(
+        scheme: u32,
+        key_id: Vec<u8>,
+        public_key: PublicKey,
+        genesis_commitment: Word,
+    ) -> Result<Self, String> {
+        validate_key_metadata(scheme, key_id.len())?;
+        Ok(Self {
+            scheme,
+            key_id,
+            public_key,
+            genesis_commitment,
+        })
+    }
+
+    /// Returns the wire identifier of the IES scheme of this key.
+    pub fn scheme(&self) -> u32 {
+        self.scheme
+    }
+
+    /// Returns the genesis commitment of the chain that this key belongs to.
+    pub fn genesis_commitment(&self) -> Word {
+        self.genesis_commitment
+    }
+
     /// Returns the node's opaque identifier for this key.
     ///
     /// The identifier changes when the key rotates, which is what lets a cached key be recognized

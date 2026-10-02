@@ -5,7 +5,6 @@ pub mod grpc;
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -32,7 +31,7 @@ use miden_tx::utils::serde::{
 
 pub use self::errors::NoteTransportError;
 use crate::note::{NoteFile, NoteSyncHint};
-use crate::store::{InputNoteRecord, NoteFilter, SettingScope};
+use crate::store::{InputNoteRecord, NoteFilter, StoreError};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
 
@@ -41,11 +40,13 @@ pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
 pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 
-/// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
-/// `User`- and `Account`-source tags whose full history has already been fetched up to the global
-/// cursor. [`Client::sync_note_transport`] diffs the currently tracked tags against this set to
-/// find tags added after the cursor advanced, and backfills only those. Reusing the settings k/v
-/// avoids a Store-trait schema change while surviving process restarts.
+/// Settings key that the default [`Store::get_note_transport_covered_tags`] uses for the
+/// note-transport backfill bookkeeping: the `User`- and `Account`-source tags whose full history
+/// has already been fetched up to the global cursor. [`Client::sync_note_transport`] diffs the
+/// currently tracked tags against this set to find tags added after the cursor advanced, and
+/// backfills only those.
+///
+/// [`Store::get_note_transport_covered_tags`]: crate::store::Store::get_note_transport_covered_tags
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Client note transport methods.
@@ -127,43 +128,21 @@ impl<AUTH> Client<AUTH> {
     /// tracked tag as new only triggers a one-off backfill, which dedupes, whereas leaving
     /// unreadable bytes in place would fail every subsequent sync.
     async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let bytes = self
-            .store
-            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
-            .await
-            .map_err(ClientError::StoreError)?;
-        let Some(bytes) = bytes else {
-            return Ok(BTreeSet::new());
-        };
-        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
+        match self.store.get_note_transport_covered_tags().await {
             Ok(tags) => Ok(tags),
-            Err(err) => {
+            Err(StoreError::DataDeserializationError(err)) => {
                 tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
-                self.store
-                    .remove_setting(
-                        SettingScope::Client,
-                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
-                    )
-                    .await
-                    .map_err(ClientError::StoreError)?;
+                self.save_covered_tags(&BTreeSet::new()).await?;
                 Ok(BTreeSet::new())
             },
+            Err(err) => Err(ClientError::StoreError(err)),
         }
     }
 
-    /// Persist the covered-tags set, removing the key entirely when empty so the settings table
-    /// doesn't accumulate empty-vec blobs.
+    /// Persist the covered-tags set. An empty set removes the stored entry.
     async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
-        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
-        if tags.is_empty() {
-            self.store
-                .remove_setting(SettingScope::Client, key)
-                .await
-                .map_err(ClientError::StoreError)?;
-            return Ok(());
-        }
         self.store
-            .set_setting(SettingScope::Client, key, tags.to_bytes())
+            .set_note_transport_covered_tags(tags)
             .await
             .map_err(ClientError::StoreError)
     }

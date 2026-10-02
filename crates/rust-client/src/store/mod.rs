@@ -57,7 +57,12 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
-use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::note_transport::{
+    NOTE_TRANSPORT_COVERED_TAGS_KEY,
+    NOTE_TRANSPORT_CURSOR_STORE_SETTING,
+    NoteTransportCursor,
+};
+use crate::protocol_config::{ProtocolConfig, protocol_config_setting_key};
 use crate::pswap::store::{ORDER_PREFIX, order_key, tip_key};
 use crate::pswap::{PswapLineageFilter, PswapLineageRecord, PswapLineageState};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
@@ -718,6 +723,63 @@ pub trait Store: Send + Sync {
         )
         .await?;
         Ok(())
+    }
+
+    /// Returns the note tags whose history the client fetched up to the note transport cursor.
+    /// Returns an empty set if no tags are stored.
+    async fn get_note_transport_covered_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_COVERED_TAGS_KEY.into())
+            .await?
+        else {
+            return Ok(BTreeSet::new());
+        };
+        BTreeSet::<NoteTag>::read_from_bytes(&bytes).map_err(Into::into)
+    }
+
+    /// Replaces the note tags whose history the client fetched up to the note transport cursor. An
+    /// empty set removes the stored tags.
+    async fn set_note_transport_covered_tags(
+        &self,
+        tags: &BTreeSet<NoteTag>,
+    ) -> Result<(), StoreError> {
+        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
+        if tags.is_empty() {
+            self.remove_setting(SettingScope::Client, key).await?;
+            return Ok(());
+        }
+        self.set_setting(SettingScope::Client, key, tags.to_bytes()).await
+    }
+
+    // PROTOCOL CONFIG
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the protocol configuration stored for `commitment`, or `None` if the store does not
+    /// hold it. The store does not check that the configuration matches `commitment`.
+    async fn get_protocol_config(
+        &self,
+        commitment: Word,
+    ) -> Result<Option<ProtocolConfig>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, protocol_config_setting_key(commitment))
+            .await?
+        else {
+            return Ok(None);
+        };
+        ProtocolConfig::read_from_bytes(&bytes).map(Some).map_err(Into::into)
+    }
+
+    /// Stores `config` under its commitment.
+    ///
+    /// [`Store::apply_state_sync`] also stores the configuration that a sync update carries. An
+    /// implementation that changes the encoding here must use the same encoding there.
+    async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError> {
+        self.set_setting(
+            SettingScope::Client,
+            protocol_config_setting_key(config.to_commitment()),
+            config.to_bytes(),
+        )
+        .await
     }
 
     // RPC LIMITS

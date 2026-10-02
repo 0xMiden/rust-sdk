@@ -5,7 +5,7 @@
 ### Breaking Changes
 
 * [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
-* [BREAKING][removal][rust,store] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely. Store migration 4 drops the stale outbox row, so notes queued by earlier versions are not re-sent ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+* [BREAKING][removal][rust] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
 
 ### Features
 

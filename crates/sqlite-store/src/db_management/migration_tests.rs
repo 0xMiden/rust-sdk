@@ -316,6 +316,45 @@ fn client_store_at_version_one_upgrades_in_place() {
 }
 
 #[test]
+fn client_store_at_version_three_drops_the_note_transport_outbox() {
+    let mut conn = open_memory_db();
+    SqliteMigrator::client()
+        .migrate_to_version(&mut conn, 3)
+        .expect("version 3 of the production schema should apply");
+    let insert_setting = |scope: SettingScope, name: &str| {
+        conn.execute(
+            "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
+            params![scope.as_u8(), name, b"value"],
+        )
+        .expect("a setting should insert");
+    };
+    insert_setting(SettingScope::Client, "note_transport_outbox");
+    insert_setting(SettingScope::Client, "note_transport_cursor");
+    insert_setting(SettingScope::User, "note_transport_outbox");
+
+    SqliteMigrator::client()
+        .apply(&mut conn)
+        .expect("a version 3 store should upgrade");
+
+    let mut stmt = conn
+        .prepare("SELECT scope, name FROM settings ORDER BY scope, name")
+        .expect("settings should be readable");
+    let settings: Vec<(u8, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("settings should be readable")
+        .collect::<Result<_, _>>()
+        .expect("settings should decode");
+    assert_eq!(
+        settings,
+        [
+            (SettingScope::Client.as_u8(), "note_transport_cursor".to_owned()),
+            (SettingScope::User.as_u8(), "note_transport_outbox".to_owned()),
+        ],
+        "only the client outbox row should be gone"
+    );
+}
+
+#[test]
 fn partial_migration_transforms_user_data() {
     let mut conn = open_db_at_fixture_version(1);
     seed_fixture_v1(&conn);

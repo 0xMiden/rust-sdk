@@ -5,6 +5,11 @@
 ### Breaking Changes
 
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).
+* [BREAKING][removal][rust] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+
+### Features
+
+* [FEATURE][rust] `GrpcNoteTransportClient` retries a send that fails with a transient error: `Unavailable`, `DeadlineExceeded`, a failed connection, or `ResourceExhausted` with a `retry-after` value. It retries up to three times, with a delay that starts at 250 ms and doubles. `GrpcNoteTransportClient::with_max_retries` and `GrpcNoteTransportClient::with_retry_interval_ms` configure the retries ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
 
 ## 0.17.0 (2026-10-02)
 

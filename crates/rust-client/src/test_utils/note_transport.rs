@@ -64,15 +64,26 @@ impl MockNoteTransportNode {
 
     /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
     /// its node; the mock only records the proof's block and serves it as the commitment block.
+    ///
+    /// The real service stores a note only once. The mock also ignores a note with an id that it
+    /// already stores.
     pub fn add_note_with_proof(
         &mut self,
         header: NoteHeader,
         details_bytes: Vec<u8>,
         inclusion_proof: &NoteInclusionProof,
     ) {
+        if self.contains_note(&header.id()) {
+            return;
+        }
         let block_num = inclusion_proof.location().block_num();
         self.proven_notes.insert(header.id(), block_num);
         self.add_note_after(header, details_bytes, Some(block_num));
+    }
+
+    /// Returns whether the mock stores a note with `note_id`.
+    fn contains_note(&self, note_id: &NoteId) -> bool {
+        self.notes.values().flatten().any(|(info, _)| info.header.id() == *note_id)
     }
 
     /// Returns the block named by the proof a note was stored with, or `None` when the note was not
@@ -224,10 +235,9 @@ impl NoteTransportClient for MockNoteTransportApi {
 /// Test-only [`NoteTransportClient`] decorator that injects controlled failures into
 /// `send_note_with_proof` calls.
 ///
-/// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
-/// attempt, exercising the durable outbox in
-/// [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof): without
-/// retry/persistence a failed relay would leave the recipient unable to discover the note.
+/// Reproduces the failure mode where the NTL is reachable but rejects a send. Tests use it to check
+/// how [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof)
+/// reports the failure and how a later send by the caller delivers the note.
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
 /// `send_note_with_proof` calls should fail (`fail_next`); successful calls delegate to an inner

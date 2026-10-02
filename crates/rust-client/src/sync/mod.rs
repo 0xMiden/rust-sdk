@@ -276,8 +276,7 @@ where
     ///    update to the row step 2 inserts.
     ///
     /// A transport failure is logged and the chain sync continues without it, leaving the transport
-    /// cursor for the next call to retry. Before step 2 but the relay outbox, which
-    /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
+    /// cursor for the next call to retry. The sync sends no notes to the transport.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

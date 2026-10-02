@@ -1,6 +1,12 @@
 use std::sync::LazyLock;
 
+use miden_client::account::AccountId;
+use miden_client::note::{NoteDetailsCommitment, NoteTag};
 use miden_client::store::SettingScope;
+use miden_client::sync::NoteTagSource;
+use miden_client::testing::common::ACCOUNT_ID_REGULAR;
+use miden_client::utils::{Deserializable, Serializable};
+use miden_client::{ONE, Word, ZERO};
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
 
@@ -313,6 +319,51 @@ fn client_store_at_version_one_upgrades_in_place() {
         conn.prepare("SELECT block_num FROM transactions").is_err(),
         "the dropped column should be gone"
     );
+}
+
+#[test]
+fn client_store_at_version_three_drops_stored_account_tags() {
+    let mut conn = open_memory_db();
+    SqliteMigrator::client()
+        .migrate_to_version(&mut conn, 3)
+        .expect("version 3 of the production schema should apply");
+
+    let account_id =
+        AccountId::try_from(ACCOUNT_ID_REGULAR).expect("the account ID should be valid");
+    let word = Word::from([ONE, ZERO, ZERO, ZERO]);
+    let tag = NoteTag::new(7);
+    let kept_sources = [
+        NoteTagSource::Note(NoteDetailsCommitment::from_raw_commitments(word, word)),
+        NoteTagSource::User,
+        NoteTagSource::Subscription(word),
+    ];
+    for source in kept_sources.iter().chain([&NoteTagSource::Account(account_id)]) {
+        conn.execute(
+            "INSERT INTO tags (tag, source) VALUES (?1, ?2)",
+            params![tag.to_bytes(), source.to_bytes()],
+        )
+        .expect("a version 3 note tag should insert");
+    }
+
+    SqliteMigrator::client()
+        .apply(&mut conn)
+        .expect("a version 3 store should upgrade");
+
+    assert_eq!(user_version(&conn), SqliteMigrator::client().latest_version());
+    let remaining = conn
+        .prepare("SELECT source FROM tags")
+        .expect("the tags query should prepare")
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .expect("the tags query should run")
+        .map(|source| {
+            NoteTagSource::read_from_bytes(&source.expect("the source should read"))
+                .expect("the source should deserialize")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(remaining.len(), kept_sources.len());
+    for source in &kept_sources {
+        assert!(remaining.contains(source), "{source:?} should survive the upgrade");
+    }
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use miden_client::ClientError;
-use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType};
+use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType, Address};
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
@@ -11,6 +11,7 @@ use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::note::{NoteType, NoteUpdateTracker};
 use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};
 use miden_client::store::{StoreError, TransactionFilter};
+use miden_client::sync::NoteTagRecord;
 use miden_client::testing::common::{
     MINT_AMOUNT,
     TRANSFER_AMOUNT,
@@ -231,6 +232,81 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
         .update_account(&account_a)
         .await
         .expect("update_account on A must succeed after the failed batch was rolled back");
+}
+
+/// Verifies that `Store::apply_transaction` rejects an update whose new tags contain an account
+/// note tag, and that the store applies no part of that update.
+#[tokio::test]
+async fn apply_transaction_rejects_account_note_tag() {
+    let mut chain_builder = MockChainBuilder::new();
+    let account = chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let account_id = account.id();
+    let mock_chain = chain_builder.build().unwrap();
+
+    let rng =
+        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
+    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
+    let rpc_api = MockRpcApi::new(mock_chain);
+    let mut client = ClientBuilder::new()
+        .rpc(Arc::new(rpc_api.clone()))
+        .rng(Box::new(rng))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .tx_discard_delta(None)
+        .build()
+        .await
+        .unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+    client.add_account(&account, false).await.unwrap();
+
+    let tx_context = rpc_api
+        .mock_chain
+        .read()
+        .build_transaction(MockTransactionInput::AccountId(account_id))
+        .build()
+        .unwrap();
+    let executed_tx = Box::pin(tx_context.execute()).await.unwrap();
+
+    let account_tag = Address::new(account_id).to_note_tag();
+    let update = TransactionStoreUpdate::new(
+        executed_tx,
+        rpc_api.get_chain_tip_block_num(),
+        NoteUpdateTracker::default(),
+        vec![],
+        vec![NoteTagRecord::with_account_source(account_tag, account_id)],
+    );
+
+    let commitment_before = client
+        .get_account(account_id)
+        .await
+        .unwrap()
+        .expect("account is tracked")
+        .to_commitment();
+
+    let store = client.test_store().clone();
+    match store.apply_transaction(update).await {
+        Err(StoreError::AccountNoteTagNotStorable(id)) if id == account_id => {},
+        other => {
+            panic!("expected StoreError::AccountNoteTagNotStorable({account_id}), got {other:?}")
+        },
+    }
+
+    assert!(client.get_transactions(TransactionFilter::All).await.unwrap().is_empty());
+    assert_eq!(
+        client
+            .get_account(account_id)
+            .await
+            .unwrap()
+            .expect("account is tracked")
+            .to_commitment(),
+        commitment_before,
+    );
+    assert!(store.get_note_tags().await.unwrap().is_empty());
+    assert_eq!(
+        store.get_account_note_tags().await.unwrap(),
+        vec![NoteTagRecord::with_account_source(account_tag, account_id)],
+    );
 }
 
 /// `BatchBuilder::push` must execute each transaction against the in-batch (stacked) account state,

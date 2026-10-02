@@ -1066,11 +1066,6 @@ async fn import_processing_note_returns_error() {
     ));
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). The
-// `send_notes_script.rs::move_asset_to_note_body` helper only emits the `pad(21)->pad(16)` stack
-// reduction inside the per-asset loop, so a zero-asset output note created from a basic wallet
-// returns at stack depth 21 and the VM rejects the transaction with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn note_without_asset() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
@@ -4203,19 +4198,27 @@ async fn account_add_address_after_creation() {
     assert!(client.add_address(basic_wallet_address.clone(), account.id()).await.is_ok());
 
     // We can remove the default address and the note tag is still present
-    assert!(client.remove_address(default_address.clone(), account.id()).await.unwrap());
+    assert!(client.remove_address(default_address.clone()).await.unwrap());
     let derived_note_tag = default_address.to_note_tag();
     let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account.id());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
 
     // If we remove all addresses, note tag should be removed
-    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.unwrap());
+    assert!(client.remove_address(basic_wallet_address.clone()).await.unwrap());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(!note_tags.contains(&note_tag_record));
+    assert!(
+        !client
+            .test_store()
+            .get_unique_note_tags()
+            .await
+            .unwrap()
+            .contains(&derived_note_tag)
+    );
 
     // Removing an address that isn't tracked reports that nothing was removed
-    assert!(!client.remove_address(basic_wallet_address, account.id()).await.unwrap());
+    assert!(!client.remove_address(basic_wallet_address).await.unwrap());
 
     // Then add it again
     assert!(client.add_address(default_address, account.id()).await.is_ok());
@@ -4223,6 +4226,14 @@ async fn account_add_address_after_creation() {
     // Derived note tag should now be available
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
+    assert!(
+        client
+            .test_store()
+            .get_unique_note_tags()
+            .await
+            .unwrap()
+            .contains(&derived_note_tag)
+    );
 }
 
 async fn insert_random_account(client: &mut TestClient) -> Result<AccountId, ClientError> {
@@ -4352,11 +4363,68 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     assert!(!account_record.is_watched());
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). Creating the zero-asset
-// output note from a basic wallet hits `send_notes_script.rs::move_asset_to_note_body`, whose
-// `pad(21)->pad(16)` stack reduction only runs inside the per-asset loop; with no assets the tx
-// script returns at stack depth 21 and the VM rejects it with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
+#[tokio::test]
+async fn add_address_to_watched_account_does_not_track_its_tag() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+    let account_id = account.id();
+    let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
+    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
+    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+
+    client.import_watched_account_by_id(account_id).await.unwrap();
+
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)
+        .unwrap();
+    let address = Address::new(account_id).with_routing_parameters(routing_params);
+    client.add_address(address.clone(), account_id).await.unwrap();
+
+    let addresses = client.test_store().get_addresses_by_account_id(account_id).await.unwrap();
+    assert!(addresses.contains(&address));
+
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(
+        !note_tags
+            .iter()
+            .any(|record| matches!(record.source, NoteTagSource::Account(_))),
+        "a watched account must not have account note tags, got {note_tags:?}"
+    );
+    let unique_tags = client.test_store().get_unique_note_tags().await.unwrap();
+    assert!(!unique_tags.contains(&address.to_note_tag()));
+    assert!(!unique_tags.contains(&Address::new(account_id).to_note_tag()));
+}
+
+#[tokio::test]
+async fn removing_user_tag_keeps_equal_account_tag() {
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+    let account_id = insert_random_account(&mut client).await.unwrap();
+    let account_tag = Address::new(account_id).to_note_tag();
+    let account_record = NoteTagRecord::with_account_source(account_tag, account_id);
+    let user_record = NoteTagRecord {
+        tag: account_tag,
+        source: NoteTagSource::User,
+    };
+
+    assert!(client.add_note_tag(account_tag).await.unwrap());
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(note_tags.contains(&account_record));
+    assert!(note_tags.contains(&user_record));
+
+    assert!(client.remove_note_tag(account_tag).await.unwrap());
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(note_tags.contains(&account_record));
+    assert!(!note_tags.contains(&user_record));
+    assert!(client.test_store().get_unique_note_tags().await.unwrap().contains(&account_tag));
+
+    // The user API cannot remove an account tag.
+    assert!(!client.remove_note_tag(account_tag).await.unwrap());
+    assert!(client.get_note_tags().await.unwrap().contains(&account_record));
+}
+
 #[tokio::test]
 async fn consume_note_with_custom_script() {
     let (mut client, mock_rpc_api) = create_test_client().await;

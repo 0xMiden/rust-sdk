@@ -96,11 +96,6 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         .try_into()?;
     assert_eq!(received_note.note().id(), note.id());
 
-    // TODO: revisit this. The received note has the uri of the note stored in the node, so it may
-    // not match with the original note.
-    //
-    // assert_eq!(received_note.note(), &note);
-
     // consume the note
     client_2
         .consume_notes_and_wait(basic_wallet_1.id(), &[received_note.note().clone()])
@@ -449,7 +444,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .context("watched account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()
@@ -505,7 +500,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .await?
         .context("account should still be tracked after re-import")?;
     assert!(record.is_watched(), "account must remain watched");
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()

@@ -602,7 +602,6 @@ impl NodeRpcClient for MockRpcApi {
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
         self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
 
-        // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
         let hit_notes = note_ids.iter().filter_map(|id| notes.get(id));

@@ -30,7 +30,7 @@ use rand::Rng;
 
 use super::network_transaction::{COUNTER_CONTRACT, COUNTER_SLOT_NAME, zero_fee_policy_manager};
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
+use crate::funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================

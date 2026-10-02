@@ -160,7 +160,6 @@ use crate::errors::ClientError;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
-use crate::sync::{NoteTagRecord, NoteTagSource};
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -388,10 +387,9 @@ impl<AUTH> Client<AUTH> {
     async fn validate_can_track_more_account_tags(&self, tag: NoteTag) -> Result<(), ClientError> {
         let tracked_tags: BTreeSet<NoteTag> = self
             .store
-            .get_note_tags()
+            .get_account_note_tags()
             .await?
             .into_iter()
-            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
             .map(|record| record.tag)
             .collect();
         if !tracked_tags.contains(&tag) && tracked_tags.len() >= Self::MAX_ACCOUNT_TAGS {
@@ -424,8 +422,10 @@ impl<AUTH> Client<AUTH> {
         Ok(NetworkAccount::new(account).is_err())
     }
 
-    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
-    /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
+    /// Inserts `account` into the store (or overwrites it if `overwrite` is true).
+    ///
+    /// If `client_account_type` is [`ClientAccountType::Native`], the client tracks the note tag of
+    /// the default address of the account.
     ///
     /// Switching the [`ClientAccountType`] of an already-tracked account is not supported and
     /// returns [`ClientError::AccountWatchedMismatch`].
@@ -459,17 +459,9 @@ impl<AUTH> Client<AUTH> {
                 }
 
                 self.store
-                    .insert_account(account, default_address.clone(), client_account_type)
+                    .insert_account(account, default_address, client_account_type)
                     .await
                     .map_err(ClientError::StoreError)?;
-
-                if matches!(client_account_type, ClientAccountType::Native) {
-                    // Set the default address note tag so sync pulls notes.
-                    let default_address_note_tag = default_address.to_note_tag();
-                    let note_tag_record =
-                        NoteTagRecord::with_account_source(default_address_note_tag, account.id());
-                    self.store.add_note_tag(note_tag_record).await?;
-                }
 
                 Ok(())
             },
@@ -481,8 +473,8 @@ impl<AUTH> Client<AUTH> {
 
                 if client_account_type != tracked_account.client_account_type() {
                     // Switching between Watched and Native after the account is tracked is not
-                    // supported: the per-account note tag and any client-side state derived from
-                    // that mode are set up at insertion time and not migrated on the fly.
+                    // supported. The store keeps the mode that the account has at insertion and
+                    // does not change it on update.
                     return Err(ClientError::AccountWatchedMismatch(account.id()));
                 }
 
@@ -535,9 +527,9 @@ impl<AUTH> Client<AUTH> {
     /// Starts watching an on-chain account ([`ClientAccountType::Watched`]).
     ///
     /// Like [`Self::import_account_by_id`], the account is fetched from the network by its ID.
-    /// Unlike `import_account_by_id`, the account is added without registering its derived note
-    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but will
-    /// **not** pull notes targeted at it.
+    /// Unlike `import_account_by_id`, the client does not track the note tags of the addresses of
+    /// the account. `sync_state` will keep the account's commitment, nonce and storage up to date
+    /// but will **not** pull notes targeted at it.
     ///
     /// If the account is already being tracked as watched its state is overwritten. Switching an
     /// already-tracked native account to watched is not supported.
@@ -652,8 +644,10 @@ impl<AUTH> Client<AUTH> {
         Ok(faucet_metadata_from_token_config(*slot_header.value()))
     }
 
-    /// Adds an [`Address`] to the associated [`AccountId`], alongside its derived [`NoteTag`]. If
-    /// the account is tracked as watched, the note tag is not registered.
+    /// Adds an [`Address`] to the associated [`AccountId`].
+    ///
+    /// If the account is native, the client tracks the [`NoteTag`] of the address. If the account
+    /// is watched, the client does not track the tag.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -676,40 +670,20 @@ impl<AUTH> Client<AUTH> {
                 if !tracked_account.is_watched() {
                     self.validate_can_track_more_account_tags(address.to_note_tag()).await?;
                 }
-                self.store.insert_address(address.clone(), account_id).await?;
-                // Watched accounts intentionally have no derived note tag registered to avoid sync
-                // state pulling notes for them.
-                if !tracked_account.is_watched() {
-                    let derived_note_tag: NoteTag = address.to_note_tag();
-                    let note_tag_record =
-                        NoteTagRecord::with_account_source(derived_note_tag, account_id);
-                    self.store.add_note_tag(note_tag_record).await?;
-                }
+                self.store.insert_address(address, account_id).await?;
                 Ok(())
             },
         }
     }
 
-    /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
+    /// Removes an [`Address`] from the account it belongs to.
     ///
-    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
-    /// left in place, since it may have been registered by something other than this address.
-    pub async fn remove_address(
-        &mut self,
-        address: Address,
-        account_id: AccountId,
-    ) -> Result<bool, ClientError> {
-        let derived_note_tag = address.to_note_tag();
-        let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        if !self.store.remove_address(address).await? {
-            return Ok(false);
-        }
-        // Remove the note tag if no other address are associated with it.
-        let addresses = self.store.get_addresses_by_account_id(account_id).await?;
-        if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
-            self.store.remove_note_tag(note_tag_record).await?;
-        }
-        Ok(true)
+    /// If the account is native and no other address of the account has the same [`NoteTag`], the
+    /// client no longer tracks the tag.
+    ///
+    /// Returns `true` if the address was tracked. If it was not tracked, this is a no-op.
+    pub async fn remove_address(&mut self, address: Address) -> Result<bool, ClientError> {
+        Ok(self.store.remove_address(address).await?)
     }
 
     // ACCOUNT DATA RETRIEVAL

@@ -57,7 +57,7 @@ use miden_client::vm::{
 use miden_client::{self, Deserializable, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
-use miden_client_integration_tests::{ClientConfig, fee_funding};
+use miden_client_integration_tests::funding;
 use miden_client_sqlite_store::SqliteStore;
 use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
@@ -2152,9 +2152,7 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.deploy_account(AccountId::from_hex(account_id)?).await?;
-
-    client.flush_funder().await
+    client.deploy_account(AccountId::from_hex(account_id)?).await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay
@@ -2164,10 +2162,7 @@ async fn cli_funding_client(
     store_path: &Path,
     endpoint: &Endpoint,
 ) -> Result<TestClient> {
-    let fee_funder = fee_funding::load(
-        &ClientConfig::new(endpoint.clone(), 10_000),
-        fee_funding::funders_path_from_env().as_deref(),
-    )?;
+    let fee_funder = funding::load(funding::funding_service_from_env().as_deref())?;
 
     let (client, _) =
         create_rust_client_with_cli_keystore(store_path, cli_path, endpoint.clone()).await?;
@@ -2965,8 +2960,7 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
     // since this one has to be committed on-chain on a fee-free chain too.
     block_on(async {
         let mut client = cli_funding_client(&target_dir, &target_store_path, &endpoint).await?;
-        client.deploy_account(AccountId::from_hex(&account_id)?).await?;
-        client.flush_funder().await
+        client.deploy_account(AccountId::from_hex(&account_id)?).await
     })
     .expect("failed to deploy the call-test account");
     sync_cli(&target_dir);

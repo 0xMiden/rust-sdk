@@ -50,8 +50,6 @@ pub struct LeafValueVector {
     #[serde(deserialize_with = "deserialize_uint_to_string")]
     pub amount: String,
     pub metadata_hash: String,
-    #[allow(dead_code)]
-    pub leaf_value: String,
 }
 
 impl LeafValueVector {

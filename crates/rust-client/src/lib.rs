@@ -562,7 +562,7 @@ pub type ClientRngBox = Box<dyn ClientCryptoRng>;
 pub struct ClientRng(ClientRngBox);
 
 impl ClientRng {
-    pub fn new(rng: ClientRngBox) -> Self {
+    pub(crate) fn new(rng: ClientRngBox) -> Self {
         Self(rng)
     }
 

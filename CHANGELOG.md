@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.17.0 (TBD)
+## 0.17.0 (2026-10-02)
 
 ### Breaking Changes
 

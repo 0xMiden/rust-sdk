@@ -29,7 +29,12 @@ use miden_client::account::{
 use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
-use miden_client::note::{BlockNumber, NoteScript, Nullifier};
+use miden_client::note::{BlockNumber, NoteId, NoteScript, NoteTag, Nullifier};
+use miden_client::note_transport::NoteTransportCursor;
+use miden_client::protocol_config::ProtocolConfig;
+use miden_client::pswap::{PswapLineageFilter, PswapLineageRecord};
+use miden_client::rpc::RpcLimits;
+use miden_client::rpc::encryption::TransactionEncryptionKey;
 use miden_client::store::{
     AccountRecord,
     AccountStatus,
@@ -59,6 +64,12 @@ use rusqlite::types::Value;
 use sql_error::SqlResultExt;
 
 use crate::account::rows::query_vault_assets;
+use crate::settings::{
+    NOTE_TRANSPORT_CURSORS_KEY,
+    RPC_LIMITS_KEY,
+    TRANSACTION_ENCRYPTION_KEY_KEY,
+    protocol_config_key,
+};
 
 mod account;
 mod builder;
@@ -66,6 +77,7 @@ mod chain_data;
 mod db_management;
 mod forest;
 mod note;
+mod pswap;
 mod settings;
 mod sql_error;
 mod sync;
@@ -534,6 +546,122 @@ impl Store for SqliteStore {
             })
         })
         .await
+    }
+
+    async fn get_pswap_lineage(
+        &self,
+        order_id: Felt,
+    ) -> Result<Option<PswapLineageRecord>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_pswap_lineage(conn, order_id))
+            .await
+    }
+
+    async fn get_pswap_order_id_by_tip(&self, tip: NoteId) -> Result<Option<Felt>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_pswap_order_id_by_tip(conn, tip))
+            .await
+    }
+
+    async fn get_pswap_lineages(
+        &self,
+        filter: PswapLineageFilter,
+    ) -> Result<Vec<PswapLineageRecord>, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::get_pswap_lineages(conn, &filter))
+            .await
+    }
+
+    async fn upsert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
+        let record = record.clone();
+        self.interact_with_connection(move |conn| {
+            with_write_tx(conn, |tx| SqliteStore::upsert_pswap_lineage(tx, &record))
+        })
+        .await
+    }
+
+    async fn get_note_transport_cursors(
+        &self,
+    ) -> Result<BTreeMap<NoteTag, NoteTransportCursor>, StoreError> {
+        self.interact_with_connection(|conn| {
+            SqliteStore::get_client_setting(conn, NOTE_TRANSPORT_CURSORS_KEY)
+        })
+        .await
+        .map(Option::unwrap_or_default)
+    }
+
+    async fn set_note_transport_cursors(
+        &self,
+        cursors: &BTreeMap<NoteTag, NoteTransportCursor>,
+    ) -> Result<(), StoreError> {
+        let cursors = cursors.clone();
+        self.interact_with_connection(move |conn| {
+            if cursors.is_empty() {
+                SqliteStore::remove_setting(conn, SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY)?;
+                return Ok(());
+            }
+            SqliteStore::set_client_setting(conn, NOTE_TRANSPORT_CURSORS_KEY, &cursors)
+        })
+        .await
+    }
+
+    async fn get_protocol_config(
+        &self,
+        commitment: Word,
+    ) -> Result<Option<ProtocolConfig>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_client_setting(conn, &protocol_config_key(commitment))
+        })
+        .await
+    }
+
+    async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError> {
+        let config = config.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::set_client_setting(
+                conn,
+                &protocol_config_key(config.to_commitment()),
+                &config,
+            )
+        })
+        .await
+    }
+
+    async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {
+        self.interact_with_connection(|conn| SqliteStore::get_client_setting(conn, RPC_LIMITS_KEY))
+            .await
+    }
+
+    async fn set_rpc_limits(&self, limits: RpcLimits) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::set_client_setting(conn, RPC_LIMITS_KEY, &limits)
+        })
+        .await
+    }
+
+    async fn get_transaction_encryption_key(
+        &self,
+    ) -> Result<Option<TransactionEncryptionKey>, StoreError> {
+        self.interact_with_connection(|conn| {
+            SqliteStore::get_client_setting(conn, TRANSACTION_ENCRYPTION_KEY_KEY)
+        })
+        .await
+    }
+
+    async fn set_transaction_encryption_key(
+        &self,
+        key: &TransactionEncryptionKey,
+    ) -> Result<(), StoreError> {
+        let key = key.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::set_client_setting(conn, TRANSACTION_ENCRYPTION_KEY_KEY, &key)
+        })
+        .await
+    }
+
+    async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
+        self.interact_with_connection(|conn| {
+            SqliteStore::remove_setting(conn, SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_KEY)
+        })
+        .await?;
+        Ok(())
     }
 
     async fn get_unspent_input_note_nullifiers(&self) -> Result<Vec<Nullifier>, StoreError> {

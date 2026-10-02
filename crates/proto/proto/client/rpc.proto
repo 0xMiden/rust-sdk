@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+// Values that the client receives from the node. Field numbers are part of the encoded format, so
+// a released number must keep its meaning. Add fields, do not renumber or reuse them.
+package client.rpc;
+
+import "primitives.proto";
+
+// Maximum number of items in a single request to an RPC endpoint.
+message RpcLimits {
+  uint32 note_ids_limit = 1;
+  uint32 nullifiers_limit = 2;
+  uint32 account_ids_limit = 3;
+  uint32 note_tags_limit = 4;
+}
+
+// Cached key that the client uses to encrypt transaction inputs.
+message TransactionEncryptionKey {
+  // Wire identifier of the IES scheme.
+  uint32 scheme = 1;
+  // Opaque identifier of the key, assigned by the node.
+  bytes key_id = 2;
+  // Canonically serialized public key.
+  bytes public_key = 3;
+  primitives.Word genesis_commitment = 4;
+}

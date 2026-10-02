@@ -97,6 +97,31 @@ impl PswapLineageRecord {
         }
     }
 
+    /// Builds a record from all of its fields. A store uses this to rebuild a record that it
+    /// persisted in its own format.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        original_note_id: NoteId,
+        order_id: Felt,
+        creator_account_id: AccountId,
+        current_tip_note_id: NoteId,
+        current_depth: u32,
+        remaining_offered: AssetAmount,
+        remaining_requested: AssetAmount,
+        state: PswapLineageState,
+    ) -> Self {
+        Self {
+            original_note_id,
+            order_id,
+            creator_account_id,
+            current_tip_note_id,
+            current_depth,
+            remaining_offered,
+            remaining_requested,
+            state,
+        }
+    }
+
     /// Stable identifier (== the depth-0 note's `serial[1]`) shared by every note in the chain.
     pub fn order_id(&self) -> Felt {
         self.order_id
@@ -389,9 +414,8 @@ impl PswapLineageFilter {
 // SERDE HELPERS
 // ================================================================================================
 
-/// Builds a [`PswapLineageRecord`] from its decoded fields. Lives here (not in a store backend) so
-/// alternative backends can reuse it. The only validation is decoding the `state_byte` into a known
-/// [`PswapLineageState`].
+/// Builds a [`PswapLineageRecord`] from its decoded fields. The only validation is decoding the
+/// `state_byte` into a known [`PswapLineageState`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_record_from_fields(
     original_note_id: NoteId,
@@ -403,7 +427,7 @@ pub(crate) fn build_record_from_fields(
     remaining_requested: AssetAmount,
     state_byte: u8,
 ) -> Result<PswapLineageRecord, PswapLineageError> {
-    Ok(PswapLineageRecord {
+    Ok(PswapLineageRecord::from_parts(
         original_note_id,
         order_id,
         creator_account_id,
@@ -411,8 +435,8 @@ pub(crate) fn build_record_from_fields(
         current_depth,
         remaining_offered,
         remaining_requested,
-        state: PswapLineageState::try_from_u8(state_byte)?,
-    })
+        PswapLineageState::try_from_u8(state_byte)?,
+    ))
 }
 
 // VALUE CODEC

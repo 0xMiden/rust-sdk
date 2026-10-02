@@ -31,7 +31,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
-version      = "0.17.0-rc.5"
+version      = "0.17.0"
 
 [profile.dev]
 codegen-units = 16
@@ -42,22 +42,22 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17.0-rc.5" }
-miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17.0-rc.5" }
-miden-client-proto             = { default-features = false, path = "crates/proto", version = "0.17.0-rc.5" }
-miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17.0-rc.5" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17" }
+miden-client-proto             = { default-features = false, path = "crates/proto", version = "0.17" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "=0.17.0-rc.9" }
-miden-objects   = { default-features = false, version = "=0.17.0-rc.9" }
-miden-protocol  = { default-features = false, version = "=0.17.0-rc.9" }
-miden-standards = { default-features = false, version = "=0.17.0-rc.9" }
-miden-testing   = { default-features = false, version = "=0.17.0-rc.9" }
-miden-tx        = { default-features = false, version = "=0.17.0-rc.9" }
-miden-tx-batch  = { default-features = false, version = "=0.17.0-rc.9" }
+miden-agglayer  = { default-features = false, version = "0.17" }
+miden-objects   = { default-features = false, version = "0.17" }
+miden-protocol  = { default-features = false, version = "0.17" }
+miden-standards = { default-features = false, version = "0.17" }
+miden-testing   = { default-features = false, version = "0.17" }
+miden-tx        = { default-features = false, version = "0.17" }
+miden-tx-batch  = { default-features = false, version = "0.17" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.17.0-rc.4" }
+miden-node-proto-build = { default-features = false, version = "0.17" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.35" }

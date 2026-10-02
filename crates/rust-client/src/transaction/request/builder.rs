@@ -203,7 +203,12 @@ impl TransactionRequestBuilder {
     /// [`TransactionRequestBuilder::build`] method will return an error.
     #[must_use]
     pub fn own_output_notes(mut self, notes: impl IntoIterator<Item = Note>) -> Self {
-        self.own_output_notes.extend(notes);
+        for note in notes {
+            self.expected_output_recipients
+                .insert(note.recipient().digest(), note.recipient().clone());
+            self.own_output_notes.push(note);
+        }
+
         self
     }
 
@@ -230,6 +235,13 @@ impl TransactionRequestBuilder {
     /// - **Private accounts**: the node retrieves a proof of the account's existence and injects
     ///   that as advice inputs. Private accounts must always be declared here with their
     ///   [`PartialAccount`](miden_protocol::account::PartialAccount) state.
+    /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
+    ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
+    ///   against the transaction's reference block.
+    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    ///   inputs for a given block.
+    ///
+    /// Declaring an account ID more than once keeps the last declaration.
     #[must_use]
     pub fn foreign_accounts(
         mut self,
@@ -719,7 +731,6 @@ impl TransactionRequestBuilder {
             return Err(TransactionRequestError::ZeroExpirationDelta);
         }
 
-        let mut expected_output_recipients = self.expected_output_recipients;
         let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
             (Some(_), false) => {
                 return Err(TransactionRequestError::ScriptTemplateError(
@@ -736,12 +747,6 @@ impl TransactionRequestBuilder {
                 Some(TransactionScriptTemplate::CustomScript(script))
             },
             (None, false) => {
-                // Added here rather than in `own_output_notes`, so that a later call to
-                // `expected_output_recipients` does not drop them.
-                for note in &self.own_output_notes {
-                    expected_output_recipients
-                        .insert(note.recipient().digest(), note.recipient().clone());
-                }
                 let partial_notes: Vec<PartialNote> =
                     self.own_output_notes.into_iter().map(Into::into).collect();
 
@@ -756,7 +761,7 @@ impl TransactionRequestBuilder {
             input_notes_args: self.input_notes_args,
             explicit_input_notes: self.explicit_input_notes,
             script_template,
-            expected_output_recipients,
+            expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,

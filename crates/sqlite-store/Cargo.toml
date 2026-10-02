@@ -14,9 +14,9 @@ doctest    = false
 
 [dependencies]
 # Miden dependencies
-miden-client   = { features = ["std"], workspace = true }
-miden-objects  = { features = ["std"], workspace = true }
-miden-protocol = { workspace = true }
+miden-client       = { features = ["std"], workspace = true }
+miden-client-proto = { workspace = true }
+miden-protocol     = { workspace = true }
 
 # Workspace dependencies
 anyhow      = { workspace = true }
@@ -28,18 +28,12 @@ tracing     = { workspace = true }
 # External dependencies
 deadpool           = { default-features = false, features = ["managed", "rt_tokio_1"], version = "0.12" }
 deadpool-sync      = { version = "0.1" }
-prost              = { features = ["derive", "std"], workspace = true }
 rusqlite           = { features = ["array", "bundled", "vtab"], version = "0.37" }
 rusqlite_migration = { version = "2.1" }
 tokio              = { workspace = true }
 
 [lints]
 workspace = true
-
-[build-dependencies]
-miden-objects = { workspace = true }
-prost-build   = { version = "0.14" }
-protox        = { workspace = true }
 
 [dev-dependencies]
 # Enable client testing utilities only for tests

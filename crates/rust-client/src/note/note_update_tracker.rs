@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -11,6 +12,7 @@ use miden_protocol::note::{
     NoteMetadata,
     Nullifier,
 };
+use miden_protocol::transaction::TransactionId;
 use miden_standards::note::NetworkAccountTarget;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -679,6 +681,34 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
+    /// Releases the input notes a discarded local transaction was consuming.
+    ///
+    /// A note still processing under `transaction_id` goes back to the state it had before the
+    /// transaction was applied, so it can be consumed again. Notes in any other state are left
+    /// untouched: in particular a note that was meanwhile consumed on chain stays consumed.
+    pub(crate) fn apply_transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<(), ClientError> {
+        let released: Vec<NoteDetailsCommitment> = self
+            .input_notes
+            .iter()
+            .filter(|(_, update)| {
+                let note = update.inner();
+                note.is_processing() && note.consumer_transaction_id() == Some(&transaction_id)
+            })
+            .map(|(commitment, _)| *commitment)
+            .collect();
+
+        for commitment in released {
+            if let Some(update) = self.input_notes.get_mut(&commitment) {
+                update.inner_mut().transaction_discarded(transaction_id)?;
+            }
+        }
+
+        Ok(())
+    }
+
     // PRIVATE HELPERS
     // --------------------------------------------------------------------------------------------
 
@@ -889,8 +919,7 @@ mod tests {
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
 
-    use super::{NoteConsumption, NoteUpdateTracker};
-    use crate::store::InputNoteRecord;
+    use super::{NoteConsumption, NoteUpdateTracker, NoteUpdateType};
     use crate::store::input_note_states::{
         ConsumedExternalNoteState,
         ConsumedUnauthenticatedLocalNoteState,
@@ -898,6 +927,7 @@ mod tests {
         NoteSubmissionData,
         ProcessingUnauthenticatedNoteState,
     };
+    use crate::store::{InputNoteRecord, InputNoteState};
     use crate::transaction::TransactionRecord;
 
     // HELPERS
@@ -939,6 +969,24 @@ mod tests {
                 submitted_at: Some(0),
                 consumer_account: sender,
                 consumer_transaction: TransactionId::from_raw(Word::default()),
+            },
+        };
+        InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
+    }
+
+    /// A metadata-bearing note being processed by the local transaction `consumer_transaction`.
+    fn processing_note_for(
+        seed: u64,
+        sender: AccountId,
+        consumer_transaction: TransactionId,
+    ) -> InputNoteRecord {
+        let state = ProcessingUnauthenticatedNoteState {
+            metadata: note_metadata(sender),
+            after_block_num: BlockNumber::from(3u32),
+            submission_data: NoteSubmissionData {
+                submitted_at: Some(0),
+                consumer_account: sender,
+                consumer_transaction,
             },
         };
         InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
@@ -1063,6 +1111,74 @@ mod tests {
             vec![id],
             "the retained id of an externally consumed note must survive serialization"
         );
+    }
+
+    #[test]
+    fn discarded_transaction_releases_only_the_notes_it_was_processing() {
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let discarded_tx =
+            TransactionId::from_raw([Felt::new_unchecked(1), ZERO, ZERO, ZERO].into());
+        let other_tx = TransactionId::from_raw([Felt::new_unchecked(2), ZERO, ZERO, ZERO].into());
+
+        let released = processing_note_for(20, sender, discarded_tx);
+        let released_id = released.id().unwrap();
+        let released_nullifier = released.nullifier().unwrap();
+        let expected_metadata = released.metadata().copied();
+        let still_processing = processing_note_for(21, sender, other_tx);
+        let still_processing_id = still_processing.id().unwrap();
+        let consumed = processing_note_for(22, sender, discarded_tx);
+        let consumed_id = consumed.id().unwrap();
+        let consumed_nullifier = consumed.nullifier().unwrap();
+
+        let mut tracker =
+            NoteUpdateTracker::new(vec![released, still_processing, consumed], vec![]);
+
+        // One of the discarded transaction's notes was consumed on chain by someone else.
+        tracker
+            .apply_note_consumption(
+                &NoteConsumption {
+                    nullifier: consumed_nullifier,
+                    block_num: BlockNumber::from(5u32),
+                    external_consumer: None,
+                },
+                core::iter::empty::<&TransactionRecord>(),
+            )
+            .unwrap();
+
+        tracker.apply_transaction_discarded(discarded_tx).unwrap();
+
+        let state_of = |tracker: &NoteUpdateTracker, id: NoteId| {
+            tracker
+                .input_notes
+                .values()
+                .find(|update| update.id() == Some(id))
+                .map(|update| update.inner().state().clone())
+                .unwrap()
+        };
+
+        // The released note is expected again, keeps its metadata and its nullifier index, and is
+        // flagged as a pending store write.
+        let InputNoteState::Expected(state) = state_of(&tracker, released_id) else {
+            panic!("the released note should be expected again");
+        };
+        assert_eq!(state.metadata, expected_metadata);
+        assert_eq!(state.after_block_num, BlockNumber::from(3u32));
+        assert_eq!(state.tag, expected_metadata.map(|metadata| metadata.tag()));
+        assert!(tracker.unspent_nullifiers().any(|nullifier| nullifier == released_nullifier));
+        assert_eq!(
+            tracker
+                .updated_input_notes()
+                .find(|update| update.id() == Some(released_id))
+                .map(|update| *update.update_type()),
+            Some(NoteUpdateType::Update)
+        );
+
+        // A note held by another transaction and a note consumed on chain are left alone.
+        assert!(matches!(
+            state_of(&tracker, still_processing_id),
+            InputNoteState::ProcessingUnauthenticated(_)
+        ));
+        assert!(matches!(state_of(&tracker, consumed_id), InputNoteState::ConsumedExternal(_)));
     }
 
     #[test]

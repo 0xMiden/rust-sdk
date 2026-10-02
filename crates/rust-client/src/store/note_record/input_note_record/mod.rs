@@ -349,6 +349,22 @@ impl InputNoteRecord {
             Ok(false)
         }
     }
+
+    /// Modifies the state of the note record to reflect that the transaction consuming the note was
+    /// discarded, making the note available again. Only a note being processed by that transaction
+    /// is affected. Returns `true` if the state was changed.
+    pub(crate) fn transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<bool, NoteRecordError> {
+        let new_state = self.state.transaction_discarded(transaction_id)?;
+        if let Some(new_state) = new_state {
+            self.state = new_state;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 // SERIALIZATION

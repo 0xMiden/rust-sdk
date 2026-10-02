@@ -6,6 +6,11 @@
 
 * [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
 * 
+
+### Fixes
+
+* [FIX][rust] Discarding a local transaction during sync now releases the input notes it was consuming: authenticated notes go back to `Committed` and unauthenticated ones to `Expected`, so they are listed as consumable again and can be spent by a new transaction. Notes consumed on chain in the meantime stay consumed. Previously such notes stayed in a processing state indefinitely ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+
 ## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes

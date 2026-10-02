@@ -55,7 +55,7 @@ miden-tx        = { default-features = false, version = "0.17" }
 miden-tx-batch  = { default-features = false, version = "0.17" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.17.0-rc.4" }
+miden-node-proto-build = { default-features = false, version = "0.17" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.35" }

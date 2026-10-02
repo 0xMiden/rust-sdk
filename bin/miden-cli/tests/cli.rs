@@ -27,7 +27,6 @@ use miden_client::auth::{
     TransactionAuthenticator,
 };
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteId;
 use miden_client::note_transport::{
@@ -55,7 +54,7 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Deserializable, Felt, Word};
+use miden_client::{self, Deserializable, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::{ClientConfig, fee_funding};
@@ -302,6 +301,37 @@ fn silent_initialization_uses_default_values() {
         !local_config_path.exists(),
         "Should not create local config during silent initialization"
     );
+}
+
+#[test]
+#[serial_test::file_serial]
+fn loaded_config_directory_is_logged_at_debug_level() {
+    let miden_home = set_isolated_miden_home();
+
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // Without a local config, the global one is loaded.
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    account_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(format!("Loaded configuration from {} (Global)", miden_home.display())));
+
+    // With a local config, that one is loaded instead.
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--network", "localhost"]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    // The local directory is derived from the current directory, which the OS may canonicalize.
+    account_cmd.current_dir(&temp_dir).assert().success().stdout(contains(format!(
+        "Loaded configuration from {} (Local)",
+        temp_dir.canonicalize().unwrap().join(MIDEN_DIR).display()
+    )));
 }
 
 #[test]
@@ -2089,16 +2119,10 @@ async fn create_rust_client(
         std::sync::Arc::new(sqlite_store)
     };
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-
-    let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
-
     let keystore = FilesystemKeyStore::new(keystore_path.to_path_buf())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))
-        .rng(rng)
         .store(store)
         .authenticator(Arc::new(keystore.clone()))
         .build()

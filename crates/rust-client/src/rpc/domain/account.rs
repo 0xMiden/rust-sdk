@@ -7,7 +7,6 @@ use miden_protocol::account::{
     StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
 };
 use miden_protocol::asset::{Asset, AssetVault};
-use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
@@ -19,8 +18,8 @@ use thiserror::Error;
 use crate::alloc::string::ToString;
 use crate::rpc::{AccountStateAt, RpcError};
 use crate::rpc::domain::MissingFieldHelper;
-use crate::rpc::generated::rpc::account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
-use crate::rpc::generated::rpc::account_request::account_detail_request::{
+use crate::rpc::generated::rpc::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
+use crate::rpc::generated::rpc::get_account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
 };
 use crate::rpc::generated::{self as proto};
@@ -41,7 +40,7 @@ impl Debug for proto::rpc::RegisterAccountRequest {
 // ================================================================================================
 
 #[cfg(feature = "tonic")]
-impl proto::rpc::account_response::AccountDetails {
+impl proto::rpc::get_account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
     /// The RPC response may omit unchanged account codes. If so, this function uses
@@ -63,18 +62,20 @@ impl proto::rpc::account_response::AccountDetails {
         use crate::rpc::RpcError;
         use crate::rpc::domain::MissingFieldHelper;
 
-        let proto::rpc::account_response::AccountDetails {
+        let proto::rpc::get_account_response::AccountDetails {
             header,
             storage_details,
             code,
             vault_details,
         } = self;
         let header: AccountHeader = header
-            .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(header)))?
+            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
+                header
+            )))?
             .decode_and_verify()?;
 
         let storage_details: AccountStorageDetails = storage_details
-            .ok_or(proto::rpc::account_response::AccountDetails::missing_field(stringify!(
+            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
                 storage_details
             )))?
             .try_into()?;
@@ -111,12 +112,6 @@ impl proto::rpc::account_response::AccountDetails {
         })
     }
 }
-
-// ACCOUNT PROOF
-// ================================================================================================
-
-/// Contains a block number, and a list of account proofs at that block.
-pub type AccountProofs = (BlockNumber, Vec<AccountProof>);
 
 // ACCOUNT DETAILS
 // ================================================================================================
@@ -663,9 +658,9 @@ impl AccountProof {
 }
 
 #[cfg(feature = "tonic")]
-impl TryFrom<proto::rpc::AccountResponse> for AccountProof {
+impl TryFrom<proto::rpc::GetAccountResponse> for AccountProof {
     type Error = RpcError;
-    fn try_from(account_proof: proto::rpc::AccountResponse) -> Result<Self, Self::Error> {
+    fn try_from(account_proof: proto::rpc::GetAccountResponse) -> Result<Self, Self::Error> {
         let Some(witness) = account_proof.witness else {
             return Err(RpcError::ExpectedDataMissing(
                 "GetAccount returned an account without witness".to_string(),

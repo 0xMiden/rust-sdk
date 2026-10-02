@@ -20,7 +20,7 @@ use rusqlite::types::{ToSqlOutput, Value};
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, text_array};
+use crate::{column_value_as_u64, proto, text_array};
 
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,
@@ -141,7 +141,7 @@ pub(super) fn query_account_code(
         .query_row(params![commitment.to_bytes()], |row| row.get::<_, Vec<u8>>(0))
         .optional()
         .into_store_error()?
-        .map(|bytes| Ok(AccountCode::read_from_bytes(&bytes)?))
+        .map(|bytes| Ok(proto::decode_unchecked::<AccountCode>(&bytes)?))
         .transpose()
 }
 

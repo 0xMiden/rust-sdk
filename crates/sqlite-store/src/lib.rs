@@ -50,6 +50,7 @@ use miden_client::store::{
 use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_client::utils::Serializable;
+use miden_client_proto as proto;
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
 use miden_protocol::asset::AssetId;

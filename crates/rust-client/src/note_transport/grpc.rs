@@ -36,7 +36,7 @@ use {
     tonic::transport::{Channel, ClientTlsConfig},
 };
 
-use super::generated::note_transport::api_client::ApiClient;
+use super::generated::note_transport::note_transport_service_client::NoteTransportServiceClient;
 use super::generated::note_transport::{
     FetchNotesCursor,
     FetchNotesRequest,
@@ -70,10 +70,8 @@ impl TryFrom<FetchedNote> for DecodedFetchedNote {
             .ok_or_else(|| ConversionError::missing_field::<FetchedNote>("details"))?
             .decode_and_verify()
             .context("details")?;
-        let block_hint = note
-            .committed_in_block
-            .or(note.after_block_num)
-            .map(|block_num| BlockNumber::from(block_num.block_num));
+        let block_hint =
+            note.committed_in_block.map(|block_num| BlockNumber::from(block_num.block_num));
 
         Ok(Self { header, details, block_hint })
     }
@@ -150,7 +148,7 @@ async fn connect_channel(
         .await
         .map_err(|e| NoteTransportError::Connection(Box::new(e)))?;
     Ok(ConnectedClient {
-        client: ApiClient::new(channel.clone()),
+        client: NoteTransportServiceClient::new(channel.clone()),
         health_client: HealthClient::new(channel),
     })
 }
@@ -166,7 +164,7 @@ async fn connect_channel(
     let wasm_client =
         tonic_web_wasm_client::Client::new_with_options(String::from(endpoint), fetch_options);
     Ok(ConnectedClient {
-        client: ApiClient::new(wasm_client.clone()),
+        client: NoteTransportServiceClient::new(wasm_client.clone()),
         health_client: HealthClient::new(wasm_client),
     })
 }
@@ -174,7 +172,7 @@ async fn connect_channel(
 /// Inner state holding the connected gRPC clients.
 #[derive(Clone)]
 struct ConnectedClient {
-    client: ApiClient<Service>,
+    client: NoteTransportServiceClient<Service>,
     health_client: HealthClient<Service>,
 }
 
@@ -210,7 +208,7 @@ impl GrpcNoteTransportClient {
     }
 
     /// Get a clone of the main client, connecting if needed.
-    async fn api(&self) -> Result<ApiClient<Service>, NoteTransportError> {
+    async fn api(&self) -> Result<NoteTransportServiceClient<Service>, NoteTransportError> {
         Ok(self.ensure_connected().await?.client)
     }
 
@@ -346,10 +344,8 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
 mod tests {
     use alloc::string::ToString;
 
-    use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -358,6 +354,8 @@ mod tests {
     };
     use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::*;
 
@@ -366,14 +364,14 @@ mod tests {
         let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::from(&[seed; 4]));
+        let mut rng = ChaCha20Rng::seed_from_u64(u64::from(seed));
 
         P2idNote::builder()
             .sender(sender)
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .unwrap()
             .into()
@@ -383,7 +381,6 @@ mod tests {
         FetchedNote {
             header: Some((*header).into()),
             details: Some(details.into()),
-            after_block_num: None,
             committed_in_block: None,
         }
     }
@@ -391,8 +388,7 @@ mod tests {
     #[test]
     fn matching_note_decodes() {
         let note = private_note(1);
-        let mut fetched = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        fetched.after_block_num = Some(BlockNumber::from(7).into());
+        let fetched = fetched_note(note.header(), NoteDetails::from(note.clone()));
 
         let info = fetched.decode_and_verify().unwrap();
 
@@ -401,14 +397,13 @@ mod tests {
             NoteDetails::read_from_bytes(&info.details_bytes).unwrap().commitment(),
             note.details_commitment()
         );
-        assert_eq!(info.block_hint, Some(BlockNumber::from(7)));
+        assert_eq!(info.block_hint, None);
     }
 
     #[test]
-    fn committed_block_takes_precedence_over_sender_hint() {
+    fn committed_block_is_used_as_the_block_hint() {
         let note = private_note(2);
         let mut fetched = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        fetched.after_block_num = Some(BlockNumber::from(7).into());
         fetched.committed_in_block = Some(BlockNumber::from(9).into());
 
         let info = fetched.decode_and_verify().unwrap();

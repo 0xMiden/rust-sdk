@@ -75,7 +75,7 @@ impl SqliteStore {
             .optional()
             .into_store_error()?;
 
-        Ok(witness.map(|witness| proto::decode(&witness)).transpose()?)
+        Ok(witness.map(|witness| proto::decode_unchecked(&witness)).transpose()?)
     }
 
     pub(crate) fn update_account_witness(

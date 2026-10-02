@@ -445,16 +445,6 @@ impl MockRpcApi {
             .collect()
     }
 
-    pub fn get_private_available_notes(&self) -> Vec<MockChainNote> {
-        self.mock_chain
-            .read()
-            .committed_notes()
-            .values()
-            .filter(|n| matches!(n, MockChainNote::Private(_, _, _, _)))
-            .cloned()
-            .collect()
-    }
-
     pub fn advance_blocks(&self, num_blocks: u32) {
         let mut mock_chain = self.mock_chain.write();
         let block_num = mock_chain.latest_block_header().block_num();
@@ -612,7 +602,6 @@ impl NodeRpcClient for MockRpcApi {
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
         self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
 
-        // assume all public notes for now
         let notes = self.mock_chain.read().committed_notes().clone();
 
         let hit_notes = note_ids.iter().filter_map(|id| notes.get(id));

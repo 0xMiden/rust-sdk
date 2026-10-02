@@ -14,7 +14,8 @@ use miden_client::store::input_note_states::{
 use miden_objects::DecodeMessageExt;
 use miden_protocol::note::NoteTag;
 
-use crate::proto::{self, ProtoDecodeError, ProtobufValue, required};
+use crate as proto;
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for InputNoteState {
     type Message = proto::InputNoteState;
@@ -417,7 +418,7 @@ mod tests {
     use miden_protocol::transaction::TransactionId;
 
     use super::*;
-    use crate::proto::{decode, encode};
+    use crate::{decode, encode};
 
     /// The conversions to and from protobuf are written field by field, so a round trip through
     /// every variant catches a field that is dropped or read into the wrong place.

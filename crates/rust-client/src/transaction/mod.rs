@@ -1992,7 +1992,6 @@ mod tests {
     };
     use miden_protocol::asset::{AssetId, FungibleAsset};
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::protocol_config::ProtocolConfig;
     use miden_protocol::testing::account_id::{
@@ -2019,6 +2018,8 @@ mod tests {
     };
     use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::{
         AccountComponentInterface,
@@ -2038,14 +2039,14 @@ mod tests {
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
 
         P2idNote::builder()
             .sender(sender)
             .target(target_id)
             .asset(FungibleAsset::new(faucet_id, 100).unwrap())
             .note_type(NoteType::Public)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .expect("note creation failed")
             .into()

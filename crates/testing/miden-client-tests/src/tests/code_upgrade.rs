@@ -37,7 +37,6 @@ use miden_client::transaction::{
     TransactionScript,
 };
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use miden_protocol::crypto::rand::RandomCoin;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
@@ -167,11 +166,8 @@ fn rpc_api_with_accounts(accounts: &[&Account]) -> MockRpcApi {
 
 /// Returns a client over `rpc_api` that tracks `account`.
 async fn client_tracking(rpc_api: MockRpcApi, account: &Account) -> MockClient<FilesystemKeyStore> {
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(rpc_api))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
         .tx_discard_delta(None)

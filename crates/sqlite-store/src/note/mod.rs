@@ -252,7 +252,7 @@ impl SqliteStore {
             .into_store_error()?;
 
         match script_bytes {
-            Some(bytes) => Ok(proto::decode(&bytes)?),
+            Some(bytes) => Ok(proto::decode_unchecked(&bytes)?),
             None => Err(StoreError::NoteScriptNotFound(script_root.to_hex())),
         }
     }
@@ -271,15 +271,15 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
     let created_at = column_value_as_u64(row, "created_at").into_store_error()?;
     let attachments: Vec<u8> = row.get("attachments").into_store_error()?;
 
-    let assets = proto::decode(&assets)?;
+    let assets = proto::decode_unchecked(&assets)?;
     let serial_number = Word::read_from_bytes(&serial_number)?;
-    let script = proto::decode(&script)?;
-    let inputs = proto::decode(&inputs)?;
+    let script = proto::decode_unchecked(&script)?;
+    let inputs = proto::decode_unchecked(&inputs)?;
     let recipient = NoteRecipient::new(serial_number, script, inputs);
 
     let details = NoteDetails::new(assets, recipient);
-    let attachments = proto::decode(&attachments)?;
-    let state = proto::decode(&state)?;
+    let attachments = proto::decode_unchecked(&attachments)?;
+    let state = proto::decode_unchecked(&state)?;
 
     Ok(InputNoteRecord::new(details, attachments, Some(created_at), state))
 }
@@ -342,11 +342,11 @@ fn parse_output_note(row: &rusqlite::Row<'_>) -> Result<OutputNoteRecord, StoreE
     let script: Option<Vec<u8>> = row.get("serialized_note_script").into_store_error()?;
 
     let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
-    let assets = proto::decode(&assets)?;
-    let metadata = proto::decode(&metadata)?;
-    let script = script.map(|script| proto::decode(&script)).transpose()?;
-    let state = proto::decode_output_note_state(&state, script)?;
-    let attachments = proto::decode(&attachments)?;
+    let assets = proto::decode_unchecked(&assets)?;
+    let metadata = proto::decode_unchecked(&metadata)?;
+    let script = script.map(|script| proto::decode_unchecked(&script)).transpose()?;
+    let state = proto::decode_output_note_state_without_script(&state, script)?;
+    let attachments = proto::decode_unchecked(&attachments)?;
 
     Ok(OutputNoteRecord::new(
         recipient_digest,
@@ -380,7 +380,7 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
     SerializedOutputNoteStateUpdate {
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
-        state: proto::encode_output_note_state(note.state()),
+        state: proto::encode_output_note_state_without_script(note.state()),
     }
 }
 
@@ -400,7 +400,7 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
     let script = note.recipient().map(|recipient| proto::encode(recipient.script()));
 
     let state_discriminant = note.state().discriminant();
-    let state = proto::encode_output_note_state(note.state());
+    let state = proto::encode_output_note_state_without_script(note.state());
 
     let attachments = proto::encode(note.attachments());
 

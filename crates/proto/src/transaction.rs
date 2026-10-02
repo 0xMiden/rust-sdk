@@ -16,10 +16,11 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_objects::DecodeMessageExt;
-use miden_protocol::account::{AccountCodeUpgrade, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
-use miden_protocol::transaction::{InputNote, TransactionScript};
+use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -454,7 +455,7 @@ impl From<&TransactionScriptTemplate> for proto::TransactionScriptTemplate {
 
 impl From<&ForeignAccount> for proto::ForeignAccount {
     fn from(account: &ForeignAccount) -> Self {
-        use proto::foreign_account::{Account, Public};
+        use proto::foreign_account::{Account, Prefetched, Public};
 
         let account = match account {
             ForeignAccount::Public(account_id, storage_requirements) => Account::Public(Public {
@@ -462,6 +463,10 @@ impl From<&ForeignAccount> for proto::ForeignAccount {
                 storage_requirements: Some(storage_requirements.into()),
             }),
             ForeignAccount::Private(partial_account) => Account::Private(partial_account.into()),
+            ForeignAccount::Prefetched(inputs) => Account::Prefetched(Prefetched {
+                account: Some(inputs.account().into()),
+                witness: Some(inputs.witness().into()),
+            }),
         };
 
         Self { account: Some(account) }
@@ -484,6 +489,20 @@ impl TryFrom<proto::ForeignAccount> for ForeignAccount {
             ),
             Account::Private(partial_account) => {
                 ForeignAccount::private(partial_account.decode_and_verify()?)
+            },
+            Account::Prefetched(prefetched) => {
+                let partial_account: PartialAccount =
+                    required(prefetched.account, MESSAGE, "account")?.decode_and_verify()?;
+                let witness: AccountWitness =
+                    required(prefetched.witness, MESSAGE, "witness")?.decode_and_verify()?;
+                if witness.id() != partial_account.id() {
+                    return Err(ProtoDecodeError::InvalidValue(format!(
+                        "witness of account {} is for account {}",
+                        partial_account.id(),
+                        witness.id()
+                    )));
+                }
+                Ok(AccountInputs::new(partial_account, witness).into())
             },
         };
 
@@ -543,6 +562,7 @@ mod tests {
     };
     use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
     use miden_protocol::account::{
+        Account,
         AccountBuilder,
         AccountCode,
         AccountId,
@@ -552,6 +572,7 @@ mod tests {
     };
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::MerkleTree;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
     use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
@@ -560,7 +581,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{InputNote, TransactionScript};
+    use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
@@ -579,15 +600,17 @@ mod tests {
         let mut rng = RandomCoin::new(Word::default());
         let mut notes = notes(8, &mut rng);
 
-        let private_account = AccountBuilder::new(Default::default())
-            .with_component(MockAccountComponent::with_empty_slots())
-            .with_component(AuthSingleSig::new(Approver::new(
-                PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
-            )))
-            .account_type(AccountType::Private)
-            .build_existing()
-            .unwrap();
+        let private_account = mock_private_account([0; 32]);
+        let prefetched_account = mock_private_account([1; 32]);
+        let account_tree = AccountTree::with_entries([(
+            prefetched_account.id(),
+            prefetched_account.to_commitment(),
+        )])
+        .unwrap();
+        let prefetched_inputs = AccountInputs::new(
+            (&prefetched_account).into(),
+            account_tree.open(prefetched_account.id()),
+        );
         let merkle_tree =
             MerkleTree::new([rng.draw_word(), rng.draw_word(), rng.draw_word(), rng.draw_word()])
                 .unwrap();
@@ -617,6 +640,7 @@ mod tests {
                 )
                 .unwrap(),
                 ForeignAccount::private(&private_account).unwrap(),
+                ForeignAccount::Prefetched(prefetched_inputs),
             ])
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
@@ -655,6 +679,19 @@ mod tests {
         let request = TransactionRequestBuilder::new().build().unwrap();
 
         assert_eq!(decode::<TransactionRequest>(&encode(&request)).unwrap(), request);
+    }
+
+    /// Returns an existing private account built from `seed`.
+    fn mock_private_account(seed: [u8; 32]) -> Account {
+        AccountBuilder::new(seed)
+            .with_component(MockAccountComponent::with_empty_slots())
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthScheme::Falcon512Poseidon2,
+            )))
+            .account_type(AccountType::Private)
+            .build_existing()
+            .unwrap()
     }
 
     /// Returns `count` P2ID notes with different serial numbers and amounts.

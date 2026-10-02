@@ -119,9 +119,17 @@ message ForeignAccount {
     AccountStorageRequirements storage_requirements = 2;
   }
 
+  // An account whose state and inclusion witness the request carries.
+  message Prefetched {
+    account.PartialAccount account = 1;
+    // Witness of the account in the account tree of the transaction reference block.
+    account.AccountWitness witness = 2;
+  }
+
   oneof account {
     Public public = 1;
     account.PartialAccount private = 2;
+    Prefetched prefetched = 3;
   }
 }
 

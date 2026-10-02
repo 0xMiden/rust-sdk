@@ -267,7 +267,7 @@ fn parse_block_headers_columns(
 fn parse_block_header(
     (header, has_client_notes): (Vec<u8>, bool),
 ) -> Result<(BlockHeader, BlockRelevance), StoreError> {
-    Ok((proto::decode(&header)?, has_client_notes.into()))
+    Ok((proto::decode_unchecked(&header)?, has_client_notes.into()))
 }
 
 pub(crate) fn set_block_header_has_client_notes(

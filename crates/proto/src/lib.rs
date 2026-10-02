@@ -1,8 +1,8 @@
-//! Protobuf format of the values this store keeps, generated from the schemas in `proto/store`.
+//! Protobuf serialization of miden-client types, generated from the schemas in `proto/client`.
 //!
-//! A message field is optional in protobuf, so a value the store requires arrives as `None` when
-//! the row was written by a version that did not set it. `required` turns that into an error at the
-//! point of use, and names the field it was reading.
+//! A message field is optional in protobuf, so a required value arrives as `None` when the message
+//! was written by a version that did not set it. `required` turns that into an error at the point
+//! of use, and names the field it was reading.
 //!
 //! A scalar field without `optional` has no presence, so an absent value reads as zero. Declare a
 //! new scalar field as `optional` when the reader must detect that it is absent.
@@ -19,7 +19,10 @@ mod output_note;
 mod protocol;
 mod transaction;
 
-pub use output_note::{decode_output_note_state, encode_output_note_state};
+pub use output_note::{
+    decode_output_note_state_without_script,
+    encode_output_note_state_without_script,
+};
 pub use protocol::{decode_mmr_peaks, encode_mmr_peaks};
 
 #[rustfmt::skip]
@@ -31,40 +34,70 @@ pub use protocol::{decode_mmr_peaks, encode_mmr_peaks};
     missing_docs
 )]
 mod generated {
-    include!(concat!(env!("OUT_DIR"), "/miden.client.store.rs"));
+    // Each module is one `client.*` package. The modules are siblings, so the `super::` paths that
+    // prost generates between packages resolve.
+    pub mod input_note {
+        include!(concat!(env!("OUT_DIR"), "/client.input_note.rs"));
+    }
+    pub mod output_note {
+        include!(concat!(env!("OUT_DIR"), "/client.output_note.rs"));
+    }
+    pub mod protocol {
+        include!(concat!(env!("OUT_DIR"), "/client.protocol.rs"));
+    }
+    pub mod transaction {
+        include!(concat!(env!("OUT_DIR"), "/client.transaction.rs"));
+    }
 }
-pub use generated::*;
+pub use generated::input_note::*;
+pub use generated::output_note::*;
+pub use generated::protocol::*;
+pub use generated::transaction::*;
 
 // PROTOBUF VALUE
 // ================================================================================================
 
-/// A value that the store keeps as a protobuf message.
+/// A value that has a protobuf message format.
 pub trait ProtobufValue: Sized {
-    /// The message that the store writes for this value.
+    /// The message that represents this value.
     type Message: prost::Message + Default;
 
-    /// Builds the message that the store writes.
+    /// Builds the message for this value.
     fn to_proto(&self) -> Self::Message;
 
-    /// Builds the value from a stored message and checks its domain constraints.
+    /// Builds the value from a message and checks all of its constraints.
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError>;
+
+    /// Builds the value from a message and may skip the checks that are expensive. A type without
+    /// such checks builds the value as `from_proto` does. Use it only for messages from a trusted
+    /// source.
+    fn from_proto_unchecked(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Self::from_proto(message)
+    }
 }
 
-/// Encodes a value as the protobuf message that the store keeps.
+/// Encodes a value as its protobuf message.
 pub fn encode<T: ProtobufValue>(value: &T) -> Vec<u8> {
     prost::Message::encode_to_vec(&value.to_proto())
 }
 
-/// Decodes a stored protobuf message and builds the value from it.
+/// Decodes a protobuf message and builds the value from it with all checks.
 pub fn decode<T: ProtobufValue>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
     let message = <T::Message as prost::Message>::decode(bytes)?;
     T::from_proto(message)
 }
 
+/// Decodes a protobuf message and builds the value from it with
+/// [`ProtobufValue::from_proto_unchecked`]. Use it only for bytes from a trusted source.
+pub fn decode_unchecked<T: ProtobufValue>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
+    let message = <T::Message as prost::Message>::decode(bytes)?;
+    T::from_proto_unchecked(message)
+}
+
 // ERRORS
 // ================================================================================================
 
-/// Errors that occur when the store reads a protobuf value.
+/// Errors that occur when a protobuf value is decoded.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoDecodeError {
     /// The bytes are not a valid protobuf message.
@@ -96,7 +129,7 @@ impl From<ProtoDecodeError> for StoreError {
 // HELPERS
 // ================================================================================================
 
-/// Returns a field that the store requires, or an error that names it.
+/// Returns a required field, or an error that names it.
 pub(crate) fn required<T>(
     field: Option<T>,
     message: &'static str,
@@ -112,7 +145,7 @@ mod tests {
 
     use super::*;
 
-    /// A later client version can add fields to a stored message. A row that carries a field the
+    /// A later client version can add fields to a message. A message that carries a field the
     /// reader does not know must still decode to the same value.
     #[test]
     fn decoding_skips_unknown_fields() {

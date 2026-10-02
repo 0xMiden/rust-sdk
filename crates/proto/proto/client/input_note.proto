@@ -1,15 +1,15 @@
 syntax = "proto3";
 
-// Values of the `input_notes` table. Field numbers are part of the on-disk format, so a released
-// number must keep its meaning. Add fields, do not renumber or reuse them.
-package miden.client.store;
+// Input note values. Field numbers are part of the encoded format, so a released number must keep
+// its meaning. Add fields, do not renumber or reuse them.
+package client.input_note;
 
 import "account.proto";
 import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
-import "store/protocol.proto";
+import "client/protocol.proto";
 
 // A note the client consumes or expects to consume.
 message InputNoteState {
@@ -24,27 +24,27 @@ message InputNoteState {
   // The note has an inclusion proof that is not verified against a block header yet.
   message Unverified {
     note.NoteMetadata metadata = 1;
-    NoteInclusionProof inclusion_proof = 2;
+    protocol.NoteInclusionProof inclusion_proof = 2;
   }
 
   // The inclusion proof is verified against the block header.
   message Committed {
     note.NoteMetadata metadata = 1;
-    NoteInclusionProof inclusion_proof = 2;
+    protocol.NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
   }
 
   // The inclusion proof does not match the block header.
   message Invalid {
     note.NoteMetadata metadata = 1;
-    NoteInclusionProof invalid_inclusion_proof = 2;
+    protocol.NoteInclusionProof invalid_inclusion_proof = 2;
     primitives.Word block_note_root = 3;
   }
 
   // A transaction that consumes the authenticated note is submitted.
   message ProcessingAuthenticated {
     note.NoteMetadata metadata = 1;
-    NoteInclusionProof inclusion_proof = 2;
+    protocol.NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
     NoteSubmissionData submission_data = 4;
   }
@@ -59,7 +59,7 @@ message InputNoteState {
   // The client consumed the authenticated note.
   message ConsumedAuthenticatedLocal {
     note.NoteMetadata metadata = 1;
-    NoteInclusionProof inclusion_proof = 2;
+    protocol.NoteInclusionProof inclusion_proof = 2;
     primitives.Word block_note_root = 3;
     blockchain.BlockNumber nullifier_block_height = 4;
     NoteSubmissionData submission_data = 5;
@@ -100,5 +100,5 @@ message NoteSubmissionData {
   // Time at which the note was submitted, in seconds since the Unix epoch.
   optional uint64 submitted_at = 1;
   account.AccountId consumer_account = 2;
-  transaction.TransactionId consumer_transaction = 3;
+  .transaction.TransactionId consumer_transaction = 3;
 }

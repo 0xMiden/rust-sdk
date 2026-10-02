@@ -363,13 +363,27 @@ fn saturating_sub(total: AssetAmount, used: AssetAmount) -> AssetAmount {
 // PSWAP LINEAGE FILTER
 // ================================================================================================
 
-/// Client-side filter for `crate::pswap::store::list_lineages`. Applied in Rust after a prefix-scan
-/// of the `settings` KV — not a store-trait concept.
+/// Selects the lineages that [`Store::get_pswap_lineages`](crate::store::Store::get_pswap_lineages)
+/// returns.
 #[derive(Debug, Clone)]
-pub(crate) enum PswapLineageFilter {
+pub enum PswapLineageFilter {
+    /// Every lineage.
     All,
+    /// Lineages in the [`PswapLineageState::Active`] state.
     Active,
+    /// Lineages created by the given account.
     ByCreator(AccountId),
+}
+
+impl PswapLineageFilter {
+    /// Returns `true` if `record` matches the filter.
+    pub fn matches(&self, record: &PswapLineageRecord) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => record.state == PswapLineageState::Active,
+            Self::ByCreator(creator) => record.creator_account_id() == *creator,
+        }
+    }
 }
 
 // SERDE HELPERS

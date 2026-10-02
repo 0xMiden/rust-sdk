@@ -985,7 +985,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
         .context("watched network account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched network account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()

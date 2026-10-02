@@ -43,7 +43,10 @@ impl TransactionStoreUpdate {
     ///   transaction execution.
     /// - `future_notes`: Notes expected to be received in follow-up transactions (e.g. swap
     ///   paybacks).
-    /// - `new_tags`: New note tags that need to be tracked because of created notes.
+    /// - `new_tags`: New note tags that need to be tracked because of created notes. A tag with a
+    ///   [`NoteTagSource::Account`](crate::sync::NoteTagSource::Account) source makes
+    ///   [`Store::apply_transaction`](crate::store::Store::apply_transaction) fail, because the
+    ///   store derives these tags from the addresses of the native accounts.
     pub fn new(
         executed_transaction: ExecutedTransaction,
         submission_height: BlockNumber,
@@ -166,7 +169,7 @@ mod tests {
         let note_updates = NoteUpdateTracker::for_transaction_updates([input_note], [], []);
 
         let tag = NoteTag::with_account_target(account.id());
-        let new_tags = vec![NoteTagRecord::with_account_source(tag, account.id())];
+        let new_tags = vec![NoteTagRecord::with_note_source(tag, note.details_commitment())];
 
         let future_notes = vec![(Into::<NoteDetails>::into(note.clone()), tag)];
 

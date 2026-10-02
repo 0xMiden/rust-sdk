@@ -1,5 +1,4 @@
-use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -11,7 +10,6 @@ use miden_client::account::component::{
     BurnPolicy,
     FungibleFaucet,
     InitStorageData,
-    MIDEN_PACKAGE_EXTENSION,
     MintPolicy,
     TokenName,
     TokenPolicyManager,
@@ -26,7 +24,6 @@ use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::keystore::Keystore;
-use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, TargetType};
 use rand::{CryptoRng, Rng};
 use serde::Deserialize;
@@ -36,6 +33,7 @@ use crate::commands::account::set_default_account_if_unset;
 use crate::commands::keys::{ECDSA_SCHEME_NAME, FALCON_SCHEME_NAME, scheme_name};
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::packages::load_packages;
 use crate::utils::parse_ecdsa_public_key;
 use crate::{CliKeyStore, client_binary_name};
 
@@ -264,72 +262,6 @@ impl NewAccountCmd {
 
 // HELPERS
 // ================================================================================================
-
-/// Reads [[`miden_core::vm::Package`]]s from the given file paths.
-///
-/// A bare name resolves to a package in the configured package directory. The CLI writes those
-/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is
-/// and is read as untrusted, so its MAST forest is validated.
-pub(crate) fn load_packages(
-    cli_config: &CliConfig,
-    package_paths: &[PathBuf],
-) -> Result<Vec<Package>, CliError> {
-    let mut packages = Vec::with_capacity(package_paths.len());
-
-    let packages_dir = &cli_config.package_directory;
-    for path in package_paths {
-        // If a user passes in a file with the `.masp` file extension, then we leave the path as is;
-        // since it probably is a full path (this is the case with cargo-miden for instance).
-        let (path, trusted) = match path.extension() {
-            None => {
-                let path = path.with_extension(MIDEN_PACKAGE_EXTENSION);
-                Ok((packages_dir.join(path), true))
-            },
-            Some(extension) => {
-                if extension == OsStr::new(MIDEN_PACKAGE_EXTENSION) {
-                    Ok((path.clone(), false))
-                } else {
-                    let error = std::io::Error::new(
-                        std::io::ErrorKind::InvalidFilename,
-                        format!(
-                            "{} has an invalid file extension: '{}'. \
-                            Expected: {MIDEN_PACKAGE_EXTENSION}",
-                            path.display(),
-                            extension.display()
-                        ),
-                    );
-                    Err(CliError::AccountComponentError(
-                        Box::new(error),
-                        format!("refuesed to read {}", path.display()),
-                    ))
-                }
-            },
-        }?;
-
-        let bytes = fs::read(&path).map_err(|e| {
-            CliError::AccountComponentError(
-                Box::new(e),
-                format!("failed to read Package file from {}", path.display()),
-            )
-        })?;
-
-        let package = if trusted {
-            Package::read_from_bytes_trusted(&bytes)
-        } else {
-            Package::read_from_bytes(&bytes)
-        }
-        .map_err(|e| {
-            CliError::AccountComponentError(
-                Box::new(e),
-                format!("failed to deserialize Package in {}", path.display()),
-            )
-        })?;
-
-        packages.push(package);
-    }
-
-    Ok(packages)
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

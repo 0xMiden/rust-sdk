@@ -597,12 +597,13 @@ inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000
 
 Call a procedure on an account and show what it returns, along with the state changes the call would produce.
 
-Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>]`
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>] [--inputs-path <INPUTS_PATH>] [--note-script <PACKAGE>]...`
 
 | Flag                          | Description                                                   | Aliases |
 | ----------------------------- | ------------------------------------------------------------- | ------- |
 | `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+| `--note-script <PACKAGE>`     | A note script `.masp` package for a note the procedure creates. Repeatable.               |         |
 
 The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
@@ -627,6 +628,8 @@ Only procedures exported from a WIT interface carry a signature. A procedure wit
 The arguments are pushed onto the stack so that the first one ends up on top, and together they may occupy at most 16 stack values — that is all a called procedure can see.
 
 `--inputs-path` takes the same TOML format as [`exec`](#exec). The entries are loaded into the VM's advice map and are visible to the called procedure.
+
+`--note-script` is for a procedure that creates a note. The procedure only gives the note's script root, so the client needs the script itself to build the full note. Pass the note script's `.masp` package with this flag; repeat it once per script. Without it, a public output note cannot be built, and a private one keeps only its recipient digest.
 
 ##### Example
 
@@ -690,6 +693,32 @@ A call on an account read from the network can only read it; no state delta.
 :::note
 The account state read this way comes from the transaction's reference block, which the wallet running the call picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
 :::
+
+#### `send`
+
+Call a procedure on one of your accounts, then prove the transaction and submit it to the network.
+
+Usage: `miden-client send <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>] [--inputs-path <INPUTS_PATH>] [--note-script <PACKAGE>]... [--force] [--delegate-proving]`
+
+| Flag                          | Description                                                   | Aliases |
+| ----------------------------- | ------------------------------------------------------------- | ------- |
+| `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
+| `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+| `--note-script <PACKAGE>`     | A note script `.masp` package for a note the procedure creates. Repeatable.               |         |
+| `--force`                     | Submit without asking for confirmation.                       |         |
+| `--delegate-proving`          | Prove with the remote prover set in the configuration file.   |         |
+
+The target, the arguments, `--package`, `--inputs-path` and `--note-script` work as in [`call`](#call). The account must be tracked by the client, because only the account that executes a transaction can change, and the client needs its keys to authenticate it.
+
+The command executes the transaction locally, prints its effects and asks for confirmation. After confirmation it proves the transaction, submits it and applies it to the local store. It does not print the procedure's return values; run `call` first to see them.
+
+A procedure that only reads still produces a transaction, because the fee payment changes the account. The transaction is submitted like any other, so it costs a fee even when the procedure changes nothing. Use `call` to run a read-only procedure without submitting.
+
+##### Example
+
+```sh
+miden-client send 0x4614b8bf575eab71455e97bd394e90:increment-count --package target/miden/dev/counter-contract.masp
+```
 
 ### `note-transport`
 

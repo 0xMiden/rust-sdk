@@ -3096,6 +3096,118 @@ fn call_remote_account_requires_local_executor() {
         .stderr(contains("of your own accounts to run the call from"));
 }
 
+// SEND COMMAND TESTS
+// ================================================================================================
+
+/// Tests that the `send` command fails when no arguments are provided.
+#[test]
+fn send_empty_command() {
+    let temp_dir = init_cli().1;
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    assert_command_fails_but_does_not_panic(cmd.args(["send"]).current_dir(&temp_dir));
+}
+
+/// Tests that `send` submits the call and that the local store holds the new storage value after
+/// it.
+#[test]
+fn send_set_value_is_stored() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "send",
+        &format!("{account_id}:set_value"),
+        "42",
+        "0",
+        "0",
+        "0",
+        "--package",
+        masp_path.to_str().unwrap(),
+        "--force",
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Send failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Successfully created transaction."),
+        "Expected the submission message in output:\n{stdout}"
+    );
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["account", "--show", &account_id]);
+    let output = show_cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(output.status.success());
+
+    // A word prints each felt as 8 little-endian bytes, so the felt 42 prints as 2a00000000000000.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2a00000000000000"),
+        "Expected the stored value 42 in output:\n{stdout}"
+    );
+}
+
+/// Tests that `send` rejects an account that the client does not track, because the client has no
+/// keys to authenticate a transaction for it.
+#[test]
+fn send_rejects_untracked_account() {
+    let owner_dir = init_cli().1;
+    let target_id = new_wallet_cli(&owner_dir, AccountType::Private);
+
+    // A second client that never saw that account.
+    let caller_dir = init_cli().1;
+    new_wallet_cli(&caller_dir, AccountType::Private);
+    sync_cli(&caller_dir);
+
+    // The digest is only parsed, never resolved, because the command fails on the account first.
+    let digest = format!("0x{}", "0".repeat(64));
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["send", &format!("{target_id}:{digest}"), "--force"]);
+
+    cmd.current_dir(&caller_dir)
+        .assert()
+        .failure()
+        // The error formatter wraps the message across lines, so match a phrase that stays on one.
+        .stderr(contains("isn't tracked"));
+}
+
+/// Tests that `send` submits a transaction for a procedure that only reads. The procedure changes
+/// nothing itself, but the fee payment changes the account, so the transaction is valid and is
+/// submitted like any other.
+#[test]
+fn send_submits_read_only_procedure() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "send",
+        &format!("{account_id}:add"),
+        "2",
+        "3",
+        "--package",
+        masp_path.to_str().unwrap(),
+        "--force",
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "Send should submit a read-only procedure.\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        stdout.contains("Successfully created transaction."),
+        "Expected the submission message in output:\n{stdout}"
+    );
+}
+
 // AUTH COMPONENT TESTS
 // ================================================================================================
 

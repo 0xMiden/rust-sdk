@@ -141,7 +141,7 @@ pub(super) fn query_account_code(
         .query_row(params![commitment.to_bytes()], |row| row.get::<_, Vec<u8>>(0))
         .optional()
         .into_store_error()?
-        .map(|bytes| Ok(proto::decode::<AccountCode>(&bytes)?))
+        .map(|bytes| Ok(proto::decode_unchecked::<AccountCode>(&bytes)?))
         .transpose()
 }
 

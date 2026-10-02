@@ -2909,6 +2909,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-client-proto"
+version = "0.17.0"
+dependencies = [
+ "miden-client",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror",
+]
+
+[[package]]
 name = "miden-client-sqlite-store"
 version = "0.17.0"
 dependencies = [
@@ -2918,12 +2932,9 @@ dependencies = [
  "deadpool",
  "deadpool-sync",
  "miden-client",
- "miden-objects",
+ "miden-client-proto",
  "miden-protocol",
  "miden-standards",
- "prost",
- "prost-build",
- "protox",
  "rusqlite",
  "rusqlite_migration",
  "thiserror",

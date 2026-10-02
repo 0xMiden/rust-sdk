@@ -5,7 +5,8 @@ use miden_client::Word;
 use miden_client::transaction::{DiscardCause, TransactionDetails, TransactionStatus};
 use miden_objects::DecodeMessageExt;
 
-use crate::proto::{self, ProtoDecodeError, ProtobufValue, required};
+use crate as proto;
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;

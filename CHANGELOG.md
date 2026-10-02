@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][cli] Added the repeatable `--init-storage-value <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value. The flag cannot be combined with `--init-storage-data-path` ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
+
 ### Breaking Changes
 
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).

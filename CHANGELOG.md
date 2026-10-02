@@ -6,6 +6,7 @@
 
 * [BREAKING][removal][rust] Removed the `miden_client::crypto::RandomCoin` re-export. Use a `rand` CSPRNG such as `ChaCha20Rng`, plus the new `miden_client::rng::{draw_felt, draw_word}` helpers where a `Felt` or `Word` is needed from a generator that does not implement `FeltRng` ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
 * [BREAKING][type][rust] `ClientBuilder::rng` is now only available under the `testing` feature and requires `CryptoRng + Send + Sync`; the marker trait `ClientFeltRng` is renamed to `ClientCryptoRng`. Outside of tests the client's RNG is always an OS-seeded `ChaCha20Rng`; drop the `rng()` call ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
+* [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
 
 ## 0.17.0-rc.5 (2026-10-01)
 
@@ -29,6 +30,7 @@
 ### Enhancements
 
 * [FEATURE][cli] The CLI logs the `.miden` directory it loaded the configuration from, and whether it is the local or the global one, at debug level. Run a command with `RUST_LOG=debug` to see it ([#2648](https://github.com/0xMiden/rust-sdk/pull/2648)).
+* [FEATURE][arch][rust] Added the `miden-client-proto` crate with the protobuf schemas and conversions of the miden-client types. `decode` runs all checks and `decode_unchecked` may skip the expensive ones for bytes from a trusted source. Output note states can include their note scripts or omit them when a store keeps scripts separately. `miden-client-sqlite-store` uses it for its stored values ([#2652](https://github.com/0xMiden/rust-sdk/pull/2652)).
 * [FEATURE][rust] Added `Client::track_account_witness`, `Client::untrack_account_witness` and `Client::tracked_account_witnesses` to register accounts whose account witness the sync keeps fresh in the store (new `account_witnesses` table). A transaction using a registered account as a foreign account builds its inputs from the store instead of issuing a `GetAccount` request, moving the cost from once per transaction to once per sync ([#2476](https://github.com/0xMiden/rust-sdk/pull/2476)).
 
 ### Fixes

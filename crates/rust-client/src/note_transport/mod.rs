@@ -648,14 +648,6 @@ pub(crate) struct NoteTransportLayerUpdate {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub struct NoteTransportCursor(Option<(u64, u64)>);
 
-/// Note Transport update
-pub struct NoteTransportUpdate {
-    /// Pagination cursor for next fetch
-    pub cursor: NoteTransportCursor,
-    /// Fetched notes
-    pub notes: Vec<Note>,
-}
-
 impl NoteTransportCursor {
     /// Returns the cursor that starts from the first retained note.
     pub fn init() -> Self {

@@ -7,7 +7,6 @@ use miden_protocol::account::{
     StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
 };
 use miden_protocol::asset::{Asset, AssetVault};
-use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
@@ -113,12 +112,6 @@ impl proto::rpc::get_account_response::AccountDetails {
         })
     }
 }
-
-// ACCOUNT PROOF
-// ================================================================================================
-
-/// Contains a block number, and a list of account proofs at that block.
-pub type AccountProofs = (BlockNumber, Vec<AccountProof>);
 
 // ACCOUNT DETAILS
 // ================================================================================================

@@ -456,17 +456,6 @@ where
         self
     }
 
-    /// Sets the number of blocks after which pending transactions are considered stale and
-    /// discarded.
-    ///
-    /// This is an alias for [`tx_discard_delta`](Self::tx_discard_delta).
-    #[deprecated(since = "0.10.0", note = "Use `tx_discard_delta` instead")]
-    #[must_use]
-    pub fn tx_graceful_blocks(mut self, delta: Option<u32>) -> Self {
-        self.tx_discard_delta = delta;
-        self
-    }
-
     /// Sets a custom note transport client directly.
     #[must_use]
     pub fn note_transport(mut self, client: Arc<dyn NoteTransportClient>) -> Self {

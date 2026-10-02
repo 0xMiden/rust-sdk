@@ -25,7 +25,6 @@ use miden_client::note::{
     NoteSyncHint,
 };
 use miden_client::pswap::PswapLineageState;
-use miden_client::rng::draw_word;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
 use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;
@@ -128,7 +127,7 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use rstest::rstest;
 
@@ -4541,7 +4540,7 @@ async fn sync_committed_private_note_with_attachments(
         .asset(note_asset)
         .note_type(NoteType::Private)
         .attachments(attachments.clone().into_vec())
-        .serial_number(draw_word(&mut note_rng))
+        .serial_number(note_rng.random())
         .build()
         .unwrap()
         .into();

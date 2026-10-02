@@ -2018,7 +2018,7 @@ mod tests {
     };
     use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
-    use rand::SeedableRng;
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     use super::{
@@ -2033,7 +2033,6 @@ mod tests {
     use crate::ClientError;
     use crate::assembly::CodeBuilder;
     use crate::auth::AuthSchemeId;
-    use crate::rng::draw_word;
     use crate::transaction::TransactionRequestError;
 
     fn own_note_with_sender(sender: AccountId) -> Note {
@@ -2047,7 +2046,7 @@ mod tests {
             .target(target_id)
             .asset(FungibleAsset::new(faucet_id, 100).unwrap())
             .note_type(NoteType::Public)
-            .serial_number(draw_word(&mut rng))
+            .serial_number(rng.random())
             .build()
             .expect("note creation failed")
             .into()

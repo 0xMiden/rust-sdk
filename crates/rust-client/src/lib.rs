@@ -133,7 +133,6 @@ pub mod transaction;
 pub mod utils;
 
 pub mod builder;
-pub mod rng;
 
 #[cfg(feature = "testing")]
 mod test_utils;
@@ -367,7 +366,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{CryptoRng, TryCryptoRng, TryRng};
+use rand::{CryptoRng, RngExt, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -594,11 +593,11 @@ impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        rng::draw_felt(&mut self.0)
+        self.0.random()
     }
 
     fn draw_word(&mut self) -> Word {
-        rng::draw_word(&mut self.0)
+        self.0.random()
     }
 }
 

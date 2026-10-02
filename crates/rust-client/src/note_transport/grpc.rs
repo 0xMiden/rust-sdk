@@ -354,11 +354,10 @@ mod tests {
     };
     use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
-    use rand::SeedableRng;
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     use super::*;
-    use crate::rng::draw_word;
 
     /// Builds a private P2ID note whose serial number derives from `seed`.
     fn private_note(seed: u32) -> Note {
@@ -372,7 +371,7 @@ mod tests {
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .serial_number(draw_word(&mut rng))
+            .serial_number(rng.random())
             .build()
             .unwrap()
             .into()

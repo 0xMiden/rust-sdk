@@ -726,7 +726,7 @@ mod tests {
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
-    use rand::SeedableRng;
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     use super::{
@@ -737,7 +737,6 @@ mod tests {
         TransactionRequestBuilder,
         TransactionScript,
     };
-    use crate::rng::draw_word;
     use crate::rpc::domain::account::AccountStorageRequirements;
     use crate::transaction::ForeignAccount;
 
@@ -803,7 +802,7 @@ mod tests {
             .target(target_id)
             .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
             .note_type(NoteType::Private)
-            .serial_number(draw_word(&mut rng))
+            .serial_number(rng.random())
             .build()
             .unwrap();
 
@@ -836,7 +835,7 @@ mod tests {
                 .target(target_id)
                 .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
                 .note_type(NoteType::Private)
-                .serial_number(draw_word(&mut rng))
+                .serial_number(rng.random())
                 .build()
                 .expect("note creation failed");
             notes.push(note.into());
@@ -844,7 +843,7 @@ mod tests {
 
         let mut advice_vec: Vec<(Word, Vec<Felt>)> = vec![];
         for i in 0u32..10 {
-            advice_vec.push((draw_word(&mut rng), vec![Felt::from(i)]));
+            advice_vec.push((rng.random(), vec![Felt::from(i)]));
         }
 
         let account = AccountBuilder::new(Default::default())
@@ -864,7 +863,7 @@ mod tests {
             .input_notes(vec![(notes.pop().unwrap(), None)])
             .explicit_input_notes(vec![(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(draw_word(&mut rng)),
+                Some(rng.random()),
             )])
             .expected_output_recipients(vec![notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
@@ -884,8 +883,8 @@ mod tests {
                 ForeignAccount::private(&account).unwrap(),
             ])
             .own_output_notes(vec![notes.pop().unwrap(), notes.pop().unwrap()])
-            .script_arg(draw_word(&mut rng))
-            .auth_arg(draw_word(&mut rng))
+            .script_arg(rng.random())
+            .auth_arg(rng.random())
             .expected_ntx_scripts(vec![notes.first().unwrap().recipient().script().clone()])
             .build()
             .unwrap();

@@ -11,7 +11,6 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::rng::draw_word;
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::*;
 use miden_client::transaction::{
@@ -22,7 +21,7 @@ use miden_client::transaction::{
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{Felt, Word, ZERO};
-use rand::SeedableRng;
+use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 use crate::ClientConfig;
@@ -256,7 +255,7 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
             ";
     let note_script = client_1.code_builder().compile_note_script(note_script)?;
     let inputs = NoteStorage::new(vec![])?;
-    let serial_num = draw_word(client_1.rng());
+    let serial_num = client_1.rng().random();
     let note_metadata = PartialNoteMetadata::new(basic_account_1.id(), NoteType::Public)
         .with_tag(NoteTag::with_account_target(basic_account_1.id()));
     let note_assets = NoteAssets::new(vec![])?;
@@ -336,7 +335,7 @@ fn create_custom_note(
     let inputs =
         NoteStorage::new(vec![target_account_id.suffix(), target_account_id.prefix().as_felt()])
             .context("failed to create note inputs")?;
-    let serial_num = draw_word(rng);
+    let serial_num = rng.random();
     let note_metadata = PartialNoteMetadata::new(faucet_account_id, NoteType::Private)
         .with_tag(NoteTag::with_account_target(target_account_id));
     let note_assets = NoteAssets::new(vec![

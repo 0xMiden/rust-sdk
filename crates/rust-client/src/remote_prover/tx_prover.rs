@@ -2,8 +2,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::time::Duration;
 
+use miden_objects::{BuildUnchecked, DecodeMessage};
 use miden_protocol::transaction::{ProvenTransaction, TransactionInputs};
-use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_tx::TransactionProverError;
 use tokio::sync::Mutex;
@@ -14,8 +14,8 @@ use super::{RemoteProverClientError, generated as proto};
 // REMOTE TRANSACTION PROVER
 // ================================================================================================
 
-/// A [`RemoteTransactionProver`] is a transaction prover that sends witness data to a remote
-/// gRPC server and receives a proven transaction.
+/// A [`RemoteTransactionProver`] is a transaction prover that sends witness data to a remote gRPC
+/// server and receives a proven transaction.
 ///
 /// When compiled for the `wasm32-unknown-unknown` target, it uses the `tonic_web_wasm_client`
 /// transport. Otherwise, it uses the built-in `tonic::transport` for native platforms.
@@ -93,11 +93,7 @@ impl RemoteTransactionProver {
                 TransactionProverError::other_with_source("failed to prove transaction", err)
             })?;
 
-            ProvenTransaction::try_from(response.into_inner()).map_err(|_| {
-                TransactionProverError::other(
-                    "failed to deserialize received response from remote transaction prover",
-                )
-            })
+            ProvenTransaction::try_from(response.into_inner())
         }
     }
 }
@@ -105,19 +101,41 @@ impl RemoteTransactionProver {
 // CONVERSIONS
 // ================================================================================================
 
-impl TryFrom<proto::Proof> for ProvenTransaction {
-    type Error = DeserializationError;
+impl TryFrom<proto::ProveResponse> for ProvenTransaction {
+    type Error = TransactionProverError;
 
-    fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
-        ProvenTransaction::read_from_bytes(&response.payload)
+    fn try_from(response: proto::ProveResponse) -> Result<Self, Self::Error> {
+        match response.proof {
+            Some(proto::prove_response::Proof::Transaction(transaction)) => transaction
+                .decode_fields()
+                .map_err(|err| {
+                    TransactionProverError::other_with_source(
+                        "failed to decode the transaction proof",
+                        err,
+                    )
+                })?
+                .build_unchecked()
+                .map_err(|err| {
+                    TransactionProverError::other_with_source(
+                        "failed to build the transaction proof",
+                        err,
+                    )
+                }),
+            Some(proto::prove_response::Proof::Batch(_)) => Err(TransactionProverError::other(
+                "expected a transaction proof, got a batch proof",
+            )),
+            Some(proto::prove_response::Proof::Block(_)) => Err(TransactionProverError::other(
+                "expected a transaction proof, got a block proof",
+            )),
+            None => Err(TransactionProverError::other("prover returned no proof")),
+        }
     }
 }
 
-impl From<&TransactionInputs> for proto::ProofRequest {
+impl From<&TransactionInputs> for proto::ProveRequest {
     fn from(tx_inputs: &TransactionInputs) -> Self {
-        proto::ProofRequest {
-            proof_type: proto::ProofType::Transaction.into(),
-            payload: tx_inputs.to_bytes(),
+        proto::ProveRequest {
+            request: Some(proto::prove_request::Request::Transaction(tx_inputs.into())),
         }
     }
 }

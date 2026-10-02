@@ -38,7 +38,9 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     let client_config = ClientConfig::default()
         .with_note_transport_endpoint(None)
         .with_funders(fee_funding::funders_path_from_env().as_deref())?;
-    {ORIGINAL_FUNCTION_NAME}(client_config).await
+    let result = {ORIGINAL_FUNCTION_NAME}(client_config.clone()).await;
+    let flushed = client_config.flush_funder().await;
+    result.and(flushed)
 }}"#;
 
 const TEST_REGISTRY_HEADER: &str = r#"// Auto-generated test cases module
@@ -117,8 +119,8 @@ struct TestCaseInfo {
 
 /// Discovers all integration test functions across all source files.
 ///
-/// This function recursively scans the `src/tests` directory for Rust files and extracts
-/// test case information from functions named `test_*`.
+/// This function recursively scans the `src/tests` directory for Rust files and extracts test case
+/// information from functions named `test_*`.
 ///
 /// # Returns
 ///
@@ -158,8 +160,8 @@ fn collect_test_cases_recursive(current_dir: &Path, test_cases: &mut Vec<TestCas
 
 /// Extracts test case information from a single Rust source file.
 ///
-/// This function parses a Rust file's content using simple text processing
-/// and identifies functions that start with `test_`.
+/// This function parses a Rust file's content using simple text processing and identifies functions
+/// that start with `test_`.
 ///
 /// # Arguments
 ///
@@ -167,8 +169,8 @@ fn collect_test_cases_recursive(current_dir: &Path, test_cases: &mut Vec<TestCas
 ///
 /// # Returns
 ///
-/// A vector of [`TestCaseInfo`] structs for all test functions found in the file.
-/// Returns an empty vector if the file cannot be read or parsed.
+/// A vector of [`TestCaseInfo`] structs for all test functions found in the file. Returns an empty
+/// vector if the file cannot be read or parsed.
 fn collect_test_cases_from_file(file_path: &Path) -> Vec<TestCaseInfo> {
     let mut test_cases = Vec::new();
 
@@ -206,8 +208,8 @@ fn collect_test_cases_from_file(file_path: &Path) -> Vec<TestCaseInfo> {
 
 /// Extracts the test category name from a file path.
 ///
-/// The category is derived from the top-level directory when a test is nested,
-/// or the filename (without extension) for tests in `src/tests/`.
+/// The category is derived from the top-level directory when a test is nested, or the filename
+/// (without extension) for tests in `src/tests/`.
 ///
 /// # Arguments
 ///
@@ -275,9 +277,9 @@ fn extract_module_path_from_path(file_path: &Path) -> Option<String> {
 
 /// Determines if a function should be treated as an integration test.
 ///
-/// Looks for public function definitions that start with [`TEST_PREFIX`].
-/// Only public functions with this prefix will be added to the list of integration tests.
-/// This ensures we only capture actual test functions and not helper functions or comments.
+/// Looks for public function definitions that start with [`TEST_PREFIX`]. Only public functions
+/// with this prefix will be added to the list of integration tests. This ensures we only capture
+/// actual test functions and not helper functions or comments.
 ///
 /// # Arguments
 ///
@@ -290,8 +292,8 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     let s = line.trim();
 
     // Skip comments (both single-line and multi-line starts)
-    // FIXME: this technically could match with fn names on /* */ blocks
-    // but should be good enough for now
+    // FIXME: this technically could match with fn names on /* */ blocks but should be good enough
+    // for now
     if s.is_empty() || s.starts_with("//") || s.starts_with("/*") {
         return None;
     }
@@ -299,16 +301,16 @@ fn parse_test_function_name(line: &str) -> Option<String> {
     let tokens: Vec<&str> = s.split_whitespace().collect();
     // Look for public function patterns
     let fn_pos = if tokens[0] == "pub" && tokens[1] == "async" && tokens[2] == "fn" {
-        2 // pub async fn 
+        2 // pub async fn
     } else if tokens[0] == "pub" && tokens[1] == "fn" {
-        1 // pub fn 
+        1 // pub fn
     } else {
         return None;
     };
 
     let name_token = tokens.get(fn_pos + 1)?;
-    // Extract only valid identifier characters from the name token
-    // This stops at '(' for parameters, '<' for generics, etc.
+    // Extract only valid identifier characters from the name token. This stops at '(' for
+    // parameters, '<' for generics, etc.
     let ident: String = name_token
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -328,9 +330,9 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 
 /// Generates integration test wrappers with individual `#[tokio::test]` functions.
 ///
-/// This function creates a complete Rust source file containing individual tokio test
-/// functions that wrap each discovered integration test. Each generated test function
-/// handles the setup of `ClientConfig` and calls the original test function.
+/// This function creates a complete Rust source file containing individual tokio test functions
+/// that wrap each discovered integration test. Each generated test function handles the setup of
+/// `ClientConfig` and calls the original test function.
 ///
 /// # Arguments
 ///
@@ -394,8 +396,8 @@ fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
     // Generate tokio test wrappers for each test case
     for test_case in test_cases {
         // Strip test prefix
-        // SAFETY: ok to unwrap here because we collected these names based on the fact they
-        // had a "test_" prefix
+        // SAFETY: ok to unwrap here because we collected these names based on the fact they had a
+        // "test_" prefix
         let test_fn_name = test_case.function_name.strip_prefix(TEST_PREFIX).unwrap().to_string();
 
         // Use template and substitute placeholders
@@ -412,9 +414,9 @@ fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
 
 /// Generates programmatic test access via `get_all_tests()` function.
 ///
-/// This function creates a Rust source file containing the `get_all_tests()` function
-/// that returns a `Vec<TestCase>` for programmatic access to all discovered integration tests.
-/// This allows the main application to enumerate and execute tests dynamically.
+/// This function creates a Rust source file containing the `get_all_tests()` function that returns
+/// a `Vec<TestCase>` for programmatic access to all discovered integration tests. This allows the
+/// main application to enumerate and execute tests dynamically.
 ///
 /// # Arguments
 ///
@@ -492,8 +494,8 @@ fn generate_test_case_vector(test_cases: &[TestCaseInfo]) -> String {
 
 /// Converts a snake_case string to PascalCase.
 ///
-/// This utility function is used to convert file names (which are in snake_case)
-/// to enum variant names for `TestCategory` (which should be in PascalCase).
+/// This utility function is used to convert file names (which are in snake_case) to enum variant
+/// names for `TestCategory` (which should be in PascalCase).
 ///
 /// # Arguments
 ///

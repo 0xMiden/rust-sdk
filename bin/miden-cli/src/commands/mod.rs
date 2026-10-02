@@ -7,6 +7,7 @@ pub mod export;
 pub mod import;
 pub mod info;
 pub mod init;
+pub mod keys;
 pub mod network_note_status;
 pub mod new_account;
 pub mod new_transactions;
@@ -25,7 +26,7 @@ fn report_replay_snapshot_write(
 ) -> Result<(), CliError> {
     match recorder.take() {
         Some(Ok(write)) => {
-            println!("Replay it offline with `miden-debug --replay {}`.", write.path.display());
+            println!("Replay it offline with `miden-debug --replay {}`.", write.path);
             Ok(())
         },
         Some(Err(err)) => Err(CliError::ReplaySnapshot(Box::new(err))),

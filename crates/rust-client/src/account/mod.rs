@@ -1,9 +1,9 @@
 //! The `account` module provides types and client APIs for managing accounts within the Miden
 //! network.
 //!
-//! Accounts are foundational entities of the Miden protocol. They store assets and define
-//! rules for manipulating them. Once an account is registered with the client, its state will
-//! be updated accordingly, and validated against the network state on every sync.
+//! Accounts are foundational entities of the Miden protocol. They store assets and define rules for
+//! manipulating them. Once an account is registered with the client, its state will be updated
+//! accordingly, and validated against the network state on every sync.
 //!
 //! # Example
 //!
@@ -32,19 +32,22 @@
 //!
 //! For more details on accounts, refer to the [Account] documentation.
 
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+pub use miden_objects::account_file::{AccountFile, AccountFileError};
 use miden_protocol::Felt;
 use miden_protocol::account::auth::PublicKey;
 pub use miden_protocol::account::{
     Account,
     AccountBuilder,
     AccountCode,
+    AccountCodePatch,
+    AccountCodeUpgrade,
     AccountComponent,
     AccountComponentCode,
     AccountDelta,
-    AccountFile,
     AccountHeader,
     AccountId,
     AccountIdPrefix,
@@ -90,8 +93,8 @@ use miden_tx::utils::serde::{
 
 /// Display-only metadata for a faucet account, persisted in the client's settings store.
 ///
-/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet
-/// and persisted under a `faucet_metadata:<faucet-id>` key.
+/// Populated lazily by the CLI resolver from the on-chain token config of a public faucet and
+/// persisted under a `faucet_metadata:<faucet-id>` key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FaucetMetadata {
     pub symbol: String,
@@ -113,11 +116,29 @@ impl Deserializable for FaucetMetadata {
     }
 }
 
+/// Decodes a fungible faucet token config slot value into display metadata.
+///
+/// Returns `None` when the value does not describe a fungible faucet config the protocol would
+/// accept: the symbol must decode as a [`TokenSymbol`], and the decimals must be within
+/// [`FungibleFaucet::MAX_DECIMALS`], which is what [`FungibleFaucet`] enforces when the component
+/// is built.
+fn faucet_metadata_from_token_config(token_config: [Felt; 4]) -> Option<FaucetMetadata> {
+    let [_token_supply, _max_supply, decimals, symbol] = token_config;
+
+    let symbol = TokenSymbol::try_from(symbol).ok()?;
+    let decimals = u8::try_from(decimals.as_canonical_u64()).ok()?;
+    if decimals > FungibleFaucet::MAX_DECIMALS {
+        return None;
+    }
+
+    Some(FaucetMetadata { symbol: symbol.to_string(), decimals })
+}
+
 mod account_reader;
 pub use account_reader::AccountReader;
 /// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
 pub use miden_standards::account as standards;
-use miden_standards::account::auth::{Approver, AuthSingleSig};
+use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
 pub use miden_standards::account::inspection::{
     AccountBuilderSchemaCommitmentExt,
@@ -139,7 +160,7 @@ use crate::errors::ClientError;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
-use crate::sync::NoteTagRecord;
+use crate::sync::{NoteTagRecord, NoteTagSource};
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -224,6 +245,7 @@ pub mod component {
         TransferPolicy,
         TransferPolicyError,
     };
+    pub use miden_standards::account::upgrade::UpgradeManager;
     pub use miden_standards::account::wallets::BasicWallet;
 }
 
@@ -243,8 +265,16 @@ pub mod component {
 ///   their state (including nonce, balance, and metadata) is updated upon every synchronization
 ///   with the network.
 ///
+/// - **Account registration:** On a network that enforces an account allowlist,
+///   [`Client::register_account`] binds an invitation code to a new account before its first
+///   transaction creates it on chain, and [`Client::is_account_allowed`] asks whether the network
+///   accepts the creation of an account.
+///
 /// - **Data retrieval:** The module also provides methods to fetch account-related data.
 impl<AUTH> Client<AUTH> {
+    // Mirror of node MAX_TAGS_PER_FETCH_REQUEST. NTL allows up to 128 tags per request.
+    pub const MAX_ACCOUNT_TAGS: usize = 128;
+
     // ACCOUNT CREATION
     // --------------------------------------------------------------------------------------------
 
@@ -270,8 +300,132 @@ impl<AUTH> Client<AUTH> {
         self.add_account_inner(account, ClientAccountType::Native, overwrite).await
     }
 
-    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers
-    /// the per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
+    // ACCOUNT REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Binds an invitation code to a tracked account on the network allowlist.
+    ///
+    /// A network that enforces an account allowlist creates an account on chain only when the
+    /// account is registered. The first transaction of an account is what creates it, so the
+    /// account must be registered before that transaction is submitted.
+    /// [`Client::submit_new_transaction`] and [`BatchBuilder::submit`] ask the node first, and fail
+    /// with [`ClientError::AccountNotAllowlisted`] for an account the network does not accept. Only
+    /// account creation is gated: an account that already exists on chain is never checked, and
+    /// network accounts are exempt.
+    ///
+    /// The account must be tracked by the client, must not be deployed on chain yet, and must not
+    /// be a network account. The invitation code must exist on the node and must not be bound to
+    /// another account. A registration consumes the code, so the client asks the node first and
+    /// does not send the code for an account the node already allows.
+    ///
+    /// When the network operator runs a funding service, the node pays the registered account a
+    /// public P2ID note with the native asset. The node answers once the funding service queues the
+    /// note, before the note is committed. The note is not part of the response, and the client
+    /// does not see it until a [`Client::sync_state`] runs after the note is committed. The client
+    /// tracks the note tag of every account it owns, so that sync imports the note and
+    /// [`Client::get_consumable_notes`] lists it. Sync again until the note arrives. The account
+    /// then consumes the note in its first transaction. That transaction creates the account on
+    /// chain and pays its fee out of the received funds.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClientError::AccountDataNotFound`] if the client does not track the account.
+    /// - [`ClientError::AccountIsNotNew`] if the account already exists on chain.
+    /// - [`ClientError::AccountIsNetworkAccount`] if the account is a network account. The node
+    ///   admits network accounts without a code.
+    /// - [`ClientError::AccountAlreadyAllowed`] if the node already allows the account, because it
+    ///   is registered or because the network does not enforce an allowlist. The code is not sent.
+    /// - [`ClientError::RpcError`] carrying a [`RegisterAccountError`] if the node rejects the
+    ///   code or the account, or an `Unavailable` status if the funding failed. In the second
+    ///   case the account stays registered, so a retry fails with
+    ///   [`ClientError::AccountAlreadyAllowed`] and the account has to be funded another way.
+    ///
+    /// [`BatchBuilder::submit`]: crate::transaction::BatchBuilder::submit
+    /// [`RegisterAccountError`]: crate::rpc::RegisterAccountError
+    pub async fn register_account(
+        &self,
+        account_id: AccountId,
+        invitation_code: &str,
+    ) -> Result<(), ClientError> {
+        let (_, status) = self
+            .store
+            .get_account_header(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        if !status.is_new() {
+            return Err(ClientError::AccountIsNotNew(account_id));
+        }
+
+        let account = self
+            .get_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        // The node admits a network account without a code.
+        if NetworkAccount::new(account).is_ok() {
+            return Err(ClientError::AccountIsNetworkAccount(account_id));
+        }
+        // A registration consumes the code, so do not send it when the node already allows the
+        // account.
+        if self.is_account_allowed(account_id).await? {
+            return Err(ClientError::AccountAlreadyAllowed(account_id));
+        }
+
+        self.rpc_api.register_account(invitation_code, account_id).await?;
+
+        Ok(())
+    }
+
+    /// Returns whether the network lets `account_id` be created on chain.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the account
+    /// is registered. See [`Client::register_account`] for how an account gets registered.
+    pub async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.rpc_api.is_account_allowed(account_id).await?)
+    }
+
+    /// Returns an error if `tag` is a new account tag and the client already tracks
+    /// [`Self::MAX_ACCOUNT_TAGS`] account tags.
+    async fn validate_can_track_more_account_tags(&self, tag: NoteTag) -> Result<(), ClientError> {
+        let tracked_tags: BTreeSet<NoteTag> = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
+            .map(|record| record.tag)
+            .collect();
+        if !tracked_tags.contains(&tag) && tracked_tags.len() >= Self::MAX_ACCOUNT_TAGS {
+            return Err(ClientError::AccountTagLimitExceeded(tracked_tags.len()));
+        }
+
+        Ok(())
+    }
+
+    /// Returns whether a transaction against `account_id` creates an account that the network
+    /// allowlist gates.
+    ///
+    /// Only a new account is gated, and a network account is exempt. The answer is `false` for an
+    /// account that the client does not track.
+    pub(crate) async fn is_allowlist_gated(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        let Some((_, status)) = self.store.get_account_header(account_id).await? else {
+            return Ok(false);
+        };
+        if !status.is_new() {
+            return Ok(false);
+        }
+
+        let Some(account) = self.get_account(account_id).await? else {
+            return Ok(false);
+        };
+
+        Ok(NetworkAccount::new(account).is_err())
+    }
+
+    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
+    /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
     ///
     /// Switching the [`ClientAccountType`] of an already-tracked account is not supported and
     /// returns [`ClientError::AccountWatchedMismatch`].
@@ -299,6 +453,10 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => {
                 let default_address = Address::new(account.id());
+                if matches!(client_account_type, ClientAccountType::Native) {
+                    self.validate_can_track_more_account_tags(default_address.to_note_tag())
+                        .await?;
+                }
 
                 self.store
                     .insert_account(account, default_address.clone(), client_account_type)
@@ -361,8 +519,8 @@ impl<AUTH> Client<AUTH> {
     /// being tracked by the client, its state will be overwritten.
     ///
     /// To import an account as watched (state-tracking only, no note sync), use
-    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account
-    /// between Native and Watched is not supported.
+    /// [`Self::import_watched_account_by_id`] instead. Switching an already-tracked account between
+    /// Native and Watched is not supported.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -378,8 +536,8 @@ impl<AUTH> Client<AUTH> {
     ///
     /// Like [`Self::import_account_by_id`], the account is fetched from the network by its ID.
     /// Unlike `import_account_by_id`, the account is added without registering its derived note
-    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but
-    /// will **not** pull notes targeted at it.
+    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but will
+    /// **not** pull notes targeted at it.
     ///
     /// If the account is already being tracked as watched its state is overwritten. Switching an
     /// already-tracked native account to watched is not supported.
@@ -395,6 +553,49 @@ impl<AUTH> Client<AUTH> {
     ) -> Result<(), ClientError> {
         let account = self.fetch_public_account(account_id).await?;
         self.add_account_inner(&account, ClientAccountType::Watched, true).await
+    }
+
+    // ACCOUNT WITNESS PREFETCHING
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose account witness [`Client::sync_chain`] keeps up to date, so that
+    /// transactions using it as a foreign account resolve the witness locally. This trades one
+    /// request per transaction for one per sync.
+    ///
+    /// A [`ForeignAccount::Private`](crate::transaction::ForeignAccount) needs nothing else, since
+    /// the caller supplies the account data. A
+    /// [`ForeignAccount::Public`](crate::transaction::ForeignAccount) additionally has to be
+    /// tracked by this client, so that its code, storage and vault come from the store as well;
+    /// registering an untracked public account costs a request per sync and saves none.
+    ///
+    /// The witness is fetched by the next sync, not by this call. Transactions assume that a sync
+    /// ran after the account was registered.
+    ///
+    /// The account is not validated against the network here. The sync fails while a registered
+    /// account has no witness that the node can return, so an account that is not in the account
+    /// tree blocks the sync until it is unregistered.
+    ///
+    /// Registering an already registered account is a no-op and keeps any cached witness.
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        self.store.track_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Stops keeping the account's witness up to date and drops the cached one.
+    ///
+    /// Returns `true` if the account was registered. Transactions using it keep working, falling
+    /// back to fetching the witness from the node.
+    pub async fn untrack_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        self.store.untrack_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Returns the IDs of every account registered via [`Client::track_account_witness`].
+    pub async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, ClientError> {
+        self.store.tracked_account_witnesses().await.map_err(Into::into)
     }
 
     /// Fetches a public [`Account`] from the network, returning a typed error when the account
@@ -448,14 +649,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(None);
         };
 
-        let [_token_supply, _max_supply, decimals, symbol] = *slot_header.value();
-        let Ok(symbol) = TokenSymbol::try_from(symbol) else {
-            return Ok(None);
-        };
-        let Ok(decimals) = u8::try_from(decimals.as_canonical_u64()) else {
-            return Ok(None);
-        };
-        Ok(Some(FaucetMetadata { symbol: symbol.to_string(), decimals }))
+        Ok(faucet_metadata_from_token_config(*slot_header.value()))
     }
 
     /// Adds an [`Address`] to the associated [`AccountId`], alongside its derived [`NoteTag`]. If
@@ -479,6 +673,9 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => Err(ClientError::AccountDataNotFound(account_id)),
             Some(tracked_account) => {
+                if !tracked_account.is_watched() {
+                    self.validate_can_track_more_account_tags(address.to_note_tag()).await?;
+                }
                 self.store.insert_address(address.clone(), account_id).await?;
                 // Watched accounts intentionally have no derived note tag registered to avoid sync
                 // state pulling notes for them.
@@ -561,8 +758,8 @@ impl<AUTH> Client<AUTH> {
         self.store.get_account_headers().await.map_err(Into::into)
     }
 
-    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status,
-    /// or `None` if the account isn't tracked by the client.
+    /// Returns the [`AccountHeader`] of the account with the specified ID along with its status, or
+    /// `None` if the account isn't tracked by the client.
     ///
     /// Said account's state is the state after the last performed sync.
     pub async fn get_account_header(
@@ -574,10 +771,9 @@ impl<AUTH> Client<AUTH> {
 
     /// Retrieves the full [`Account`] object from the store, returning `None` if not found.
     ///
-    /// This method loads the complete account state including vault, storage, and code —
-    /// including building the vault's Merkle tree. For lazy access that fetches only the data
-    /// you need (existence checks, single fields, storage items), use
-    /// [`Client::account_reader`] instead.
+    /// This method loads the complete account state including vault, storage, and code — including
+    /// building the vault's Merkle tree. For lazy access that fetches only the data you need
+    /// (existence checks, single fields, storage items), use [`Client::account_reader`] instead.
     pub async fn get_account(&self, account_id: AccountId) -> Result<Option<Account>, ClientError> {
         match self.store.get_account(account_id).await? {
             Some(record) => Ok(Some(record.try_into()?)),
@@ -587,8 +783,8 @@ impl<AUTH> Client<AUTH> {
 
     /// Creates an [`AccountReader`] for lazy access to account data.
     ///
-    /// The `AccountReader` provides lazy access to account state - each method call
-    /// fetches fresh data from storage, ensuring you always see the current state.
+    /// The `AccountReader` provides lazy access to account state - each method call fetches fresh
+    /// data from storage, ensuring you always see the current state.
     ///
     /// For loading the full [`Account`] object, use [`Client::get_account`] instead.
     ///
@@ -610,11 +806,11 @@ impl<AUTH> Client<AUTH> {
 
     /// Prunes historical account states for the specified account up to the given nonce.
     ///
-    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any
-    /// orphaned account code.
-    ///
-    /// Returns the total number of rows deleted, including historical entries and orphaned
+    /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any orphaned
     /// account code.
+    ///
+    /// Returns the total number of rows deleted, including historical entries and orphaned account
+    /// code.
     pub async fn prune_account_history(
         &self,
         account_id: AccountId,
@@ -694,5 +890,59 @@ mod schema_commitment_tests {
             .get_item(AccountSchemaCommitment::schema_commitment_slot())
             .expect("schema commitment slot");
         assert_ne!(commitment, EMPTY_WORD);
+    }
+}
+
+#[cfg(test)]
+mod faucet_metadata_tests {
+    use miden_protocol::Felt;
+
+    use super::{FungibleFaucet, TokenSymbol, faucet_metadata_from_token_config};
+
+    /// Builds a token config slot value carrying the given decimals and the symbol "TST".
+    fn token_config(decimals: u32) -> [Felt; 4] {
+        [
+            Felt::from(0u32),
+            Felt::from(0u32),
+            Felt::from(decimals),
+            TokenSymbol::new("TST").unwrap().as_element(),
+        ]
+    }
+
+    #[test]
+    fn decodes_a_config_within_the_protocol_bounds() {
+        let metadata = faucet_metadata_from_token_config(token_config(8)).unwrap();
+
+        assert_eq!(metadata.symbol, "TST");
+        assert_eq!(metadata.decimals, 8);
+    }
+
+    #[test]
+    fn accepts_the_maximum_supported_decimals() {
+        let max = u32::from(FungibleFaucet::MAX_DECIMALS);
+        let metadata = faucet_metadata_from_token_config(token_config(max)).unwrap();
+
+        assert_eq!(metadata.decimals, FungibleFaucet::MAX_DECIMALS);
+    }
+
+    #[test]
+    fn rejects_decimals_above_the_maximum() {
+        let above_max = u32::from(FungibleFaucet::MAX_DECIMALS) + 1;
+
+        assert!(faucet_metadata_from_token_config(token_config(above_max)).is_none());
+        assert!(faucet_metadata_from_token_config(token_config(200)).is_none());
+    }
+
+    #[test]
+    fn rejects_decimals_that_do_not_fit_a_u8() {
+        assert!(faucet_metadata_from_token_config(token_config(300)).is_none());
+    }
+
+    #[test]
+    fn rejects_a_symbol_that_is_not_a_token_symbol() {
+        let mut config = token_config(8);
+        config[3] = Felt::from(0u32);
+
+        assert!(faucet_metadata_from_token_config(config).is_none());
     }
 }

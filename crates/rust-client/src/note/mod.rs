@@ -1,9 +1,9 @@
 //! Contains the Client APIs related to notes. Notes can contain assets and scripts that are
 //! executed as part of transactions.
 //!
-//! This module enables the tracking, retrieval, and processing of notes.
-//! It offers methods to query input and output notes from the store, check their consumability,
-//! compile note scripts, and retrieve notes based on partial ID matching.
+//! This module enables the tracking, retrieval, and processing of notes. It offers methods to query
+//! input and output notes from the store, check their consumability, compile note scripts, and
+//! retrieve notes based on partial ID matching.
 //!
 //! ## Overview
 //!
@@ -76,6 +76,7 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
+pub use miden_objects::note_file::{NoteFile, NoteFileError, NoteSyncHint};
 pub use miden_protocol::block::BlockNumber;
 pub use miden_protocol::errors::NoteError;
 pub use miden_protocol::note::{
@@ -106,16 +107,17 @@ pub use miden_protocol::note::{
 pub use miden_protocol::transaction::ToInputNoteCommitments;
 /// Raw access to `miden-standards` note modules for items not curated by `miden-client`.
 pub use miden_standards::note as standards;
+pub use miden_standards::note::config::NetworkAccountConfigNote;
+pub use miden_standards::note::costs::{NoteConsumptionCost, NoteCost};
 pub use miden_standards::note::{
+    AccountCodeUpgradeAttachment,
+    AccountCodeUpgradeAttachmentError,
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
-    NetworkAccountConfigNote,
     NetworkAccountTarget,
     NoteConsumptionStatus,
     NoteExecutionHint,
-    NoteFile,
-    NoteSyncHint,
     P2idNote,
     P2idNoteStorage,
     P2ideNote,
@@ -124,6 +126,7 @@ pub use miden_standards::note::{
     StandardNote,
     SwapNote,
     TxFeeNote,
+    UpgradeNote,
 };
 pub use miden_tx::{FailedNote, NoteConsumptionInfo};
 pub use note_reader::InputNoteReader;
@@ -261,11 +264,11 @@ where
         Ok(self.store.get_output_notes(NoteFilter::Unique(note_id)).await?.pop())
     }
 
-    /// Returns an [`InputNoteReader`] that lazily iterates over consumed input notes
-    /// for the given consumer account.
+    /// Returns an [`InputNoteReader`] that lazily iterates over consumed input notes for the given
+    /// consumer account.
     ///
-    /// The consumer is required because ordering is only guaranteed among notes
-    /// consumed by the same account.
+    /// The consumer is required because ordering is only guaranteed among notes consumed by the
+    /// same account.
     ///
     /// # Example
     ///

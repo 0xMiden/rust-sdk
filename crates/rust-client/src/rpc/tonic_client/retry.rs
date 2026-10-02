@@ -20,10 +20,10 @@ pub(super) const DEFAULT_RETRY_INTERVAL_MS: u64 = 100;
 /// Tracks retry attempts for a single RPC call and applies the node-provided cooldown policy.
 ///
 /// The state is intentionally tiny: it counts how many retries have already been attempted and
-/// keeps the endpoint the call targets, which decides whether an ambiguous failure may be
-/// repeated at all. Delay selection is derived from the current gRPC [`Status`], preferring a
-/// non-zero `retry-after` response metadata value when present and falling back to the configured
-/// retry interval otherwise.
+/// keeps the endpoint the call targets, which decides whether an ambiguous failure may be repeated
+/// at all. Delay selection is derived from the current gRPC [`Status`], preferring a non-zero
+/// `retry-after` response metadata value when present and falling back to the configured retry
+/// interval otherwise.
 pub(super) struct RetryState {
     endpoint: RpcEndpoint,
     attempt: u32,
@@ -77,17 +77,17 @@ impl RetryState {
 
 /// Returns whether the call may be repeated after the provided status.
 ///
-/// Each code is listed on its own arm rather than filtering a shared retryable set, so a code
-/// added here later has to be classified against non-idempotent endpoints explicitly instead of
+/// Each code is listed on its own arm rather than filtering a shared retryable set, so a code added
+/// here later has to be classified against non-idempotent endpoints explicitly instead of
 /// inheriting the read policy.
 fn is_retryable(endpoint: RpcEndpoint, status: &Status) -> bool {
     match status.code() {
         // Rate limiting is a rejection issued before the request is processed, so repeating it
         // cannot duplicate work.
         tonic::Code::ResourceExhausted => true,
-        // This code carries no evidence about whether the node processed the request: it is
-        // usually produced by the local gRPC stack when the connection breaks, so the response
-        // may simply have been lost on the way back.
+        // This code carries no evidence about whether the node processed the request: it is usually
+        // produced by the local gRPC stack when the connection breaks, so the response may simply
+        // have been lost on the way back.
         tonic::Code::Unavailable => endpoint.is_idempotent(),
         _ => false,
     }
@@ -134,18 +134,26 @@ mod tests {
         Status::with_metadata(Code::ResourceExhausted, "Too Many Requests! Wait for 0s", metadata)
     }
 
-    /// A submission whose response was lost may already have been accepted, so repeating it
-    /// would surface the resulting conflict instead of the original success.
+    /// A call that changes state and whose response was lost may already have been applied, so
+    /// repeating it would surface the resulting conflict instead of the original success.
     #[test]
-    fn submissions_do_not_retry_unavailable() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_do_not_retry_unavailable() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(!is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
         }
     }
 
     #[test]
-    fn submissions_retry_resource_exhausted() {
-        for endpoint in [RpcEndpoint::SubmitProvenTx, RpcEndpoint::SubmitProvenBatch] {
+    fn state_changing_calls_retry_resource_exhausted() {
+        for endpoint in [
+            RpcEndpoint::SubmitProvenTx,
+            RpcEndpoint::SubmitProvenBatch,
+            RpcEndpoint::RegisterAccount,
+        ] {
             assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
         }
     }

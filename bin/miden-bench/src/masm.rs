@@ -10,9 +10,9 @@ use crate::generators::{SlotDescriptor, generate_reader_component_code};
 // READ SCRIPT GENERATION
 // ================================================================================================
 
-/// Maximum read ops per code block to stay within the Miden parser's `u16::MAX` instruction
-/// limit. Map entries generate 6 ops each (push key + call + 4 dropw). Using 7000 as the
-/// conservative limit.
+/// Maximum read ops per code block to stay within the Miden parser's `u16::MAX` instruction limit.
+/// Map entries generate 6 ops each (push key + call + 4 dropw). Using 7000 as the conservative
+/// limit.
 const MAX_OPS_PER_BLOCK: usize = 7_000;
 
 /// Writes the MASM instructions for a single map entry read (push key, call reader, drop result).
@@ -22,8 +22,8 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
         .expect("write to string should not fail");
 
     // Call the account's reader procedure for this storage map slot.
-    // Stack input: [KEY]
-    // Stack output via call frame: [VALUE, pad(12)] = 16 elements
+    // - Stack input: [KEY]
+    // - Stack output via call frame: [VALUE, pad(12)] = 16 elements
     writeln!(script, "    call.storage_reader::get_map_item_slot_{}", op.slot_idx)
         .expect("write to string should not fail");
 
@@ -33,13 +33,11 @@ fn write_read_op_instructions(script: &mut String, op: &ReadOp) {
 
 /// Generates a MASM script that reads storage entries from the active account.
 ///
-/// Uses `call` to invoke account reader procedures rather than directly `exec`-ing
-/// kernel syscalls. The kernel's `authenticate_account_origin` requires the caller
-/// to be an account procedure.
+/// Uses `call` to invoke account reader procedures rather than directly `exec`-ing kernel syscalls.
+/// The kernel's `authenticate_account_origin` requires the caller to be an account procedure.
 ///
-/// When the total number of read ops exceeds [`MAX_OPS_PER_BLOCK`], the script is
-/// split into `repeat.1 ... end` blocks to stay within the Miden parser's per-block
-/// instruction limit.
+/// When the total number of read ops exceeds [`MAX_OPS_PER_BLOCK`], the script is split into
+/// `repeat.1 ... end` blocks to stay within the Miden parser's per-block instruction limit.
 fn generate_storage_read_script(read_ops: &[ReadOp]) -> String {
     let mut script = String::from(
         "use bench_reader::storage_reader
@@ -54,8 +52,8 @@ pub proc main
             write_read_op_instructions(&mut script, op);
         }
     } else {
-        // Split into repeat.1 blocks to create new block scopes, each with its own
-        // independent instruction limit. repeat.1 compiles to a single pass (no overhead).
+        // Split into repeat.1 blocks to create new block scopes, each with its own independent
+        // instruction limit. repeat.1 compiles to a single pass (no overhead).
         for chunk in read_ops.chunks(MAX_OPS_PER_BLOCK) {
             script.push_str("    repeat.1\n");
             for op in chunk {

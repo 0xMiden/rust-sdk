@@ -1,33 +1,14 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountVaultPatch;
 use miden_protocol::asset::{Asset, AssetId};
 use miden_protocol::block::BlockNumber;
 
 use crate::rpc::domain::MissingFieldHelper;
-use crate::rpc::{RpcConversionError, RpcError, generated as proto};
-
-// ASSET CONVERSION
-// ================================================================================================
-
-impl TryFrom<proto::primitives::Asset> for Asset {
-    type Error = RpcConversionError;
-
-    fn try_from(value: proto::primitives::Asset) -> Result<Self, Self::Error> {
-        let key_word: Word = value
-            .key
-            .ok_or(proto::primitives::Asset::missing_field(stringify!(key)))?
-            .try_into()?;
-        let value_word: Word = value
-            .value
-            .ok_or(proto::primitives::Asset::missing_field(stringify!(value)))?
-            .try_into()?;
-        Asset::from_id_and_value_words(key_word, value_word)
-            .map_err(|e| RpcConversionError::InvalidField(e.to_string()))
-    }
-}
+use crate::rpc::{RpcError, generated as proto};
 
 // ACCOUNT VAULT INFO
 // ================================================================================================
@@ -35,8 +16,8 @@ impl TryFrom<proto::primitives::Asset> for Asset {
 /// The merged result of syncing an account's vault over a block range.
 ///
 /// The node reports per-block asset updates that may repeat a vault key across blocks; these are
-/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also
-/// provides the current chain tip observed while processing the request.
+/// merged into a single absolute [`AccountVaultPatch`] (latest block wins per key). Also provides
+/// the current chain tip observed while processing the request.
 pub struct AccountVaultInfo {
     /// Current chain tip.
     pub chain_tip: BlockNumber,
@@ -67,8 +48,8 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
             .collect::<Result<Vec<_>, _>>()?;
 
         // The node may report the same asset ID in more than one block, folding the updates in
-        // ascending block order lets the latest block win, with an absent asset (`None`) encoding
-        // a removal.
+        // ascending block order lets the latest block win, with an absent asset (`None`) encoding a
+        // removal.
         updates.sort_by_key(|(block_num, ..)| *block_num);
         let mut vault_patch = AccountVaultPatch::default();
         for (_, asset_id, asset) in updates {
@@ -103,7 +84,7 @@ fn vault_update_from_proto(
     let asset_id =
         AssetId::try_from(asset_id).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;
 
-    let asset = value.asset.map(Asset::try_from).transpose()?;
+    let asset: Option<Asset> = value.asset.map(DecodeMessageExt::decode_and_verify).transpose()?;
 
     if let Some(ref asset) = asset
         && asset.id() != asset_id

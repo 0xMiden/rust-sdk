@@ -43,9 +43,9 @@ impl TryFrom<proto::rpc::SyncAccountStorageMapsResponse> for StorageMapInfo {
             .map(storage_map_update_from_proto)
             .collect::<Result<Vec<_>, _>>()?;
 
-        // The node may report the same `(slot, key)` in more than one block, folding the updates
-        // in ascending block order lets the latest block win, with an empty value encoding a
-        // cleared entry.
+        // The node may report the same `(slot, key)` in more than one block, folding the updates in
+        // ascending block order lets the latest block win, with an empty value encoding a cleared
+        // entry.
         updates.sort_by_key(|(block_num, ..)| *block_num);
         let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
         for (_, slot_name, key, value) in updates {
@@ -72,10 +72,10 @@ fn storage_map_update_from_proto(
     let slot_name = StorageSlotName::new(value.slot_name)
         .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
-    let key: StorageMapKey = value
-        .key
-        .ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(key)))?
-        .try_into()?;
+    let key = Word::try_from(
+        value.key.ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(key)))?,
+    )
+    .map(StorageMapKey::new)?;
 
     let map_value: Word = value
         .value

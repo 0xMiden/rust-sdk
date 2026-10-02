@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use miden_node_proto_build::{remote_prover_api_descriptor, rpc_api_descriptor};
-use miden_note_transport_proto_build::mnt_api_descriptor;
+use miden_node_proto_build::{
+    note_transport_api_descriptor,
+    remote_prover_api_descriptor,
+    rpc_api_descriptor,
+};
 use miette::IntoDiagnostic;
 
 const RPC_STD_DIR: &str = "rpc/std";
@@ -46,6 +49,21 @@ fn main() -> miette::Result<()> {
     Ok(())
 }
 
+// PROST CONFIGURATION
+// ===============================================================================================
+
+/// Builds a prost config that resolves the canonical object schemas to `miden-objects` types.
+///
+/// The node's descriptors embed the object schemas they import. These paths make prost reference
+/// the types `miden-objects` already defines, so the conversions it ships apply to them.
+fn canonical_object_config() -> tonic_prost_build::Config {
+    let mut config = tonic_prost_build::Config::new();
+    for (proto_path, rust_path) in miden_objects::EXTERN_PATHS {
+        config.extern_path(*proto_path, *rust_path);
+    }
+    config
+}
+
 // REMOTE PROVER CLIENT PROTO CODEGEN
 // ===============================================================================================
 
@@ -64,13 +82,13 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
         .build_transport(false)
         .build_server(false)
         .out_dir(&nostd_out)
-        .compile_fds_with_config(file_descriptors.clone(), tonic_prost_build::Config::new())
+        .compile_fds_with_config(file_descriptors.clone(), canonical_object_config())
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
         .build_server(false)
         .out_dir(&std_out)
-        .compile_fds_with_config(file_descriptors, tonic_prost_build::Config::new())
+        .compile_fds_with_config(file_descriptors, canonical_object_config())
         .into_diagnostic()?;
 
     Ok(())
@@ -81,18 +99,16 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
 
 /// Generates the Rust protobuf bindings for the Note Transport client.
 fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
-    let file_descriptors = mnt_api_descriptor();
+    let file_descriptors = note_transport_api_descriptor();
 
     let std_out = out_dir.join(NOTE_TRANSPORT_STD_DIR);
     let nostd_out = out_dir.join(NOTE_TRANSPORT_NOSTD_DIR);
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.skip_debug(["AccountId", "Digest"]);
+    let prost_config = canonical_object_config();
 
-    let mut web_tonic_prost_config = tonic_prost_build::Config::new();
-    web_tonic_prost_config.skip_debug(["AccountId", "Digest"]);
+    let mut web_tonic_prost_config = canonical_object_config();
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap.
     web_tonic_prost_config.btree_map(["."]);
 
@@ -125,11 +141,11 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
     fs::create_dir_all(&std_out).into_diagnostic()?;
     fs::create_dir_all(&nostd_out).into_diagnostic()?;
 
-    let mut prost_config = tonic_prost_build::Config::new();
-    prost_config.skip_debug(["AccountId", "Digest"]);
+    let mut prost_config = canonical_object_config();
+    prost_config.skip_debug(["RegisterAccountRequest"]);
 
-    let mut web_tonic_prost_config = tonic_prost_build::Config::new();
-    web_tonic_prost_config.skip_debug(["AccountId", "Digest"]);
+    let mut web_tonic_prost_config = canonical_object_config();
+    web_tonic_prost_config.skip_debug(["RegisterAccountRequest"]);
 
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap
     web_tonic_prost_config.btree_map(["."]);
@@ -157,11 +173,11 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
 /// Scans `out_dir/subdir/` for generated `.rs` files and produces a single wrapper file at
 /// `out_dir/wrapper_name` that re-exports each file as a module via `include!`.
 ///
-/// The wrapper converts each file into a module declaration:
+/// The wrapper converts each file name into a nested module declaration:
 ///
 /// ```ignore
 /// #[allow(clippy::doc_markdown, ...)]
-/// pub mod foo { include!(concat!(env!("OUT_DIR"), "/subdir/foo.rs")); }
+/// pub mod foo { pub mod bar { include!(concat!(env!("OUT_DIR"), "/subdir/foo.bar.rs")); } }
 /// ```
 fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette::Result<()> {
     let dir = out_dir.join(subdir);
@@ -182,10 +198,12 @@ fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette:
 
     let mut wrapper = String::new();
     for mod_name in &mod_names {
-        let mod_declaration = format!(
-            "{allow_attr}\n\
-             pub mod {mod_name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{mod_name}.rs\")); }}\n"
-        );
+        let include = format!("include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{mod_name}.rs\"));");
+        let nested_modules = mod_name
+            .split('.')
+            .rev()
+            .fold(include, |body, name| format!("pub mod {name} {{ {body} }}"));
+        let mod_declaration = format!("{allow_attr}\n{nested_modules}\n");
         wrapper.push_str(&mod_declaration);
     }
 
@@ -199,8 +217,8 @@ fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette:
 
 /// Applies `no_std` type replacements to all `.rs` files in the given directory.
 ///
-/// This is needed because `tonic_build` doesn't generate `no_std` compatible files and we need
-/// to build WASM without `std`.
+/// This is needed because `tonic_build` doesn't generate `no_std` compatible files and we need to
+/// build WASM without `std`.
 fn replace_no_std_types_in_dir(dir: &Path) -> miette::Result<()> {
     for entry in fs::read_dir(dir).into_diagnostic()? {
         let entry = entry.into_diagnostic()?;

@@ -22,6 +22,7 @@ use commands::export::ExportCmd;
 use commands::import::ImportCmd;
 use commands::info::InfoCmd;
 use commands::init::InitCmd;
+use commands::keys::KeysCmd;
 use commands::network_note_status::NetworkNoteStatusCmd;
 use commands::new_account::{NewAccountCmd, NewWalletCmd};
 use commands::new_transactions::{ConsumeNotesCmd, MintCmd, PswapCmd, SwapCmd, TransferCmd};
@@ -37,9 +38,8 @@ pub type CliKeyStore = FilesystemKeyStore;
 
 /// A Client configured using the CLI's system user configuration.
 ///
-/// This is a wrapper around `Client<CliKeyStore>` that provides convenient
-/// initialization methods while maintaining full compatibility with the
-/// underlying Client API through `Deref`.
+/// This is a wrapper around `Client<CliKeyStore>` that provides convenient initialization methods
+/// while maintaining full compatibility with the underlying Client API through `Deref`.
 ///
 /// # Examples
 ///
@@ -129,11 +129,9 @@ impl CliClient {
     /// # }
     /// ```
     pub async fn from_config(config: CliConfig) -> Result<Self, CliError> {
-        // Create keystore
         let keystore =
             CliKeyStore::new(config.secret_keys_directory.clone()).map_err(CliError::KeyStore)?;
 
-        // Build client with the provided configuration
         let rpc_client = Arc::new(VerifyingRpcClient::new(
             GrpcClient::new(&config.rpc.endpoint.clone().into(), config.rpc.timeout_ms)
                 .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
@@ -145,21 +143,17 @@ impl CliClient {
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(Some(TX_DISCARD_DELTA));
 
-        // Add optional max_block_number_delta
         if let Some(delta) = config.max_block_number_delta {
             builder = builder.max_block_number_delta(delta);
         }
 
-        // Add optional note transport client
         if let Some(tl_config) = config.note_transport {
             let note_transport_client =
                 GrpcNoteTransportClient::new(tl_config.endpoint.clone(), tl_config.timeout_ms);
             builder = builder.note_transport(Arc::new(note_transport_client));
         }
 
-        // Build and return the wrapped client
-        let client = builder.build().await.map_err(CliError::from)?;
-        Ok(CliClient(client))
+        Ok(CliClient(builder.build().await.map_err(CliError::from)?))
     }
 
     /// Creates a new `CliClient` instance configured using the system user configuration.
@@ -230,10 +224,8 @@ impl CliClient {
             init_cmd.execute()?;
         }
 
-        // Load configuration from system
         let config = CliConfig::load()?;
 
-        // Create client using the loaded configuration
         Self::from_config(config).await
     }
 
@@ -295,8 +287,8 @@ pub use miden_client::*;
 
 /// Client binary name.
 ///
-/// If, for whatever reason, we fail to obtain the client's executable name,
-/// then we simply display the standard "miden-client".
+/// If, for whatever reason, we fail to obtain the client's executable name, then we simply display
+/// the standard "miden-client".
 pub fn client_binary_name() -> OsString {
     std::env::current_exe()
         .inspect_err(|e| {
@@ -340,7 +332,7 @@ impl From<MidenClientCli> for Cli {
     fn from(value: MidenClientCli) -> Self {
         match value.behavior {
             Behavior::MidenClient { cli } => cli,
-            Behavior::External(args) => Cli::parse_from(args).set_external(),
+            Behavior::External(args) => Cli::parse_from(args),
         }
     }
 }
@@ -354,10 +346,9 @@ enum Behavior {
         cli: Cli,
     },
 
-    /// Used when the Miden Client CLI is called under a different name, like
-    /// when it is called from [Midenup](https://github.com/0xMiden/midenup).
-    /// Vec<OsString> holds the "raw" arguments passed to the command line,
-    /// analogous to `argv`.
+    /// Used when the Miden Client CLI is called under a different name, like when it is called from
+    /// [Midenup](https://github.com/0xMiden/midenup). Vec<OsString> holds the "raw" arguments
+    /// passed to the command line, analogous to `argv`.
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -367,13 +358,6 @@ enum Behavior {
 pub struct Cli {
     #[command(subcommand)]
     action: Command,
-
-    /// Indicates whether the client's CLI is being called directly, or
-    /// externally under an alias (like in the case of
-    /// [Midenup](https://github.com/0xMiden/midenup).
-    #[arg(skip)]
-    #[allow(unused)]
-    external: bool,
 }
 
 /// CLI actions.
@@ -384,6 +368,7 @@ pub enum Command {
     NewWallet(NewWalletCmd),
     Import(ImportCmd),
     Export(ExportCmd),
+    Keys(KeysCmd),
     Init(InitCmd),
     ClearConfig(ClearConfigCmd),
     Notes(NotesCmd),
@@ -423,26 +408,25 @@ impl Cli {
             _ => {},
         }
 
-        // Check if Client is not yet initialized => silently initialize the client
+        // Initialize the client silently if it has no configuration file yet.
         if !config_file_exists()? {
             let init_cmd = InitCmd::default();
             init_cmd.execute()?;
         }
 
-        // Load configuration
         let cli_config = CliConfig::load()?;
 
-        // Create keystore for commands that need it
         let keystore = CliKeyStore::new(cli_config.secret_keys_directory.clone())
             .map_err(CliError::KeyStore)?;
 
-        // Create the client
+        if let Command::Keys(keys) = &self.action {
+            return keys.execute(&keystore);
+        }
+
         let cli_client = CliClient::from_config(cli_config).await?;
 
-        // Extract the inner client for command execution
         let client = cli_client.into_inner();
 
-        // Execute CLI command
         match &self.action {
             Command::Account(account) => account.execute(client).await,
             Command::NewWallet(new_wallet) => Box::pin(new_wallet.execute(client, keystore)).await,
@@ -450,7 +434,10 @@ impl Cli {
                 Box::pin(new_account.execute(client, keystore)).await
             },
             Command::Import(import) => import.execute(client, keystore).await,
-            Command::Init(_) | Command::ClearConfig(_) | Command::NetworkNoteStatus(_) => Ok(()), /* Already handled earlier */
+            Command::Init(_)
+            | Command::ClearConfig(_)
+            | Command::NetworkNoteStatus(_)
+            | Command::Keys(_) => Ok(()), /* Already handled earlier */
             Command::Info(info_cmd) => info::print_client_info(&client, info_cmd.rpc_status).await,
             Command::Notes(notes) => Box::pin(notes.execute(client)).await,
             Command::Sync(sync) => sync.execute(client).await,
@@ -466,11 +453,6 @@ impl Cli {
             Command::Swap(swap) => Box::pin(swap.execute(client)).await,
             Command::ConsumeNotes(consume_notes) => Box::pin(consume_notes.execute(client)).await,
         }
-    }
-
-    fn set_external(mut self) -> Self {
-        self.external = true;
-        self
     }
 }
 

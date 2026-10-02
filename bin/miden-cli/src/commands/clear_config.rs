@@ -34,10 +34,10 @@ impl ClearConfigCmd {
         }
     }
 
-    /// Try to clear the local config if it exists, and if not, try to clear the global config.
-    /// This function will first try to clear the local config if it exists, and if not, it will
-    /// clear the global config.
-    /// For both cases, it will prompt the user for confirmation to clear the config.
+    /// Try to clear the local config if it exists, and if not, try to clear the global config. This
+    /// function will first try to clear the local config if it exists, and if not, it will clear
+    /// the global config. For both cases, it will prompt the user for confirmation to clear the
+    /// config.
     fn try_clear_local_config(&self) -> Result<(), CliError> {
         // Try local config first
         let local_miden_dir = get_local_miden_dir()?;

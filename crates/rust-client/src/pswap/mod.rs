@@ -1,5 +1,5 @@
-//! PSWAP chain tracking — follows partial-swap orders across fills so the
-//! creator can always see the current tip and reclaim the unfilled balance.
+//! PSWAP chain tracking — follows partial-swap orders across fills so the creator can always see
+//! the current tip and reclaim the unfilled balance.
 //!
 //! Flow:
 //! 1. Create → persist a [`PswapLineageRecord`] + asset-pair tag subscription.
@@ -8,9 +8,8 @@
 //!    emits one `PswapLineageRoundUpdate` per round.
 //! 3. Reclaim → [`Client::build_pswap_cancel_by_order`].
 //!
-//! Protocol invariants (≤1 payback + ≤1 remainder per round, attachment
-//! word layout, deterministic reconstruction) live on
-//! `miden_standards::note::PswapNote`.
+//! Protocol invariants (≤1 payback + ≤1 remainder per round, attachment word layout, deterministic
+//! reconstruction) live on `miden_standards::note::PswapNote`.
 //!
 //! # Trust model
 //!
@@ -62,9 +61,9 @@ use crate::{Client, ClientError};
 // PSWAP TRANSACTION OBSERVER
 // ================================================================================================
 
-/// Registers a [`PswapLineageRecord`] + asset-pair tag subscription for
-/// every depth-0 PSWAP this wallet emits. Creator-agnostic (service
-/// wallets are tracked too; reclaim surfaces `CreatorNotLocal` later).
+/// Registers a [`PswapLineageRecord`] + asset-pair tag subscription for every depth-0 PSWAP this
+/// wallet emits. Creator-agnostic (service wallets are tracked too; reclaim surfaces
+/// `CreatorNotLocal` later).
 pub struct PswapTransactionObserver {
     store: Arc<dyn Store>,
 }
@@ -94,8 +93,8 @@ impl TransactionObserver for PswapTransactionObserver {
                 continue;
             }
 
-            // The full note lives in `output_notes`; the record keeps only its id
-            // plus the immutable order facts (see `PswapLineageRecord`).
+            // The full note lives in `output_notes`; the record keeps only its id plus the
+            // immutable order facts (see `PswapLineageRecord`).
             let record = PswapLineageRecord::new_depth_zero(note.id(), &pswap);
 
             store::put_lineage(&self.store, &record).await?;
@@ -139,8 +138,8 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
             .map_err(Into::into)
     }
 
-    /// Returns the still-open PSWAP lineages — orders that are neither fully
-    /// filled nor reclaimed (i.e. the creator's live, reclaimable orders).
+    /// Returns the still-open PSWAP lineages — orders that are neither fully filled nor reclaimed
+    /// (i.e. the creator's live, reclaimable orders).
     pub async fn pswap_active_lineages(&self) -> Result<Vec<PswapLineageRecord>, ClientError> {
         store::list_lineages(&self.store, PswapLineageFilter::Active)
             .await
@@ -155,8 +154,8 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         store::get_lineage(&self.store, order_id).await.map_err(Into::into)
     }
 
-    /// Builds a tx reclaiming the unfilled offered asset on the current
-    /// tip of an Active lineage. See [`PswapLineageError`] for failure modes.
+    /// Builds a tx reclaiming the unfilled offered asset on the current tip of an Active lineage.
+    /// See [`PswapLineageError`] for failure modes.
     pub async fn build_pswap_cancel_by_order(
         &self,
         order_id: Felt,
@@ -176,9 +175,8 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
             return Err(PswapLineageError::CreatorNotLocal(creator).into());
         }
 
-        // At depth 0 the tip is the original PSWAP, fetched from `output_notes`
-        // by its id. At depth > 0 the tip is a remainder discovered during sync
-        // and persisted to `input_notes`.
+        // At depth 0 the tip is the original PSWAP, fetched from `output_notes` by its id. At depth
+        // > 0 the tip is a remainder discovered during sync and persisted to `input_notes`.
         let tip_note: Note = if lineage.current_depth == 0 {
             Note::from(store::get_original_pswap(&self.store, lineage.original_note_id).await?)
         } else {

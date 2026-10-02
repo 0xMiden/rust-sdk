@@ -87,8 +87,11 @@ miden-client clear-config --global
 An `rpc` section is used to configure the connection to the Miden node. It contains the following fields:
 
 - `endpoint`: The Miden node endpoint as a URL, such as `"https://rpc.devnet.miden.io"`.
+- `network_id` (optional): The bech32 human-readable part (HRP) of the network the node serves, such as `"mm"`. The CLI uses it to encode and validate addresses. When it is not set, the network ID is derived from `endpoint`: the built-in `mainnet`, `testnet`, `devnet` and `localhost` endpoints map to `mm`, `mtst`, `mdev` and `mlcl`, and any other endpoint maps to `mcst`. Set it when `endpoint` points at your own node of a known network.
 
-This field can be set with the `--network` flag when running the `miden-client init` command. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
+The `endpoint` field can be set with the `--network` flag when running the `miden-client init` command. The flag accepts `mainnet`, `testnet`, `devnet`, `localhost` or a custom endpoint URL. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
+
+The `network_id` field can be set with the `--network-id` flag. For example, to use your own mainnet node: `miden-client init --network https://my-node.example.com --network-id mm`.
 
 :::note
 

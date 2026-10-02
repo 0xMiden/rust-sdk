@@ -9,7 +9,7 @@
 use std::string::ToString;
 use std::sync::Arc;
 
-use miden_processor::advice::AdviceInputs;
+use miden_processor::advice::{AdviceError, AdviceInputs};
 use miden_processor::{
     ExecutionError,
     ExecutionOptions,
@@ -36,7 +36,15 @@ use miden_protocol::vm::{
 use miden_tx::ProgramExecutor;
 
 /// [`ProgramExecutor`] adapter for [`miden_debug::DapExecutor`].
-pub struct DapProgramExecutor(miden_debug::DapExecutor);
+///
+/// The debug information reaches the executor before execution. The package the debugger consumes
+/// can only be built once the program is known. Both configured values are therefore held here
+/// until [`ProgramExecutor::execute`] assembles the package.
+pub struct DapProgramExecutor {
+    executor: miden_debug::DapExecutor,
+    package_debug_info: PackageDebugInfo,
+    entrypoint_source_node: Option<DebugSourceNodeId>,
+}
 
 impl DapProgramExecutor {
     fn execute_package<H: Host + Send>(
@@ -46,7 +54,7 @@ impl DapProgramExecutor {
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
         async move {
             let package = package?;
-            self.0.execute_async(package, host).await
+            self.executor.execute_async(package, host).await
         }
     }
 }
@@ -56,8 +64,25 @@ impl ProgramExecutor for DapProgramExecutor {
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
         options: ExecutionOptions,
+    ) -> Result<Self, AdviceError> {
+        Ok(Self {
+            executor: miden_debug::DapExecutor::new(stack_inputs, advice_inputs, options),
+            package_debug_info: PackageDebugInfo::default(),
+            entrypoint_source_node: None,
+        })
+    }
+
+    fn with_debug_info(mut self, package_debug_info: PackageDebugInfo) -> Self {
+        self.package_debug_info = package_debug_info;
+        self
+    }
+
+    fn with_entrypoint_source_node(
+        mut self,
+        entrypoint_source_node: Option<DebugSourceNodeId>,
     ) -> Self {
-        Self(miden_debug::DapExecutor::new(stack_inputs, advice_inputs, options))
+        self.entrypoint_source_node = entrypoint_source_node;
+        self
     }
 
     fn execute<H: Host + Send>(
@@ -65,18 +90,8 @@ impl ProgramExecutor for DapProgramExecutor {
         program: &Program,
         host: &mut H,
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
-        let package = build_dap_package(program, &PackageDebugInfo::default(), None);
-        self.execute_package(package, host)
-    }
-
-    fn execute_with_package_debug_info<H: Host + Send>(
-        self,
-        program: &Program,
-        package_debug_info: &PackageDebugInfo,
-        entrypoint_source_node: Option<DebugSourceNodeId>,
-        host: &mut H,
-    ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
-        let package = build_dap_package(program, package_debug_info, entrypoint_source_node);
+        let package =
+            build_dap_package(program, &self.package_debug_info, self.entrypoint_source_node);
         self.execute_package(package, host)
     }
 }
@@ -93,8 +108,8 @@ fn build_dap_package(
     package_debug_info: &PackageDebugInfo,
     entrypoint_source_node: Option<DebugSourceNodeId>,
 ) -> Result<Arc<Package>, ExecutionError> {
-    // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing
-    // the program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
+    // A transaction program is an executable whose root is exported as `$exec::$main`. Reusing the
+    // program's MAST forest, entrypoint node, and digest makes `Package::try_into_program`
     // reconstruct the exact program that the transaction executor supplied.
     let entrypoint: Arc<Path> = Path::exec_path().join(ProcedureName::MAIN_PROC_NAME).into();
     let export =
@@ -102,8 +117,8 @@ fn build_dap_package(
             .with_source_node(entrypoint_source_node);
 
     // The transaction kernel is an external dependency of transaction programs. The package
-    // manifest identifies that dependency, while the embedded kernel section gives the debugger
-    // the code required to resolve and execute it offline.
+    // manifest identifies that dependency, while the embedded kernel section gives the debugger the
+    // code required to resolve and execute it offline.
     let kernel = TransactionKernel::package();
     let mut package = Package::create(
         "miden-client-debug".into(),
@@ -115,8 +130,8 @@ fn build_dap_package(
     )
     .map_err(|error| dap_package_construction_error(&error))?;
 
-    // `Package::create` recognizes the exported `$main` procedure as the executable entrypoint.
-    // The embedded kernel payload gives the debugger the code required to execute the package
+    // `Package::create` recognizes the exported `$main` procedure as the executable entrypoint. The
+    // embedded kernel payload gives the debugger the code required to execute the package
     // independently of the transaction host's package store.
     package.sections.push(Section::new(SectionId::KERNEL, kernel.to_bytes()));
 
@@ -126,8 +141,8 @@ fn build_dap_package(
         .sections
         .push(Section::new(SectionId::DEBUG_INFO, package_debug_info.to_bytes()));
 
-    // Decode once here to reject invalid references before the package reaches the asynchronous
-    // DAP session, preserving the structured package error for the caller.
+    // Decode once here to reject invalid references before the package reaches the asynchronous DAP
+    // session, preserving the structured package error for the caller.
     package.debug_info()?;
 
     Ok(Arc::new(package))

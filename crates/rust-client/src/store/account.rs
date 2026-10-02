@@ -53,9 +53,9 @@ pub enum ClientAccountType {
 
 /// Represents a stored account state along with its status.
 ///
-/// The account should be stored in the database with its parts normalized. Meaning that the
-/// account header, vault, storage and code are stored separately. This is done to avoid data
-/// duplication as the header can reference the same elements if they have equal roots.
+/// The account should be stored in the database with its parts normalized. Meaning that the account
+/// header, vault, storage and code are stored separately. This is done to avoid data duplication as
+/// the header can reference the same elements if they have equal roots.
 #[derive(Debug)]
 pub struct AccountRecord {
     /// Full account object.
@@ -136,15 +136,14 @@ impl TryFrom<AccountRecord> for PartialAccount {
 /// The status of an account may change by local or external factors.
 #[derive(Debug, Clone)]
 pub enum AccountStatus {
-    /// The account is new and hasn't been used yet. The seed used to create the account is
-    /// stored in this state.
+    /// The account is new and hasn't been used yet. The seed used to create the account is stored
+    /// in this state.
     New { seed: Word },
     /// The account is tracked by the node and was used at least once.
     Tracked,
-    /// The local account state doesn't match the node's state, rendering it unusable.
-    /// Only used for private accounts.
-    /// The seed is preserved for private accounts with nonce=0 that need reconstruction via
-    /// `Account::new()`.
+    /// The local account state doesn't match the node's state, rendering it unusable. Only used for
+    /// private accounts. The seed is preserved for private accounts with nonce=0 that need
+    /// reconstruction via `Account::new()`.
     Locked { seed: Option<Word> },
 }
 
@@ -183,8 +182,7 @@ impl Display for AccountStatus {
 pub struct AccountUpdates {
     /// Updated public accounts, either as full state replacements or incremental deltas.
     updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Network account commitments that don't match the current tracked state for private
-    /// accounts.
+    /// Network account commitments that don't match the current tracked state for private accounts.
     mismatched_private_accounts: Vec<(AccountId, Word)>,
 }
 

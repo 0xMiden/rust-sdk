@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::ParseIntError;
 use std::path::PathBuf;
 
+use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
-use miden_client::address::{Address, AddressId};
-use miden_client::asset::{Asset, FungibleAsset};
+use miden_client::address::{Address, AddressId, NetworkId};
+use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
-use miden_client::utils::{base_units_to_tokens, tokens_to_base_units};
+use miden_client::utils::{Deserializable, hex_to_bytes};
 use miden_client::vm::MIN_STACK_DEPTH;
-use miden_client::{Client, Felt, WORD_SIZE, Word};
+use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
@@ -48,12 +51,16 @@ pub(crate) async fn get_input_acc_id_by_prefix_or_default<AUTH>(
 ///
 /// - It's a hex prefix of an account ID of an account tracked by the client.
 /// - It's a full hex account ID.
-/// - It's a full bech32 account ID.
+/// - It's a full bech32 address.
+///
+/// An address encodes the network it belongs to. An address from another network refers to another
+/// chain, so it is rejected.
 ///
 /// # Errors
 ///
 /// - Will return a `IdPrefixFetchError` if the provided account ID string can't be parsed as an
 ///   `AccountId` and doesn't correspond to an account tracked by the client either.
+/// - Will return a `CliError::Input` if the address belongs to another network.
 pub(crate) async fn parse_account_id<AUTH>(
     client: &Client<AUTH>,
     account_id: &str,
@@ -68,9 +75,9 @@ pub(crate) async fn parse_account_id<AUTH>(
         .map_err(|_| CliError::Input(format!("Input account ID {account_id} is neither a valid Account ID nor a hex prefix of a known Account ID")))?
         .id())
     } else {
-        let address = Address::decode(account_id)
-            .map_err(|err| CliError::Input(format!("error parsing bech32 address: {err}")))?
-            .1;
+        let (address_network_id, address) = Address::decode(account_id)
+            .map_err(|err| CliError::Input(format!("error parsing bech32 address: {err}")))?;
+        validate_network_eq(&address_network_id, &configured_network_id()?)?;
         match address.id() {
             AddressId::AccountId(account_id_address) => Ok(account_id_address),
             _ => Err(CliError::Input(format!(
@@ -80,11 +87,30 @@ pub(crate) async fn parse_account_id<AUTH>(
     }
 }
 
+/// Rejects an address that belongs to a network other than the configured one.
+pub(crate) fn validate_network_eq(
+    address_network_id: &NetworkId,
+    client_network_id: &NetworkId,
+) -> Result<(), CliError> {
+    if address_network_id != client_network_id {
+        return Err(CliError::Input(format!(
+            "Address network `{address_network_id}` does not match configured network `{client_network_id}`",
+        )));
+    }
+
+    Ok(())
+}
+
+/// Returns true if the string can only be an account ID or an address, and not a token symbol.
+fn is_account_identifier(asset: &str) -> bool {
+    asset.starts_with("0x") || Address::decode(asset).is_ok()
+}
+
 /// Splits a `<ACCOUNT_ID>[:<PROCEDURE>]` target into its account ID and procedure parts.
 ///
 /// Account IDs (hex or bech32) never contain a colon, so the first one separates the two. The
-/// procedure is `None` when the target carries no colon; commands that require one reject that
-/// case themselves.
+/// procedure is `None` when the target carries no colon; commands that require one reject that case
+/// themselves.
 pub(crate) fn split_procedure_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((account_id, procedure)) => (account_id, Some(procedure)),
@@ -109,11 +135,17 @@ pub(super) fn config_file_exists() -> Result<bool, CliError> {
 /// Returns the faucet metadata resolver using the config file.
 pub fn load_faucet_metadata_resolver() -> Result<FaucetMetadataResolver, CliError> {
     let config = CliConfig::load()?;
-    FaucetMetadataResolver::new(config.token_symbol_map_filepath)
+    let network_id = config.network_id()?;
+    FaucetMetadataResolver::new(config.token_symbol_map_filepath, &network_id)
 }
 
-/// Prints the effects of an executed transaction: input notes, output notes, storage value
-/// changes, storage map changes, vault changes, and the nonce change.
+/// Returns the network ID of the configured network. See [`CliConfig::network_id`].
+pub(crate) fn configured_network_id() -> Result<NetworkId, CliError> {
+    CliConfig::load()?.network_id()
+}
+
+/// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
+/// storage map changes, vault changes, and the nonce change.
 pub async fn print_executed_transaction<AUTH>(
     client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
@@ -173,6 +205,7 @@ pub async fn print_executed_transaction<AUTH>(
     }
 
     // VAULT
+    //
     // The patch carries the new absolute value of each changed asset, cleared entries are listed as
     // removed.
     if patch.vault().is_empty() {
@@ -182,16 +215,16 @@ pub async fn print_executed_transaction<AUTH>(
         let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
         for asset in patch.vault().updated_assets() {
-            match asset {
-                Asset::Fungible(fungible) => {
+            match asset.as_fungible() {
+                Some(fungible) => {
                     let (faucet_fmt, amount_fmt) =
                         resolver.format_fungible_asset(client, &fungible).await?;
                     table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
                 },
-                Asset::NonFungible(non_fungible) => {
+                None => {
                     table.add_row(vec![
                         "Non Fungible Asset",
-                        &non_fungible.faucet_id().prefix().to_hex(),
+                        &asset.faucet_id().prefix().to_hex(),
                         "1",
                     ]);
                 },
@@ -221,8 +254,8 @@ pub async fn print_executed_transaction<AUTH>(
 
 /// Prints the output stack from `execute_program`.
 ///
-/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the
-/// last non-zero value so trailing zero-padding is hidden.
+/// If `expected_results` is `Some(n)`, prints the top `n` values. If `None`, prints up to the last
+/// non-zero value so trailing zero-padding is hidden.
 pub fn print_executed_program_stack(
     stack: &[Felt; MIN_STACK_DEPTH],
     expected_results: Option<usize>,
@@ -263,6 +296,97 @@ pub fn print_executed_program_stack_hex_words(stack: &[Felt; MIN_STACK_DEPTH]) {
     }
 }
 
+// TOKEN AMOUNT CONVERSION
+// ================================================================================================
+
+/// Converts an amount in the faucet base units to the token's decimals.
+///
+/// This is meant for display purposes only.
+pub(crate) fn base_units_to_tokens(units: AssetAmount, decimals: u8) -> String {
+    let units_str = units.as_u64().to_string();
+    let len = units_str.len();
+
+    if decimals == 0 {
+        return units_str;
+    }
+
+    if decimals as usize >= len {
+        // Handle cases where the number of decimals is greater than the length of units
+        "0.".to_owned() + &"0".repeat(decimals as usize - len) + &units_str
+    } else {
+        // Insert the decimal point at the correct position
+        let integer_part = &units_str[..len - decimals as usize];
+        let fractional_part = &units_str[len - decimals as usize..];
+        format!("{integer_part}.{fractional_part}")
+    }
+}
+
+/// Errors that can occur when parsing a token represented as a decimal number in a string into base
+/// units.
+#[derive(thiserror::Error, Debug)]
+pub(crate) enum TokenParseError {
+    #[error("Number of decimals {0} must be less than or equal to {max_decimals}", max_decimals = FungibleFaucet::MAX_DECIMALS)]
+    MaxDecimals(u8),
+    #[error("More than one decimal point")]
+    MultipleDecimalPoints,
+    #[error("Failed to parse u64")]
+    ParseU64(#[source] ParseIntError),
+    #[error("Amount has more than {0} decimal places")]
+    TooManyDecimals(u8),
+    #[error("Amount is not a valid asset amount")]
+    InvalidAmount(#[source] AssetError),
+}
+
+/// Converts a decimal number, represented as a string, into an integer by shifting the decimal
+/// point to the right by a specified number of decimal places.
+pub(crate) fn tokens_to_base_units(
+    decimal_str: &str,
+    n_decimals: u8,
+) -> Result<AssetAmount, TokenParseError> {
+    if n_decimals > FungibleFaucet::MAX_DECIMALS {
+        return Err(TokenParseError::MaxDecimals(n_decimals));
+    }
+
+    // Split the string on the decimal point
+    let parts: Vec<&str> = decimal_str.split('.').collect();
+
+    if parts.len() > 2 {
+        return Err(TokenParseError::MultipleDecimalPoints);
+    }
+
+    // Validate that the parts are valid numbers
+    for part in &parts {
+        part.parse::<u64>().map_err(TokenParseError::ParseU64)?;
+    }
+
+    let integer_part = parts[0];
+
+    // Trailing zeros carry no value and would change the decimal count.
+    let mut fractional_part = if parts.len() > 1 {
+        parts[1].trim_end_matches('0').to_string()
+    } else {
+        String::new()
+    };
+
+    // Check if the fractional part has more than N decimals
+    if fractional_part.len() > n_decimals.into() {
+        return Err(TokenParseError::TooManyDecimals(n_decimals));
+    }
+
+    // Add extra zeros if the fractional part is shorter than N decimals
+    while fractional_part.len() < n_decimals.into() {
+        fractional_part.push('0');
+    }
+
+    // Combine the integer and padded fractional part
+    let combined = format!("{}{}", integer_part, &fractional_part[0..n_decimals.into()]);
+
+    // Convert the combined string to an integer
+    let units = combined.parse::<u64>().map_err(TokenParseError::ParseU64)?;
+
+    AssetAmount::new(units).map_err(TokenParseError::InvalidAmount)
+}
+
 // FAUCET METADATA RESOLVER
 // ================================================================================================
 
@@ -295,9 +419,15 @@ pub struct FaucetMetadataResolver {
 
 impl FaucetMetadataResolver {
     /// Creates a new instance of the [`FaucetMetadataResolver`] by loading the token symbol map
-    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty
-    /// map is created.
-    pub fn new(token_symbol_map_filepath: PathBuf) -> Result<Self, CliError> {
+    /// file from the specified `token_symbol_map_filepath`. If the file doesn't exist, an empty map
+    /// is created.
+    ///
+    /// Every entry must hold an address of the `network_id` network. An entry of another network
+    /// names a faucet on another chain, so it is rejected when the map is loaded.
+    pub fn new(
+        token_symbol_map_filepath: PathBuf,
+        network_id: &NetworkId,
+    ) -> Result<Self, CliError> {
         let raw: BTreeMap<String, RawFaucetEntry> =
             match std::fs::read_to_string(token_symbol_map_filepath) {
                 Ok(content) => toml::from_str(&content).map_err(|err| {
@@ -318,7 +448,7 @@ impl FaucetMetadataResolver {
         let mut parsed: BTreeMap<String, FaucetTomlEntry> = BTreeMap::new();
         let mut seen: BTreeSet<AccountId> = BTreeSet::new();
         for (symbol, entry) in raw {
-            let account_id = parse_address(&entry.address).map_err(|err| {
+            let account_id = parse_address(&entry.address, network_id).map_err(|err| {
                 CliError::Config(
                     err.into(),
                     format!("Failed to parse `address` for token symbol {symbol}"),
@@ -356,8 +486,8 @@ impl FaucetMetadataResolver {
         Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch.
-    /// On RPC success, the result is persisted to the settings store.
+    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
+    /// RPC success, the result is persisted to the settings store.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -387,8 +517,8 @@ impl FaucetMetadataResolver {
         }
     }
 
-    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns
-    /// `(<bech32 faucet address>, <base-unit amount>)`.
+    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet
+    /// address>, <base-unit amount>)`.
     pub async fn format_fungible_asset<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -397,7 +527,7 @@ impl FaucetMetadataResolver {
         if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
             return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
         }
-        let network_id = client.network_id().await?;
+        let network_id = configured_network_id()?;
         let address_str = Address::new(asset.faucet_id()).encode(network_id);
         Ok((address_str, asset.amount().to_string()))
     }
@@ -431,20 +561,26 @@ impl FaucetMetadataResolver {
             "separator `::` not found".into(),
             "Failed to parse amount and asset".to_string(),
         ))?;
-        let (faucet_id, amount) = if let Ok(id) = parse_account_id(client, asset).await {
-            let amount = amount
-                .parse::<u64>()
-                .map_err(|err| CliError::Parse(err.into(), "Failed to parse u64".to_string()))?;
-            (id, amount)
-        } else {
-            let entry = self.toml.get(asset).ok_or(CliError::Config(
-                "Token symbol not found in the map file".to_string().into(),
-                asset.to_string(),
-            ))?;
-            let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
-                CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
-            })?;
-            (entry.account_id, amount.as_u64())
+        let (faucet_id, amount) = match parse_account_id(client, asset).await {
+            Ok(faucet_id) => {
+                let amount = amount.parse::<u64>().map_err(|err| {
+                    CliError::Parse(err.into(), "Failed to parse u64".to_string())
+                })?;
+                (faucet_id, amount)
+            },
+            // A token symbol is never an account ID or an address, so the token symbol map cannot
+            // resolve this asset. Report why the account ID is invalid.
+            Err(err) if is_account_identifier(asset) => return Err(err),
+            Err(_) => {
+                let entry = self.toml.get(asset).ok_or(CliError::Config(
+                    "Token symbol not found in the map file".to_string().into(),
+                    asset.to_string(),
+                ))?;
+                let amount = tokens_to_base_units(amount, entry.decimals).map_err(|err| {
+                    CliError::Parse(err.into(), "Failed to parse tokens to base units".to_string())
+                })?;
+                (entry.account_id, amount.as_u64())
+            },
         };
 
         FungibleAsset::new(faucet_id, amount).map_err(CliError::Asset)
@@ -466,21 +602,143 @@ fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
     format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
 }
 
-/// Parses a bech32 address from the token symbol map.
-fn parse_address(address_str: &str) -> Result<AccountId, String> {
-    let (_, address) = Address::decode(address_str)
+/// Parses a bech32 address from the token symbol map and checks that it belongs to `network_id`.
+fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId, String> {
+    let (address_network_id, address) = Address::decode(address_str)
         .map_err(|err| format!("`{address_str}` is not a valid bech32 address: {err}"))?;
+    validate_network_eq(&address_network_id, network_id).map_err(|err| err.to_string())?;
     if let AddressId::AccountId(account_id) = address.id() {
         return Ok(account_id);
     }
     Err(format!("address `{address_str}` does not encode an account ID"))
 }
 
+// ECDSA PUBLIC KEY PARSING
+// ================================================================================================
+
+/// Byte length of a SEC1-compressed secp256k1 public key (parity prefix plus x coordinate).
+pub(crate) const ECDSA_COMPRESSED_KEY_BYTES: usize = 33;
+/// Byte length of a SEC1-uncompressed secp256k1 public key (`0x04` prefix plus both coordinates).
+pub(crate) const ECDSA_UNCOMPRESSED_KEY_BYTES: usize = 65;
+
+/// SPKI (RFC 5280) ASN.1 DER header declaring an uncompressed secp256k1 EC public key. The 65-byte
+/// SEC1 point follows these bytes directly. Layout:
+///
+/// ```text
+/// 30 56           SEQUENCE (86 bytes)
+///   30 10         SEQUENCE, AlgorithmIdentifier (16 bytes)
+///     06 07 2a 86 48 ce 3d 02 01   OID 1.2.840.10045.2.1 (ecPublicKey)
+///     06 05 2b 81 04 00 0a         OID 1.3.132.0.10 (secp256k1)
+///   03 42 00      BIT STRING (66 bytes, no unused bits): the SEC1 point
+/// ```
+const SECP256K1_SPKI_HEADER: [u8; 23] = [
+    0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+    0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
+];
+
+fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
+    CliError::InvalidArgument(format!("invalid ECDSA public key: {err}"))
+}
+
+/// Parses a hex-encoded secp256k1 public key in SEC1 format.
+///
+/// Accepts the 33-byte compressed and the 65-byte uncompressed encoding (the form Ledger and other
+/// Ethereum-style signers export), both with a mandatory `0x` prefix. The point is fully validated:
+/// an uncompressed key whose coordinates do not lie on the curve is rejected.
+pub(crate) fn parse_ecdsa_public_key(
+    encoded: &str,
+) -> Result<ecdsa_k256_keccak::PublicKey, CliError> {
+    let hex_digits = encoded.strip_prefix("0x").ok_or_else(|| {
+        CliError::InvalidArgument(
+            "ECDSA public key must use a 0x-prefixed hexadecimal encoding".to_string(),
+        )
+    })?;
+
+    match hex_digits.len() {
+        len if len == ECDSA_COMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_COMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(invalid_ecdsa_key)
+        },
+        len if len == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_UNCOMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            // Wrapping the point in an SPKI document lets the DER constructor validate both
+            // coordinates against the curve equation. Compressing the point locally instead would
+            // drop the y coordinate and silently accept a corrupted key whose y parity happens to
+            // match.
+            let mut der = Vec::with_capacity(SECP256K1_SPKI_HEADER.len() + bytes.len());
+            der.extend_from_slice(&SECP256K1_SPKI_HEADER);
+            der.extend_from_slice(&bytes);
+            ecdsa_k256_keccak::PublicKey::from_der(&der).map_err(invalid_ecdsa_key)
+        },
+        len => Err(CliError::InvalidArgument(format!(
+            "unsupported ECDSA public key length: expected {} (compressed) or {} (uncompressed) \
+            hexadecimal digits after the 0x prefix, got {len}",
+            ECDSA_COMPRESSED_KEY_BYTES * 2,
+            ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::RawFaucetEntry;
+    use miden_client::account::AccountId;
+    use miden_client::address::{Address, NetworkId};
+    use miden_client::asset::AssetAmount;
+    use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+    use miden_client::utils::Serializable;
+
+    use super::{
+        FaucetMetadataResolver,
+        RawFaucetEntry,
+        TokenParseError,
+        base_units_to_tokens,
+        hex_to_bytes,
+        parse_ecdsa_public_key,
+        tokens_to_base_units,
+    };
+
+    fn amount(units: u64) -> AssetAmount {
+        AssetAmount::new(units).unwrap()
+    }
+
+    #[test]
+    fn convert_tokens_to_base_units() {
+        assert_eq!(tokens_to_base_units("9223372.034707292160", 12).unwrap(), AssetAmount::MAX);
+        assert_eq!(tokens_to_base_units("7531.2468", 8).unwrap(), amount(753_124_680_000));
+        assert_eq!(tokens_to_base_units("7531.2468", 4).unwrap(), amount(75_312_468));
+        assert_eq!(tokens_to_base_units("0", 3).unwrap(), AssetAmount::ZERO);
+        assert_eq!(tokens_to_base_units("1234", 8).unwrap(), amount(123_400_000_000));
+        assert_eq!(tokens_to_base_units("1", 0).unwrap(), amount(1));
+        assert!(matches!(
+            tokens_to_base_units("1.1", 0),
+            Err(TokenParseError::TooManyDecimals(0))
+        ),);
+        assert!(matches!(
+            tokens_to_base_units("18446744.073709551615", 11),
+            Err(TokenParseError::TooManyDecimals(11))
+        ),);
+        assert!(matches!(tokens_to_base_units("123u3.23", 4), Err(TokenParseError::ParseU64(_))),);
+        assert!(matches!(tokens_to_base_units("2.k3", 4), Err(TokenParseError::ParseU64(_))),);
+        assert_eq!(tokens_to_base_units("12.345000", 4).unwrap(), amount(123_450));
+        assert!(tokens_to_base_units("0.0001.00000001", 12).is_err());
+        // Parses as a u64 but exceeds the maximum representable asset amount.
+        assert!(matches!(
+            tokens_to_base_units("18446744.073709551615", 12),
+            Err(TokenParseError::InvalidAmount(_))
+        ),);
+    }
+
+    #[test]
+    fn convert_base_units_to_tokens() {
+        assert_eq!(base_units_to_tokens(AssetAmount::MAX, 12), "9223372.034707292160");
+        assert_eq!(base_units_to_tokens(amount(753_124_680_000), 8), "7531.24680000");
+        assert_eq!(base_units_to_tokens(amount(75_312_468), 4), "7531.2468");
+        assert_eq!(base_units_to_tokens(amount(75_312_468), 0), "75312468");
+    }
 
     #[test]
     fn raw_faucet_entry_accepts_address_field() {
@@ -493,6 +751,27 @@ mod tests {
         assert_eq!(entries["BTC"].decimals, 8);
     }
 
+    /// The token symbol map names faucets by address. An address of another network names a faucet
+    /// on another chain, so the map must not load.
+    #[test]
+    fn faucet_metadata_resolver_rejects_address_from_another_network() {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let address = Address::new(faucet_id).encode(NetworkId::Testnet);
+        let path = std::env::temp_dir().join("token_symbol_map_network_mismatch.toml");
+        std::fs::write(&path, format!(r#"BTC = {{ address = "{address}", decimals = 8 }}"#))
+            .unwrap();
+
+        let result = FaucetMetadataResolver::new(path.clone(), &NetworkId::Mainnet);
+        std::fs::remove_file(&path).unwrap();
+
+        let err = result.unwrap_err();
+        let source = std::error::Error::source(&err).unwrap().to_string();
+        assert!(
+            source.contains("does not match configured network"),
+            "unexpected error: {source}"
+        );
+    }
+
     #[test]
     fn raw_faucet_entry_rejects_id_field() {
         let result = toml::from_str::<BTreeMap<String, RawFaucetEntry>>(
@@ -500,5 +779,82 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    // ECDSA PUBLIC KEY PARSING
+    // --------------------------------------------------------------------------------------------
+
+    /// The secp256k1 generator point (even y coordinate) in both SEC1 encodings.
+    const GEN_COMPRESSED: &str =
+        "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    const GEN_UNCOMPRESSED: &str = "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b1\
+        6f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+
+    /// The point 6·G (odd y coordinate), so the odd-parity branch of the uncompressed encoding is
+    /// exercised as well.
+    const SIX_GEN_COMPRESSED: &str =
+        "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+    const SIX_GEN_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057\
+        a1460297556ae12777aacfbb620f3be96017f45c560de80f0f6518fe4a03c870c36b075f297";
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_compressed_key() {
+        let key = parse_ecdsa_public_key(GEN_COMPRESSED).expect("compressed key should parse");
+
+        let expected = hex_to_bytes::<33>(GEN_COMPRESSED).unwrap();
+        assert_eq!(key.to_bytes(), expected);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_even_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_odd_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(SIX_GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(SIX_GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_missing_hex_prefix() {
+        let err = parse_ecdsa_public_key(&GEN_COMPRESSED[2..])
+            .expect_err("a key without the 0x prefix should be rejected");
+
+        assert!(err.to_string().contains("0x"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_invalid_length() {
+        let err = parse_ecdsa_public_key("0x1234")
+            .expect_err("a key with an unsupported length should be rejected");
+
+        assert!(err.to_string().contains("length"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_compressed_x_not_on_curve() {
+        // x = 5 has no square root of x³ + 7 on secp256k1, so no point has this x coordinate.
+        let not_on_curve = "0x020000000000000000000000000000000000000000000000000000000000000005";
+
+        parse_ecdsa_public_key(not_on_curve)
+            .expect_err("a compressed key with no matching curve point should be rejected");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_uncompressed_point_not_on_curve() {
+        // (1, 1) does not satisfy the curve equation.
+        let not_on_curve =
+            format!("0x04{}{}", format_args!("{:064x}", 1), format_args!("{:064x}", 1));
+
+        parse_ecdsa_public_key(&not_on_curve)
+            .expect_err("an uncompressed point off the curve should be rejected");
     }
 }

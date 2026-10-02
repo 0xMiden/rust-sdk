@@ -5,7 +5,6 @@ use core::fmt;
 
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::merkle::MerkleError;
 pub use miden_protocol::errors::{
     AccountError,
     AccountIdError,
@@ -18,28 +17,25 @@ use miden_protocol::errors::{
     PartialBlockchainError,
     ProposedBatchError,
     ProvenBatchError,
-    TransactionInputError,
-    TransactionScriptError,
 };
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionInputs};
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
-use miden_standards::tx_script::SendNotesTransactionScriptError;
-use miden_tx::utils::HexParseError;
 use miden_tx::utils::serde::DeserializationError;
-pub use miden_tx::{AuthenticationError, TransactionExecutorError};
-use miden_tx::{DataStoreError, NoteCheckerError, TransactionProverError};
+pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorError};
+use miden_tx::{DataStoreError, TransactionProverError};
 use thiserror::Error;
 
 use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
-use crate::rpc::RpcError;
+use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
 use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
     ChainAnchorError,
+    ProvenBatchSubmission,
     TransactionRequestError,
     TransactionStoreUpdateError,
 };
@@ -68,8 +64,7 @@ impl fmt::Display for ErrorHint {
     }
 }
 
-// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers
-// for each error
+// TODO: This is mostly illustrative but we could add a URL with fragemtn identifiers for each error
 const TROUBLESHOOTING_DOC: &str =
     "https://docs.miden.xyz/builder/tools/clients/rust-client/cli/cli-troubleshooting";
 
@@ -85,8 +80,6 @@ pub enum ClientError {
     AccountAlreadyTracked(AccountId),
     #[error("account error")]
     AccountError(#[from] AccountError),
-    #[error("account patch error")]
-    AccountPatchError(#[from] AccountPatchError),
     #[error("account {0} is locked because the local state may be out of date with the network")]
     AccountLocked(AccountId),
     #[error(
@@ -97,12 +90,20 @@ pub enum ClientError {
     AccountIsPrivate(AccountId),
     #[error("account {0} is watched and cannot be used to execute transactions")]
     AccountIsWatched(AccountId),
+    #[error("account {0} is a network account and does not need an invitation code")]
+    AccountIsNetworkAccount(AccountId),
+    #[error("account {0} is already allowed on the network and does not need an invitation code")]
+    AccountAlreadyAllowed(AccountId),
+    #[error("account {0} is already deployed and does not need an invitation code")]
+    AccountIsNotNew(AccountId),
     #[error(
         "account {0} is already tracked with a different ClientAccountType; switching between Native and Watched is not supported"
     )]
     AccountWatchedMismatch(AccountId),
     #[error("account with id {0} not found on the network")]
     AccountNotFoundOnChain(AccountId),
+    #[error("account {0} is not registered on the network allowlist")]
+    AccountNotAllowlisted(AccountId),
     #[error(
         "cannot import account: the local account nonce is higher than the imported one, meaning the local state is newer"
     )]
@@ -135,8 +136,6 @@ pub enum ClientError {
     MissingNoteConsumptionPosition(Word),
     #[error("note with id {0} not found on chain")]
     NoteNotFoundOnChain(NoteId),
-    #[error("failed to parse hex string")]
-    HexParseError(#[from] HexParseError),
     #[error(
         "the chain Merkle Mountain Range (MMR) forest value exceeds the supported range (must fit in a u32)"
     )]
@@ -147,8 +146,6 @@ pub enum ClientError {
         "cannot track a new account without its seed; the seed is required to validate the account ID's correctness"
     )]
     AddNewAccountWithoutSeed,
-    #[error("merkle proof error")]
-    MerkleError(#[from] MerkleError),
     #[error(
         "transaction output mismatch: expected output notes with recipient digests {0:?} were not produced by the transaction"
     )]
@@ -170,10 +167,6 @@ pub enum ClientError {
     #[error("RPC error")]
     RpcError(#[from] RpcError),
     #[error(
-        "no transaction encryption key is available; the validator set's key must be cached in the store before transaction inputs can be sealed for submission"
-    )]
-    MissingTransactionEncryptionKey,
-    #[error(
         "transaction failed a recency check: {0} — the reference block may be too old; try syncing and resubmitting"
     )]
     RecencyConditionError(&'static str),
@@ -183,8 +176,6 @@ pub enum ClientError {
     StoreError(#[from] StoreError),
     #[error("transaction execution failed")]
     TransactionExecutorError(#[from] TransactionExecutorError),
-    #[error("invalid transaction input")]
-    TransactionInputError(#[source] TransactionInputError),
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
     #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]
@@ -194,10 +185,6 @@ pub enum ClientError {
     },
     #[error("invalid transaction request")]
     TransactionRequestError(#[from] TransactionRequestError),
-    #[error("failed to build the send-notes transaction script")]
-    SendNotesTransactionScriptError(#[from] SendNotesTransactionScriptError),
-    #[error("transaction script error")]
-    TransactionScriptError(#[source] TransactionScriptError),
     #[error("client initialization error: {0}")]
     ClientInitializationError(String),
     #[error("expected full account data for account {0}, but only partial data is available")]
@@ -240,20 +227,23 @@ pub enum ClientError {
         #[source]
         source: RpcError,
     },
-    /// Generic carrier for feature-specific errors raised by an observer
-    /// or domain module. Keeps `ClientError` free of per-feature variants;
-    /// each feature provides its own `From<MyFeatureError> for ClientError`
-    /// returning `Observer(Box::new(err))`.
+    /// Generic carrier for feature-specific errors raised by an observer or domain module. Keeps
+    /// `ClientError` free of per-feature variants; each feature provides its own
+    /// `From<MyFeatureError> for ClientError` returning `Observer(Box::new(err))`.
     #[error(transparent)]
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
+    #[error("expected note blocks to be screened before state sync update is built")]
+    UnscreenedNoteBlocks,
+    #[error("client already tracks maximum number of account tags possible: {0}")]
+    AccountTagLimitExceeded(usize),
 }
 
 // OBSERVER FAN-OUT
 // ================================================================================================
 
-/// Logs a non-fatal observer failure without propagating it, so one observer
-/// can't abort the others or the surrounding sync/transaction step. Shared by
-/// the `NoteObserver` and `TransactionObserver` fan-out loops.
+/// Logs a non-fatal observer failure without propagating it, so one observer can't abort the others
+/// or the surrounding sync/transaction step. Shared by the `NoteObserver` and `TransactionObserver`
+/// fan-out loops.
 pub(crate) fn log_observer_failure(
     observer: &'static str,
     op: &str,
@@ -305,6 +295,9 @@ impl From<&ClientError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
+            ClientError::AccountNotAllowlisted(account_id) => {
+                Some(account_not_allowlisted_hint(*account_id))
+            },
             ClientError::AccountNonceTooLow => Some(ErrorHint {
                 message: "The account you are trying to import has an older nonce than the version \
                           already tracked locally. Run `sync` to ensure your local state is current, \
@@ -319,16 +312,12 @@ impl From<&ClientError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
-            ClientError::RpcError(RpcError::ConnectionError(_)) => Some(ErrorHint {
-                message: "Could not reach the Miden node. Check that the node endpoint in your \
-                          configuration is correct and that the node is running.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            ClientError::RpcError(RpcError::AcceptHeaderError(_)) => Some(ErrorHint {
-                message: "The node rejected the request due to a version mismatch. \
-                          Ensure your client version is compatible with the node version.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
+            ClientError::AccountIsNetworkAccount(account_id)
+            | ClientError::AccountAlreadyAllowed(account_id)
+            | ClientError::AccountIsNotNew(account_id) => {
+                Some(unneeded_invitation_code_hint(err, *account_id))
+            },
+            ClientError::RpcError(inner) => rpc_hint(inner),
             ClientError::AddNewAccountWithoutSeed => Some(ErrorHint {
                 message: "New accounts require a seed to derive their initial state. \
                           Use `Client::new_account()` which generates the seed automatically, \
@@ -365,6 +354,10 @@ impl From<&ClientError> for Option<ErrorHint> {
                     docs_url: Some(TROUBLESHOOTING_DOC),
                 })
             },
+            ClientError::BatchBuilder(BatchBuilderError::BatchSubmissionOutcomeUnknown {
+                submission,
+                ..
+            }) => Some(batch_submission_outcome_unknown_hint(submission)),
             _ => None,
         }
     }
@@ -393,9 +386,27 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
+            TransactionRequestError::InputNoteBeingProcessed { transaction_id, .. } => {
+                Some(ErrorHint {
+                    message: format!(
+                        "The note is an input of pending transaction {transaction_id}. Run `sync` \
+                         until that transaction is committed or discarded before consuming the \
+                         note again."
+                    ),
+                    docs_url: Some(TROUBLESHOOTING_DOC),
+                })
+            },
             TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
                 message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
                           Add at least one fungible or non-fungible asset to the note.".to_string(),
+                docs_url: Some(TROUBLESHOOTING_DOC),
+            }),
+            TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+                message: format!(
+                    "A swap note exchanges the offered asset for the requested one, and its \
+                     payback is a P2ID note carrying the requested asset. A zero {side} asset \
+                     leaves one side of that exchange empty. Set a non-zero amount."
+                ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
             TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {
@@ -417,6 +428,105 @@ impl From<&TransactionRequestError> for Option<ErrorHint> {
 impl TransactionRequestError {
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
+    }
+}
+
+/// Returns the hint for an account the network allowlist does not accept.
+fn account_not_allowlisted_hint(account_id: AccountId) -> ErrorHint {
+    ErrorHint {
+        message: format!(
+            "The network only creates accounts that are on its allowlist, and account \
+             {account_id} is not on it. Register it with \
+             `account --register {account_id} --invitation-code <CODE>` before you create it."
+        ),
+        docs_url: Some(TROUBLESHOOTING_DOC),
+    }
+}
+
+/// Hint for a batch submission that came back without a definite outcome.
+fn batch_submission_outcome_unknown_hint(submission: &ProvenBatchSubmission) -> ErrorHint {
+    ErrorHint {
+        message: format!(
+            "Do not rebuild the batch: re-executing produces new transaction ids over the same \
+             notes, so if the original did land you would be left with ids that can never \
+             commit. Neither option can apply the batch twice, since both consume the same \
+             nullifiers. Either retry with the `submission` attached to this error, which \
+             carries the proven batch and each transaction's inputs and records the batch if the \
+             node accepts it, or sync and see whether the accounts moved: until a retry is \
+             accepted the {} ids in `submission.transaction_ids()` have no record to look up.",
+            submission.transaction_count()
+        ),
+        docs_url: Some(TROUBLESHOOTING_DOC),
+    }
+}
+
+/// Returns the hint for an error the node or the transport returned.
+fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
+    match err {
+        RpcError::ConnectionError(_) => Some(ErrorHint {
+            message: "Could not reach the Miden node. Check that the node endpoint in your \
+                      configuration is correct and that the node is running."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::AcceptHeaderError(_) => Some(ErrorHint {
+            message: "The node rejected the request due to a version mismatch. \
+                      Ensure your client version is compatible with the node version."
+                .to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        RpcError::RequestError {
+            endpoint_error: Some(EndpointError::RegisterAccount(inner)),
+            ..
+        } => Some(register_account_hint(inner)),
+        _ => None,
+    }
+}
+
+/// Returns the hint for an invitation code that the client refused before it sent the code.
+fn unneeded_invitation_code_hint(err: &ClientError, account_id: AccountId) -> ErrorHint {
+    let message = match err {
+        ClientError::AccountIsNetworkAccount(_) => format!(
+            "Account {account_id} is a network account. The node admits network accounts without \
+             an invitation code. Add the account without a code."
+        ),
+        ClientError::AccountAlreadyAllowed(_) => format!(
+            "Account {account_id} is already registered, or the node does not enforce an \
+             allowlist. The client did not send the invitation code. Keep the code for a \
+             different account."
+        ),
+        _ => format!(
+            "Account {account_id} already exists on chain. Only an account that is not deployed \
+             needs an invitation code. Keep the code for a new account."
+        ),
+    };
+
+    ErrorHint {
+        message,
+        docs_url: Some(TROUBLESHOOTING_DOC),
+    }
+}
+
+/// Returns the hint for a registration that the node rejected.
+fn register_account_hint(err: &RegisterAccountError) -> ErrorHint {
+    let message = match err {
+        RegisterAccountError::InvitationNotFound => {
+            "The node does not know this invitation code. A code is case-sensitive. Send it \
+             exactly as you received it, and do not add or remove characters."
+        },
+        RegisterAccountError::AlreadyRegistered => {
+            "This invitation code is registered to a different account, or this account is \
+             already registered. A code binds to one account only."
+        },
+        RegisterAccountError::InvalidRequest(_) => {
+            "The node rejected the registration request. Check that the invitation code is not \
+             empty and that the account ID is correct."
+        },
+    };
+
+    ErrorHint {
+        message: message.to_string(),
+        docs_url: Some(TROUBLESHOOTING_DOC),
     }
 }
 

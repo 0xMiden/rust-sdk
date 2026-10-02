@@ -29,7 +29,7 @@ These actions can also be executed when inside the repository via the Makefile w
 To have a fully-functional client CLI, you would need to set it up first. You can accomplish that with:
 
 ```sh
-miden-client init --network {localhost/devnet/testnet/custom_rpc_endpoint}
+miden-client init --network {mainnet/testnet/devnet/localhost/custom_rpc_endpoint}
 ```
 
 This would generate the `miden-client.toml` file, which contains useful information for the client like RPC provider's URL and database path.

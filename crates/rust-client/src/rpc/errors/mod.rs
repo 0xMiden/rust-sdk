@@ -2,10 +2,8 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use core::error::Error;
 use core::fmt;
-use core::num::TryFromIntError;
 
-use miden_protocol::account::AccountId;
-use miden_protocol::crypto::merkle::MerkleError;
+pub use miden_objects::ConversionError;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::DeserializationError;
@@ -14,7 +12,7 @@ use thiserror::Error;
 use super::RpcEndpoint;
 
 pub mod node;
-pub use node::{AddTransactionError, EndpointError};
+pub use node::{AddTransactionError, EndpointError, RegisterAccountError};
 
 // RPC ERROR
 // ================================================================================================
@@ -23,10 +21,6 @@ pub use node::{AddTransactionError, EndpointError};
 pub enum RpcError {
     #[error("accept header validation failed")]
     AcceptHeaderError(#[from] AcceptHeaderError),
-    #[error(
-        "unexpected update received for private account {0}; private account state should not be sent by the node"
-    )]
-    AccountUpdateForPrivateAccountReceived(AccountId),
     #[error("failed to connect to the Miden node")]
     ConnectionError(#[source] Box<dyn Error + Send + Sync + 'static>),
     #[error("failed to deserialize response from the Miden node: {0}")]
@@ -78,8 +72,8 @@ impl RpcError {
         )
     }
 
-    /// Returns whether this is a submission that came back without a definite outcome, so the
-    /// node may or may not have accepted the transaction.
+    /// Returns whether this is a submission that came back without a definite outcome, so the node
+    /// may or may not have accepted the transaction.
     ///
     /// In practice a lost submission arrives as `Unavailable`, `Unknown` or `Cancelled`. The match
     /// lists the codes the node issues deliberately instead, so a code this client does not
@@ -128,30 +122,26 @@ impl From<RpcConversionError> for RpcError {
     }
 }
 
+impl From<ConversionError> for RpcError {
+    fn from(err: ConversionError) -> Self {
+        Self::DeserializationError(err.to_string())
+    }
+}
+
 // RPC CONVERSION ERROR
 // ================================================================================================
 
 #[derive(Debug, Error)]
 pub enum RpcConversionError {
-    #[error("failed to deserialize")]
-    DeserializationError(#[from] DeserializationError),
-    #[error(
-        "invalid field element: value is outside the valid range (0..modulus, where modulus = 2^64 - 2^32 + 1)"
-    )]
-    NotAValidFelt,
-    #[error("invalid note type in node response")]
-    NoteTypeError(#[from] NoteError),
-    #[error("merkle proof error in node response")]
-    MerkleError(#[from] MerkleError),
     #[error("invalid field in node response: {0}")]
     InvalidField(String),
-    #[error("integer conversion failed in node response")]
-    InvalidInt(#[from] TryFromIntError),
     #[error("field `{field_name}` expected to be present in protobuf representation of {entity}")]
     MissingFieldInProtobufRepresentation {
         entity: &'static str,
         field_name: &'static str,
     },
+    #[error("failed to convert a canonical object message: {0}")]
+    CanonicalConversion(#[from] ConversionError),
 }
 
 // GRPC ERROR KIND
@@ -227,8 +217,8 @@ impl GrpcError {
 // ACCEPT HEADER ERROR
 // ================================================================================================
 
-// TODO: Accept header errors are still parsed from message strings, which is fragile.
-// Ideally the node would return structured error codes for these too. See #1129.
+// TODO: Accept header errors are still parsed from message strings, which is fragile. Ideally the
+// node would return structured error codes for these too. See #1129.
 
 /// Errors that can occur during accept header validation.
 #[derive(Debug, Error)]
@@ -244,15 +234,6 @@ pub enum AcceptHeaderError {
 pub struct AcceptHeaderContext {
     pub client_version: String,
     pub genesis_commitment: String,
-}
-
-impl AcceptHeaderContext {
-    pub fn unknown() -> Self {
-        Self {
-            client_version: "unknown".to_string(),
-            genesis_commitment: "unknown".to_string(),
-        }
-    }
 }
 
 impl fmt::Display for AcceptHeaderContext {

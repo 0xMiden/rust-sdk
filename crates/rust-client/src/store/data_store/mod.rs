@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -19,6 +19,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{Word, ZERO};
@@ -72,12 +73,12 @@ impl ClientDataStore {
         }
     }
 
-    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the
-    /// store's sync height, pinning execution to the anchor's reference block.
+    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the store's
+    /// sync height, pinning execution to the anchor's reference block.
     ///
     /// The store's account data is still used as-is: only the reference block header and the
-    /// partial blockchain come from the anchor. Any authenticated input note must have been
-    /// created in a block tracked by the anchor's partial blockchain, otherwise
+    /// partial blockchain come from the anchor. The anchor must track all blocks required by the
+    /// request and all creation blocks of authenticated input notes. Otherwise,
     /// `get_transaction_inputs` fails.
     #[must_use]
     pub fn with_chain_anchor(mut self, anchor: ChainAnchor) -> Self {
@@ -111,6 +112,14 @@ impl ClientDataStore {
         self.cache.replace_foreign_account_inputs(foreign_accounts);
     }
 
+    /// Stores the blocks that the current transaction must be able to authenticate.
+    pub(crate) fn register_block_numbers(
+        &self,
+        block_numbers: impl IntoIterator<Item = BlockNumber>,
+    ) {
+        self.cache.replace_block_numbers(block_numbers);
+    }
+
     /// Registers note scripts so they can be served to the executor upon request.
     ///
     /// Scripts accumulate across calls (they are not cleared) so that a data store reused for
@@ -122,8 +131,8 @@ impl ClientDataStore {
 
     /// Attempts to resolve a storage map witness from the local store.
     ///
-    /// This covers any account present in the store (local or foreign) as well as any
-    /// foreign account previously cached in `foreign_account_inputs`.
+    /// This covers any account present in the store (local or foreign) as well as any foreign
+    /// account previously cached in `foreign_account_inputs`.
     ///
     /// Returns `Ok(None)` when the map is not found locally.
     async fn get_local_storage_map_witness(
@@ -253,10 +262,10 @@ impl ClientDataStore {
         Ok(witness)
     }
 
-    /// Fetches an account's full vault via RPC — anchored at the transaction reference block —
-    /// and verifies it against the vault root the executor requires. Fallback for vault reads
-    /// the local store cannot serve, typically foreign accounts whose [`AccountInputs`] carry
-    /// only their vault root.
+    /// Fetches an account's full vault via RPC — anchored at the transaction reference block — and
+    /// verifies it against the vault root the executor requires. Fallback for vault reads the local
+    /// store cannot serve, typically foreign accounts whose [`AccountInputs`] carry only their
+    /// vault root.
     async fn fetch_vault_via_rpc(
         &self,
         account_id: AccountId,
@@ -318,9 +327,19 @@ impl DataStore for ClientDataStore {
         &self,
         account_id: AccountId,
         mut block_refs: BTreeSet<BlockNumber>,
-    ) -> Result<(PartialAccount, BlockHeader, PartialBlockchain), DataStoreError> {
+    ) -> Result<(PartialAccount, BlockHeader, ProtocolConfig, PartialBlockchain), DataStoreError>
+    {
         // Last block is used as reference (it does not need to be authenticated manually)
         let ref_block = *block_refs.last().ok_or(DataStoreError::other("block set is empty"))?;
+
+        for block_num in self.cache.block_numbers() {
+            if block_num > ref_block {
+                return Err(DataStoreError::other(format!(
+                    "requested block {block_num} is after transaction reference block {ref_block}"
+                )));
+            }
+            block_refs.insert(block_num);
+        }
 
         // Cache the reference block so lazy-loading methods can use it
         self.cache.set_ref_block(ref_block);
@@ -335,9 +354,9 @@ impl DataStore for ClientDataStore {
                     .await?
                     .ok_or(DataStoreError::AccountNotFound(account_id))?;
 
-                // New accounts (nonce == 0) need full storage maps as advice inputs for the
-                // kernel to validate during account creation. For these, fetch the full account
-                // and convert to PartialAccount (which includes full storage for new accounts).
+                // New accounts (nonce == 0) need full storage maps as advice inputs for the kernel
+                // to validate during account creation. For these, fetch the full account and
+                // convert to PartialAccount (which includes full storage for new accounts).
                 // Existing accounts use the minimal partial record directly.
                 let partial_account: PartialAccount = if partial_account_record.nonce() == ZERO {
                     let full_record = self
@@ -360,9 +379,9 @@ impl DataStore for ClientDataStore {
             };
 
         let (block_header, partial_blockchain) = if let Some(anchor) = &self.anchor {
-            // Anchored execution: serve the pinned chain data. The executor-derived reference
-            // block must match the anchor, and every other block in the set (input note creation
-            // blocks) must already be tracked by the anchor's partial blockchain.
+            // Anchored execution: serve the pinned chain data. The executor-derived reference block
+            // must match the anchor. The anchor's partial blockchain must track every other block
+            // in the set.
             if ref_block != anchor.block_num() {
                 return Err(DataStoreError::other_with_source(
                     "anchored data store cannot serve the requested reference block",
@@ -388,33 +407,29 @@ impl DataStore for ClientDataStore {
         {
             (block_header, partial_blockchain)
         } else {
-            // The full set identifies the served blockchain, so keep it as the cache key before
-            // the reference block is removed from it below.
+            // The full set identifies the served blockchain, so keep it as the cache key before the
+            // reference block is removed from it below.
             let cache_key = block_refs.clone();
             block_refs.remove(&ref_block);
 
             let current_peaks = self.store.get_current_blockchain_peaks().await?;
 
-            // Get header data
             let (block_header, _had_notes) = self
                 .store
                 .get_block_header_by_num(ref_block)
                 .await?
                 .ok_or(DataStoreError::BlockNotFound(ref_block))?;
 
-            let block_headers: Vec<BlockHeader> = self
-                .store
-                .get_block_headers(&block_refs)
-                .await?
-                .into_iter()
-                .map(|(header, _has_notes)| header)
-                .collect();
-
             // TODO: the client stores only the peaks of the MMR at the current sync height, so we
             // are not actually following the block_ref here. If the block_ref !=
             // current_sync_height, this would return an invalid partial blockchain.
-            let partial_mmr =
-                build_partial_mmr_with_paths(&self.store, current_peaks, &block_headers).await?;
+            let (partial_mmr, block_headers) = build_partial_mmr_and_headers_with_fallback(
+                &self.store,
+                &self.rpc_api,
+                current_peaks,
+                &block_refs,
+            )
+            .await?;
 
             let partial_blockchain =
                 PartialBlockchain::new(partial_mmr, block_headers).map_err(|err| {
@@ -428,14 +443,19 @@ impl DataStore for ClientDataStore {
             (block_header, partial_blockchain)
         };
 
-        Ok((partial_account, block_header, partial_blockchain))
+        let protocol_config = crate::protocol_config::load_protocol_config(
+            self.store.as_ref(),
+            block_header.protocol_config_commitment(),
+        )
+        .await?;
+        Ok((partial_account, block_header, protocol_config, partial_blockchain))
     }
 
-    /// Retrieves witnesses for the requested assets from the local store, falling back to a
-    /// single RPC vault fetch when the store cannot serve the requested root.
+    /// Retrieves witnesses for the requested assets from the local store, falling back to a single
+    /// RPC vault fetch when the store cannot serve the requested root.
     ///
-    /// Assets absent from the vault are served too: the store returns an emptiness proof for
-    /// them, which the executor needs when an asset is being added to the vault.
+    /// Assets absent from the vault are served too: the store returns an emptiness proof for them,
+    /// which the executor needs when an asset is being added to the vault.
     async fn get_vault_asset_witnesses(
         &self,
         account_id: AccountId,
@@ -469,10 +489,9 @@ impl DataStore for ClientDataStore {
         Ok(asset_witnesses)
     }
 
-    /// Retrieves the [`StorageMapWitness`] requested from the store. Alternatively fetching it
-    /// from the RPC if not available locally. Witnesses fetched via RPC are cached in memory so
-    /// that repeated accesses to the same map entry within a transaction avoid additional RPC
-    /// calls.
+    /// Retrieves the [`StorageMapWitness`] requested from the store. Alternatively fetching it from
+    /// the RPC if not available locally. Witnesses fetched via RPC are cached in memory so that
+    /// repeated accesses to the same map entry within a transaction avoid additional RPC calls.
     async fn get_storage_map_witness(
         &self,
         account_id: AccountId,
@@ -601,14 +620,14 @@ impl MastForestStore for ClientDataStore {
 /// itself, or the parameters needed to fetch it via RPC.
 enum WitnessResolution {
     Witness(StorageMapWitness),
-    /// The [`AccountCode`] is not needed to build the witness: it is only sent along with the
-    /// RPC request so the node can omit the account code from its response.
+    /// The [`AccountCode`] is not needed to build the witness: it is only sent along with the RPC
+    /// request so the node can omit the account code from its response.
     FetchParams(StorageSlotName, AccountCode),
 }
 
-/// Tries to open the witness from the inputs' partial storage maps (this can miss if the
-/// account's storage is too big); on a miss, resolves the slot name and account code needed to
-/// fetch the witness via RPC.
+/// Tries to open the witness from the inputs' partial storage maps (this can miss if the account's
+/// storage is too big); on a miss, resolves the slot name and account code needed to fetch the
+/// witness via RPC.
 fn resolve_witness_from_inputs(
     inputs: &AccountInputs,
     map_root: Word,
@@ -636,13 +655,14 @@ fn resolve_witness_from_inputs(
     Ok(WitnessResolution::FetchParams(slot_name, inputs.code().clone()))
 }
 
-/// Builds a [`PartialMmr`] from the given peaks and a list of blocks that should be
-/// authenticated against them.
+/// Builds a [`PartialMmr`] from the given peaks and a list of blocks that should be authenticated
+/// against them.
 ///
-/// `authenticated_blocks` must not contain the block whose forest matches `peaks`. For that
-/// block the kernel extends the MMR itself, so an authentication path is not needed.
+/// `authenticated_blocks` must not contain the block whose forest matches `peaks`. For that block
+/// the kernel extends the MMR itself, so an authentication path is not needed.
 pub(crate) async fn build_partial_mmr_with_paths(
     store: &alloc::sync::Arc<dyn Store>,
+    rpc_api: &Arc<dyn NodeRpcClient>,
     peaks: MmrPeaks,
     authenticated_blocks: &[BlockHeader],
 ) -> Result<PartialMmr, DataStoreError> {
@@ -655,20 +675,103 @@ pub(crate) async fn build_partial_mmr_with_paths(
         get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest().num_leaves())
             .await?;
 
-    for (header, path) in authenticated_blocks.iter().zip(authentication_paths.iter()) {
-        partial_mmr
-            .track(header.block_num().as_usize(), header.commitment(), path)
-            .map_err(|err| DataStoreError::other(format!("error constructing MMR: {err}")))?;
+    for (header, local_path) in authenticated_blocks.iter().zip(authentication_paths.iter()) {
+        if partial_mmr
+            .track(header.block_num().as_usize(), header.commitment(), local_path)
+            .is_ok()
+        {
+            continue;
+        }
+
+        fetch_and_track_block_header(rpc_api, &mut partial_mmr, header.block_num(), Some(header))
+            .await?;
     }
 
     Ok(partial_mmr)
 }
 
+/// Builds a [`PartialMmr`] and returns the authenticated block headers.
+///
+/// Headers in the store use local MMR nodes when possible. If a local path is incomplete, the node
+/// returns the header and its proof in one call. A missing header always uses this combined call.
+pub(crate) async fn build_partial_mmr_and_headers_with_fallback(
+    store: &alloc::sync::Arc<dyn Store>,
+    rpc_api: &Arc<dyn NodeRpcClient>,
+    peaks: MmrPeaks,
+    block_numbers: &BTreeSet<BlockNumber>,
+) -> Result<(PartialMmr, Vec<BlockHeader>), DataStoreError> {
+    let mut headers: BTreeMap<BlockNumber, BlockHeader> = store
+        .get_block_headers(block_numbers)
+        .await?
+        .into_iter()
+        .map(|(header, _has_notes)| (header.block_num(), header))
+        .collect();
+
+    let local_headers: Vec<BlockHeader> = headers.values().cloned().collect();
+    let mut partial_mmr =
+        build_partial_mmr_with_paths(store, rpc_api, peaks, &local_headers).await?;
+
+    for &block_num in block_numbers {
+        if headers.contains_key(&block_num) {
+            continue;
+        }
+
+        let header =
+            fetch_and_track_block_header(rpc_api, &mut partial_mmr, block_num, None).await?;
+        headers.insert(block_num, header);
+    }
+
+    Ok((partial_mmr, headers.into_values().collect()))
+}
+
+/// Fetches a block header with its MMR proof and tracks the authenticated header.
+///
+/// If `expected_header` is set, the fetched header must match it.
+async fn fetch_and_track_block_header(
+    rpc_api: &Arc<dyn NodeRpcClient>,
+    partial_mmr: &mut PartialMmr,
+    block_num: BlockNumber,
+    expected_header: Option<&BlockHeader>,
+) -> Result<BlockHeader, DataStoreError> {
+    let (header, proof) = rpc_api.get_block_header_with_proof(block_num).await.map_err(|err| {
+        DataStoreError::other_with_source(
+            format!("failed to fetch block header and MMR proof for block {block_num}"),
+            err,
+        )
+    })?;
+
+    if header.block_num() != block_num {
+        return Err(DataStoreError::other(format!(
+            "node returned block header {} for requested block {block_num}",
+            header.block_num()
+        )));
+    }
+    if expected_header.is_some_and(|expected| header != *expected) {
+        return Err(DataStoreError::other(format!(
+            "node returned a different header for block {block_num}"
+        )));
+    }
+    if proof.leaf() != header.commitment() {
+        return Err(DataStoreError::other(format!(
+            "node returned an invalid MMR proof for block {block_num}"
+        )));
+    }
+
+    let proof = proof.with_forest(partial_mmr.forest()).map_err(|err| {
+        DataStoreError::other(format!("failed to adjust MMR proof for block {block_num}: {err}"))
+    })?;
+    partial_mmr
+        .track(block_num.as_usize(), header.commitment(), proof.merkle_path())
+        .map_err(|err| DataStoreError::other(format!("error constructing MMR: {err}")))?;
+
+    Ok(header)
+}
+
 /// Retrieves all Partial Blockchain nodes required for authenticating the set of blocks, and then
 /// constructs the path for each of them.
 ///
-/// This function assumes `block_nums` doesn't contain values above or equal to `forest`.
-/// If there are any such values, the function will panic when calling `mmr_merkle_path_len()`.
+/// This function assumes `block_nums` doesn't contain values above or equal to `forest`. If there
+/// are any such values, the function will panic when calling `mmr_merkle_path_len()`.
 async fn get_authentication_path_for_blocks(
     store: &alloc::sync::Arc<dyn Store>,
     block_nums: &[BlockNumber],
@@ -688,7 +791,6 @@ async fn get_authentication_path_for_blocks(
         }
     }
 
-    // Get all MMR nodes based on collected indices
     let node_indices: Vec<InOrderIndex> = node_indices.into_iter().collect();
 
     let filter = PartialBlockchainFilter::List(node_indices);
@@ -711,9 +813,8 @@ async fn get_authentication_path_for_blocks(
     Ok(authentication_paths)
 }
 
-/// Calculates the merkle path length for an MMR of a specific forest and a leaf index
-/// `leaf_index` is a 0-indexed leaf number and `forest` is the total amount of leaves
-/// in the MMR at this point.
+/// Calculates the merkle path length for an MMR of a specific forest and a leaf index `leaf_index`
+/// is a 0-indexed leaf number and `forest` is the total amount of leaves in the MMR at this point.
 fn mmr_merkle_path_len(leaf_index: usize, forest: usize) -> usize {
     let before: usize = forest & leaf_index;
     let after = forest ^ before;

@@ -28,6 +28,7 @@ Creates a global configuration file for the client. Pass `--local` to create one
 miden-client init
 
 # You can set up the CLI for any of the default networks
+miden-client init --network mainnet
 miden-client init --network testnet
 miden-client init --network devnet
 miden-client init --network localhost
@@ -61,7 +62,7 @@ More information on the configuration file can be found in the [configuration se
 
 ### `account`
 
-Inspect account details.
+Inspect account details, and register an account on the network allowlist.
 
 #### Action Flags
 
@@ -71,6 +72,7 @@ Inspect account details.
 | `--show <ID>`                | Show details of the account for the specified ID             | `-s`       |
 | `--inspect <ID[:PROCEDURE]>` | List the procedures an account exposes, or resolve a single one |         |
 | `--default <ID>`             | Manage the setting for the default account                   | `-d`       |
+| `--register <ID>`            | Register the account on the network allowlist with the code given by `--invitation-code <CODE>` | |
 
 The `--show` flag also accepts a partial ID instead of the full ID. For example, instead of:
 
@@ -91,19 +93,49 @@ The `--inspect` flag lists the procedures an account exposes, grouped into resol
 - `-p, --package <FILE>`: Supplies an additional `.masp` package used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
 - `-v, --verbose`: Prints the MASM disassembly of each procedure.
 
+#### Registering an account on the network allowlist
+
+A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt. The network operator hands out the invitation codes. A code is case-sensitive, binds to one account, and cannot be reused for another.
+
+Register the account after creating it and before its first transaction:
+
+```sh
+miden-client account --register <ACCOUNT_ID> --invitation-code <CODE>
+```
+
+The account must be tracked by this client, must not exist on chain yet, and must not be a network account. A registration consumes the code, so the command first asks the node whether it already allows the account and fails without sending the code when it does. Like `--show`, `--register` accepts a partial ID.
+
+When the network operator runs a funding service, the node pays the registered account a public note with the native asset, and the command returns as soon as the funding service queues that note. The note is not committed on chain yet at that point, so it can take a few blocks to arrive. The client tracks the note tag of every account it owns, so a sync that runs after the note is committed imports it. Sync until the note is listed as consumable. Consuming it creates the account on chain, and the fee of that transaction is paid out of the received funds:
+
+```sh
+miden-client sync
+miden-client notes --list consumable --account-id <ACCOUNT_ID>
+miden-client consume-notes --account <ACCOUNT_ID>
+```
+
+A transaction that would create an unregistered account fails with `AccountNotAllowlisted` before it reaches the node. If the node registered the account but the funding failed, the command fails with an `Unavailable` RPC error. The account stays registered, so a retry fails with `AccountAlreadyAllowed`, and the account has to be funded another way, for example through a faucet.
+
+On a network that does not enforce the allowlist the node already allows every account, so the command fails with `AccountAlreadyAllowed` and no registration is needed.
+
 ### `new-wallet`
 
 Creates a new wallet account.
 
-A basic wallet is comprised of a basic authentication component (for RPO Falcon signature verification), alongside a basic wallet component (for sending and receiving assets).
+A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Poseidon2 authentication key by default.
 
-This command has three optional flags:
+The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Used to select the account visibility (private if not specified). It may receive "private" or "public". This is the only thing the protocol's `AccountType` encodes.
 - `--extra-packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
+- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+
+The authentication scheme flags are mutually exclusive. They also cannot be combined with an extra package that contributes an authentication component. An account that uses an external public key requires an external signer to authorize transactions.
 
 After creating an account with the `new-wallet` command, it is automatically stored and tracked by the client. This means the client can execute transactions that modify the state of accounts and track related changes by synchronizing with the Miden network.
+
+On a network that enforces an account allowlist, register the account before its first transaction. See [Registering an account on the network allowlist](#registering-an-account-on-the-network-allowlist).
 
 ### `new-account`
 
@@ -111,15 +143,21 @@ Creates a new account and saves it locally.
 
 An account may be composed of one or more components, each with its own storage and distinct functionality. This command lets you build a custom account by selecting an account type and optionally adding extra component packages.
 
-This command has four flags:
+The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Specifies the account visibility. It accepts either "private" or "public", with "private" as the default. This is the only thing the protocol's `AccountType` encodes.
 
 There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If any package contributes the `FungibleFaucet` component, the resulting account is treated as a fungible faucet and an implicit `TokenPolicyManager` is installed when one is not already provided. `--account-type` only selects visibility.
 - `--packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
+- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+
+The authentication scheme flags are mutually exclusive. They also cannot be combined with a package that contributes an authentication component. Without a scheme flag, a package authentication component takes precedence. If no package supplies one, the CLI generates and stores a Falcon key. An account that uses an external public key requires an external signer to authorize transactions.
 
 After creating an account with the `new-account` command, the account is stored locally and tracked by the client, enabling it to execute transactions and synchronize state changes with the Miden network.
+
+On a network that enforces an account allowlist, register the account before its first transaction. See [Registering an account on the network allowlist](#registering-an-account-on-the-network-allowlist).
 
 #### Examples
 
@@ -132,6 +170,12 @@ miden-client new-wallet -t public
 
 # Create a new wallet that includes custom packages
 miden-client new-wallet --extra-packages packages/custom-package.masp
+
+# Create a wallet and generate an ECDSA authentication key
+miden-client new-wallet --ecdsa
+
+# Create a wallet that commits to an external ECDSA public key
+miden-client new-wallet --ecdsa 0x02...
 
 # Create a fungible faucet with interactive input
 # (the resulting account is a faucet because basic-fungible-faucet.masp contributes the
@@ -389,16 +433,116 @@ This confirmation can be skipped in non-interactive environments by providing th
 
 If a remote prover is configured, the CLI can offload the proving process to it. This is done by providing the `--delegate-proving` flag when creating a transaction. The CLI will then send the transaction to the remote prover for processing.
 
+### `keys`
+
+Manage authentication keys in the configured filesystem keystore.
+
+Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
+
+#### `keys --list`
+
+List each stored key's public key commitment, authentication scheme, and associated account IDs:
+
+```sh
+miden-client keys --list
+```
+
+Running `miden-client keys` without an action also lists the keys. The associated accounts column contains `-` for a standalone key. Associated keys are included in account exports unless `--no-keys` is used.
+
+The command reads the keystore directory and skips every file that does not hold a readable key, so a damaged file does not hide the keys that are readable.
+
+#### `keys --generate`
+
+Generate a key for the selected authentication scheme and store it in the keystore:
+
+```sh
+miden-client keys --generate falcon512-poseidon2
+miden-client keys --generate ecdsa-k256-keccak
+```
+
+The command prints the public key commitment. It does not print the secret key.
+
+#### `keys --import`
+
+Import and store one serialized authentication secret key:
+
+```sh
+miden-client keys --import <FILE>
+```
+
+The file must contain exactly one `AuthSecretKey` in the Miden binary serialization format. PEM, DER, and raw secret-key files are not accepted. The command rejects data after the serialized key.
+
+Generated and imported keys are standalone until they are associated with an account.
+
+#### `keys --associate` and `keys --disassociate`
+
+Add or remove an association between a stored key and an account:
+
+```sh
+miden-client keys --associate <COMMITMENT> --account-id <ACCOUNT_ID>
+miden-client keys --disassociate <COMMITMENT> --account-id <ACCOUNT_ID>
+```
+
+`COMMITMENT` must be a `0x`-prefixed hexadecimal word, as `keys --list` prints it. `ACCOUNT_ID` accepts a hexadecimal account ID or a bech32 address.
+
+An association is client bookkeeping. It selects the keys that an account export includes. It does not change the authentication component of the account, and it does not give the key the right to authorize a transaction for that account.
+
+`--associate` fails if the keystore holds no key for the commitment. `--disassociate` accepts a commitment that is not associated with the account and reports that nothing changed, so it can be used to clear an association whose key file is gone.
+
+#### `keys --commitment`
+
+Calculate a public key commitment without storing the public key:
+
+```sh
+miden-client keys --commitment <PUBLIC_KEY>
+```
+
+`PUBLIC_KEY` must be a `0x`-prefixed hexadecimal serialization of the key. The CLI identifies the scheme from the key length. For ECDSA, provide a 33-byte compressed or 65-byte uncompressed SEC1 public key. For Falcon, provide the 897-byte serialized Falcon public key.
+
 ### Importing and exporting
 
 #### `export`
 
-Export input note data to a binary file .
+Export an output note or a local account to a binary file.
 
-| Flag                          | Description                           | Aliases |
-| ----------------------------- | ------------------------------------- | ------- |
-| `--filename <FILENAME>`       | Desired filename for the binary file. | `-f`    |
-| `--export-type <EXPORT_TYPE>` | Exported note type.                   | `-e`    |
+| Flag                          | Description                                              | Aliases |
+| ----------------------------- | -------------------------------------------------------- | ------- |
+| `--filename <FILENAME>`       | Desired filename for the binary file.                    | `-f`    |
+| `--account`                   | Export account data.                                     |         |
+| `--note`                      | Export note data.                                        |         |
+| `--export-type <EXPORT_TYPE>` | Exported note type. Required when exporting a note.      | `-e`    |
+| `--no-keys`                   | Leave secret keys out of an exported account file.       |         |
+
+##### Export an account
+
+Use `--account` to export a locally tracked account:
+
+```sh
+miden-client export <ACCOUNT_ID> --account
+miden-client export <ACCOUNT_ID> --account --filename account.mac
+```
+
+The default filename is `<ACCOUNT_ID>.mac`. A `.mac` file contains the account state and the authentication secret keys that the keystore associates with the account. If the keystore has no associated key, the export succeeds and the file contains no secret key.
+
+Use `--no-keys` to omit associated secret keys from the file:
+
+```sh
+miden-client export <ACCOUNT_ID> --account --no-keys
+```
+
+This option is useful when another party needs the account state but must not receive signing authority.
+
+:::warning
+An account file without secret keys can still contain sensitive data. An undeployed account file contains the account seed, which is required to deploy the account.
+:::
+
+##### Export a note
+
+Use `--note` and select an export type:
+
+```sh
+miden-client export <NOTE_ID> --note --export-type partial
+```
 
 ##### Export type
 
@@ -410,9 +554,19 @@ The user needs to specify how the note should be exported via the `--export-type
 
 #### `import`
 
-Import entities managed by the client, such as accounts and notes. The type of entities is inferred.
+Import one or more account or note files. The CLI infers each file type from its contents.
+
+```sh
+miden-client import <FILE>...
+```
+
+Importing a `.mac` account file adds the account to the client. The CLI also stores each secret key in the file and associates it with the account. A keyless account file still imports successfully, but it does not grant signing authority.
 
 The `--overwrite` flag can be used when importing accounts. It allows the user to overwrite existing accounts with the same ID. This is useful when you want to update the account's information or replace it with a new version.
+
+```sh
+miden-client import --overwrite account.mac
+```
 
 ### Executing scripts
 
@@ -423,9 +577,13 @@ Execute the specified program against the specified account.
 | Flag                          | Description                                  | Aliases |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `--account <ACCOUNT_ID>`      | Account ID to use for the program execution. | `-a`    |
-| `--script-path <SCRIPT_PATH>` | Path to script's source code to be executed. | `-s`    |
+| `--package <PACKAGE>`         | Required compiled transaction script package (`.masp`), as a path or a name resolved in the packages directory. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to the inputs file.                     | `-i`    |
 | `--hex-words`                 | Print the output stack grouped into words.   |         |
+
+`--package` is required. It accepts a library package with exactly one transaction script export, such as a Rust `#[tx_script]` built with `miden build`. Executable packages and MASM source files are not accepted. Replace `--script-path script.masm` with `--package script.masp` after compiling the script.
+
+With the `dap` feature, add `--start-debug-adapter <ADDR>` to debug the package. Compile with debug information for source stepping. A restart reloads the package without compiling sources; rebuild it first to apply source changes. See the [debugging guide](../debugging.md).
 
 The file referenced by `--inputs-path` should contain a TOML array of inline tables, where each table has two fields: - `key`: a 256-bit hexadecimal string representing a word to be used as a key for the input entry. The hexadecimal value must be prefixed with 0x. - `values`: an array of 64-bit unsigned integers representing field elements to be used as values for the input entry. Each integer must be written as a separate string, within double quotes.
 
@@ -458,9 +616,11 @@ Arguments are passed positionally after the target, one token per value in the p
 | integers (`u8`…`u128`, `i8`…`i128`) | decimal, range-checked against the type | `-1` |
 | `bool` | `true`, `false`, `1` or `0` | `true` |
 | `word` | hex | `0x00..` |
-| `account-id` | hex account ID | `0x4614b8bf575eab71455e97bd394e90` |
-| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only | `100::0xabcdef0123456789` |
+| `account-id` | hex account ID, or a bech32 address naming one | `0x4614b8bf575eab71455e97bd394e90` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only, the faucet in either account ID spelling | `100::0xabcdef0123456789` |
 | records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
+
+An `account-id` argument takes the same two spellings the target does, so both can be written the same way in one command line. A hex prefix of a tracked account is not one of them: resolving a prefix reads the client's store, and an argument is read on its own.
 
 Only procedures exported from a WIT interface carry a signature. A procedure without one is still called, with one raw field element per argument written in decimal (a `0x` hex literal is not accepted); the argument count is not checked and the result is printed as a stack dump.
 

@@ -8,6 +8,7 @@ use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountCode,
+    AccountCodePatch,
     AccountHeader,
     AccountId,
     AccountPatch,
@@ -24,6 +25,7 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::block::AccountWitness;
 use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
@@ -34,7 +36,7 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
-use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::crypto::merkle::{MerkleError, SparseMerklePath};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_WITH_CALLBACKS,
@@ -109,8 +111,8 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         StorageSlotName::new("miden::testing::sqlite_store::value").expect("valid slot name");
     let map_slot_name =
         StorageSlotName::new("miden::testing::sqlite_store::map").expect("valid slot name");
-    // Second map slot starts empty (same root as map_slot_name) to verify that
-    // modifying only one map slot doesn't corrupt the other when roots collide.
+    // Second map slot starts empty (same root as map_slot_name) to verify that modifying only one
+    // map slot doesn't corrupt the other when roots collide.
     let map_slot_b_name =
         StorageSlotName::new("miden::testing::sqlite_store::mapB").expect("valid slot name");
 
@@ -166,8 +168,13 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         .into(),
     ]);
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -182,7 +189,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -201,8 +208,8 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
 
     assert_eq!(updated_account, account_after_patch);
 
-    // The untouched second map slot must still be empty despite sharing the same
-    // initial root as the modified map slot.
+    // The untouched second map slot must still be empty despite sharing the same initial root as
+    // the modified map slot.
     let map_b = updated_account
         .storage()
         .slots()
@@ -217,18 +224,17 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Regression test: applying a fungible vault patch must preserve the asset's
-/// [`AssetCallbackFlag`].
+/// Applying a fungible vault patch must preserve the asset's [`AssetCallbackFlag`].
 ///
-/// The callback flag is part of an asset's vault key *and* value encoding, so if the store
-/// drops it while applying a patch, the locally recomputed vault root diverges from the one
-/// the transaction kernel produced (which carries the flag). That divergence surfaces as a
-/// `MerkleStoreError`/`ConflictingRoots` when `apply_account_vault_patch` compares the
-/// recomputed root against `final_account_state.vault_root()`.
+/// The callback flag is part of an asset's vault key *and* value encoding, so if the store drops it
+/// while applying a patch, the locally recomputed vault root diverges from the one the transaction
+/// kernel produced (which carries the flag). That divergence surfaces as a
+/// `MerkleStoreError`/`ConflictingRoots` when `apply_account_vault_patch` compares the recomputed
+/// root against `final_account_state.vault_root()`.
 ///
-/// Callback-bearing fungible assets are produced by agglayer faucets (B2AGG), so this path
-/// is exercised when a wallet consumes an agglayer-minted note. Ordinary assets use the
-/// disabled flag, where preserving it is a no-op — which is why only agglayer hit the bug.
+/// Callback-bearing fungible assets are produced by agglayer faucets (B2AGG), so this path is
+/// exercised when a wallet consumes an agglayer-minted note. Ordinary assets use the disabled flag,
+/// where preserving it is a no-op, so only agglayer assets can observe the divergence.
 #[tokio::test]
 async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Result<()> {
     let store = create_test_store().await;
@@ -253,15 +259,15 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
     )?
     .into();
 
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(callback_asset);
     let patch = AccountPatch::new(
         account.id(),
         AccountStoragePatch::new(),
         vault_patch,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -278,12 +284,12 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
             let tx = conn.transaction().into_store_error()?;
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
 
-            // Without preserving the callback flag this fails with a `ConflictingRoots`
-            // merkle store error (recomputed root != final_state.vault_root()).
+            // Without preserving the callback flag this fails with a `ConflictingRoots` merkle
+            // store error (recomputed root != final_state.vault_root()).
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -363,8 +369,13 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
         vault_patch.remove_asset(asset.id());
     }
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -380,7 +391,7 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                &account.into(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -781,8 +792,8 @@ async fn prune_account_history_removes_old_committed_states() -> anyhow::Result<
     // Apply patch 2 (nonce 2 to 3)
     apply_single_entry_update(&store, &mut account, &map_slot_name, 3).await?;
 
-    // Before prune: 2 historical headers (nonce 1, 2).
-    // The latest state (nonce 3) is in latest_account_headers, not historical.
+    // Before prune: 2 historical headers (nonce 1, 2). The latest state (nonce 3) is in
+    // latest_account_headers, not historical.
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 2);
     assert!(m.historical_storage_map_entries > 0);
@@ -796,8 +807,8 @@ async fn prune_account_history_removes_old_committed_states() -> anyhow::Result<
 
     assert!(deleted > 0, "Should have deleted some rows");
 
-    // After prune: only 1 historical header remains (nonce 2, replaced_at_nonce = 3).
-    // Nonce 3 is in latest_account_headers (not historical).
+    // After prune: only 1 historical header remains (nonce 2, replaced_at_nonce = 3). Nonce 3 is in
+    // latest_account_headers (not historical).
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 1);
 
@@ -885,8 +896,8 @@ async fn prune_account_history_multiple_accounts() -> anyhow::Result<()> {
     let mut account_b_mut = account_b.clone();
     apply_single_entry_update(&store, &mut account_b_mut, &map_slot_name_b, 2).await?;
 
-    // Before prune: 2 headers for A (nonce 1, 2) + 1 for B (nonce 1) = 3.
-    // Latest states are in latest_account_headers, not historical.
+    // Before prune: 2 headers for A (nonce 1, 2) + 1 for B (nonce 1) = 3. Latest states are in
+    // latest_account_headers, not historical.
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 3);
 
@@ -920,16 +931,16 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let map_slot_name = StorageSlotName::new("test::prune_code::map").expect("valid slot name");
 
-    // Insert account with map entries (nonce 1), then apply a patch (nonce 1 to 2).
-    // The patch creates a historical header at nonce 1 whose code_commitment points
-    // to the original account code.
+    // Insert account with map entries (nonce 1), then apply a patch (nonce 1 to 2). The patch
+    // creates a historical header at nonce 1 whose code_commitment points to the original account
+    // code.
     let mut account = setup_account_with_map(&store, 2, &map_slot_name).await?;
     let account_id = account.id();
     apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
 
-    // Simulate the nonce-2 state having a different code commitment by updating
-    // the latest header's code_commitment directly. This makes the nonce-1
-    // historical header the only reference to the original code.
+    // Simulate the nonce-2 state having a different code commitment by updating the latest header's
+    // code_commitment directly. This makes the nonce-1 historical header the only reference to the
+    // original code.
     let original_code_commitment: Vec<u8> = store
         .interact_with_connection(move |conn| {
             conn.query_row(
@@ -941,8 +952,8 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Insert a fake code entry for the latest header so the original code becomes
-    // orphaned when we prune the historical header.
+    // Insert a fake code entry for the latest header so the original code becomes orphaned when we
+    // prune the historical header.
     store
         .interact_with_connection(move |conn| {
             let new_code_commitment = vec![1u8; 32];
@@ -967,8 +978,8 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         })
         .await?;
 
-    // Prune nonce-1 history: the historical header referencing original_code_commitment
-    // is deleted, and since no other header references it, the code should be removed.
+    // Prune nonce-1 history: the historical header referencing original_code_commitment is deleted,
+    // and since no other header references it, the code should be removed.
     let deleted = store
         .interact_with_connection(move |conn| {
             SqliteStore::prune_account_history(conn, account_id, Felt::from(2u32))
@@ -1056,8 +1067,8 @@ async fn get_storage_metrics(store: &SqliteStore) -> StorageMetrics {
         .unwrap()
 }
 
-/// Creates an account with a storage map of `map_size` entries, inserts it into the store,
-/// and returns the account. Uses `Store::insert_account` (public API).
+/// Creates an account with a storage map of `map_size` entries, inserts it into the store, and
+/// returns the account. Uses `Store::insert_account` (public API).
 async fn setup_account_with_map(
     store: &SqliteStore,
     map_size: u64,
@@ -1092,8 +1103,8 @@ async fn setup_account_with_map(
     Ok(account)
 }
 
-/// Applies a delta that changes a single map entry (key=1) and persists it.
-/// `target_nonce` must be strictly greater than the account's current nonce.
+/// Applies a delta that changes a single map entry (key=1) and persists it. `target_nonce` must be
+/// strictly greater than the account's current nonce.
 async fn apply_single_entry_update(
     store: &SqliteStore,
     account: &mut Account,
@@ -1114,7 +1125,7 @@ async fn apply_single_entry_update(
         account.id(),
         storage_patch,
         AccountVaultPatch::default(),
-        None,
+        AccountCodePatch::default(),
         Some(Felt::new_unchecked(target_nonce)),
     )?;
 
@@ -1166,14 +1177,19 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
         map_slot_name.clone(),
         StorageSlotPatch::Map(StorageMapPatch::Remove),
     )])?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let prev_header: AccountHeader = (&account).into();
     account.apply_patch(&patch)?;
@@ -1342,8 +1358,8 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the
-/// latest and historical tables so that the lock survives undo/rebuild.
+/// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the latest
+/// and historical tables so that the lock survives undo/rebuild.
 #[tokio::test]
 async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     let store = create_test_store().await;
@@ -1363,14 +1379,19 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
         map_slot_name.clone(),
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
     )])?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
     let prev_header: AccountHeader = (&account).into();
     account.apply_patch(&patch)?;
     let final_header: AccountHeader = (&account).into();
@@ -1437,8 +1458,8 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that undoing a patch after `update_account_state` does not resurrect entries that
-/// were removed by the update. This exercises the archival logic in `update_account_state`.
+/// Verifies that undoing a patch after `update_account_state` does not resurrect entries that were
+/// removed by the update. This exercises the archival logic in `update_account_state`.
 ///
 /// Flow:
 /// 1. Insert account with map entries {A, B, C} and an asset X at nonce 1
@@ -1505,7 +1526,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         AccountStoragePatch::new(),
         vault_patch_1,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -1550,7 +1571,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         storage_patch_remove,
         vault_patch_remove,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(3u32)),
     )?;
 
@@ -1594,7 +1615,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         storage_patch_next,
         vault_patch_next,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(4u32)),
     )?;
 
@@ -1743,8 +1764,8 @@ async fn get_account_header_by_commitment_returns_historical() -> anyhow::Result
     assert_eq!(header.nonce().as_canonical_u64(), 1);
     assert_eq!(header.to_commitment(), initial_commitment);
 
-    // Look up the post-patch commitment: should NOT be in historical (it's the current
-    // latest state, not an old one that was replaced)
+    // Look up the post-patch commitment: should NOT be in historical (it's the current latest
+    // state, not an old one that was replaced)
     let lookup = post_patch_commitment;
     let result = store
         .interact_with_connection(move |conn| {
@@ -1794,15 +1815,15 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries_1 }),
     )])?;
     let asset_1 = FungibleAsset::new(faucet_id, 100)?;
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch_1 = AccountVaultPatch::default();
     vault_patch_1.insert_asset(asset_1.into());
     let patch_1 = AccountPatch::new(
         account_id,
         storage_patch_1,
         vault_patch_1,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -1850,7 +1871,7 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
         account_id,
         storage_patch_2,
         vault_patch_2,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(3u32)),
     )?;
 
@@ -1917,8 +1938,8 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that entries genuinely new in `update_account_state` (not in the previous state)
-/// are correctly removed from latest on undo. These entries get NULL `old_value` in historical.
+/// Verifies that entries genuinely new in `update_account_state` (not in the previous state) are
+/// correctly removed from latest on undo. These entries get NULL `old_value` in historical.
 ///
 /// Flow:
 /// 1. Insert account with map entries {A, B} at nonce 1
@@ -1974,9 +1995,8 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
         StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries_add }),
     )])?;
 
-    // Also add an asset so the vault root changes (avoids SMT root collision on undo).
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // Also add an asset so the vault root changes (avoids SMT root collision on undo). The account
+    // starts with an empty vault, so the absolute value of the added asset is the asset itself.
     let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
     let asset = FungibleAsset::new(faucet_id, 100)?;
     let mut vault_patch_add = AccountVaultPatch::default();
@@ -1985,7 +2005,7 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
         account_id,
         storage_patch_add,
         vault_patch_add,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -2065,9 +2085,9 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
 // SMT FOREST TRANSACTION ROLLBACK
 // ================================================================================================
 
-/// Builds a non-trivial patch over a freshly inserted account, with a value-slot write, a
-/// map-slot write, and a vault addition, so `apply_account_patch` produces SMT mutations on
-/// several lineages.
+/// Builds a non-trivial patch over a freshly inserted account, with a value-slot write, a map-slot
+/// write, and a vault addition, so `apply_account_patch` produces SMT mutations on several
+/// lineages.
 fn build_patch_for_forest_rollback_test(
     account: &Account,
     value_slot_name: StorageSlotName,
@@ -2089,15 +2109,20 @@ fn build_patch_for_forest_rollback_test(
         ),
     ])?;
 
-    // The account starts with an empty vault, so the absolute value of the added asset is the
-    // asset itself.
+    // The account starts with an empty vault, so the absolute value of the added asset is the asset
+    // itself.
     let mut vault_patch = AccountVaultPatch::default();
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -2312,8 +2337,8 @@ async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::
     Ok(())
 }
 
-/// A committed transaction must persist the forest mutations made through the
-/// transaction-scoped forest.
+/// A committed transaction must persist the forest mutations made through the transaction-scoped
+/// forest.
 #[tokio::test]
 async fn committed_transaction_persists_forest_tables() -> anyhow::Result<()> {
     let (store, account, value_slot_name, map_slot_name) =
@@ -2383,16 +2408,21 @@ fn build_bulk_patch_for_reopen_test(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?, 0)?.into(),
     );
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(3u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(3u32)),
+    )?;
 
     let mut account_after = account.clone();
     account_after.apply_patch(&patch)?;
     Ok((patch, account_after, keys))
 }
 
-/// The forest is persisted in the database: after dropping and reopening the store from the
-/// same file, witness reads are served from the persisted forest without any state rebuild.
+/// The forest is persisted in the database: after dropping and reopening the store from the same
+/// file, witness reads are served from the persisted forest without any state rebuild.
 ///
 /// The account is taken through two committed patches so more than one forest version precedes the
 /// reopen, and the map is filled with enough entries to span several of the 8-level subtree blobs
@@ -2499,8 +2529,8 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
         bulk_before.push(store.get_account_map_item(account_id, map_slot_name.clone(), key).await?);
     }
 
-    // Reopen the store from the same database file. The forest must serve identical data
-    // from its persisted tables.
+    // Reopen the store from the same database file. The forest must serve identical data from its
+    // persisted tables.
     drop(store);
     let reopened = SqliteStore::new(store_path).await?;
 
@@ -2573,7 +2603,7 @@ async fn watched_status_survives_state_replacement() -> anyhow::Result<()> {
         account_id,
         AccountStoragePatch::new(),
         AccountVaultPatch::default(),
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
     updated.apply_patch(&patch)?;
@@ -2682,8 +2712,8 @@ async fn create_map_patch_replaces_existing_entries() -> anyhow::Result<()> {
     let account = setup_account_with_map(&store, 5, &map_slot_name).await?;
     let account_id = account.id();
 
-    // Create the map anew with a different entry set: key 1 changes value, key 6 is new,
-    // keys 2..=5 disappear.
+    // Create the map anew with a different entry set: key 1 changes value, key 6 is new, keys 2..=5
+    // disappear.
     let key1 = StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into());
     let key6 = StorageMapKey::new([Felt::from(6u32), ZERO, ZERO, ZERO].into());
     let val1 = [Felt::from(999u32), ZERO, ZERO, ZERO].into();
@@ -2746,6 +2776,452 @@ async fn remove_map_patch_deletes_slot() -> anyhow::Result<()> {
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_storage, 1);
     assert_eq!(m.historical_storage_map_entries, 5);
+
+    Ok(())
+}
+
+// ACCOUNT WITNESS REGISTRY TESTS
+// ================================================================================================
+
+/// Builds a witness for `account_id` whose path is the one an empty tree would give.
+///
+/// The registry stores the witness as an opaque blob and never opens it, so the path's contents do
+/// not matter for these tests.
+fn mock_account_witness(account_id: AccountId, state_commitment: Word) -> AccountWitness {
+    let path = SparseMerklePath::from_parts(u64::MAX, Vec::new())
+        .expect("an all-empty path spans the full account tree depth");
+    AccountWitness::new(account_id, state_commitment, path)
+        .expect("the path depth matches the account tree depth")
+}
+
+/// A registered account has no witness until one is cached, and the cached witness round-trips.
+#[tokio::test]
+async fn account_witness_registry_round_trip() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([1u32; 4]));
+
+    // Not registered yet.
+    assert!(
+        store.get_account_witness(account_id).await?.is_none(),
+        "an unregistered account has no cached witness"
+    );
+
+    assert!(
+        store.track_account_witness(account_id).await?,
+        "the account was not registered yet"
+    );
+
+    // Registered, but no sync has run.
+    assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
+    assert!(
+        store.get_account_witness(account_id).await?.is_none(),
+        "registering an account does not cache a witness on its own"
+    );
+
+    store.update_account_witness(account_id, &witness).await?;
+
+    // Registered and cached, as it stands after a sync.
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the cached witness should be readable")?;
+    assert_eq!(cached.id(), witness.id());
+    assert_eq!(cached.state_commitment(), witness.state_commitment());
+
+    // Unregistered again: the row and its witness are gone.
+    assert!(store.untrack_account_witness(account_id).await?);
+    assert!(store.tracked_account_witnesses().await?.is_empty());
+    assert!(
+        !store.untrack_account_witness(account_id).await?,
+        "untracking an unregistered account reports no removal"
+    );
+
+    Ok(())
+}
+
+/// Re-registering must not discard a witness already cached for the account.
+#[tokio::test]
+async fn tracking_an_already_tracked_account_keeps_its_witness() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([2u32; 4]));
+
+    store.track_account_witness(account_id).await?;
+    store.update_account_witness(account_id, &witness).await?;
+
+    // Registering the same account a second time.
+    assert!(
+        !store.track_account_witness(account_id).await?,
+        "re-registering reports no new registration"
+    );
+
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the witness cached before re-registering should survive")?;
+    assert_eq!(cached.state_commitment(), witness.state_commitment());
+
+    Ok(())
+}
+
+/// Caching a witness never registers the account: `track_account_witness` is the only way in, so a
+/// write for an account that is not registered is dropped rather than upserted.
+#[tokio::test]
+async fn update_does_not_create_a_registration() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let witness = mock_account_witness(account_id, Word::from([3u32; 4]));
+
+    let updated = store.update_account_witness(account_id, &witness).await?;
+
+    assert!(!updated, "an unregistered account reports no update");
+    assert!(store.tracked_account_witnesses().await?.is_empty());
+    assert!(store.get_account_witness(account_id).await?.is_none());
+
+    Ok(())
+}
+
+/// A refresh replaces the previous entry rather than accumulating one per sync.
+#[tokio::test]
+async fn updating_a_witness_replaces_the_previous_one() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let account_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let latest_commitment = Word::from([5u32; 4]);
+
+    store.track_account_witness(account_id).await?;
+
+    // Two syncs.
+    store
+        .update_account_witness(
+            account_id,
+            &mock_account_witness(account_id, Word::from([4u32; 4])),
+        )
+        .await?;
+    store
+        .update_account_witness(account_id, &mock_account_witness(account_id, latest_commitment))
+        .await?;
+
+    let cached = store
+        .get_account_witness(account_id)
+        .await?
+        .context("the latest witness should be readable")?;
+    assert_eq!(cached.state_commitment(), latest_commitment);
+    assert_eq!(store.tracked_account_witnesses().await?, vec![account_id]);
+
+    Ok(())
+}
+
+// PoC: overwriting a not-yet-deployed account with itself drops its seed
+// ================================================================================================
+
+#[tokio::test]
+async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = AccountBuilder::new([7; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(AccountComponent::new(
+            BasicWallet::code().as_package().clone(),
+            vec![],
+            AccountComponentMetadata::new("miden::testing::seed_kept"),
+        )?)
+        .build_with_schema_commitment()?;
+    assert!(account.is_new());
+    let seed = account.seed().expect("a new account carries its seed");
+
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    // Re-importing the same (still undeployed) account with `overwrite = true` goes through
+    // `update_account` with an unchanged nonce.
+    store.update_account(&account).await?;
+
+    let (_, status) = store
+        .get_account_header(account.id())
+        .await?
+        .context("account should be tracked")?;
+    assert_eq!(status.seed(), Some(&seed), "the seed must survive the overwrite");
+    let record = store.get_account(account.id()).await?.context("account should be tracked")?;
+    let stored: Account = record.try_into()?;
+    assert_eq!(stored.seed(), Some(seed));
+
+    // `PartialAccount::new` refuses a nonce-0 account without a seed, so without the seed every
+    // client operation that starts from the minimal partial account (including a second
+    // `add_account` that could repair the record) fails.
+    let partial = store.get_minimal_partial_account(account.id()).await?;
+    assert!(partial.is_some());
+
+    Ok(())
+}
+
+// ACCOUNT CODE UPGRADE TESTS
+// ================================================================================================
+
+/// Returns an existing account with a wallet and the code that the account upgrades to. The new
+/// code adds a procedure, so its commitment is different.
+fn account_with_upgraded_code() -> anyhow::Result<(Account, AccountCode)> {
+    let auth = || {
+        AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))
+    };
+
+    let account = AccountBuilder::new([7; 32])
+        .account_type(AccountType::Public)
+        .with_component(auth())
+        .with_component(BasicWallet)
+        .build_existing()?;
+
+    let extra_component = AccountComponent::new(
+        CodeBuilder::default().compile_component_code(
+            "miden::testing::upgrade_component",
+            "@account_procedure\npub proc upgraded nop end",
+        )?,
+        vec![],
+        AccountComponentMetadata::new("miden::testing::upgrade_component"),
+    )?;
+    let upgraded_code =
+        AccountCode::from_components(&[auth().into(), BasicWallet.into(), extra_component])?;
+    assert_ne!(account.code().commitment(), upgraded_code.commitment());
+
+    Ok((account, upgraded_code))
+}
+
+/// Returns a patch that only upgrades the code of `account` to `code`.
+fn code_upgrade_patch(account: &Account, code: AccountCode) -> anyhow::Result<AccountPatch> {
+    Ok(AccountPatch::new(
+        account.id(),
+        AccountStoragePatch::default(),
+        AccountVaultPatch::default(),
+        AccountCodePatch::new(Some(code)),
+        Some(account.nonce() + ONE),
+    )?)
+}
+
+/// Applies `patch` to the stored state `init_header`, with `final_header` as the new state.
+async fn apply_patch_in_store(
+    store: &SqliteStore,
+    init_header: AccountHeader,
+    final_header: AccountHeader,
+    patch: AccountPatch,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_account_patch(
+                &tx,
+                &mut smt_forest,
+                &init_header,
+                &final_header,
+                &patch,
+            )?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await
+}
+
+/// Undoes the state of `account_id` with `commitment`.
+async fn undo_in_store(
+    store: &SqliteStore,
+    account_id: AccountId,
+    commitment: Word,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::undo_account_state(&tx, &mut smt_forest, &[(account_id, commitment)])?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await
+}
+
+async fn count_account_codes(store: &SqliteStore) -> usize {
+    store
+        .interact_with_connection(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM account_code", [], |row| row.get(0))
+                .into_store_error()
+        })
+        .await
+        .expect("account code count query should succeed")
+}
+
+/// A patch that upgrades the code stores the new code, and the account reads back with it.
+#[tokio::test]
+async fn apply_account_patch_stores_upgraded_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+    assert_eq!(count_account_codes(&store).await, 1);
+
+    let patch = code_upgrade_patch(&account, upgraded_code.clone())?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+    assert_eq!(upgraded_account.code(), &upgraded_code);
+
+    apply_patch_in_store(&store, (&account).into(), (&upgraded_account).into(), patch).await?;
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, upgraded_account);
+    assert_eq!(stored.code(), &upgraded_code);
+
+    // The old code stays stored because the historical header still refers to it.
+    assert_eq!(count_account_codes(&store).await, 2);
+
+    Ok(())
+}
+
+/// A patch whose code does not match the code commitment of the final header is rejected, and the
+/// stored state does not change.
+#[tokio::test]
+async fn apply_account_patch_rejects_code_not_matching_final_header() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+
+    // The final header keeps the old code commitment.
+    let final_header = AccountHeader::new(
+        upgraded_account.id(),
+        upgraded_account.nonce(),
+        upgraded_account.vault().root(),
+        upgraded_account.storage().to_commitment(),
+        account.code().commitment(),
+    );
+
+    let result = apply_patch_in_store(&store, (&account).into(), final_header, patch).await;
+    assert!(
+        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("patch code commitment")),
+        "unexpected result: {result:?}"
+    );
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+    assert_eq!(count_account_codes(&store).await, 1);
+
+    Ok(())
+}
+
+/// A patch without code cannot move the account to a header with a different code commitment,
+/// because the store would not have the code of the new header.
+#[tokio::test]
+async fn apply_account_patch_rejects_code_change_without_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+
+    let patch_without_code = AccountPatch::new(
+        account.id(),
+        AccountStoragePatch::default(),
+        AccountVaultPatch::default(),
+        AccountCodePatch::default(),
+        Some(upgraded_account.nonce()),
+    )?;
+
+    let result = apply_patch_in_store(
+        &store,
+        (&account).into(),
+        (&upgraded_account).into(),
+        patch_without_code,
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("does not contain the new code")),
+        "unexpected result: {result:?}"
+    );
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+
+    Ok(())
+}
+
+/// A full-state replacement with upgraded code stores the new code.
+#[tokio::test]
+async fn update_account_state_stores_upgraded_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&code_upgrade_patch(&account, upgraded_code.clone())?)?;
+
+    store.update_account(&upgraded_account).await?;
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, upgraded_account);
+    assert_eq!(stored.code(), &upgraded_code);
+
+    Ok(())
+}
+
+/// Undoing the state that upgraded the code restores the previous code.
+#[tokio::test]
+async fn undo_code_upgrade_restores_previous_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+    apply_patch_in_store(&store, (&account).into(), (&upgraded_account).into(), patch).await?;
+
+    let account_id = account.id();
+    undo_in_store(&store, account_id, upgraded_account.to_commitment()).await?;
+
+    let stored: Account = store
+        .get_account(account_id)
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+    assert_eq!(stored.code(), account.code());
 
     Ok(())
 }

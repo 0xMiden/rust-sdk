@@ -27,7 +27,7 @@ The Miden client supports screening notes against tracked accounts to determine 
 
 ### Account generation and tracking
 
-The Miden client provides features for generating and tracking accounts within the Miden rollup ecosystem. Users can create accounts and track their transaction status.
+The Miden client provides features for generating and tracking accounts within the Miden rollup ecosystem. Users can create accounts and track their transaction status. On a network that enforces an account allowlist, the client registers a new account with an invitation code before its first transaction, and receives the funds the network pays a registered account. See [Account registration on an allowlisted network](./library.md#account-registration-on-an-allowlisted-network).
 
 ### Crate features
 
@@ -35,7 +35,7 @@ The `miden-client` crate gates some of the functionality above behind Cargo feat
 
 | Feature | Description |
 | ------- | ----------- |
-| `tonic` | Includes the gRPC pieces that talk to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up (`for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). Uses `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
+| `tonic` | Includes the gRPC pieces that talk to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up (`for_mainnet`, `for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). Uses `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
 | `std` | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. This turns on the `tonic` dependency's transport and TLS features, which is not the same as the `tonic` feature above: gRPC support still has to be requested explicitly. |
 | `concurrent` | Enables Rayon-parallel proving without pulling in the rest of `std`, for `wasm32` consumers that cannot use it. Native builds get it through `std`. |
 | `testing` | Enables mocks and helpers meant for test environments. **Disabled by default.** |

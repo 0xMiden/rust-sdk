@@ -109,8 +109,8 @@ fn create_expected_input_note_with_script(index: u32, script: NoteScript) -> Inp
     InputNoteRecord::new(details, NoteAttachments::empty(), Some(0), state.into())
 }
 
-/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a
-/// known nullifier.
+/// Helper to create an expected (non-consumed) input note that carries metadata, so it has a known
+/// nullifier.
 fn create_expected_input_note_with_metadata(index: u32) -> InputNoteRecord {
     let serial_number: Word =
         [Felt::new_unchecked(u64::from(index) + 9000), ZERO, ZERO, ZERO].into();
@@ -545,8 +545,8 @@ async fn input_note_after_ignores_a_cursor_before_the_block_range() {
         .await
         .unwrap();
 
-    // A cursor before `block_start` selects nothing that the range does not already exclude, so
-    // the first note in the range is returned.
+    // A cursor before `block_start` selects nothing that the range does not already exclude, so the
+    // first note in the range is returned.
     let cursor = InputNoteCursor::from_record(&note_at_1).unwrap();
     let note = store
         .get_input_note_after(
@@ -789,6 +789,7 @@ async fn output_notes_filtered_by_script_root() {
         ),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -815,6 +816,22 @@ async fn output_notes_filtered_by_script_root() {
     assert!(notes.is_empty());
 }
 
+/// `get_note_script` returns the stored script when present and `NoteScriptNotFound` otherwise.
+#[tokio::test]
+async fn get_note_script_by_root() {
+    let store = create_test_store().await;
+    let script = StandardNote::SWAP.script();
+
+    store.upsert_note_scripts(std::slice::from_ref(&script)).await.unwrap();
+
+    let stored = store.get_note_script(script.root().into()).await.unwrap();
+    assert_eq!(stored.root(), script.root());
+
+    let missing_root = Word::default();
+    let err = store.get_note_script(missing_root).await.unwrap_err();
+    assert!(matches!(err, miden_client::store::StoreError::NoteScriptNotFound(_)));
+}
+
 #[tokio::test]
 async fn output_note_state_blob_does_not_embed_script() {
     let store = create_test_store().await;
@@ -826,6 +843,7 @@ async fn output_note_state_blob_does_not_embed_script() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -834,8 +852,9 @@ async fn output_note_state_blob_does_not_embed_script() {
     let notes = store.get_output_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes, vec![note]);
 
-    // The stored state blob carries the recipient without its script.
-    let script_bytes = StandardNote::SWAP.script().to_bytes();
+    // The stored state blob carries the recipient without its script. The MAST forest bytes are in
+    // every encoding of the script, so the search finds an embedded script in any format.
+    let script_bytes = StandardNote::SWAP.script().mast().to_bytes();
     let state_blob = store
         .interact_with_connection(|conn| {
             conn.query_row("SELECT state FROM output_notes", [], |row| row.get::<_, Vec<u8>>(0))
@@ -859,6 +878,7 @@ async fn consumed_output_note_round_trips() {
         NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -890,6 +910,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
             NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
             AccountUpdates::default(),
+            None,
         );
         store.apply_state_sync(state_sync_update).await.unwrap();
 
@@ -988,8 +1009,8 @@ fn unspent_states_classify_every_note_state() {
 }
 
 /// Attachment content is resolved during sync, after the record may already be stored, so a
-/// state-only update has to persist it too. Attachments feed the note id, so a record that keeps
-/// a stale set reconstructs to a different note than the on-chain one and becomes unconsumable.
+/// state-only update has to persist it too. Attachments feed the note id, so a record that keeps a
+/// stale set reconstructs to a different note than the on-chain one and becomes unconsumable.
 #[tokio::test]
 async fn input_note_state_update_persists_attachments() {
     let store = create_test_store().await;
@@ -1024,6 +1045,7 @@ async fn input_note_state_update_persists_attachments() {
         NoteUpdateTracker::for_transaction_updates([], [updated], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
+        None,
     );
     store.apply_state_sync(state_sync_update).await.unwrap();
 

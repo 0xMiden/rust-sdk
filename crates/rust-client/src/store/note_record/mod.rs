@@ -2,10 +2,9 @@
 //! notes that are available to be consumed ([`InputNoteRecord`]) and notes that have been produced
 //! as a result of executing a transaction ([`OutputNoteRecord`]).
 //!
-//! Both structs are similar in terms of the data they carry, but are differentiated semantically
-//! as they are involved in very different flows. As such, known states are modeled differently for
-//! the two structures, with [`InputNoteRecord`] having states described by the [`InputNoteState`]
-//! enum.
+//! Both structs are similar in terms of the data they carry, but are differentiated semantically as
+//! they are involved in very different flows. As such, known states are modeled differently for the
+//! two structures, with [`InputNoteRecord`] having states described by the [`InputNoteState`] enum.
 //!
 //! ## Serialization / Deserialization
 //!
@@ -20,7 +19,6 @@
 
 use alloc::string::{String, ToString};
 
-use miden_protocol::errors::NoteError;
 use thiserror::Error;
 
 mod input_note_record;
@@ -55,9 +53,6 @@ pub enum NoteRecordError {
     /// Error generated during conversion of note record.
     #[error("note record conversion error: {0}")]
     ConversionError(String),
-    /// Invalid underlying note object.
-    #[error("note error")]
-    NoteError(#[from] NoteError),
     /// Note record isn't consumable.
     #[error("note not consumable: {0}")]
     NoteNotConsumable(String),

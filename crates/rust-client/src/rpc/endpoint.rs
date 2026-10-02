@@ -34,6 +34,11 @@ impl Endpoint {
         Self { protocol, host, port }
     }
 
+    /// Returns the [Endpoint] associated with the mainnet network.
+    pub fn mainnet() -> Self {
+        Self::new("https".into(), "rpc.mainnet.miden.io".into(), None)
+    }
+
     /// Returns the [Endpoint] associated with the testnet network.
     pub fn testnet() -> Self {
         Self::new("https".into(), "rpc.testnet.miden.io".into(), None)
@@ -62,7 +67,9 @@ impl Endpoint {
     }
 
     pub fn to_network_id(&self) -> NetworkId {
-        if self == &Endpoint::testnet() {
+        if self == &Endpoint::mainnet() {
+            NetworkId::Mainnet
+        } else if self == &Endpoint::testnet() {
             NetworkId::Testnet
         } else if self == &Endpoint::devnet() {
             NetworkId::Devnet
@@ -157,7 +164,32 @@ impl TryFrom<&str> for Endpoint {
 mod test {
     use alloc::string::ToString;
 
+    use miden_protocol::address::NetworkId;
+
     use crate::rpc::Endpoint;
+
+    #[test]
+    fn network_id_of_known_endpoints() {
+        assert_eq!(Endpoint::mainnet().to_network_id(), NetworkId::Mainnet);
+        assert_eq!(Endpoint::testnet().to_network_id(), NetworkId::Testnet);
+        assert_eq!(Endpoint::devnet().to_network_id(), NetworkId::Devnet);
+        assert_eq!(Endpoint::localhost().to_network_id().as_str(), "mlcl");
+    }
+
+    #[test]
+    fn network_id_of_parsed_mainnet_endpoint() {
+        // A configuration file stores the endpoint as a string, so the parsed form must map to the
+        // same network as the constructor.
+        let endpoint = Endpoint::try_from(Endpoint::mainnet().to_string().as_str()).unwrap();
+        assert_eq!(endpoint.to_network_id(), NetworkId::Mainnet);
+    }
+
+    #[test]
+    fn network_id_of_custom_endpoint() {
+        // An explicit port makes a known host a custom endpoint.
+        let endpoint = Endpoint::try_from("https://rpc.mainnet.miden.io:8080").unwrap();
+        assert_eq!(endpoint.to_network_id().as_str(), "mcst");
+    }
 
     #[test]
     fn endpoint_parsing_with_hostname_only() {

@@ -7,7 +7,7 @@ status-level   = "skip"
 
 # The integration tests share a node instance and prove locally, so concurrency is kept low.
 [test-groups.integration]
-max-threads = 3
+max-threads = 2
 
 [[profile.default.overrides]]
 filter           = "package(miden-client-unit-tests)"

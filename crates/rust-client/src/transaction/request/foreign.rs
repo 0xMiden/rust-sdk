@@ -33,8 +33,7 @@ use crate::rpc::domain::account::{
 // FPI SCRIPT
 // ================================================================================================
 
-/// Builds a transaction script that invokes the procedure with the given root on a foreign
-/// account.
+/// Builds a transaction script that invokes the procedure with the given root on a foreign account.
 ///
 /// `args` are the procedure's inputs, pushed so that `args[0]` ends up on top of the stack. The
 /// kernel reads them as a fixed window of [`MIN_STACK_DEPTH`] felts, so no more may be passed.
@@ -90,16 +89,15 @@ pub fn build_fpi_script(
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum ForeignAccount {
-    /// Account with public visibility whose state and
-    /// code will be retrieved from the network at execution time. Declaring it upfront lets you
-    /// specify [`AccountStorageRequirements`] so the correct storage map entries are fetched in a
-    /// single RPC call. If not declared, the account is lazily loaded with empty storage
-    /// requirements, and any storage map accesses will trigger additional RPC calls during
-    /// execution.
+    /// Account with public visibility whose state and code will be retrieved from the network at
+    /// execution time. Declaring it upfront lets you specify [`AccountStorageRequirements`] so the
+    /// correct storage map entries are fetched in a single RPC call. If not declared, the account
+    /// is lazily loaded with empty storage requirements, and any storage map accesses will trigger
+    /// additional RPC calls during execution.
     Public(AccountId, AccountStorageRequirements),
-    /// Private account that requires a [`PartialAccount`] to be provided by the caller. An
-    /// account witness will be retrieved from the network at execution time so that it can be
-    /// used as inputs to the transaction kernel.
+    /// Private account that requires a [`PartialAccount`] to be provided by the caller. An account
+    /// witness will be retrieved from the network at execution time so that it can be used as
+    /// inputs to the transaction kernel.
     Private(PartialAccount),
     /// Account whose state and inclusion witness the caller supplies, so nothing is fetched for it
     /// at execution time.
@@ -107,15 +105,15 @@ pub enum ForeignAccount {
     /// The witness opens against the account tree of exactly one block, so inputs fetched at block
     /// `N` are only valid for a transaction whose reference block is `N`: the anchor's block under
     /// [`Client::execute_transaction_at`](crate::Client::execute_transaction_at), or the sync
-    /// height at execution time otherwise. Storage map keys and vault assets absent from the
-    /// inputs are still resolved lazily during execution.
+    /// height at execution time otherwise. Storage map keys and vault assets absent from the inputs
+    /// are still resolved lazily during execution.
     Prefetched(AccountInputs),
 }
 
 impl ForeignAccount {
     /// Creates a new [`ForeignAccount::Public`]. The account's components (code, storage header and
-    /// inclusion proof) will be retrieved at execution time, alongside particular storage slot
-    /// maps correspondent to keys passed in `indices`.
+    /// inclusion proof) will be retrieved at execution time, alongside particular storage slot maps
+    /// correspondent to keys passed in `indices`.
     pub fn public(
         account_id: AccountId,
         storage_requirements: AccountStorageRequirements,
@@ -287,8 +285,8 @@ pub(crate) fn account_proof_into_inputs(
     Err(TransactionRequestError::ForeignAccountDataMissing)
 }
 
-/// Rebuilds a [`PartialStorageMap`] from the raw keys the node covered and the partial SMT
-/// covering them.
+/// Rebuilds a [`PartialStorageMap`] from the raw keys the node covered and the partial SMT covering
+/// them.
 ///
 /// An empty key list keeps the root alone, since there is no opening to derive it from.
 fn partial_map_into_partial_storage(
@@ -334,8 +332,8 @@ mod foreign_vault_tests {
         (account, Arc::new(MockRpcApi::new(builder.build().unwrap())))
     }
 
-    /// `IfChangedFrom` with a matching root makes the node omit the asset list, which must
-    /// degrade to a root-only vault rather than be kept as an empty one.
+    /// `IfChangedFrom` with a matching root makes the node omit the asset list, which must degrade
+    /// to a root-only vault rather than be kept as an empty one.
     #[tokio::test]
     async fn omitted_asset_list_degrades_to_a_root_only_vault() {
         let (account, rpc) = chain_with_funded_account();
@@ -410,8 +408,8 @@ mod foreign_storage_map_tests {
     };
     use crate::test_utils::mock::MockRpcApi;
 
-    /// Builds a chain with an account holding a three-entry storage map, returning the account,
-    /// the map's slot name and root, and an RPC client over the chain.
+    /// Builds a chain with an account holding a three-entry storage map, returning the account, the
+    /// map's slot name and root, and an RPC client over the chain.
     fn chain_with_map_account() -> (Account, StorageSlotName, Word, Arc<dyn NodeRpcClient>) {
         chain_with_map_account_capped(usize::MAX)
     }
@@ -500,8 +498,8 @@ mod foreign_storage_map_tests {
     }
 
     /// A map the node reports as oversize carries no entries at all, so it must degrade to a
-    /// root-only map (absent from the partial storage, served lazily during execution) rather
-    /// than fail the conversion.
+    /// root-only map (absent from the partial storage, served lazily during execution) rather than
+    /// fail the conversion.
     #[tokio::test]
     async fn oversize_map_degrades_to_a_root_only_map() {
         let (account, slot_name, _map_root, rpc) = chain_with_map_account_capped(1);

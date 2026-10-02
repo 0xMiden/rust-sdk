@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use miden_protocol::account::{
     Account,
     AccountCode,
+    AccountCodePatch,
     AccountHeader,
     AccountId,
     AccountPatch,
@@ -15,10 +16,12 @@ use miden_protocol::account::{
     StorageSlotPatch,
     StorageValuePatch,
 };
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::errors::AccountPatchError;
 use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, ONE, Word};
 
@@ -46,6 +49,9 @@ pub struct StateSyncUpdate {
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
     account_updates: AccountUpdates,
+    /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
+    /// genesis, or when the starting block and `block_num` commit to different configurations.
+    protocol_config: Option<ProtocolConfig>,
 }
 
 impl StateSyncUpdate {
@@ -58,6 +64,7 @@ impl StateSyncUpdate {
         note_updates: NoteUpdateTracker,
         transaction_updates: TransactionUpdateTracker,
         account_updates: AccountUpdates,
+        protocol_config: Option<ProtocolConfig>,
     ) -> Self {
         Self {
             block_num,
@@ -65,6 +72,7 @@ impl StateSyncUpdate {
             note_updates,
             transaction_updates,
             account_updates,
+            protocol_config,
         }
     }
 
@@ -93,6 +101,11 @@ impl StateSyncUpdate {
         &self.account_updates
     }
 
+    /// Returns the protocol configuration the node sent with this sync, if any.
+    pub fn protocol_config(&self) -> Option<&ProtocolConfig> {
+        self.protocol_config.as_ref()
+    }
+
     /// Decomposes this update into its constituent parts.
     pub fn into_parts(
         self,
@@ -102,6 +115,7 @@ impl StateSyncUpdate {
         NoteUpdateTracker,
         TransactionUpdateTracker,
         AccountUpdates,
+        Option<ProtocolConfig>,
     ) {
         (
             self.block_num,
@@ -109,6 +123,7 @@ impl StateSyncUpdate {
             self.note_updates,
             self.transaction_updates,
             self.account_updates,
+            self.protocol_config,
         )
     }
 }
@@ -189,11 +204,10 @@ impl From<&StateSyncUpdate> for SyncSummary {
 /// Insert-only: entries are staged once known to be worth keeping, never revised or removed.
 #[derive(Debug, Clone, Default)]
 pub struct PartialBlockchainUpdates {
-    /// New block headers to be stored, keyed by block number. The value contains the block
-    /// header and a flag indicating whether the block is relevant and should remain tracked.
+    /// New block headers to be stored, keyed by block number. The value contains the block header
+    /// and a flag indicating whether the block is relevant and should remain tracked.
     block_headers: BTreeMap<BlockNumber, (BlockHeader, bool)>,
-    /// New authentication nodes that are meant to be stored in order to authenticate block
-    /// headers.
+    /// New authentication nodes that are meant to be stored in order to authenticate block headers.
     new_authentication_nodes: Vec<(InOrderIndex, Word)>,
     /// MMR peaks at the new sync height.
     pub new_peaks: MmrPeaks,
@@ -307,6 +321,10 @@ impl TransactionUpdateTracker {
 
     /// Applies the necessary state transitions to the [`TransactionUpdateTracker`] when a
     /// transaction is included in a block.
+    ///
+    /// The included transaction is matched to a local pending transaction by its ID only. The node
+    /// reports the original transaction ID, so a record with an unknown ID is an external
+    /// transaction of a tracked account.
     pub fn apply_transaction_inclusion(&mut self, record: &RpcTransactionRecord, timestamp: u64) {
         let header = &record.transaction_header;
         let account_id = header.account_id();
@@ -316,18 +334,7 @@ impl TransactionUpdateTracker {
             return;
         }
 
-        // Fallback for transactions with unauthenticated input notes: the node
-        // authenticates these notes during processing, which changes the transaction
-        // ID. Match by account ID and pre-transaction state instead.
-        if let Some(transaction) = self.transactions.values_mut().find(|tx| {
-            tx.details.account_id == account_id
-                && tx.details.init_account_state == header.initial_state_commitment()
-        }) {
-            transaction.commit_transaction(record.block_num, timestamp);
-            return;
-        }
-
-        // No local transaction matched. This is an external transaction by a tracked account.
+        // No local transaction has this ID. This is an external transaction by a tracked account.
         // Record the nullifier→account mappings so we can attribute note consumption to tracked
         // accounts during nullifier processing.
         for commitment in header.input_notes().iter() {
@@ -402,8 +409,8 @@ impl TransactionUpdateTracker {
         let mut new_invalid_account_states = vec![];
 
         for transaction in self.mutable_pending_transactions() {
-            // Discard transactions, and also push the invalid account state if the transaction
-            // got correctly discarded
+            // Discard transactions, and also push the invalid account state if the transaction got
+            // correctly discarded
             // NOTE: previous updates in a chain of state syncs could have committed a transaction,
             // so we need to check that `discard_transaction` returns `true` here (aka, it got
             // discarded from a valid state)
@@ -473,21 +480,23 @@ impl PublicAccountUpdate {
 /// map entry, and vault asset, so the patch is assembled directly from them with no need to load
 /// the prior account state.
 ///
-/// An update of an existing account (final nonce > 1) yields a partial-state patch with no code. A
-/// newly created account (final nonce 1) cannot be represented as a partial-state patch, so the
-/// patch becomes a full-state patch carrying `code` (already validated against the on-chain code
-/// commitment by the caller).
+/// A newly created account (final nonce 1) gets a creation patch: every storage slot is a `Create`
+/// operation and the patch carries `code`. An update of an existing account (final nonce > 1) gets
+/// `Update` operations. It carries `code` only if the code commitment differs from
+/// `local_code_commitment`, which means that the account upgraded its code. The caller must
+/// validate `code` against the on-chain code commitment.
 pub(crate) fn build_account_patch(
     new_header: &AccountHeader,
     value_slot_updates: Vec<(StorageSlotName, Word)>,
     map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     vault_patch: AccountVaultPatch,
     code: AccountCode,
+    local_code_commitment: Word,
 ) -> Result<AccountPatch, AccountPatchError> {
-    let is_full_state = new_header.nonce() == ONE;
+    let is_new_account = new_header.nonce() == ONE;
 
     let value_entries = value_slot_updates.into_iter().map(|(slot_name, new_value)| {
-        let value_patch = if is_full_state {
+        let value_patch = if is_new_account {
             StorageValuePatch::Create { value: new_value }
         } else {
             StorageValuePatch::Update { value: new_value }
@@ -496,7 +505,7 @@ pub(crate) fn build_account_patch(
     });
 
     let map_entries = map_entries.into_iter().map(|(slot_name, entries)| {
-        let map_patch = if is_full_state {
+        let map_patch = if is_new_account {
             StorageMapPatch::Create { entries }
         } else {
             StorageMapPatch::Update { entries }
@@ -506,7 +515,8 @@ pub(crate) fn build_account_patch(
 
     let storage = AccountStoragePatch::from_entries(value_entries.chain(map_entries))?;
 
-    let code = is_full_state.then_some(code);
+    let carries_code = is_new_account || code.commitment() != local_code_commitment;
+    let code = AccountCodePatch::new(carries_code.then_some(code));
 
     AccountPatch::new(new_header.id(), storage, vault_patch, code, Some(new_header.nonce()))
 }
@@ -520,13 +530,16 @@ pub(crate) fn build_account_patch(
 pub struct AccountUpdates {
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Account commitments received from the network that don't match the currently
-    /// locally-tracked state of the private accounts.
+    /// Account commitments received from the network that don't match the currently locally-tracked
+    /// state of the private accounts.
     ///
     /// These updates may represent a stale account commitment (meaning that the latest local state
     /// hasn't been committed). If this is not the case, the account may be locked until the state
     /// is restored manually.
     mismatched_private_accounts: Vec<(AccountId, Word)>,
+    /// Witnesses validated at the target block, for the accounts the sync queried anyway. Kept so
+    /// that the witness refresh does not request them a second time.
+    account_witnesses: Vec<(AccountId, AccountWitness)>,
 }
 
 impl AccountUpdates {
@@ -538,7 +551,18 @@ impl AccountUpdates {
         Self {
             updated_public_accounts,
             mismatched_private_accounts,
+            account_witnesses: Vec::new(),
         }
+    }
+
+    /// Attaches the account witnesses the sync validated at its target block.
+    #[must_use]
+    pub fn with_account_witnesses(
+        mut self,
+        account_witnesses: Vec<(AccountId, AccountWitness)>,
+    ) -> Self {
+        self.account_witnesses = account_witnesses;
+        self
     }
 
     /// Returns the updated public accounts.
@@ -551,9 +575,15 @@ impl AccountUpdates {
         &self.mismatched_private_accounts
     }
 
+    /// Returns the account witnesses validated at the sync's target block.
+    pub fn account_witnesses(&self) -> &[(AccountId, AccountWitness)] {
+        &self.account_witnesses
+    }
+
     pub fn extend(&mut self, other: AccountUpdates) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
+        self.account_witnesses.extend(other.account_witnesses);
     }
 }
 
@@ -567,8 +597,15 @@ mod tests {
 
     use miden_protocol::account::{AccountCode, StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
+    use miden_protocol::transaction::{
+        InputNoteCommitment,
+        InputNotes,
+        RawOutputNotes,
+        TransactionHeader,
+    };
 
     use super::*;
+    use crate::transaction::TransactionDetails;
 
     fn account_id() -> AccountId {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap()
@@ -608,6 +645,7 @@ mod tests {
             map_entries,
             AccountVaultPatch::default(),
             AccountCode::mock(),
+            AccountCode::mock().commitment(),
         )
     }
 
@@ -618,7 +656,7 @@ mod tests {
         assert_eq!(patch.final_nonce(), Some(Felt::new_unchecked(4)));
         assert!(patch.storage().is_empty());
         assert!(patch.vault().is_empty());
-        assert!(!patch.is_full_state());
+        assert!(patch.code().is_empty());
     }
 
     #[test]
@@ -652,14 +690,47 @@ mod tests {
     }
 
     /// A newly created account (final nonce 1) observed via the oversized sync path yields a
-    /// full-state patch carrying the supplied code, rather than failing to build.
+    /// creation patch carrying the supplied code, rather than failing to build.
     #[test]
-    fn build_patch_for_new_account_is_full_state() {
+    fn build_patch_for_new_account_carries_code() {
         let value_slot = slot_name("miden::test::value");
         let patch = build_patch(1, vec![(value_slot, word(1))], BTreeMap::new()).unwrap();
 
-        assert!(patch.is_full_state());
+        assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
         assert_eq!(patch.final_nonce(), Some(ONE));
+        assert!(patch.try_to_new_account().is_ok());
+    }
+
+    /// An existing account whose on-chain code commitment differs from the local one upgraded its
+    /// code. The patch carries the new code and keeps `Update` operations for storage.
+    #[test]
+    fn build_patch_for_code_upgrade_carries_new_code() {
+        let value_slot = slot_name("miden::test::value");
+        let local_code_commitment = word(7);
+        assert_ne!(local_code_commitment, AccountCode::mock().commitment());
+
+        let patch = build_account_patch(
+            &header_with_nonce(3),
+            vec![(value_slot.clone(), word(3))],
+            BTreeMap::new(),
+            AccountVaultPatch::default(),
+            AccountCode::mock(),
+            local_code_commitment,
+        )
+        .unwrap();
+
+        assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
+        assert_eq!(patch.storage().updated_value(&value_slot), Some(word(3)));
+        assert!(patch.try_to_new_account().is_err());
+    }
+
+    /// An existing account whose code commitment did not change gets a patch without code.
+    #[test]
+    fn build_patch_without_code_change_omits_code() {
+        let value_slot = slot_name("miden::test::value");
+        let patch = build_patch(3, vec![(value_slot, word(3))], BTreeMap::new()).unwrap();
+
+        assert!(patch.code().is_empty());
     }
 
     /// A newly created account (final nonce 1, full-state) emits each map slot as a `Create`, which
@@ -688,5 +759,65 @@ mod tests {
         let patch = build_patch(2, vec![], map_entries).unwrap();
 
         assert!(patch.storage().updated_map(&map_slot).is_some());
+    }
+
+    // TRANSACTION INCLUSION TESTS
+    // --------------------------------------------------------------------------------------------
+
+    fn rpc_transaction(init_state: u64, final_state: u64, nullifier: u64) -> RpcTransactionRecord {
+        let input_notes = InputNotes::new_unchecked(vec![InputNoteCommitment::from(
+            Nullifier::from_raw(word(nullifier)),
+        )]);
+
+        RpcTransactionRecord {
+            block_num: BlockNumber::from(5u32),
+            transaction_header: TransactionHeader::new(
+                account_id(),
+                word(init_state),
+                word(final_state),
+                input_notes,
+                vec![],
+            )
+            .unwrap(),
+            output_notes: vec![],
+            erased_output_notes: vec![],
+            consumed_note_refs: vec![],
+        }
+    }
+
+    fn pending_transaction(init_state: u64, final_state: u64, nullifier: u64) -> TransactionRecord {
+        let id = rpc_transaction(init_state, final_state, nullifier).transaction_header.id();
+        let details = TransactionDetails {
+            account_id: account_id(),
+            init_account_state: word(init_state),
+            final_account_state: word(final_state),
+            input_note_nullifiers: vec![word(nullifier)],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(1u32),
+            submission_height: BlockNumber::from(1u32),
+            expiration_block_num: BlockNumber::from(100u32),
+            creation_timestamp: 0,
+        };
+
+        TransactionRecord::new(id, details, None, TransactionStatus::Pending)
+    }
+
+    /// An included transaction with an unknown ID is external, even when it shares the account and
+    /// the initial and final states with a local pending transaction.
+    #[test]
+    fn inclusion_with_unknown_id_does_not_commit_local_transaction() {
+        let local = pending_transaction(10, 11, 1);
+        let local_id = local.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![local]);
+
+        let included = rpc_transaction(10, 11, 2);
+        assert_ne!(included.transaction_header.id(), local_id);
+        tracker.apply_transaction_inclusion(&included, 0);
+
+        assert!(tracker.committed_transactions().next().is_none());
+        assert_eq!(
+            tracker.external_nullifier_account(&Nullifier::from_raw(word(2))),
+            Some(account_id())
+        );
     }
 }

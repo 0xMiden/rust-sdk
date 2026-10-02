@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+
+### Enhancements
+
+* [rust] On official networks, `std` builds now fetch the genesis block from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node. Builds without `std` still fetch it from the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+
 ### Breaking Changes
 
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).

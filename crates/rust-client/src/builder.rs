@@ -1,10 +1,12 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
@@ -16,11 +18,12 @@ use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
 use crate::note_transport::NoteTransportClient;
+use crate::protocol_config::protocol_config_setting_key;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
 #[cfg(feature = "tonic")]
 use crate::rpc::{GrpcClient, VerifyingRpcClient};
-use crate::store::{Store, StoreError};
+use crate::store::{SettingScope, Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
@@ -142,6 +145,8 @@ pub struct ClientBuilder<AUTH> {
     endpoint: Option<Endpoint>,
     /// An optional shared source manager for MASM source information.
     source_manager: Option<Arc<dyn SourceManagerSync>>,
+    /// An optional genesis block header and protocol configuration to store on build.
+    genesis: Option<(BlockHeader, ProtocolConfig)>,
 }
 
 impl<AUTH> Default for ClientBuilder<AUTH> {
@@ -160,6 +165,7 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             tx_prover: None,
             endpoint: None,
             source_manager: None,
+            genesis: None,
         }
     }
 }
@@ -470,6 +476,18 @@ where
         self
     }
 
+    /// Sets the genesis block header and its protocol configuration, which are stored when the
+    /// client is built.
+    #[must_use]
+    pub fn seed_genesis(
+        mut self,
+        block_header: BlockHeader,
+        protocol_config: ProtocolConfig,
+    ) -> Self {
+        self.genesis = Some((block_header, protocol_config));
+        self
+    }
+
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
@@ -521,6 +539,10 @@ where
 
         let source_manager: Arc<dyn SourceManagerSync> =
             self.source_manager.unwrap_or_else(|| Arc::new(DefaultSourceManager::default()));
+
+        if let Some((block_header, protocol_config)) = self.genesis {
+            store_genesis(store.as_ref(), block_header, protocol_config).await?;
+        }
 
         // Initialize genesis commitment in RPC client
         if let Some((genesis, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
@@ -576,6 +598,54 @@ where
         };
         Ok(client)
     }
+}
+
+// GENESIS SEEDING
+// ================================================================================================
+
+/// Stores `block_header` and `protocol_config` as the genesis of `store`. See
+/// [`ClientBuilder::seed_genesis`].
+async fn store_genesis(
+    store: &dyn Store,
+    block_header: BlockHeader,
+    protocol_config: ProtocolConfig,
+) -> Result<(), ClientError> {
+    if block_header.block_num() != BlockNumber::GENESIS {
+        return Err(ClientError::ChainValidationError(format!(
+            "expected genesis block header, got block {}",
+            block_header.block_num()
+        )));
+    }
+    let expected_commitment = block_header.protocol_config_commitment();
+    let actual_commitment = protocol_config.to_commitment();
+    if actual_commitment != expected_commitment {
+        return Err(ClientError::ChainValidationError(format!(
+            "genesis protocol configuration commitment mismatch: expected {expected_commitment}, got {actual_commitment}"
+        )));
+    }
+
+    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
+        if stored.commitment() != block_header.commitment() {
+            return Err(ClientError::ChainValidationError(format!(
+                "stored genesis block commitment {} does not match {}",
+                stored.commitment(),
+                block_header.commitment()
+            )));
+        }
+        return Ok(());
+    }
+
+    // Genesis is untracked since there are no client notes associated with it, so no MMR nodes are
+    // stored.
+    store.insert_block_header(&block_header, &[], false).await?;
+    store
+        .set_setting(
+            SettingScope::Client,
+            protocol_config_setting_key(actual_commitment),
+            protocol_config.to_bytes(),
+        )
+        .await?;
+    Ok(())
 }
 
 // BUILDER AUTHENTICATOR

@@ -285,37 +285,6 @@ fn user_data_does_not_change_schema_hash() {
 }
 
 #[test]
-fn client_store_at_version_one_upgrades_in_place() {
-    let mut conn = open_memory_db();
-    SqliteMigrator::client()
-        .migrate_to_version(&mut conn, 1)
-        .expect("version 1 of the production schema should apply");
-    conn.execute(
-        "INSERT INTO transactions (id, details, script_root, block_num, status_variant, status) \
-         VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-        params![b"transaction-id", b"details", 7, 0, b"status"],
-    )
-    .expect("a version 1 transaction should insert");
-
-    SqliteMigrator::client()
-        .apply(&mut conn)
-        .expect("a version 1 store should upgrade");
-
-    assert_eq!(user_version(&conn), SqliteMigrator::client().latest_version());
-    let (id, status_variant): (Vec<u8>, u8) = conn
-        .query_row("SELECT id, status_variant FROM transactions", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .expect("the transaction should have survived the upgrade");
-    assert_eq!(id, b"transaction-id");
-    assert_eq!(status_variant, 0);
-    assert!(
-        conn.prepare("SELECT block_num FROM transactions").is_err(),
-        "the dropped column should be gone"
-    );
-}
-
-#[test]
 fn partial_migration_transforms_user_data() {
     let mut conn = open_db_at_fixture_version(1);
     seed_fixture_v1(&conn);

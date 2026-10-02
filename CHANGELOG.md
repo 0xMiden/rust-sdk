@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).
 * [BREAKING][removal][rust] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
 
 ### Features
@@ -14,6 +15,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed the `miden_client::crypto::RandomCoin` re-export. Use a `rand` CSPRNG such as `ChaCha20Rng`, plus the new `miden_client::rng::{draw_felt, draw_word}` helpers where a `Felt` or `Word` is needed from a generator that does not implement `FeltRng` ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
+* [BREAKING][type][rust] `ClientBuilder::rng` is now only available under the `testing` feature and requires `CryptoRng + Send + Sync`; the marker trait `ClientFeltRng` is renamed to `ClientCryptoRng`. Outside of tests the client's RNG is always an OS-seeded `ChaCha20Rng`; drop the `rng()` call ([#2414](https://github.com/0xMiden/rust-sdk/pull/2414)).
 * [BREAKING][arch][rust,store] Updated protocol dependencies to `0.17.0`, Miden VM to `0.35`, `miden-debug` to `0.18.0` and `miden-node-proto-build` to `0.17.0-rc.4`. Requires a compatible node and a new client database ([#2530](https://github.com/0xMiden/rust-sdk/pull/2530), [#2549](https://github.com/0xMiden/rust-sdk/pull/2549), [#2562](https://github.com/0xMiden/rust-sdk/pull/2562), [#2594](https://github.com/0xMiden/rust-sdk/pull/2594), [#2621](https://github.com/0xMiden/rust-sdk/pull/2621), [#2651](https://github.com/0xMiden/rust-sdk/pull/2651)).
 * [BREAKING][behavior][rust] `Keystore::get_account_key_commitments` returns an empty set for an account the keystore holds no key for, instead of an error. An account can use keys that are held elsewhere, so this is a valid state. Code that read the error as "this account is unknown" must check for an empty set instead. `export --account` now exports such an account instead of failing with "No keys found for account" ([#2556](https://github.com/0xMiden/rust-sdk/pull/2556)).
 * [BREAKING][type][rust] Added the `StoreError::DatabaseTransientError` and `StoreError::DatabasePermanentError` variants, so exhaustive matches on `StoreError` must handle them. The SQLite store returns the first for a busy or locked database and the second for a constraint violation or a corrupt database file, which it previously reported as `StoreError::DatabaseError` ([#2537](https://github.com/0xMiden/rust-sdk/pull/2537)).

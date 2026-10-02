@@ -477,10 +477,8 @@ fn retry_delay(failure: &SendFailure, retry: u32, retry_interval_ms: u64) -> Opt
 mod tests {
     use alloc::string::ToString;
 
-    use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -489,6 +487,8 @@ mod tests {
     };
     use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
     use tonic::metadata::MetadataMap;
 
     use super::*;
@@ -498,14 +498,14 @@ mod tests {
         let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::from(&[seed; 4]));
+        let mut rng = ChaCha20Rng::seed_from_u64(u64::from(seed));
 
         P2idNote::builder()
             .sender(sender)
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .unwrap()
             .into()

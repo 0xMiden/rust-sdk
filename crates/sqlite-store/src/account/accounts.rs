@@ -212,7 +212,7 @@ impl SqliteStore {
             .into_store_error()?
             .map(|result| {
                 let (id, code): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-                Ok((AccountId::read_from_bytes(&id)?, proto::decode(&code)?))
+                Ok((AccountId::read_from_bytes(&id)?, proto::decode_unchecked(&code)?))
             })
             .collect::<Result<BTreeMap<AccountId, AccountCode>, _>>()
     }

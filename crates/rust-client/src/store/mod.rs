@@ -59,6 +59,8 @@ use miden_tx::utils::serde::{Deserializable, Serializable};
 
 #[allow(deprecated)]
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::pswap::store::{ORDER_PREFIX, order_key, tip_key};
+use crate::pswap::{PswapLineageFilter, PswapLineageRecord, PswapLineageState};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
@@ -575,6 +577,79 @@ pub trait Store: Send + Sync {
         scope: SettingScope,
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
+
+    // PSWAP
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the PSWAP lineage of the order with `order_id`, or `None` if the store does not
+    /// track that order.
+    async fn get_pswap_lineage(
+        &self,
+        order_id: Felt,
+    ) -> Result<Option<PswapLineageRecord>, StoreError> {
+        let Some(bytes) = self.get_setting(SettingScope::Client, order_key(order_id)).await? else {
+            return Ok(None);
+        };
+        PswapLineageRecord::read_from_bytes(&bytes)
+            .map(Some)
+            .map_err(StoreError::DataDeserializationError)
+    }
+
+    /// Returns the `order_id` of the active PSWAP lineage whose current tip is `tip`, or `None` if
+    /// `tip` is not the tip of an active lineage.
+    async fn get_pswap_order_id_by_tip(&self, tip: NoteId) -> Result<Option<Felt>, StoreError> {
+        let Some(bytes) = self.get_setting(SettingScope::Client, tip_key(tip)).await? else {
+            return Ok(None);
+        };
+        Felt::read_from_bytes(&bytes)
+            .map(Some)
+            .map_err(StoreError::DataDeserializationError)
+    }
+
+    /// Returns the PSWAP lineages that match `filter`.
+    async fn get_pswap_lineages(
+        &self,
+        filter: PswapLineageFilter,
+    ) -> Result<Vec<PswapLineageRecord>, StoreError> {
+        let mut lineages = Vec::new();
+        for key in self.list_setting_keys(SettingScope::Client).await? {
+            if !key.starts_with(ORDER_PREFIX) {
+                continue;
+            }
+            let Some(bytes) = self.get_setting(SettingScope::Client, key).await? else {
+                continue;
+            };
+            let record = PswapLineageRecord::read_from_bytes(&bytes)
+                .map_err(StoreError::DataDeserializationError)?;
+            if filter.matches(&record) {
+                lineages.push(record);
+            }
+        }
+        Ok(lineages)
+    }
+
+    /// Inserts or replaces the PSWAP lineage of `record.order_id()` and updates the tip index in
+    /// the same atomic operation. The index keeps the tip of an active lineage only.
+    async fn upsert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
+        let mut mutations = Vec::new();
+        // The removal comes first, so a set on the same tip key wins.
+        if let Some(previous) = self.get_pswap_lineage(record.order_id()).await? {
+            mutations.push(SettingMutation::Remove {
+                key: tip_key(previous.current_tip_note_id),
+            });
+        }
+        mutations.push(SettingMutation::Set {
+            key: order_key(record.order_id()),
+            value: record.to_bytes(),
+        });
+        if record.state == PswapLineageState::Active {
+            mutations.push(SettingMutation::Set {
+                key: tip_key(record.current_tip_note_id),
+                value: record.order_id().to_bytes(),
+            });
+        }
+        self.apply_settings_mutations(SettingScope::Client, mutations).await
+    }
 
     // SYNC
     // --------------------------------------------------------------------------------------------

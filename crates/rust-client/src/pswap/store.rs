@@ -1,5 +1,5 @@
-//! Client-side persistence for PSWAP lineages over the existing `settings` KV store, using two key
-//! families:
+//! Client-side persistence for PSWAP lineages. The default [`Store`] PSWAP methods keep lineages in
+//! the `settings` KV store, using two key families:
 //!
 //! ```text
 //! pswap/order/{order_id_hex}    →  serialized PswapLineageRecord  (PRIMARY; stable, never re-keyed)
@@ -12,7 +12,6 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteInclusionProof};
@@ -20,26 +19,21 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::PswapNote;
 
 use super::errors::PswapLineageError;
-use super::lineage::{
-    PswapLineageFilter,
-    PswapLineageRecord,
-    PswapLineageRoundUpdate,
-    PswapLineageState,
-};
+use super::lineage::{PswapLineageRoundUpdate, PswapLineageState};
 use crate::store::input_note_states::{CommittedNoteState, UnverifiedNoteState};
-use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, SettingScope, Store, StoreError};
+use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteTagRecord, NoteTagSource};
-use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
+use crate::utils::bytes_to_hex_string;
 
 // KEY SCHEME
 // ================================================================================================
 
-const ORDER_PREFIX: &str = "pswap/order/";
+pub(crate) const ORDER_PREFIX: &str = "pswap/order/";
 const TIP_PREFIX: &str = "pswap/tip/";
 
 /// Stable primary key for an order's lineage record. Hex of the `order_id` canonical bytes — only
 /// uniqueness + stability matter; we never parse it back (the record carries its own `order_id`).
-fn order_key(order_id: Felt) -> String {
+pub(crate) fn order_key(order_id: Felt) -> String {
     format!(
         "{ORDER_PREFIX}{}",
         bytes_to_hex_string(order_id.as_canonical_u64().to_le_bytes())
@@ -48,61 +42,12 @@ fn order_key(order_id: Felt) -> String {
 
 /// Secondary-index key for the current tip. Hex convention matches the note id encoding used
 /// elsewhere in the store layer.
-fn tip_key(tip: NoteId) -> String {
+pub(crate) fn tip_key(tip: NoteId) -> String {
     format!("{TIP_PREFIX}{}", tip.as_word())
 }
 
 // READ / WRITE HELPERS
 // ================================================================================================
-
-/// Persists a lineage record and its tip index in one atomic batch, so the record and its tip index
-/// can never diverge. Used at creation and as the building block for [`apply_round`].
-pub(crate) async fn put_lineage(
-    store: &Arc<dyn Store>,
-    record: &PswapLineageRecord,
-) -> Result<(), StoreError> {
-    store
-        .apply_settings_mutations(
-            SettingScope::Client,
-            vec![
-                SettingMutation::Set {
-                    key: order_key(record.order_id()),
-                    value: record.to_bytes(),
-                },
-                SettingMutation::Set {
-                    key: tip_key(record.current_tip_note_id),
-                    value: record.order_id().to_bytes(),
-                },
-            ],
-        )
-        .await
-}
-
-/// Point-get a lineage by its stable `order_id`.
-pub(crate) async fn get_lineage(
-    store: &Arc<dyn Store>,
-    order_id: Felt,
-) -> Result<Option<PswapLineageRecord>, StoreError> {
-    let Some(bytes) = store.get_setting(SettingScope::Client, order_key(order_id)).await? else {
-        return Ok(None);
-    };
-    let record = PswapLineageRecord::read_from_bytes(&bytes)
-        .map_err(StoreError::DataDeserializationError)?;
-    Ok(Some(record))
-}
-
-/// Resolves a (possibly consumed) tip note id back to its `order_id` via the tip index. `None` when
-/// the note id is not a tracked tip.
-pub(crate) async fn resolve_order_by_tip(
-    store: &Arc<dyn Store>,
-    tip: NoteId,
-) -> Result<Option<Felt>, StoreError> {
-    let Some(bytes) = store.get_setting(SettingScope::Client, tip_key(tip)).await? else {
-        return Ok(None);
-    };
-    let order_id = Felt::read_from_bytes(&bytes).map_err(StoreError::DataDeserializationError)?;
-    Ok(Some(order_id))
-}
 
 /// Fetches and reconstructs the immutable depth-0 PSWAP note from `output_notes` by its stable id.
 /// The lineage record stores only `original_note_id` and the cheap order facts; the full note
@@ -131,35 +76,6 @@ pub(crate) async fn get_original_pswap(
         .map_err(|_| PswapLineageError::OriginalNoteUnavailable(original_note_id))
 }
 
-/// Prefix-scans the `pswap/order/` family and applies the (client-side) filter. `pswap/tip/` and
-/// non-PSWAP settings keys are excluded by the full-prefix check. Rare path (a client's own open
-/// orders).
-pub(crate) async fn list_lineages(
-    store: &Arc<dyn Store>,
-    filter: PswapLineageFilter,
-) -> Result<Vec<PswapLineageRecord>, StoreError> {
-    let mut out = Vec::new();
-    for key in store.list_setting_keys(SettingScope::Client).await? {
-        if !key.starts_with(ORDER_PREFIX) {
-            continue;
-        }
-        let Some(bytes) = store.get_setting(SettingScope::Client, key).await? else {
-            continue;
-        };
-        let record = PswapLineageRecord::read_from_bytes(&bytes)
-            .map_err(StoreError::DataDeserializationError)?;
-        let keep = match &filter {
-            PswapLineageFilter::All => true,
-            PswapLineageFilter::Active => record.state == PswapLineageState::Active,
-            PswapLineageFilter::ByCreator(creator) => record.creator_account_id() == *creator,
-        };
-        if keep {
-            out.push(record);
-        }
-    }
-    Ok(out)
-}
-
 // ROUND APPLICATION
 // ================================================================================================
 
@@ -167,18 +83,18 @@ pub(crate) async fn list_lineages(
 /// advances the lineage record, re-keys the tip index, and drops the asset-pair tag on terminal
 /// states.
 ///
-/// The lineage-record advance and tip re-key are committed as one atomic settings batch, so the
-/// record and its tip index never diverge. The `input_notes` and tag writes target other tables and
-/// keep the note-first ordering: a crash before the settings batch leaves the lineage at the old
-/// tip, and the next sync re-derives the round idempotently (`upsert_input_notes` is keyed on
-/// `note_id`; settings are last-writer-wins).
+/// [`Store::upsert_pswap_lineage`] commits the lineage-record advance and the tip re-key as one
+/// atomic operation, so the record and its tip index never diverge. The `input_notes` and tag
+/// writes target other tables and keep the note-first ordering: a crash before the lineage upsert
+/// leaves the lineage at the old tip, and the next sync re-derives the round idempotently
+/// (`upsert_input_notes` is keyed on `note_id`; the lineage upsert is last-writer-wins).
 pub(crate) async fn apply_round(
     store: &Arc<dyn Store>,
     update: &PswapLineageRoundUpdate,
 ) -> Result<(), StoreError> {
     // Load the current record and enforce the monotonic-depth invariant before any write. The store
     // is the last line of defense against correlator off-by-ones / duplicate deliveries.
-    let record = get_lineage(store, update.order_id).await?.ok_or_else(|| {
+    let record = store.get_pswap_lineage(update.order_id).await?.ok_or_else(|| {
         StoreError::DatabaseError(format!(
             "apply_round: no lineage for order_id {}",
             update.order_id
@@ -201,31 +117,13 @@ pub(crate) async fn apply_round(
         upsert_round_note(store, remainder_note, inclusion_proof, at_block_note_root).await?;
     }
 
-    // 2. Advance the lineage record and re-key the tip index in one atomic batch, so the order
-    //    record and its tip index can never diverge. On terminal rounds `tip_note_id` is `None`, so
-    //    the tip stays frozen at the last live tip while `current_depth` advances to the
-    //    terminating round, and the live tip index is dropped (a terminal lineage has no tip to
-    //    resolve).
-    let old_tip = record.current_tip_note_id;
+    // 2. Advance the lineage record. On terminal rounds `tip_note_id` is `None`, so the tip stays
+    //    frozen at the last live tip while `current_depth` advances to the terminating round, and
+    //    the store drops the tip index (a terminal lineage has no tip to resolve).
     // Reuse the record's own advance logic (the same `advance` the in-memory walk in `discovery`
     // uses) so the persisted transition can never drift from it.
     let new_record = record.advance(update);
-    let mut mutations = vec![
-        SettingMutation::Set {
-            key: order_key(update.order_id),
-            value: new_record.to_bytes(),
-        },
-        SettingMutation::Remove { key: tip_key(old_tip) },
-    ];
-    if update.state == PswapLineageState::Active
-        && let Some(new_tip) = update.tip_note_id
-    {
-        mutations.push(SettingMutation::Set {
-            key: tip_key(new_tip),
-            value: update.order_id.to_bytes(),
-        });
-    }
-    store.apply_settings_mutations(SettingScope::Client, mutations).await?;
+    store.upsert_pswap_lineage(&new_record).await?;
 
     // 4. Terminal states no longer need the asset-pair subscription. The tag is re-derived from the
     //    depth-0 note (the record stores only amounts, not the faucets the tag needs) — one fetch,

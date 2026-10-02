@@ -6,6 +6,11 @@
 
 * [BREAKING][removal][rust,cli] Removed unused items: the deprecated `ClientBuilder::tx_graceful_blocks` alias (use `tx_discard_delta`), the `NoteTransportUpdate` struct, the `AccountProofs` type alias, the `CliError::Internal` variant ([#2661](https://github.com/0xMiden/rust-sdk/pull/2661))..
 * 
+
+### Fixes
+
+* [FIX][rust] Calling `TransactionRequestBuilder::own_output_notes` before `expected_output_recipients` no longer drops the own notes' recipients, which made `execute_transaction` panic. `TransactionRequest::validate` now also rejects a `SendNotes` note whose recipient is missing ([#2603](https://github.com/0xMiden/rust-sdk/pull/2603)).
+
 ## 0.17.0-rc.5 (2026-10-01)
 
 ### Breaking Changes

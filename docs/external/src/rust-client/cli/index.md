@@ -238,6 +238,15 @@ You can call:
 miden-client notes --show 0x70b7ec
 ```
 
+The `--show` flag prints the note information, its assets and its storage. The `Record` row tells
+whether the client stores the note as an input note, an output note, or both. For a P2ID, P2IDE,
+SWAP, PSWAP or FEE_SPONSORSHIP note, the storage is shown as named fields, and a field that the note
+does not set is shown as `-`. For other notes, and for storage that does not decode, it is shown as
+raw storage items. For an input note that this client consumes or has consumed, it prints the
+consuming transaction and account. If the note carries attachments, it prints their scheme and
+content. A standard scheme also shows its name, and a network account target or PSWAP attachment
+shows its fields instead of the raw words. Pass `--with-code` to also print the note script.
+
 To send a private note, the `--send` flag sends a note using the note transport network.
 The note ID (hex, in full or a prefix) and recipient's address (bech32) must be provided.
 The note is assumed to be stored in the store (e.g., imported using [`import`](#import)).
@@ -317,9 +326,10 @@ The `--list` flag accepts filters that narrow the listing, which is ordered by c
 | `--limit <count>`   | Only list at most this many of the newest transactions  |         |
 
 The `--show` flag prints the transaction record, a table of its input notes and a table of its
-output notes. Each note row has the standard note name, the store state and the decoded storage of a P2ID, P2IDE,
-SWAP or PSWAP note. The reference block is the block the transaction executed against, not the
-block that included it. It accepts a partial ID:
+output notes. Each note row has the standard note name, the store state and the note storage. The
+storage of a P2ID, P2IDE, SWAP, PSWAP or FEE_SPONSORSHIP note is shown as named fields, and the
+storage of other notes as raw items. The reference block is the block the transaction executed
+against, not the block that included it. It accepts a partial ID:
 
 ```sh
 miden-client tx --show 0x0c97ec

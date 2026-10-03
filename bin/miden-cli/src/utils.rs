@@ -8,8 +8,6 @@ use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
-use miden_client::note::standards::{PswapNoteStorage, SwapNoteStorage};
-use miden_client::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{Deserializable, hex_to_bytes};
 use miden_client::vm::MIN_STACK_DEPTH;
@@ -20,6 +18,9 @@ use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_p
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+
+/// Placeholder for a value that is not available or not set.
+pub(crate) const NO_VALUE: &str = "-";
 
 pub(crate) const SHARED_TOKEN_DOCUMENTATION: &str = "There are two accepted formats for the asset:
 - `<AMOUNT>::<FAUCET_ID>` where `<AMOUNT>` is in the faucet base units.
@@ -687,77 +688,6 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
         return Ok(account_id);
     }
     Err(format!("address `{address_str}` does not encode an account ID"))
-}
-
-// NOTE STORAGE DECODING
-// ================================================================================================
-
-/// Placeholder shown for a field that the client can't fill in.
-pub(crate) const NO_VALUE: &str = "-";
-
-/// Renders the decoded storage of a P2ID, P2IDE, SWAP or PSWAP note one field per line.
-///
-/// Other notes, and storage that doesn't decode, are shown as the empty-value placeholder.
-pub(crate) async fn format_standard_note_storage<AUTH>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    standard_note: Option<StandardNote>,
-    items: &[Felt],
-) -> Result<String, CliError> {
-    let fields = match standard_note {
-        Some(StandardNote::P2ID) => P2idNoteStorage::try_from(items)
-            .map(|storage| vec![format!("target: {}", storage.target())])
-            .ok(),
-        Some(StandardNote::P2IDE) => P2ideNoteStorage::try_from(items)
-            .map(|storage| {
-                let mut fields = vec![format!("target: {}", storage.target())];
-                if let Some(height) = storage.reclaim_height() {
-                    fields.push(format!("reclaim height: {height}"));
-                }
-                if let Some(height) = storage.timelock_height() {
-                    fields.push(format!("timelock height: {height}"));
-                }
-                fields
-            })
-            .ok(),
-        Some(StandardNote::SWAP) => match SwapNoteStorage::try_from(items) {
-            Ok(storage) => Some(vec![
-                format!(
-                    "requested: {}",
-                    resolver.format_asset(client, &storage.requested_asset()).await?
-                ),
-                format!("payback note: {}", storage.payback_note_type()),
-            ]),
-            Err(_) => None,
-        },
-        Some(StandardNote::PSWAP) => match PswapNoteStorage::try_from(items) {
-            Ok(storage) => {
-                let requested = Asset::from(*storage.min_requested_asset());
-                let mut fields = vec![
-                    format!("creator: {}", storage.creator_account_id()),
-                    format!("requested: {}", resolver.format_asset(client, &requested).await?),
-                ];
-                // A zero fill step means that the note accepts fills of any size.
-                if storage.min_fill_step() != AssetAmount::ZERO
-                    && let Ok(fill_step) = FungibleAsset::new(
-                        storage.requested_faucet_id(),
-                        storage.min_fill_step().as_u64(),
-                    )
-                {
-                    fields.push(format!(
-                        "min fill step: {}",
-                        resolver.format_asset(client, &Asset::from(fill_step)).await?
-                    ));
-                }
-                fields.push(format!("payback note: {}", storage.payback_note_type()));
-                Some(fields)
-            },
-            Err(_) => None,
-        },
-        _ => None,
-    };
-
-    Ok(fields.map_or_else(|| NO_VALUE.to_string(), |fields| fields.join("\n")))
 }
 
 // ECDSA PUBLIC KEY PARSING

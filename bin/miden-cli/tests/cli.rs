@@ -28,7 +28,8 @@ use miden_client::auth::{
 };
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::Keystore;
-use miden_client::note::{NoteId, NoteTag};
+use miden_client::note::standards::payback_serial_from_swap;
+use miden_client::note::{NoteId, NoteTag, P2idNoteStorage, SwapNote};
 use miden_client::note_transport::{
     NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
@@ -826,8 +827,8 @@ async fn tx_show_decodes_p2ide_note_storage() -> Result<()> {
         "Expected Full".to_string(),
         record.expected_height().to_string(),
         format!(
-            "target: {target_account_id}\nreclaim height: {RECLAIM_HEIGHT}\n\
-             timelock height: {TIMELOCK_HEIGHT}"
+            "target: {target_account_id}\nreclaimer: {sender_account_id}\n\
+             reclaim height: {RECLAIM_HEIGHT}\ntimelock height: {TIMELOCK_HEIGHT}"
         ),
         "0.0000000025 BTC".to_string(),
     ];
@@ -898,6 +899,219 @@ fn show_note_with_unknown_id_reports_an_input_error() {
         .stderr(contains("did not match any note"))
         .stderr(contains("import error").not())
         .stderr(contains("Check the file name").not());
+}
+
+/// Checks `notes --show` for a P2IDE output note and for a consumed P2ID mint note.
+#[tokio::test]
+async fn notes_show_prints_decoded_storage_and_consumer_transaction() -> Result<()> {
+    const RECLAIM_HEIGHT: &str = "100000";
+    const TIMELOCK_HEIGHT: &str = "50000";
+
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let sender_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let target_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &sender_account_id).await?;
+
+    sync_cli(&temp_dir);
+    let (_, minted_note_id) = mint_cli(&temp_dir, &sender_account_id, &fungible_faucet_account_id);
+    sync_until_committed_note(&temp_dir);
+    consume_note_cli(&temp_dir, &sender_account_id, &[&minted_note_id]);
+
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    transfer_cmd.args([
+        "transfer",
+        "--sender",
+        &sender_account_id,
+        "--target",
+        &target_account_id,
+        "--asset",
+        &format!("25::{fungible_faucet_account_id}"),
+        "-n",
+        "private",
+        "--recall-height",
+        RECLAIM_HEIGHT,
+        "--timelock-height",
+        TIMELOCK_HEIGHT,
+        "--force",
+    ]);
+    let output = transfer_cmd.current_dir(&temp_dir).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout)?;
+    let note_id = stdout
+        .split_whitespace()
+        .skip_while(|&word| word != "Output")
+        .find(|word| word.starts_with("0x"))
+        .unwrap_or_else(|| panic!("the transfer should report an output note ID:\n{stdout}"))
+        .to_string();
+
+    // Get the consuming transaction from the store.
+    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    let consumer_tx = client
+        .get_input_note(NoteId::try_from_hex(&minted_note_id)?)
+        .await?
+        .expect("the mint note should be stored")
+        .consumer_transaction_id()
+        .expect("the consumed mint note should record its consuming transaction")
+        .to_hex();
+
+    let labels =
+        |rows: &[Vec<String>]| -> Vec<String> { rows.iter().map(|row| row[0].clone()).collect() };
+    let info_labels = [
+        "ID",
+        "Record",
+        "Standard Note",
+        "Script Root",
+        "Assets Commitment",
+        "Inputs Commitment",
+        "Serial Number",
+        "Type",
+        "State",
+        "Tag",
+        "Sender",
+        "Exportable",
+    ];
+
+    // The client stores the P2IDE note only as an output note. No sync ran after the transfer, so
+    // the target account does not have it as an input note yet.
+    let stdout = notes_show_stdout(&temp_dir, &note_id)?;
+    let information = horizontal_table_rows(&stdout, "Note Information");
+    assert_eq!(labels(&information), info_labels, "{stdout}");
+    assert_eq!(information[0], ["ID", note_id.as_str()], "{stdout}");
+    assert_eq!(information[1], ["Record", "Output"], "{stdout}");
+    assert_eq!(information[2], ["Standard Note", "P2IDE"], "{stdout}");
+    assert_eq!(information[10], ["Sender", sender_account_id.as_str()], "{stdout}");
+
+    // `transfer --recall-height` makes the sender the reclaimer.
+    assert_eq!(
+        horizontal_table_rows(&stdout, "Note Storage"),
+        string_rows(&[
+            &["Field", "Value"],
+            &["target", &target_account_id],
+            &["reclaimer", &sender_account_id],
+            &["reclaim height", RECLAIM_HEIGHT],
+            &["timelock height", TIMELOCK_HEIGHT],
+        ]),
+        "{stdout}"
+    );
+
+    // The mint note is a P2ID note to the sender, which also consumed it. The local faucet created
+    // it, so the client stores it as an output note too.
+    let stdout = notes_show_stdout(&temp_dir, &minted_note_id)?;
+    let information = horizontal_table_rows(&stdout, "Note Information");
+    let mut mint_labels = info_labels.to_vec();
+    mint_labels.extend(["Consumer Transaction", "Consumer Account"]);
+    assert_eq!(labels(&information), mint_labels, "{stdout}");
+    assert_eq!(information[0], ["ID", minted_note_id.as_str()], "{stdout}");
+    assert_eq!(information[1], ["Record", "Input, Output"], "{stdout}");
+    assert_eq!(information[2], ["Standard Note", "P2ID"], "{stdout}");
+    assert_eq!(information[10], ["Sender", fungible_faucet_account_id.as_str()], "{stdout}");
+    assert_eq!(information[12], ["Consumer Transaction", consumer_tx.as_str()], "{stdout}");
+    assert_eq!(information[13], ["Consumer Account", sender_account_id.as_str()], "{stdout}");
+    assert_eq!(
+        horizontal_table_rows(&stdout, "Note Storage"),
+        string_rows(&[&["Field", "Value"], &["target", &sender_account_id]]),
+        "{stdout}"
+    );
+
+    Ok(())
+}
+
+/// Checks `notes --show` for SWAP notes with a public and a private payback.
+#[tokio::test]
+async fn notes_show_decodes_swap_note_storage() -> Result<()> {
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let sender_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let offered_faucet_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    // Deploy the requested faucet, so `notes --show` can fetch its metadata.
+    let requested_faucet_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &offered_faucet_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &requested_faucet_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &sender_account_id).await?;
+
+    sync_cli(&temp_dir);
+    let (_, minted_note_id) = mint_cli(&temp_dir, &sender_account_id, &offered_faucet_id);
+    sync_until_committed_note(&temp_dir);
+    consume_note_cli(&temp_dir, &sender_account_id, &[&minted_note_id]);
+
+    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    // Runs `swap` and returns the ID and serial number of the SWAP note.
+    let swap_note = async |payback_note_type: &str| -> Result<(String, Word)> {
+        let mut swap_cmd = cargo_bin_cmd!("miden-client");
+        swap_cmd.args([
+            "swap",
+            "--source",
+            &sender_account_id,
+            "--offered-asset",
+            &format!("10::{offered_faucet_id}"),
+            "--requested-asset",
+            &format!("200::{requested_faucet_id}"),
+            "--note-type",
+            "private",
+            "--payback-note-type",
+            payback_note_type,
+            "--force",
+        ]);
+        let output = swap_cmd.current_dir(&temp_dir).output()?;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8(output.stdout)?;
+
+        // On a chain that charges fees, the transaction also creates a TX_FEE note.
+        for note_id in stdout.lines().filter_map(|line| line.trim().strip_prefix("- ")) {
+            let record = client
+                .get_output_note(NoteId::try_from_hex(note_id)?)
+                .await?
+                .expect("the swap should store its output notes");
+            let recipient = record.recipient().expect("a local output note has a recipient");
+            if recipient.script().root() == SwapNote::script_root() {
+                return Ok((note_id.to_string(), recipient.serial_num()));
+            }
+        }
+        panic!("the swap should create a SWAP note:\n{stdout}");
+    };
+
+    let sender = AccountId::from_hex(&sender_account_id)?;
+    let payback_tag = NoteTag::with_account_target(sender).to_string();
+    // `new_faucet_cli` uses the BTC symbol with 10 decimals.
+    let requested = "0.0000000200 BTC";
+
+    let (note_id, _) = swap_note("public").await?;
+    let stdout = notes_show_stdout(&temp_dir, &note_id)?;
+    assert_eq!(
+        horizontal_table_rows(&stdout, "Note Storage"),
+        string_rows(&[
+            &["Field", "Value"],
+            &["requested", requested],
+            &["payback note", "public"],
+            &["payback tag", &payback_tag],
+            &["payback target", &sender_account_id],
+        ]),
+        "{stdout}"
+    );
+
+    // Compute the expected payback recipient from the swap serial number.
+    let (note_id, serial_num) = swap_note("private").await?;
+    let payback_recipient = P2idNoteStorage::new(sender)
+        .into_recipient(payback_serial_from_swap(serial_num))
+        .digest()
+        .to_hex();
+    let stdout = notes_show_stdout(&temp_dir, &note_id)?;
+    assert_eq!(
+        horizontal_table_rows(&stdout, "Note Storage"),
+        string_rows(&[
+            &["Field", "Value"],
+            &["requested", requested],
+            &["payback note", "private"],
+            &["payback tag", &payback_tag],
+            &["payback recipient", &payback_recipient],
+        ]),
+        "{stdout}"
+    );
+
+    Ok(())
 }
 
 // INSPECT TESTS
@@ -2225,6 +2439,54 @@ fn table_rows(stdout: &str, title: &str) -> Vec<Vec<String>> {
         rows.push(join_cells(row));
     }
     rows
+}
+
+/// Runs `notes --show` for `note_id` and returns its stdout.
+fn notes_show_stdout(cli_path: &Path, note_id: &str) -> Result<String> {
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["notes", "--show", note_id]);
+    let output = show_cmd.current_dir(cli_path).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+/// Parses the rows of the `UTF8_HORIZONTAL_ONLY` table with the given title.
+///
+/// Cells are split on two or more spaces.
+fn horizontal_table_rows(stdout: &str, title: &str) -> Vec<Vec<String>> {
+    let mut lines = stdout
+        .lines()
+        .skip_while(|line| line.trim() != title)
+        .skip_while(|line| !line.starts_with('═'))
+        .skip(1)
+        .peekable();
+
+    let mut rows = Vec::new();
+    while let Some(line) = lines.next() {
+        if line.starts_with('─') {
+            // Two separator lines in a row start the next table.
+            if lines.peek().is_none_or(|next| next.starts_with('─')) {
+                break;
+            }
+            continue;
+        }
+        let cells = line
+            .trim()
+            .split("  ")
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .map(str::to_string)
+            .collect();
+        rows.push(cells);
+    }
+    rows
+}
+
+/// Converts `&str` rows to `String` rows.
+fn string_rows(rows: &[&[&str]]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| row.iter().map(|cell| (*cell).to_string()).collect())
+        .collect()
 }
 
 /// Creates a new faucet account using the CLI given by `cli_path`.

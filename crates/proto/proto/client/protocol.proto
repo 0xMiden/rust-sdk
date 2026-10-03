@@ -1,9 +1,9 @@
 syntax = "proto3";
 
-// Protocol values where the `miden-objects` schema has no message that fits the store. Field numbers
-// are part of the on-disk format, so a released number must keep its meaning. Add fields, do not
-// renumber or reuse them.
-package miden.client.store;
+// Protocol values where the `miden-objects` schema has no message that fits the client. Field
+// numbers are part of the encoded format, so a released number must keep its meaning. Add fields,
+// do not renumber or reuse them.
+package client.protocol;
 
 import "asset.proto";
 import "block_number.proto";
@@ -22,8 +22,15 @@ message NoteAssets {
   repeated asset.Asset assets = 1;
 }
 
-// A MAST forest in the Miden binary format with its node hashes. The store reads the forest without
-// a new hash check, so the hashes must be present. The `miden-objects` message can omit them.
+// The peaks of the partial blockchain MMR. The message has no forest: the checkpoint row keeps it
+// as the block number.
+message MmrPeaks {
+  repeated primitives.Word peaks = 1;
+}
+
+// A MAST forest in the Miden binary format with its node hashes. An unchecked decode reads the
+// forest without a new hash check, so the hashes must be present. The `miden-objects` message can
+// omit them.
 message MastForest {
   bytes encoded = 1;
 }

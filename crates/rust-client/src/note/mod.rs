@@ -110,6 +110,8 @@ pub use miden_standards::note as standards;
 pub use miden_standards::note::config::NetworkAccountConfigNote;
 pub use miden_standards::note::costs::{NoteConsumptionCost, NoteCost};
 pub use miden_standards::note::{
+    AccountCodeUpgradeAttachment,
+    AccountCodeUpgradeAttachmentError,
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,
@@ -124,6 +126,7 @@ pub use miden_standards::note::{
     StandardNote,
     SwapNote,
     TxFeeNote,
+    UpgradeNote,
 };
 pub use miden_tx::{FailedNote, NoteConsumptionInfo};
 pub use note_reader::InputNoteReader;

@@ -301,6 +301,7 @@ enum TestCategory {
     Allowlist,
     Batch,
     Client,
+    CodeUpgrade,
     CustomTransaction,
     Fpi,
     NetworkFpi,
@@ -320,6 +321,7 @@ impl AsRef<str> for TestCategory {
             TestCategory::Allowlist => "allowlist",
             TestCategory::Batch => "batch",
             TestCategory::Client => "client",
+            TestCategory::CodeUpgrade => "code_upgrade",
             TestCategory::CustomTransaction => "custom_transaction",
             TestCategory::Fpi => "fpi",
             TestCategory::NetworkFpi => "network_fpi",
@@ -979,7 +981,6 @@ impl FromStr for Network {
 
 impl Network {
     /// Converts the Network variant to its corresponding RPC endpoint string
-    #[allow(dead_code)]
     pub fn to_rpc_endpoint(&self) -> String {
         match self {
             Network::Custom(custom) => custom.clone(),

@@ -123,9 +123,9 @@ impl SqliteStore {
                 let (id, script, details, status) = result.into_store_error()?;
                 Ok(TransactionRecord {
                     id: TransactionId::read_from_bytes(&id)?,
-                    details: proto::decode(&details)?,
-                    script: script.map(|script| proto::decode(&script)).transpose()?,
-                    status: proto::decode(&status)?,
+                    details: proto::decode_unchecked(&details)?,
+                    script: script.map(|script| proto::decode_unchecked(&script)).transpose()?,
+                    status: proto::decode_unchecked(&status)?,
                 })
             })
             .collect::<Result<Vec<TransactionRecord>, StoreError>>()?;

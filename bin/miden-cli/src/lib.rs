@@ -333,7 +333,7 @@ impl From<MidenClientCli> for Cli {
     fn from(value: MidenClientCli) -> Self {
         match value.behavior {
             Behavior::MidenClient { cli } => cli,
-            Behavior::External(args) => Cli::parse_from(args).set_external(),
+            Behavior::External(args) => Cli::parse_from(args),
         }
     }
 }
@@ -359,12 +359,6 @@ enum Behavior {
 pub struct Cli {
     #[command(subcommand)]
     action: Command,
-
-    /// Indicates whether the client's CLI is being called directly, or externally under an alias
-    /// (like in the case of [Midenup](https://github.com/0xMiden/midenup).
-    #[arg(skip)]
-    #[allow(unused)]
-    external: bool,
 }
 
 /// CLI actions.
@@ -460,11 +454,6 @@ impl Cli {
             Command::Swap(swap) => Box::pin(swap.execute(client)).await,
             Command::ConsumeNotes(consume_notes) => Box::pin(consume_notes.execute(client)).await,
         }
-    }
-
-    fn set_external(mut self) -> Self {
-        self.external = true;
-        self
     }
 }
 

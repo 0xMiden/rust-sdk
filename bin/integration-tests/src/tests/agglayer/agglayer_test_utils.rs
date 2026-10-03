@@ -82,7 +82,6 @@ pub struct ProofValueVector {
     pub mainnet_exit_root: String,
     pub rollup_exit_root: String,
     /// Expected global exit root: keccak256(mainnetExitRoot || rollupExitRoot)
-    #[allow(dead_code)]
     pub global_exit_root: String,
 }
 

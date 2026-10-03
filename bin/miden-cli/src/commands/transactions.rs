@@ -3,18 +3,10 @@ use std::collections::BTreeMap;
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::Client;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::standards::{PswapNoteStorage, SwapNoteStorage};
-use miden_client::note::{
-    NoteAssets,
-    NoteId,
-    Nullifier,
-    P2idNoteStorage,
-    P2ideNoteStorage,
-    StandardNote,
-};
+use miden_client::note::{NoteAssets, NoteId, Nullifier, StandardNote};
 use miden_client::store::{
     InputNoteRecord,
     NoteFilter,
@@ -32,15 +24,17 @@ use miden_client::transaction::{
     TransactionStatus,
     TransactionStatusVariant,
 };
-use miden_client::{Client, Felt};
 
 use crate::commands::notes::note_record_type;
 use crate::errors::CliError;
-use crate::utils::{FaucetMetadataResolver, load_faucet_metadata_resolver, parse_account_id};
+use crate::utils::{
+    FaucetMetadataResolver,
+    NO_VALUE,
+    format_standard_note_storage,
+    load_faucet_metadata_resolver,
+    parse_account_id,
+};
 use crate::{Parser, create_dynamic_table, get_transaction_with_id_prefix};
-
-/// Placeholder shown for a field that the client can't fill in for the transaction at hand.
-const NO_VALUE: &str = "-";
 
 /// Placeholder shown instead of the ID of a consumed note the client does not track. A consumed
 /// note is recorded only by its nullifier. If the client does not track the note, its ID cannot be
@@ -268,7 +262,7 @@ async fn print_input_notes<AUTH: Keystore + Sync>(
             note_record_type(record.metadata()),
             record.state().to_string(),
             storage,
-            format_assets(client, resolver, record.assets()).await?,
+            format_note_assets(client, resolver, record.assets()).await?,
         ]);
     }
 
@@ -339,7 +333,7 @@ async fn print_output_notes<AUTH: Keystore + Sync>(
                 |record| record.expected_height().to_string(),
             ),
             storage,
-            format_assets(client, resolver, note.assets()).await?,
+            format_note_assets(client, resolver, note.assets()).await?,
         ]);
     }
 
@@ -406,80 +400,15 @@ fn format_timestamp(timestamp: u64) -> String {
         .map_or_else(|| timestamp.to_string(), |datetime| datetime.to_string())
 }
 
-/// Renders the decoded storage of a P2ID, P2IDE, SWAP or PSWAP note one field per line.
-///
-/// Other notes, and storage that doesn't decode, are shown as the empty-value placeholder.
-async fn format_standard_note_storage<AUTH: Keystore + Sync>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    standard_note: Option<StandardNote>,
-    items: &[Felt],
-) -> Result<String, CliError> {
-    let fields = match standard_note {
-        Some(StandardNote::P2ID) => P2idNoteStorage::try_from(items)
-            .map(|storage| vec![format!("target: {}", storage.target())])
-            .ok(),
-        Some(StandardNote::P2IDE) => P2ideNoteStorage::try_from(items)
-            .map(|storage| {
-                let mut fields = vec![format!("target: {}", storage.target())];
-                if let Some(height) = storage.reclaim_height() {
-                    fields.push(format!("reclaim height: {height}"));
-                }
-                if let Some(height) = storage.timelock_height() {
-                    fields.push(format!("timelock height: {height}"));
-                }
-                fields
-            })
-            .ok(),
-        Some(StandardNote::SWAP) => match SwapNoteStorage::try_from(items) {
-            Ok(storage) => Some(vec![
-                format!(
-                    "requested: {}",
-                    format_asset(client, resolver, &storage.requested_asset()).await?
-                ),
-                format!("payback note: {}", storage.payback_note_type()),
-            ]),
-            Err(_) => None,
-        },
-        Some(StandardNote::PSWAP) => match PswapNoteStorage::try_from(items) {
-            Ok(storage) => {
-                let requested = Asset::from(*storage.min_requested_asset());
-                let mut fields = vec![
-                    format!("creator: {}", storage.creator_account_id()),
-                    format!("requested: {}", format_asset(client, resolver, &requested).await?),
-                ];
-                // A zero fill step means that the note accepts fills of any size.
-                if storage.min_fill_step() != AssetAmount::ZERO
-                    && let Ok(fill_step) = FungibleAsset::new(
-                        storage.requested_faucet_id(),
-                        storage.min_fill_step().as_u64(),
-                    )
-                {
-                    fields.push(format!(
-                        "min fill step: {}",
-                        format_asset(client, resolver, &Asset::from(fill_step)).await?
-                    ));
-                }
-                fields.push(format!("payback note: {}", storage.payback_note_type()));
-                Some(fields)
-            },
-            Err(_) => None,
-        },
-        _ => None,
-    };
-
-    Ok(fields.map_or_else(|| NO_VALUE.to_string(), |fields| fields.join("\n")))
-}
-
 /// Renders a note's assets one per line, so they fit a single table cell.
-async fn format_assets<AUTH: Keystore + Sync>(
+async fn format_note_assets<AUTH: Keystore + Sync>(
     client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     assets: &NoteAssets,
 ) -> Result<String, CliError> {
     let mut formatted = Vec::with_capacity(assets.num_assets());
     for asset in assets.iter() {
-        formatted.push(format_asset(client, resolver, asset).await?);
+        formatted.push(resolver.format_asset(client, asset).await?.to_string());
     }
 
     if formatted.is_empty() {
@@ -487,20 +416,6 @@ async fn format_assets<AUTH: Keystore + Sync>(
     }
 
     Ok(formatted.join("\n"))
-}
-
-/// Renders an asset as its amount and faucet.
-async fn format_asset<AUTH: Keystore + Sync>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    asset: &Asset,
-) -> Result<String, CliError> {
-    let formatted = resolver.format_asset(client, asset).await?;
-    Ok(if formatted.is_fungible {
-        format!("{} {}", formatted.amount, formatted.faucet)
-    } else {
-        format!("{} {} (non-fungible)", formatted.amount, formatted.faucet)
-    })
 }
 
 #[cfg(test)]

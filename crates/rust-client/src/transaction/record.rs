@@ -217,6 +217,7 @@ pub enum TransactionStatus {
     Discarded(DiscardCause),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionStatusVariant {
     Pending = 0,
     Committed = 1,
@@ -279,5 +280,48 @@ impl Deserializable for TransactionStatus {
             },
             _ => Err(DeserializationError::InvalidValue("Invalid transaction status".to_string())),
         }
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
+    use miden_protocol::transaction::RawOutputNotes;
+    use miden_tx::utils::serde::Serializable;
+
+    use super::TransactionDetails;
+
+    /// The SQLite store filters and orders transactions with `substr` over this blob: it reads the
+    /// account ID from the first `AccountId::SERIALIZED_SIZE` bytes and the creation timestamp from
+    /// the last 8 bytes, as a little-endian `u64`. Both positions are fixed only because the two
+    /// fields are written first and last. A change to the order of the fields in `write_into`
+    /// breaks those queries, so this test fails first.
+    #[test]
+    fn serialized_details_start_with_the_account_id_and_end_with_the_creation_timestamp() {
+        let details = TransactionDetails {
+            account_id: AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE)
+                .unwrap(),
+            init_account_state: Word::default(),
+            final_account_state: Word::default(),
+            input_note_nullifiers: vec![Word::default()],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(5u32),
+            submission_height: BlockNumber::from(6u32),
+            expiration_block_num: BlockNumber::from(7u32),
+            creation_timestamp: 1_790_000_000,
+        };
+
+        let bytes = details.to_bytes();
+        let (head, _) = bytes.split_at(AccountId::SERIALIZED_SIZE);
+        let (_, tail) = bytes.split_at(bytes.len() - size_of::<u64>());
+
+        assert_eq!(head, details.account_id.to_bytes().as_slice());
+        assert_eq!(tail, details.creation_timestamp.to_le_bytes().as_slice());
     }
 }

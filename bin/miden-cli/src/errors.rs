@@ -110,6 +110,9 @@ pub enum CliError {
     #[error(transparent)]
     #[diagnostic(code(cli::typed_error))]
     Typed(#[from] TypedError),
+    #[error("package registry error: {0}")]
+    #[diagnostic(code(cli::package_registry_error))]
+    PackageRegistry(String),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),

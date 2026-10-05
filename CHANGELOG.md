@@ -70,6 +70,7 @@
 * [FEATURE][rust] Added `Client::push_proven_transaction`, which adds a transaction that another party executed and proved to a batch. The client must not track its account and does not record it locally ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FEATURE][cli] `account --show` no longer fetches storage map entries for an account that the client does not track ([#2680](https://github.com/0xMiden/rust-sdk/pull/2680)).
 * [FEATURE][rust] The note record state transitions (`InputNoteRecord::consumed_locally`, `consumed_externally`, `transaction_committed`, etc., and `OutputNoteRecord::inclusion_proof_received` and `nullifier_received`) and the `NoteUpdateTracker` getters and update methods are public ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
+* [FEATURE][cli] Package flags (`new-account --packages`, `new-wallet --extra-packages`, `call --package`, `exec --package` and `account --inspect --package`) accept a `<NAME>@<VERSION>` reference to the local package registry. `<NAME>@` and `<NAME>@latest` select the highest semantic version. The CLI resolves the reference with the `miden registry` command of the active Miden toolchain, which requires the `local-registry` midenup component ([#2671](https://github.com/0xMiden/rust-sdk/pull/2671)).
 
 ### Fixes
 

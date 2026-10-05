@@ -416,26 +416,33 @@ async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
     assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 2)));
 }
 
-/// Drains a long history in one call, one page per request.
+/// A long history does not stop another group. The next sync resumes the partial history.
 #[tokio::test]
-async fn transport_drains_history_across_pages() {
+async fn transport_page_budget_preserves_progress_and_resumes() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
-    let tag = NoteTag::new(2002);
-    recipient.add_note_tag(tag).await.unwrap();
+    let (first, second) = two_transport_chunks(&mut recipient).await;
     for serial in 0..40 {
-        seed_transport_note(&mock_node, tag, serial);
+        seed_transport_note(&mock_node, first[0], serial);
     }
+    seed_transport_note(&mock_node, second[0], 40);
 
     recipient.fetch_private_notes().await.unwrap();
 
-    assert_eq!(transport.fetch_tag_counts().len(), 40);
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 40);
-    assert_eq!(
-        stored_note_transport_cursors(&mut recipient).await.get(&tag),
-        Some(&NoteTransportCursor::from_parts(1, 40))
-    );
+    assert_eq!(transport.fetch_tag_counts(), [vec![128; 32], vec![1]].concat());
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 32)));
+    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts()[33..], [vec![128; 8], vec![1]].concat());
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 41);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 40)));
+    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
 }
 
 /// Requests different database nonces separately and merges tags after a cursor reset.

@@ -47,6 +47,8 @@ pub const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
 type NoteTransportCursors = BTreeMap<NoteTag, NoteTransportCursor>;
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
+/// Limits the pages for each request group so other groups can progress in the same sync.
+const MAX_NOTE_TRANSPORT_PAGES_PER_GROUP: usize = 32;
 
 /// Legacy settings key for note transport backfill state.
 #[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
@@ -284,7 +286,7 @@ where
     /// note again after a tag is added or removed; the import drops these duplicates.
     ///
     /// A failed request returns an error after successful pages are imported and their cursors are
-    /// saved.
+    /// saved. Histories that exceed the page budget continue on the next call.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
@@ -335,7 +337,7 @@ where
         Ok(tags)
     }
 
-    /// Fetches every page for request groups of at most
+    /// Fetches bounded pages for request groups of at most
     /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags.
     ///
     /// Each group starts from its lowest cursor. The import drops notes delivered again. Each tag
@@ -357,7 +359,7 @@ where
         let mut notes = Vec::new();
         for (start, group) in transport_request_groups(&tags, &cursors) {
             let mut cursor = start;
-            loop {
+            for _ in 0..MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
                 let page = match api
                     .fetch_notes_page(&group, cursor)
                     .await
@@ -432,7 +434,7 @@ where
 
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Fetches every page for each group of tracked tags. This performs no node call and writes
+    /// Fetches bounded pages for each group of tracked tags. This performs no node call and writes
     /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
     /// imports the returned files and then persists all tag cursors. A failed request preserves
     /// successful pages in the returned update.

@@ -36,6 +36,7 @@ figment            = { features = ["env", "toml"], version = "0.10" }
 miette             = { workspace = true }
 rand               = { workspace = true }
 serde              = { workspace = true }
+serde_json         = { workspace = true }
 thiserror          = { workspace = true }
 tokio              = { workspace = true }
 toml               = { workspace = true }

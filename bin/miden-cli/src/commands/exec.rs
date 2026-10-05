@@ -34,6 +34,9 @@ pub struct ExecCmd {
     /// Compiled transaction script package (.masp), given as a path or a package name.
     ///
     /// A bare name resolves in the configured package directory.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(long, short)]
     package: PathBuf,
 

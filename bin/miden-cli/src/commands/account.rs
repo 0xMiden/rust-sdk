@@ -52,7 +52,10 @@ pub struct AccountCmd {
     /// signatures, on top of the packages in the configured packages directory.
     ///
     /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
-    #[arg(short, long, value_name = "FILE", requires = "inspect")]
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
+    #[arg(short, long, value_name = "PACKAGE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
     #[arg(short, long, requires = "inspect")]
@@ -376,7 +379,7 @@ async fn inspect_account<AUTH>(
 
     if !unresolved.is_empty() {
         println!(
-            "\nUnresolved ({}) — pass --package <FILE.masp> to resolve names:",
+            "\nUnresolved ({}) — pass --package <PACKAGE> to resolve names:",
             unresolved.len()
         );
         for proc in &unresolved {

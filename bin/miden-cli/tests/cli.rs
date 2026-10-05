@@ -1001,7 +1001,7 @@ fn account_inspect_without_packages_prints_roots() {
         .stdout(contains("0x"));
 }
 
-/// `account --inspect <ID> --package <FILE>` resolves procedure names and signatures from the
+/// `account --inspect <ID> --package <PACKAGE>` resolves procedure names and signatures from the
 /// explicitly passed `.masp` package. The default packages directory is removed first so a
 /// successful resolution can only come from the `--package` flag.
 #[test]
@@ -1048,6 +1048,117 @@ fn account_inspect_flags_require_inspect() {
     let mut package_cmd = cargo_bin_cmd!("miden-client");
     package_cmd.args(["account", "--package", "some.masp"]);
     package_cmd.current_dir(&temp_dir).assert().failure();
+}
+
+// PACKAGE REGISTRY TESTS
+// ================================================================================================
+
+/// Writes a fake `miden` command to `<cli_path>/fake-bin` and returns that directory.
+///
+/// For `miden registry show <package_name> --json`, the command writes a registry summary that
+/// points to `artifact_path`. For other package names, it writes the error of the registry to
+/// stderr and exits with code 2, as `miden registry` does.
+#[cfg(unix)]
+fn write_fake_miden_command(cli_path: &Path, package_name: &str, artifact_path: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = cli_path.join("fake-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let summary = format!(
+        r#"{{"name":"{package_name}","version":"1.0.0#0x00","description":null,"dependencies":{{}},"artifact_path":"{}"}}"#,
+        artifact_path.display()
+    );
+    let script = format!(
+        "#!/bin/sh\n\
+         echo 'info: current toolchain is test and is installed' >&2\n\
+         if [ \"$1 $2 $3\" = 'registry show {package_name}' ]; then\n\
+         \x20   printf '%s\\n' '{summary}'\n\
+         \x20   exit 0\n\
+         fi\n\
+         echo \"'$3' is not a registered package\" >&2\n\
+         exit 2\n"
+    );
+
+    let command_path = bin_dir.join("miden");
+    fs::write(&command_path, script).unwrap();
+    fs::set_permissions(&command_path, fs::Permissions::from_mode(0o755)).unwrap();
+    bin_dir
+}
+
+/// `--package <NAME>@<VERSION>` resolves the package file through `miden registry`. A fake `miden`
+/// command stands in for the toolchain, so the test does not need midenup.
+#[cfg(unix)]
+#[test]
+fn account_inspect_resolves_package_from_registry() {
+    let temp_dir = init_cli().1;
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    // Move the auth package out of the package directory, so that resolution can only come from the
+    // registry.
+    let packages_dir = temp_dir.join(MIDEN_DIR).join("packages");
+    let auth_package = temp_dir.join("registry-basic-auth.masp");
+    fs::copy(packages_dir.join("auth/basic-auth.masp"), &auth_package).unwrap();
+    fs::remove_dir_all(&packages_dir).unwrap();
+
+    let package_name = Package::read_from_bytes(&fs::read(&auth_package).unwrap())
+        .unwrap()
+        .name
+        .to_string();
+    let bin_dir = write_fake_miden_command(&temp_dir, &package_name, &auth_package);
+    let path = format!("{}:{}", bin_dir.display(), env::var("PATH").unwrap_or_default());
+
+    for version in ["1.0.0", "latest", ""] {
+        let mut inspect_cmd = cargo_bin_cmd!("miden-client");
+        inspect_cmd.args([
+            "account",
+            "--inspect",
+            &account_id,
+            "--package",
+            &format!("{package_name}@{version}"),
+        ]);
+        inspect_cmd
+            .env("PATH", &path)
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains("auth_tx"))
+            .stdout(contains("fn([felt; 4])"));
+    }
+
+    let mut unknown_cmd = cargo_bin_cmd!("miden-client");
+    unknown_cmd.args(["account", "--inspect", &account_id, "--package", "unknown@1.0.0"]);
+    unknown_cmd
+        .env("PATH", &path)
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        // The error output wraps long lines, so the test matches short parts of the message.
+        .stderr(contains("unknown@1.0.0"))
+        .stderr(contains("'unknown' is"))
+        .stderr(contains("current toolchain").not());
+}
+
+/// A `<NAME>@<VERSION>` package fails with an installation hint when the `miden` command is not on
+/// `PATH`.
+#[cfg(unix)]
+#[test]
+fn registry_package_without_miden_command_reports_install_hint() {
+    let temp_dir = init_cli().1;
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    let empty_bin_dir = temp_dir.join("empty-bin");
+    fs::create_dir_all(&empty_bin_dir).unwrap();
+
+    let mut inspect_cmd = cargo_bin_cmd!("miden-client");
+    inspect_cmd.args(["account", "--inspect", &account_id, "--package", "basic-auth@1.0.0"]);
+    inspect_cmd
+        .env("PATH", &empty_bin_dir)
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("command was not found"))
+        .stderr(contains("midenup"));
 }
 
 // IMPORT TESTS

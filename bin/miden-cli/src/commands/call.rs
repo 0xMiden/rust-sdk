@@ -74,6 +74,9 @@ pub struct CallCmd {
 
     /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
     /// a hex digest and the output stack is shown as raw felts.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(long, short)]
     package: Option<PathBuf>,
 
@@ -228,14 +231,14 @@ impl CallCmd {
     ) -> Result<CallCode, CliError> {
         let digest = Word::try_from(procedure).map_err(|_| {
             CliError::InvalidArgument(format!(
-                "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                "'{procedure}' is not a hex digest. Pass `--package <PACKAGE>` to \
                  call a procedure by name, or give its hex digest to call without a \
                  package."
             ))
         })?;
         println!(
             "No `--package` provided; output will be raw felts. Pass \
-             `--package <FILE>.masp` for typed output."
+             `--package <PACKAGE>` for typed output."
         );
 
         Ok(CallCode {

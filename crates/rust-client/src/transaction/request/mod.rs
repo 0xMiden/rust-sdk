@@ -714,7 +714,7 @@ mod tests {
     };
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::block::account_tree::AccountTree;
-    use miden_protocol::note::{NoteTag, NoteType};
+    use miden_protocol::note::{Note, NoteRecipient, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
@@ -816,6 +816,36 @@ mod tests {
         tx_request.input_notes_args.push((note_id, None));
 
         assert!(TransactionRequest::read_from_bytes(&tx_request.to_bytes()).is_err());
+    }
+
+    #[test]
+    fn expected_output_recipients_keep_own_output_note_recipients() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let note: Note = P2idNote::builder()
+            .sender(AccountId::try_from(ACCOUNT_ID_SENDER).unwrap())
+            .target(AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap())
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(NoteType::Private)
+            .serial_number(rng.random())
+            .build()
+            .unwrap()
+            .into();
+        let recipient = note.recipient();
+        let other = NoteRecipient::new(
+            rng.random(),
+            recipient.script().clone(),
+            recipient.storage().clone(),
+        );
+
+        let tx_request = TransactionRequestBuilder::new()
+            .own_output_notes([note.clone()])
+            .expected_output_recipients([other])
+            .build()
+            .unwrap();
+
+        assert_eq!(tx_request.expected_output_own_notes(), [note]);
+        assert_eq!(tx_request.expected_output_recipients().count(), 2);
     }
 
     fn assert_transaction_request_serialization_with<F>(auth_component: F)

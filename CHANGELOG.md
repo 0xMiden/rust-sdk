@@ -7,6 +7,17 @@
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).
 * [BREAKING][behavior][rust,store] Account note tags are derived from the addresses of native accounts instead of being stored. `Store::get_note_tags` returns only the stored tags, the new provided `Store::get_account_note_tags` returns the account tags, and `get_unique_note_tags` returns both sets. `add_note_tag` and `apply_transaction` reject account-source tags with the new `StoreError::AccountNoteTagNotStorable`. A SQLite migration removes the stored account tags ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId` ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
+* [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+
+### Features
+
+* [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+
+### Fixes
+
+* [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 
 ## 0.17.0 (2026-10-02)
 

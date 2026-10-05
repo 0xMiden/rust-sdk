@@ -2860,6 +2860,7 @@ version = "0.17.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "chrono",
  "clap",
  "comfy-table",
  "dirs",

@@ -272,15 +272,8 @@ async fn show_note<AUTH: Keystore + Sync>(
     let assets = assets.iter();
 
     for asset in assets {
-        let (asset_type, faucet, amount) = match asset.as_fungible() {
-            Some(fungible_asset) => {
-                let (faucet, amount) =
-                    resolver.format_fungible_asset(client, &fungible_asset).await?;
-                ("Fungible Asset", faucet, amount)
-            },
-            None => ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string()),
-        };
-        table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+        let formatted = resolver.format_asset(client, asset).await?;
+        table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
     }
     println!("{table}");
 
@@ -453,7 +446,7 @@ fn note_consumption_status_type(note_consumption_status: &NoteConsumptionStatus)
     .clone()
 }
 
-fn note_record_type(note_record_metadata: Option<&NoteMetadata>) -> String {
+pub(crate) fn note_record_type(note_record_metadata: Option<&NoteMetadata>) -> String {
     match note_record_metadata {
         Some(metadata) => match metadata.note_type() {
             miden_client::note::NoteType::Private => "Private",

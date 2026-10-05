@@ -260,22 +260,11 @@ impl<AUTH> Client<AUTH> {
     ) -> Result<(), ClientError> {
         let key = String::from(NOTE_TRANSPORT_CURSORS_KEY);
         if cursors.is_empty() {
-            self.store
-                .remove_setting(SettingScope::Client, key)
-                .await
-                .map_err(ClientError::StoreError)?;
-            return Ok(());
+            self.store.remove_setting(SettingScope::Client, key).await?;
+        } else {
+            self.store.set_setting(SettingScope::Client, key, cursors.to_bytes()).await?;
         }
-
-        self.store
-            .set_setting(SettingScope::Client, key, cursors.to_bytes())
-            .await
-            .map_err(ClientError::StoreError)
-    }
-
-    /// Returns the unique tracked tags that the note transport layer must fetch.
-    async fn transport_note_tags(&self) -> Result<Vec<NoteTag>, ClientError> {
-        Ok(self.store.get_unique_note_tags().await?.into_iter().collect())
+        Ok(())
     }
 }
 
@@ -302,8 +291,7 @@ where
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
-        let note_tags = self.transport_note_tags().await?;
-        let mut update = self.fetch_transport_notes_in_chunks(&note_tags).await?;
+        let mut update = self.fetch_transport_notes_in_chunks().await?;
         let fetch_error = update.fetch_error.take();
         self.apply_note_transport_update(update).await?;
         if let Some(error) = fetch_error {
@@ -318,19 +306,19 @@ where
     /// as delivered.
     async fn screen_transport_notes(
         &self,
-        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+        notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
     ) -> Result<(), ClientError> {
         let account_tags = self.tracked_account_tags().await?;
 
         let notes_to_screen: Vec<Note> = notes
             .iter()
-            .filter(|(note, _)| account_tags.contains(&note.metadata().tag()))
-            .map(|(note, _)| note.clone())
+            .filter(|(_, note, _)| account_tags.contains(&note.metadata().tag()))
+            .map(|(_, note, _)| note.clone())
             .collect();
         let consumable = self.note_screener().get_batch_consumability(&notes_to_screen).await?;
 
         // Discard the notes whose tag match the tracked accounts but are not consumable.
-        notes.retain(|(note, _)| {
+        notes.retain(|(_, note, _)| {
             !account_tags.contains(&note.metadata().tag()) || consumable.contains_key(&note.id())
         });
 
@@ -353,22 +341,15 @@ where
     /// Fetches bounded pages for request groups of at most
     /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags.
     ///
-    /// Each group starts from the lowest cursor of its tags, so tags at different positions share
-    /// one request. The service can return notes that a tag at a higher position already received.
-    /// The import drops these duplicates. After each page, every tag in the group holds at least
-    /// the page cursor.
-    ///
-    /// A group with no further page also advances to the furthest sequence that an earlier response
-    /// in this call returned. That sequence existed before the response that reported the end, so
-    /// the group has no note between the two. Groups run from the highest start cursor to the
-    /// lowest, so the groups that catch up converge on one cursor in one call.
+    /// Each group starts from its lowest cursor. The import drops notes delivered again. Each tag
+    /// keeps the higher of its stored cursor and the page cursor when their database nonces match.
     ///
     /// A failed page keeps the pages fetched before it and leaves the other groups to proceed.
     async fn fetch_transport_notes_in_chunks(
         &self,
-        tags: &[NoteTag],
     ) -> Result<NoteTransportLayerUpdate, ClientError> {
         let api = self.get_note_transport_api()?;
+        let tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
         let stored = self.load_note_transport_cursors().await?;
         let mut cursors: NoteTransportCursors = tags
             .iter()
@@ -377,9 +358,7 @@ where
 
         let mut update = NoteTransportLayerUpdate::default();
         let mut notes = Vec::new();
-        // Furthest sequence that a response in this call returned for each database nonce.
-        let mut furthest = BTreeMap::<u64, u64>::new();
-        for (start, group) in transport_request_groups(tags, &cursors) {
+        for (start, group) in transport_request_groups(&tags, &cursors) {
             let mut cursor = start;
             for page_index in 0..MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
                 let page = match api
@@ -398,13 +377,6 @@ where
                     notes.push((id, note, block_hint));
                 }
                 cursor = page.cursor;
-                if let Some((nonce, sequence)) = cursor.parts() {
-                    let known = furthest.entry(nonce).or_insert(sequence);
-                    *known = (*known).max(sequence);
-                    if !page.has_more {
-                        cursor = NoteTransportCursor::from_parts(nonce, *known);
-                    }
-                }
                 for tag in &group {
                     let position = cursors.entry(*tag).or_insert(cursor);
                     *position = advance_transport_cursor(*position, cursor);
@@ -440,7 +412,6 @@ where
         }
 
         self.drop_notes_resolved_locally(&mut notes).await?;
-        let mut notes: Vec<_> = notes.into_iter().map(|(_, note, hint)| (note, hint)).collect();
 
         // Screen the transport-delivered notes to discard the ones that are not relevant to the
         // accounts tracked by the client. Boxed to avoid a `clippy::large_futures` warning, since
@@ -452,7 +423,7 @@ where
             BlockNumber::from(sync_height.as_u32().saturating_sub(NOTE_LOOKBACK_BLOCKS));
 
         let mut note_files = Vec::with_capacity(notes.len());
-        for (note, block_hint) in notes {
+        for (_, note, block_hint) in notes {
             let tag = note.metadata().tag();
             // Prefer the transport-provided block, falling back to the lookback window when absent.
             let after_block_num = block_hint.unwrap_or(fallback_after_block_num);
@@ -488,8 +459,7 @@ where
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        let note_tags = self.transport_note_tags().await?;
-        self.fetch_transport_notes_in_chunks(&note_tags).await
+        self.fetch_transport_notes_in_chunks().await
     }
 
     /// Writes everything [`Client::fetch_note_transport_updates`] returned, in two steps:
@@ -542,31 +512,22 @@ where
         &self,
         notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
     ) -> Result<(), ClientError> {
-        if notes.is_empty() {
-            return Ok(());
-        }
-
         let commitments = notes.iter().map(|(_, note, _)| note.details_commitment()).collect();
-        let mut processing = BTreeSet::new();
-        let mut resolved = BTreeSet::new();
-        for record in self.get_input_notes(NoteFilter::DetailsCommitments(commitments)).await? {
-            if record.is_processing() {
-                processing.insert(record.details_commitment());
-            } else if (record.is_committed() || record.is_consumed())
-                && let Some(id) = record.id()
-            {
-                resolved.insert(id);
-            }
-        }
-
-        if !processing.is_empty() {
-            tracing::warn!(?processing, "skipping deliveries of notes being consumed locally");
-        }
-        if !resolved.is_empty() {
-            tracing::debug!(?resolved, "skipping deliveries of notes already resolved locally");
-        }
+        let records: BTreeMap<_, _> = self
+            .get_input_notes(NoteFilter::DetailsCommitments(commitments))
+            .await?
+            .into_iter()
+            .map(|record| (record.details_commitment(), record))
+            .collect();
         notes.retain(|(id, note, _)| {
-            !processing.contains(&note.details_commitment()) && !resolved.contains(id)
+            let Some(record) = records.get(&note.details_commitment()) else {
+                return true;
+            };
+            if record.is_processing() {
+                tracing::warn!(%id, "skipping delivery of a note being consumed locally");
+                return false;
+            }
+            !((record.is_committed() || record.is_consumed()) && record.id() == Some(*id))
         });
         Ok(())
     }
@@ -597,8 +558,7 @@ pub(crate) struct NoteTransportLayerUpdate {
 /// Tags without a cursor start from the first retained note. Tags with a cursor are grouped by
 /// database nonce, because sequences from different databases do not compare. Each nonce group is
 /// sorted by sequence before it is split, so the tags in one request sit close together and the
-/// lowest cursor delivers few notes again. The groups are ordered from the highest start cursor to
-/// the lowest, and the tags without a cursor come last.
+/// lowest cursor limits repeated deliveries.
 fn transport_request_groups(
     tags: &[NoteTag],
     cursors: &NoteTransportCursors,
@@ -620,7 +580,6 @@ fn transport_request_groups(
             groups.push((start, chunk.iter().map(|(_, tag)| *tag).collect()));
         }
     }
-    groups.sort_by(|(left, _), (right, _)| right.cmp(left));
     groups
 }
 

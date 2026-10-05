@@ -266,6 +266,7 @@ pub struct FaultyNoteTransportApi {
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
     fail_next_fetches: AtomicUsize,
+    fail_on_fetch: AtomicUsize,
     fetch_attempts: AtomicUsize,
 }
 
@@ -278,6 +279,7 @@ impl FaultyNoteTransportApi {
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
             fail_next_fetches: AtomicUsize::new(0),
+            fail_on_fetch: AtomicUsize::new(0),
             fetch_attempts: AtomicUsize::new(0),
         }
     }
@@ -290,6 +292,11 @@ impl FaultyNoteTransportApi {
     /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
     pub fn fail_next_n_fetches(&self, n: usize) {
         self.fail_next_fetches.store(n, Ordering::SeqCst);
+    }
+
+    /// Fails one fetch attempt. Attempt numbers start at one.
+    pub fn fail_on_fetch_attempt(&self, attempt: usize) {
+        self.fail_on_fetch.store(attempt, Ordering::SeqCst);
     }
 
     /// Total `fetch_notes` calls observed (success + failure).
@@ -331,12 +338,12 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
-        if should_fail {
+        if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(
                 "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
             ));

@@ -81,13 +81,6 @@ pub enum NoteTagSource {
     Subscription(Word),
 }
 
-impl NoteTagSource {
-    /// Returns `true` when the note transport layer must fetch this tag.
-    pub const fn is_ntl_enabled(&self) -> bool {
-        matches!(self, Self::Account(_) | Self::User)
-    }
-}
-
 impl NoteTagRecord {
     pub fn with_note_source(tag: NoteTag, details_commitment: NoteDetailsCommitment) -> Self {
         Self {

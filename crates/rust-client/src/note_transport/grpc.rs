@@ -44,7 +44,7 @@ use super::generated::note_transport::{
     SendNoteWithProofRequest,
     TransportNote as ProtoTransportNote,
 };
-use super::{NoteInfo, NoteTransportCursor, NoteTransportError, TransportNote};
+use super::{NoteInfo, NoteTransportCursor, NoteTransportError, NoteTransportPage, TransportNote};
 
 // FETCHED NOTE DECODING
 // ================================================================================================
@@ -251,6 +251,16 @@ impl GrpcNoteTransportClient {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        let page = self.fetch_notes_page(tags, cursor).await?;
+        Ok((page.notes, page.cursor))
+    }
+
+    /// Fetches one page with the service's continuation flag.
+    pub async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
         let tags_int = tags.iter().map(NoteTag::as_u32).collect();
         let request = FetchNotesRequest {
             tags: tags_int,
@@ -287,7 +297,11 @@ impl GrpcNoteTransportClient {
         let cursor = response
             .cursor
             .ok_or_else(|| NoteTransportError::Network("fetch response has no cursor".into()))?;
-        Ok((notes, NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence)))
+        Ok(NoteTransportPage {
+            notes,
+            cursor: NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence),
+            has_more: response.has_more,
+        })
     }
 
     /// gRPC-standardized server health-check.
@@ -334,6 +348,14 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         self.fetch_notes(tags, cursor).await
+    }
+
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        self.fetch_notes_page(tags, cursor).await
     }
 }
 

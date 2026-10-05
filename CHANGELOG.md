@@ -4,7 +4,7 @@
 
 ### Fixes
 
-* [FIX][rust] Clients can track more than 128 account note tags. Note transport fetches account- and user-source tags in requests of at most 128 and keeps a cursor for each tag. Tags at the same cursor share requests, so adding or removing a tag does not reset another tag. Note- and subscription-source tags remain exclusive to the normal node sync. The sync no longer maintains or runs a separate per-tag backfill. `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded`, `NoteTransportError::PaginationDidNotTerminate`, and `NOTE_TRANSPORT_COVERED_TAGS_KEY` are deprecated; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
+* [FIX][rust] Removed the account note tag limit. Note transport fetched all tracked tag sources in requests of at most 128 tags and stored a cursor for each tag. Bounded pagination recovered retained history without a separate backfill. Successful pages remained available when another request failed. Caught-up groups confirmed a common sequence before regrouping. Added `NoteTransportClient::fetch_notes_page` with a default implementation for existing transports. Deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded`, `NoteTransportError::PaginationDidNotTerminate`, `NOTE_TRANSPORT_COVERED_TAGS_KEY`, `NOTE_TRANSPORT_CURSOR_STORE_SETTING`, `Store::get_note_transport_cursor`, and `Store::update_note_transport_cursor`; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
 
 ## 0.17.0 (2026-10-02)
 

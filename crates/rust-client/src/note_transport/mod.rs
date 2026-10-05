@@ -39,10 +39,14 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
+/// Settings key for the unused aggregate transport cursor.
+#[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
 pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
 pub const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
 
 type NoteTransportCursors = BTreeMap<NoteTag, NoteTransportCursor>;
+// Bound each chunk independently so one large history cannot prevent other chunks from progressing.
+const MAX_NOTE_TRANSPORT_PAGES_PER_CHUNK: usize = 32;
 
 /// Legacy settings key for note transport backfill state.
 #[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
@@ -272,18 +276,8 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Returns the unique tracked tags that the note transport layer must fetch.
-    async fn ntl_enabled_note_tags(&self) -> Result<Vec<NoteTag>, ClientError> {
-        let tags = self
-            .store
-            .get_note_tags()
-            .await?
-            .into_iter()
-            .filter(|record| record.source.is_ntl_enabled())
-            .map(|record| record.tag)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        Ok(tags)
+    async fn transport_note_tags(&self) -> Result<Vec<NoteTag>, ClientError> {
+        Ok(self.store.get_unique_note_tags().await?.into_iter().collect())
     }
 }
 
@@ -297,23 +291,25 @@ where
 
     /// Fetch notes for tracked note tags.
     ///
-    /// The client queries the configured note transport node for tracked tags whose source enables
-    /// NTL fetching. Account- and user-source tags enable it. Note- and subscription-source tags
-    /// use the normal node sync only. To list tracked tags, use [`Client::get_note_tags`]. To add a
-    /// user-source tag, use [`Client::add_note_tag`]. Fetched notes are stored in the client store.
+    /// The client queries the configured note transport node for all tracked tags. To list tracked
+    /// tags, use [`Client::get_note_tags`]. To add a user-source tag, use [`Client::add_note_tag`].
+    /// Fetched notes are stored in the client store.
     ///
     /// An internal pagination mechanism fetches only notes past the stored cursor for each tag.
     /// Tags without a stored cursor start from the initial cursor.
+    ///
+    /// A failed request returns an error after successful pages are imported and their cursors are
+    /// saved. Histories that exceed the page budget continue on the next call.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
-        let note_tags = self.ntl_enabled_note_tags().await?;
-        let mut id_by_commitment = BTreeMap::new();
-        let (note_files, cursors) =
-            self.fetch_transport_notes_in_chunks(&note_tags, &mut id_by_commitment).await?;
-
-        self.import_notes(&note_files).await?;
-        self.save_note_transport_cursors(&cursors).await?;
+        let note_tags = self.transport_note_tags().await?;
+        let mut update = self.fetch_transport_notes_in_chunks(&note_tags).await?;
+        let fetch_error = update.fetch_error.take();
+        self.apply_note_transport_update(update).await?;
+        if let Some(error) = fetch_error {
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -355,55 +351,141 @@ where
         Ok(tags)
     }
 
-    /// Fetches one page for each transport-sized group of tracked tags at the same cursor.
+    /// Fetches bounded pages for each transport-sized group of tracked tags at the same cursor.
     ///
     /// Each tag keeps its own cursor. Tags at the same cursor share requests of at most
-    /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags. Adding or removing a tag does not change
-    /// the cursor of any other tag.
+    /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags. Completed groups catch up to a common
+    /// target before they share a cursor. Failed pages leave previously fetched pages available for
+    /// import.
     async fn fetch_transport_notes_in_chunks(
         &self,
         tags: &[NoteTag],
-        id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<(Vec<NoteFile>, NoteTransportCursors), ClientError> {
+    ) -> Result<NoteTransportLayerUpdate, ClientError> {
+        let api = self.get_note_transport_api()?;
         let stored_cursors = self.load_note_transport_cursors().await?;
-        let mut note_files = Vec::new();
+        let mut update = NoteTransportLayerUpdate::default();
+        let mut notes = Vec::new();
         let mut tags_by_cursor = BTreeMap::<NoteTransportCursor, Vec<NoteTag>>::new();
+        let mut cursors = BTreeMap::new();
         for tag in tags {
             let cursor = stored_cursors.get(tag).copied().unwrap_or_else(NoteTransportCursor::init);
             tags_by_cursor.entry(cursor).or_default().push(*tag);
-        }
-
-        let mut new_cursors = BTreeMap::new();
-        for (cursor, cursor_tags) in tags_by_cursor {
-            for chunk in cursor_tags.chunks(Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
-                let (chunk_files, new_cursor) =
-                    self.fetch_transport_notes(cursor, chunk, id_by_commitment).await?;
-
-                note_files.extend(chunk_files);
-                new_cursors.extend(chunk.iter().map(|tag| (*tag, new_cursor)));
+            if let Some(cursor) = stored_cursors.get(tag) {
+                cursors.insert(*tag, *cursor);
             }
         }
 
-        Ok((note_files, new_cursors))
+        let mut chunks = Vec::new();
+        for (cursor, cursor_tags) in tags_by_cursor {
+            for tags in cursor_tags.chunks(Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
+                chunks.push(NoteTransportChunk {
+                    tags: tags.to_vec(),
+                    cursor,
+                    remaining_pages: MAX_NOTE_TRANSPORT_PAGES_PER_CHUNK,
+                    failed: false,
+                });
+            }
+        }
+
+        for chunk in &mut chunks {
+            Self::fetch_transport_chunk(
+                api.as_ref(),
+                chunk,
+                None,
+                &mut notes,
+                &mut cursors,
+                &mut update,
+            )
+            .await;
+        }
+
+        // Fix the targets before the confirmation requests. An earlier empty response cannot prove
+        // that a later sequence has no matching notes.
+        let mut targets = BTreeMap::<u64, u64>::new();
+        for cursor in cursors.values() {
+            if let Some((nonce, sequence)) = cursor.parts() {
+                targets
+                    .entry(nonce)
+                    .and_modify(|target| *target = (*target).max(sequence))
+                    .or_insert(sequence);
+            }
+        }
+        for chunk in &mut chunks {
+            if let Some((nonce, sequence)) = chunk.cursor.parts()
+                && let Some(&target) = targets.get(&nonce)
+                && sequence < target
+            {
+                Self::fetch_transport_chunk(
+                    api.as_ref(),
+                    chunk,
+                    Some((nonce, target)),
+                    &mut notes,
+                    &mut cursors,
+                    &mut update,
+                )
+                .await;
+            }
+        }
+
+        update.note_files = self.prepare_transport_notes(notes).await?;
+        update.cursors = Some(cursors);
+        Ok(update)
     }
 
-    /// Fetches and returns one batch of notes from the note transport layer for the provided tags
-    /// without applying any update to the store.
-    ///
-    /// The server paginates; this method issues one transport call and returns the note files
-    /// together with the new cursor. The returned cursor equals the input cursor when the batch was
-    /// empty (i.e. no new notes). Steady-state polling calls this once per chunk and sync with the
-    /// stored cursor.
-    ///
-    /// Each downloaded note's id is recorded in `id_by_commitment` so the caller can resolve the
-    /// written records back to note ids once the final record set is known. Persistence of the
-    /// returned cursor is left to the caller so that notes are stored before the cursor advances.
-    async fn fetch_transport_notes(
+    /// Fetches a chunk until its history ends, its target is covered, or its request budget ends.
+    async fn fetch_transport_chunk(
+        api: &dyn NoteTransportClient,
+        chunk: &mut NoteTransportChunk,
+        target: Option<(u64, u64)>,
+        notes: &mut Vec<(Note, Option<BlockNumber>)>,
+        cursors: &mut NoteTransportCursors,
+        update: &mut NoteTransportLayerUpdate,
+    ) {
+        while !chunk.failed && chunk.remaining_pages > 0 {
+            chunk.remaining_pages -= 1;
+            let page = match api
+                .fetch_notes_page(&chunk.tags, chunk.cursor)
+                .await
+                .and_then(|page| validate_transport_page(page, &chunk.tags, chunk.cursor))
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    chunk.failed = true;
+                    update.fetch_error.get_or_insert(error.into());
+                    return;
+                },
+            };
+
+            for (id, note, block_hint) in page.notes {
+                update.id_by_commitment.insert(note.details_commitment(), id);
+                notes.push((note, block_hint));
+            }
+
+            let covered_target = target.filter(|&(nonce, sequence)| {
+                page.cursor.parts().is_some_and(|(page_nonce, page_sequence)| {
+                    nonce == page_nonce && (page_sequence >= sequence || !page.has_more)
+                })
+            });
+            // A confirmation page can include notes above the fixed target. Import those notes and
+            // resume from the target so completed chunks can share requests.
+            chunk.cursor = covered_target.map_or(page.cursor, |(nonce, sequence)| {
+                NoteTransportCursor::from_parts(nonce, sequence)
+            });
+            cursors.extend(chunk.tags.iter().map(|tag| (*tag, chunk.cursor)));
+            if covered_target.is_some() || !page.has_more {
+                return;
+            }
+        }
+        if !chunk.failed && chunk.remaining_pages == 0 {
+            tracing::warn!(tags = ?chunk.tags, "note transport page budget exhausted; retaining progress for the next sync");
+        }
+    }
+
+    /// Screens fetched notes and prepares them for import with one set of store reads.
+    async fn prepare_transport_notes(
         &self,
-        cursor: NoteTransportCursor,
-        tags: &[NoteTag],
-        id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<(Vec<NoteFile>, NoteTransportCursor), ClientError> {
+        mut notes: Vec<(Note, Option<BlockNumber>)>,
+    ) -> Result<Vec<NoteFile>, ClientError> {
         // Fallback lookback window, in blocks, used only for notes the transport delivered without
         // block information. Scanning back from sync height handles the race where a note is
         // committed on-chain just before the NTL delivers its data. Without it,
@@ -411,28 +493,8 @@ where
         // note. A transport-provided block is deterministic and always preferred.
         const NOTE_LOOKBACK_BLOCKS: u32 = 20;
 
-        let mut notes = Vec::new();
-        // TODO: perhaps we should not need to map received IDs with details commitments, and
-        // instead we may allow `InputNoteRecord` to optionally keep NoteIds. Then within
-        // `import_note` we could match everything by ID and remove this map check
-        let (note_infos, rcursor) =
-            self.get_note_transport_api()?.fetch_notes(tags, cursor).await?;
-        for note_info in &note_infos {
-            // e2ee impl hint: for key in self.store.decryption_keys() try
-            // key.decrypt(details_bytes_encrypted)
-            //
-            // An invalid delivery fails the fetch and the cursor stays on this page.
-            let note = rejoin_note(&note_info.header, &note_info.details_bytes)?;
-            let tag = note.metadata().tag();
-            if !tags.contains(&tag) {
-                return Err(NoteTransportError::UnrequestedTag(tag).into());
-            }
-
-            // The header carries the attachment-aware (on-chain) note id; the rejoined note has
-            // empty attachments and would hash to a different id, so key off the header.
-            id_by_commitment.insert(note.details_commitment(), note_info.header.id());
-
-            notes.push((note, note_info.block_hint));
+        if notes.is_empty() {
+            return Ok(Vec::new());
         }
 
         // Screen the transport-delivered notes to discard the ones that are not relevant to the
@@ -457,23 +519,22 @@ where
             });
         }
 
-        Ok((note_files, rcursor))
+        Ok(note_files)
     }
 
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Fetches one page for every transport-sized group of note-transport-enabled tags at the same
-    /// cursor. This performs no node call and writes nothing but the relay outbox, so it can run
-    /// concurrently with the chain fetch. The caller imports the returned files and then persists
-    /// all tag cursors.
+    /// Fetches bounded pages for each group of tracked tags. This performs no node call and writes
+    /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
+    /// imports the returned files and then persists all tag cursors. A failed request preserves
+    /// successful pages in the returned update.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
         &self,
     ) -> Result<NoteTransportLayerUpdate, ClientError> {
-        let mut note_transport_update = NoteTransportLayerUpdate::default();
         if !self.is_note_transport_enabled() {
-            return Ok(note_transport_update);
+            return Ok(NoteTransportLayerUpdate::default());
         }
 
         // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
@@ -484,18 +545,8 @@ where
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        let note_tags = self.ntl_enabled_note_tags().await?;
-
-        let (note_files, cursors) = self
-            .fetch_transport_notes_in_chunks(
-                &note_tags,
-                &mut note_transport_update.id_by_commitment,
-            )
-            .await?;
-        note_transport_update.note_files.extend(note_files);
-        note_transport_update.cursors = Some(cursors);
-
-        Ok(note_transport_update)
+        let note_tags = self.transport_note_tags().await?;
+        self.fetch_transport_notes_in_chunks(&note_tags).await
     }
 
     /// Writes everything [`Client::fetch_note_transport_updates`] returned, in two steps:
@@ -511,7 +562,12 @@ where
         &mut self,
         update: NoteTransportLayerUpdate,
     ) -> Result<(Vec<NoteId>, Vec<NoteDetailsCommitment>), ClientError> {
-        let NoteTransportLayerUpdate { note_files, id_by_commitment, cursors } = update;
+        let NoteTransportLayerUpdate {
+            note_files,
+            id_by_commitment,
+            cursors,
+            fetch_error,
+        } = update;
 
         let written = self.import_notes(&note_files).await?;
         let mut imported_ids: Vec<NoteId> = written
@@ -521,6 +577,9 @@ where
 
         if let Some(cursors) = cursors {
             self.save_note_transport_cursors(&cursors).await?;
+        }
+        if let Some(error) = fetch_error {
+            tracing::warn!(?error, "note transport fetch failed; saved successful pages for retry");
         }
 
         imported_ids.sort_unstable();
@@ -572,11 +631,65 @@ pub(crate) struct NoteTransportLayerUpdate {
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
     /// Cursor for each tag used by the steady-state fetch.
     cursors: Option<NoteTransportCursors>,
+    /// First request error. Successful pages remain available for import.
+    pub(crate) fetch_error: Option<ClientError>,
+}
+
+struct NoteTransportChunk {
+    tags: Vec<NoteTag>,
+    cursor: NoteTransportCursor,
+    remaining_pages: usize,
+    failed: bool,
+}
+
+struct ValidatedTransportPage {
+    notes: Vec<(NoteId, Note, Option<BlockNumber>)>,
+    cursor: NoteTransportCursor,
+    has_more: bool,
+}
+
+/// Validates a complete page before its notes or cursor can advance local progress.
+fn validate_transport_page(
+    page: NoteTransportPage,
+    tags: &[NoteTag],
+    request_cursor: NoteTransportCursor,
+) -> Result<ValidatedTransportPage, NoteTransportError> {
+    let Some((nonce, sequence)) = page.cursor.parts() else {
+        return Err(NoteTransportError::Network(String::from("fetch response has no cursor")));
+    };
+    if request_cursor.parts().is_some_and(|(request_nonce, request_sequence)| {
+        nonce == request_nonce
+            && (sequence < request_sequence
+                || (!page.notes.is_empty() && sequence == request_sequence))
+    }) || (!page.notes.is_empty() && sequence == 0)
+        || (page.has_more && page.notes.is_empty())
+    {
+        return Err(NoteTransportError::Network(String::from(
+            "fetch response has invalid pagination progress",
+        )));
+    }
+    let mut notes = Vec::with_capacity(page.notes.len());
+    for info in page.notes {
+        let note = rejoin_note(&info.header, &info.details_bytes)?;
+        if !tags.contains(&note.metadata().tag()) {
+            return Err(NoteTransportError::UnrequestedTag(note.metadata().tag()));
+        }
+        // The header ID includes attachments that the transport does not send.
+        notes.push((info.header.id(), note, info.block_hint));
+    }
+    Ok(ValidatedTransportPage {
+        notes,
+        cursor: page.cursor,
+        has_more: page.has_more,
+    })
 }
 
 /// Note transport cursor
 ///
 /// Identifies a position in the note transport service's stored-note sequence.
+///
+/// The sequence is global across tags in one service database. Compare sequences only when their
+/// nonces match.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub struct NoteTransportCursor(Option<(u64, u64)>);
 
@@ -661,6 +774,29 @@ pub trait NoteTransportClient: Send + Sync {
         tag: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError>;
+
+    /// Fetches a page and reports whether another page is available.
+    ///
+    /// Transports without a continuation flag use an empty page to confirm the end of the history.
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        let (notes, cursor) = self.fetch_notes(tags, cursor).await?;
+        let has_more = !notes.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more })
+    }
+}
+
+/// A page of notes from the transport service.
+pub struct NoteTransportPage {
+    /// Notes in global sequence order.
+    pub notes: Vec<NoteInfo>,
+    /// Position of the last returned note. An empty page keeps the request position.
+    pub cursor: NoteTransportCursor,
+    /// Indicates that the requested tags have another page.
+    pub has_more: bool,
 }
 
 /// Information about a note fetched from the note transport network
@@ -815,6 +951,23 @@ mod tests {
 
     use super::*;
     use crate::rng::draw_word;
+
+    #[test]
+    fn transport_rejects_invalid_pagination() {
+        let cursor = NoteTransportCursor::from_parts(1, 10);
+        for (returned, has_more) in [
+            (NoteTransportCursor::init(), false),
+            (NoteTransportCursor::from_parts(1, 9), false),
+            (cursor, true),
+        ] {
+            let page = NoteTransportPage {
+                notes: Vec::new(),
+                cursor: returned,
+                has_more,
+            };
+            assert!(validate_transport_page(page, &[], cursor).is_err());
+        }
+    }
 
     #[test]
     fn relay_outbox_entry_round_trips() {

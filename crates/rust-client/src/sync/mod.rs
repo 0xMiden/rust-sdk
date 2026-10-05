@@ -244,15 +244,20 @@ where
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note
-    /// transport is disabled.
+    /// transport is disabled. A failed request returns an error after successful pages and their
+    /// cursors are saved.
     pub async fn sync_note_transport(&mut self) -> Result<Vec<NoteId>, ClientError> {
         if !self.is_note_transport_enabled() {
             return Ok(Vec::new());
         }
         self.ensure_genesis_in_place().await?;
 
-        let note_transport_update = self.fetch_note_transport_updates().await?;
+        let mut note_transport_update = self.fetch_note_transport_updates().await?;
+        let fetch_error = note_transport_update.fetch_error.take();
         let (imported_ids, _) = self.apply_note_transport_update(note_transport_update).await?;
+        if let Some(error) = fetch_error {
+            return Err(error);
+        }
         Ok(imported_ids)
     }
 
@@ -275,9 +280,9 @@ where
     /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
-    /// A transport failure is logged and the chain sync continues without it, leaving the transport
-    /// cursor for the next call to retry. Before step 2 but the relay outbox, which
-    /// [`Client::flush_relay_outbox`] persists during the fetch and the next sync retries.
+    /// A transport failure is logged and the chain sync continues. Successful transport pages are
+    /// imported and their cursors are saved. Failed requests keep their previous positions for
+    /// retry. The relay outbox is persisted during the fetch and retried on the next sync.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

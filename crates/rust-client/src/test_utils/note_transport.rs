@@ -22,6 +22,7 @@ use crate::note_transport::{
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    NoteTransportPage,
     TransportNote,
 };
 
@@ -119,6 +120,11 @@ impl MockNoteTransportNode {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
+        let cursor = if cursor.parts().is_some_and(|(nonce, _)| nonce != self.nonce) {
+            NoteTransportCursor::init()
+        } else {
+            cursor
+        };
         // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
         // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
         // `init()`.
@@ -238,6 +244,15 @@ impl NoteTransportClient for MockNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        let page = self.fetch_notes_page(tags, cursor).await?;
+        Ok((page.notes, page.cursor))
+    }
+
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
         self.fetch_tag_counts.write().push(tags.len());
         if let Some(max_tags) = self.max_tags_per_fetch
             && tags.len() > max_tags
@@ -247,7 +262,10 @@ impl NoteTransportClient for MockNoteTransportApi {
                 tags.len(),
             )));
         }
-        Ok(self.fetch_notes(tags, cursor))
+        let node = self.mock_node.read();
+        let (notes, cursor) = node.get_notes(tags, cursor);
+        let has_more = !node.get_notes(tags, cursor).0.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more })
     }
 }
 

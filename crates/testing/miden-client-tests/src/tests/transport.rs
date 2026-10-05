@@ -27,7 +27,8 @@ use miden_client::note_transport::{
     NoteTransportPage,
     TransportNote,
 };
-use miden_client::store::{NoteFilter, SettingScope};
+use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
+use miden_client::store::{InputNoteRecord, NoteFilter, SettingScope};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -210,6 +211,48 @@ async fn unavailable_attachments_do_not_fail_sync() {
     assert!(notes[0].attachments().is_empty());
 }
 
+/// Repeated transport deliveries can repair unverified and invalid records.
+#[tokio::test]
+async fn transport_repeated_delivery_repairs_incomplete_records() {
+    let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
+    transport
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+    client.fetch_private_notes().await.unwrap();
+    let committed = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(committed.is_committed());
+
+    for state in [
+        UnverifiedNoteState {
+            metadata: *note.metadata(),
+            inclusion_proof: committed.inclusion_proof().unwrap().clone(),
+        }
+        .into(),
+        InvalidNoteState {
+            metadata: *note.metadata(),
+            invalid_inclusion_proof: genesis_inclusion_proof(),
+            block_note_root: Word::default(),
+        }
+        .into(),
+    ] {
+        let record = InputNoteRecord::new(
+            committed.details().clone(),
+            committed.attachments().clone(),
+            committed.created_at(),
+            state,
+        );
+        client.test_store().upsert_input_notes(&[record]).await.unwrap();
+        client
+            .test_store()
+            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into())
+            .await
+            .unwrap();
+
+        client.fetch_private_notes().await.unwrap();
+        assert!(client.get_input_note(note.id()).await.unwrap().unwrap().is_committed());
+    }
+}
+
 /// Verifies that cursor-based pagination works: a second sync only receives newly sent notes.
 #[tokio::test]
 async fn transport_cursor_pagination() {
@@ -285,11 +328,12 @@ async fn transport_fetch_chunks_tracked_tags() {
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
 
     recipient.fetch_private_notes().await.unwrap();
+    // The group that stopped further back runs last and advances to the sequence seen before it.
     let cursors = stored_note_transport_cursors(&mut recipient).await;
     assert_eq!(cursors.len(), 129);
     assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 1)));
     recipient.fetch_private_notes().await.unwrap();
-    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128, 1, 128, 1]);
+    assert_eq!(transport.fetch_tag_counts(), [128, 1, 1, 128, 128, 1]);
 }
 
 /// Adding a tag starts that tag from the initial cursor without changing existing tag cursors.
@@ -393,72 +437,86 @@ async fn transport_tag_cursor_paginates_initial_backlog() {
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
 }
 
-/// Regroups at the saved target without skipping newer notes or mixing database nonces.
+/// Groups that stop at different positions merge once a tag is removed. The merged request starts
+/// from the lowest cursor, and the notes it delivers again are not imported twice.
 #[tokio::test]
-async fn transport_regrouping_preserves_notes_and_nonces() {
-    for (nonce, sequence, leader_sequence) in
-        [(1, 120, 200), (1, 160, 200), (1, 160, 150), (2, 1, 150)]
-    {
-        let transport = Arc::new(ScriptedTransport::default());
-        let mut recipient = create_test_client_with_transport(transport.clone()).await;
-        let (first, second) = two_transport_chunks(&mut recipient).await;
-        let account = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let first_note = private_note_with_tag(account, first[0], 1);
-        let second_note = private_note_with_tag(account, second[0], 2);
-        let zero = NoteTransportCursor::from_parts(1, 0);
-        let target = NoteTransportCursor::from_parts(1, 150);
-        let returned = NoteTransportCursor::from_parts(nonce, sequence);
-        let leader = NoteTransportCursor::from_parts(1, leader_sequence);
-        let cursors: BTreeMap<_, _> = first
-            .iter()
-            .map(|tag| (*tag, zero))
-            .chain(second.iter().map(|tag| (*tag, target)))
-            .collect();
-        recipient
-            .test_store()
-            .set_setting(
-                SettingScope::Client,
-                NOTE_TRANSPORT_CURSORS_KEY.into(),
-                cursors.to_bytes(),
-            )
-            .await
-            .unwrap();
-        let second_notes = if leader_sequence > 150 {
-            vec![&second_note]
-        } else {
-            vec![]
-        };
-        transport.push(&first, zero, Ok(transport_page(&[&first_note], returned, false)));
-        transport.push(&second, target, Ok(transport_page(&second_notes, leader, false)));
-
-        recipient.fetch_private_notes().await.unwrap();
-        let cursors = stored_note_transport_cursors(&mut recipient).await;
-        let expected = if nonce == 1 && sequence < leader_sequence {
-            target
-        } else {
-            returned
-        };
-        assert_eq!(cursors.get(&first[0]), Some(&expected));
-        assert_eq!(cursors.get(&second[0]), Some(&leader));
-        let note_count = 1 + second_notes.len();
-        assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), note_count);
-
-        if nonce == 1 && leader_sequence > 150 {
-            let replay = if sequence > 150 { vec![&first_note] } else { vec![] };
-            let next_cursor = if sequence > 150 { returned } else { target };
-            transport.push(&first, target, Ok(transport_page(&replay, next_cursor, false)));
-            transport.push(&second, leader, Ok(transport_page(&[], leader, false)));
-            recipient.fetch_private_notes().await.unwrap();
-            assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), note_count);
-            assert!(
-                stored_note_transport_cursors(&mut recipient)
-                    .await
-                    .values()
-                    .all(|cursor| *cursor == leader)
-            );
-        }
-        assert!(transport.responses.read().is_empty());
+async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    let account = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+    // The first group exhausts its page budget one note short. The second group catches up past it.
+    for serial in 0..33 {
+        let note = private_note_with_tag(account, first[1], serial);
+        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
     }
+    let late_note = private_note_with_tag(account, second[0], 33);
+    mock_node
+        .write()
+        .add_note(*late_note.header(), NoteDetails::from(late_note).to_bytes());
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 32)));
+    assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 34)));
+
+    recipient.remove_note_tag(first[0]).await.unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+
+    let counts = transport.fetch_tag_counts();
+    assert_eq!(counts[32..], [1, 128, 128]);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 34);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.len(), 128);
+    assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 34)));
+}
+
+/// Tags whose cursors name different databases are requested separately. A group whose database is
+/// gone continues from the cursor the service returns, and the next sync merges the groups.
+#[tokio::test]
+async fn transport_groups_tags_by_database_nonce() {
+    let transport = Arc::new(ScriptedTransport::default());
+    let mut recipient = create_test_client_with_transport(transport.clone()).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    let account = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+    let note = private_note_with_tag(account, first[0], 1);
+    let stale = NoteTransportCursor::from_parts(1, 10);
+    let current = NoteTransportCursor::from_parts(2, 5);
+    let restarted = NoteTransportCursor::from_parts(2, 7);
+    let cursors: BTreeMap<_, _> = first
+        .iter()
+        .map(|tag| (*tag, stale))
+        .chain(second.iter().map(|tag| (*tag, current)))
+        .collect();
+    recipient
+        .test_store()
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), cursors.to_bytes())
+        .await
+        .unwrap();
+    // The service does not know nonce 1 and serves the stale group from its first retained note.
+    transport.push(&second, current, Ok(transport_page(&[], current, false)));
+    transport.push(&first, stale, Ok(transport_page(&[&note], restarted, false)));
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(first.iter().all(|tag| cursors.get(tag) == Some(&restarted)));
+    assert_eq!(cursors.get(&second[0]), Some(&current));
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+
+    // All tags share one database now. The lowest cursor leads the merged request, which runs after
+    // the group that is further ahead and advances to its sequence.
+    let mut merged = vec![second[0]];
+    merged.extend_from_slice(&first[..127]);
+    transport.push(&first[127..], restarted, Ok(transport_page(&[], restarted, false)));
+    transport.push(&merged, current, Ok(transport_page(&[], current, false)));
+    recipient.fetch_private_notes().await.unwrap();
+    assert!(transport.responses.read().is_empty());
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(cursors.values().all(|cursor| *cursor == restarted));
 }
 
 /// A later page failure preserves progress, allows other chunks to finish, and permits retry.
@@ -494,8 +552,8 @@ async fn transport_chunk_failure_preserves_successful_pages() {
     assert_eq!(cursors.get(&first[0]), Some(&first_cursor));
     assert_eq!(cursors.get(&second[0]), Some(&second_cursor));
 
-    transport.push(&first, first_cursor, Ok(transport_page(&[], first_cursor, false)));
     transport.push(&second, second_cursor, Ok(transport_page(&[], second_cursor, false)));
+    transport.push(&first, first_cursor, Ok(transport_page(&[], first_cursor, false)));
     recipient.sync_note_transport().await.unwrap();
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
     assert!(

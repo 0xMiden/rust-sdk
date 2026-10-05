@@ -6,6 +6,10 @@
 
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).
 
+### Fixes
+
+* [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
+
 ## 0.17.0 (2026-10-02)
 
 ### Breaking Changes

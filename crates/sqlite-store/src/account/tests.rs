@@ -1012,6 +1012,38 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pruning must compare nonces as unsigned values, also above `i64::MAX`.
+#[tokio::test]
+async fn prune_account_history_with_large_nonces() -> anyhow::Result<()> {
+    const HIGH_BIT: u64 = 1 << 63;
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::prune_large::map").expect("valid slot name");
+
+    let mut account = setup_account_with_map(&store, 1, &map_slot_name).await?;
+    let account_id = account.id();
+    apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT - 1).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT).await?;
+
+    // A boundary below `i64::MAX` keeps the states replaced at larger nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::from(2u32))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 2);
+
+    // A boundary above `i64::MAX` also removes the states replaced at smaller nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::new_unchecked(HIGH_BIT))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 0);
+
+    Ok(())
+}
+
 // TEST HELPERS
 // ================================================================================================
 
@@ -1114,7 +1146,7 @@ async fn apply_single_entry_update(
     let mut map_entries = StorageMapPatchEntries::new();
     map_entries.insert(
         StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
-        [Felt::new_unchecked(target_nonce * 1000), ZERO, ZERO, ZERO].into(),
+        [Felt::new_unchecked(target_nonce) * Felt::from(1000u32), ZERO, ZERO, ZERO].into(),
     );
     let storage_patch = AccountStoragePatch::from_entries([(
         map_slot_name.clone(),

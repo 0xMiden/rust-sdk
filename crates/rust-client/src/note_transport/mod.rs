@@ -47,9 +47,6 @@ pub const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
 type NoteTransportCursors = BTreeMap<NoteTag, NoteTransportCursor>;
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
-/// Page budget for one request group in one sync. A large history for one group cannot prevent the
-/// other groups from progressing.
-const MAX_NOTE_TRANSPORT_PAGES_PER_GROUP: usize = 32;
 
 /// Legacy settings key for note transport backfill state.
 #[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
@@ -287,7 +284,7 @@ where
     /// note again after a tag is added or removed; the import drops these duplicates.
     ///
     /// A failed request returns an error after successful pages are imported and their cursors are
-    /// saved. Histories that exceed the page budget continue on the next call.
+    /// saved.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
@@ -338,7 +335,7 @@ where
         Ok(tags)
     }
 
-    /// Fetches bounded pages for request groups of at most
+    /// Fetches every page for request groups of at most
     /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags.
     ///
     /// Each group starts from its lowest cursor. The import drops notes delivered again. Each tag
@@ -360,7 +357,7 @@ where
         let mut notes = Vec::new();
         for (start, group) in transport_request_groups(&tags, &cursors) {
             let mut cursor = start;
-            for page_index in 0..MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
+            loop {
                 let page = match api
                     .fetch_notes_page(&group, cursor)
                     .await
@@ -383,9 +380,6 @@ where
                 }
                 if !page.has_more {
                     break;
-                }
-                if page_index + 1 == MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
-                    tracing::warn!(tags = ?group, "note transport page budget exhausted; retaining progress for the next sync");
                 }
             }
         }
@@ -438,7 +432,7 @@ where
 
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Fetches bounded pages for each group of tracked tags. This performs no node call and writes
+    /// Fetches every page for each group of tracked tags. This performs no node call and writes
     /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
     /// imports the returned files and then persists all tag cursors. A failed request preserves
     /// successful pages in the returned update.

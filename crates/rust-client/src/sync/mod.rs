@@ -71,7 +71,7 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::pswap::PswapChainObserver;
 use crate::rpc::AccountStateAt;
@@ -219,8 +219,6 @@ where
         let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
-        debug!(sync_summary = ?sync_summary, "Sync summary computed");
-
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
         // propagated.
         state_sync.run_apply_hooks(&state_sync_update).await?;
@@ -232,7 +230,6 @@ where
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
-
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
 

@@ -387,35 +387,55 @@ async fn transport_adding_tag_preserves_existing_cursors() {
     assert_eq!(cursors_after_removal[&existing_tag], cursor);
 }
 
-/// Resumes a bounded history and merges chunks after tag removal without duplicate records.
+/// Merges chunks after tag removal. The merged request starts from the lowest cursor, and the notes
+/// it delivers again do not create duplicate records.
 #[tokio::test]
 async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
     let (first, second) = two_transport_chunks(&mut recipient).await;
-    // The first group exhausts its page budget one note short. The second group catches up past it.
-    for serial in 0..33 {
-        seed_transport_note(&mock_node, first[1], serial);
-    }
-    seed_transport_note(&mock_node, second[0], 33);
+    // Each group stops at its own last note, so the two groups end at different positions.
+    seed_transport_note(&mock_node, first[1], 1);
+    seed_transport_note(&mock_node, second[0], 2);
 
     recipient.fetch_private_notes().await.unwrap();
 
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
+    assert_eq!(transport.fetch_tag_counts(), [128, 1]);
     let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 32)));
-    assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 34)));
+    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 1)));
+    assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 2)));
 
     recipient.remove_note_tag(first[0]).await.unwrap();
     recipient.fetch_private_notes().await.unwrap();
 
-    let counts = transport.fetch_tag_counts();
-    assert_eq!(counts[32..], [1, 128, 128]);
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 34);
+    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128]);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
     let cursors = stored_note_transport_cursors(&mut recipient).await;
     assert_eq!(cursors.len(), 128);
-    assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 34)));
+    assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 2)));
+}
+
+/// Drains a long history in one call, one page per request.
+#[tokio::test]
+async fn transport_drains_history_across_pages() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let tag = NoteTag::new(2002);
+    recipient.add_note_tag(tag).await.unwrap();
+    for serial in 0..40 {
+        seed_transport_note(&mock_node, tag, serial);
+    }
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts().len(), 40);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 40);
+    assert_eq!(
+        stored_note_transport_cursors(&mut recipient).await.get(&tag),
+        Some(&NoteTransportCursor::from_parts(1, 40))
+    );
 }
 
 /// Requests different database nonces separately and merges tags after a cursor reset.

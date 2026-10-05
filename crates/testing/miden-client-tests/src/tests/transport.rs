@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env::temp_dir;
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use miden_client::note_transport::{
     NoteTransportError,
 };
 use miden_client::store::{NoteFilter, SettingScope};
+use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
@@ -299,197 +301,103 @@ async fn transport_fetch_chunks_tracked_tags() {
     );
 }
 
-/// A newly tracked tag receives notes that the transport stored before the tag was tracked.
-///
-/// `sync_note_transport` backfills the tag from the start before adding it to steady-state chunk
-/// polling.
+/// Fetches account and user tags while leaving note and subscription tags to the node sync.
 #[tokio::test]
-async fn backfill_imports_history_for_late_added_tag() {
+async fn transport_fetches_only_ntl_enabled_tag_sources() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
 
-    let tag_tracked = NoteTag::new(1001);
-    let tag_late = NoteTag::new(1002);
-    recipient.add_note_tag(tag_tracked).await.unwrap();
+    let user_tag = NoteTag::new(10_001);
+    let note_tag = NoteTag::new(10_002);
+    let subscription_tag = NoteTag::new(10_003);
+    recipient.add_note_tag(user_tag).await.unwrap();
 
-    let note_late = private_note_with_tag(recipient_account.id(), tag_late, 10);
-    let note_tracked = private_note_with_tag(recipient_account.id(), tag_tracked, 20);
-
-    // Deliver the late tag's note before the tag is tracked.
+    let user_note = private_note_with_tag(recipient_account.id(), user_tag, 1);
+    let note_source_note = private_note_with_tag(recipient_account.id(), note_tag, 2);
+    recipient
+        .test_store()
+        .add_note_tag(NoteTagRecord::with_note_source(
+            note_tag,
+            note_source_note.details_commitment(),
+        ))
+        .await
+        .unwrap();
+    recipient
+        .test_store()
+        .add_note_tag(NoteTagRecord {
+            tag: subscription_tag,
+            source: NoteTagSource::Subscription(Word::default()),
+        })
+        .await
+        .unwrap();
     mock_node
         .write()
-        .add_note(*note_late.header(), NoteDetails::from(note_late.clone()).to_bytes());
-    mock_node
-        .write()
-        .add_note(*note_tracked.header(), NoteDetails::from(note_tracked.clone()).to_bytes());
+        .add_note(*user_note.header(), NoteDetails::from(user_note.clone()).to_bytes());
+    mock_node.write().add_note(
+        *note_source_note.header(),
+        NoteDetails::from(note_source_note.clone()).to_bytes(),
+    );
 
-    // Sync: only the tracked tag's note is fetched; the late tag isn't tracked yet.
-    recipient.sync_state().await.unwrap();
+    let records = recipient.get_note_tags().await.unwrap();
+    assert!(records.iter().any(|record| matches!(record.source, NoteTagSource::Account(_))));
+    assert!(records.iter().any(|record| record.source == NoteTagSource::User));
+    assert!(records.iter().any(|record| matches!(record.source, NoteTagSource::Note(_))));
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record.source, NoteTagSource::Subscription(_)))
+    );
+    let expected_tags: BTreeSet<NoteTag> = records
+        .iter()
+        .filter(|record| record.source.is_ntl_enabled())
+        .map(|record| record.tag)
+        .collect();
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    let fetched_tags: BTreeSet<NoteTag> = stored_note_transport_cursors(&mut recipient)
+        .await
+        .into_iter()
+        .flat_map(|(tags, _)| tags)
+        .collect();
+    assert_eq!(fetched_tags, expected_tags);
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1, "only the tracked tag's note should arrive first");
     assert!(
         notes
             .iter()
-            .any(|n| n.details_commitment() == note_tracked.details_commitment())
+            .any(|record| record.details_commitment() == user_note.details_commitment())
     );
-
-    // Track the late tag.
-    recipient.add_note_tag(tag_late).await.unwrap();
-
-    // The backfill is scoped to the newly tracked tag, so it recovers that tag's history without
-    // re-scanning every tag from the start.
-    recipient.sync_state().await.unwrap();
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 2, "the late tag's historical note must be backfilled");
-    assert!(notes.iter().any(|n| n.details_commitment() == note_late.details_commitment()));
-}
-
-/// Removing a tag drops it from the covered set, so re-adding it backfills again. Re-adding the tag
-/// must recover a note that arrived while the tag was untracked. This proves that the covered set
-/// is cleared on removal.
-#[tokio::test]
-async fn backfill_recovers_notes_that_arrived_while_untracked() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
-    let tag_x = NoteTag::new(5005);
-    let tag_driver = NoteTag::new(5006);
-    recipient.add_note_tag(tag_driver).await.unwrap();
-    recipient.add_note_tag(tag_x).await.unwrap();
-
-    // Track and cover tag_x while it has no notes yet (so it leaves no `Note`-source tag behind),
-    // then stop tracking it.
-    recipient.sync_state().await.unwrap();
-    recipient.remove_note_tag(tag_x).await.unwrap();
-
-    // A note arrives while tag_x is untracked. A note for the tracked driver tag arrives after it.
-    let note_x = private_note_with_tag(recipient_account.id(), tag_x, 60);
-    let note_driver = private_note_with_tag(recipient_account.id(), tag_driver, 70);
-    mock_node
-        .write()
-        .add_note(*note_x.header(), NoteDetails::from(note_x.clone()).to_bytes());
-    mock_node
-        .write()
-        .add_note(*note_driver.header(), NoteDetails::from(note_driver.clone()).to_bytes());
-    recipient.sync_state().await.unwrap();
-
-    // note_x is not imported because tag_x is not tracked.
-    let before = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert!(
-        !before.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
-        "note_x must not be imported while tag_x is untracked"
-    );
-
-    // Re-add tag_x: the backfill drains it from the start and recovers note_x.
-    recipient.add_note_tag(tag_x).await.unwrap();
-    recipient.sync_state().await.unwrap();
-    let after = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert!(
-        after.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
-        "re-adding a removed tag must backfill notes that arrived while it was untracked"
+        !notes
+            .iter()
+            .any(|record| record.details_commitment() == note_source_note.details_commitment())
     );
 }
 
-/// The tag backfill drains a tag's history across multiple server-paginated batches.
-///
-/// Regression test for the interaction between the transport server's response-size cap and the
-/// backfill drain loop: a cap of N per response must not leave the backfill returning only the
-/// first N notes. With `BATCH_CAP` < the backlog, one sync still pulls the whole history for the
-/// newly tracked tag.
+/// Advances a chunk cursor one server page per sync until the initial backlog is consumed.
 #[tokio::test]
-async fn backfill_drains_across_batches() {
+async fn transport_chunk_cursor_paginates_initial_backlog() {
     const BATCH_CAP: usize = 3;
     const TOTAL_NOTES: usize = 10;
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(BATCH_CAP)));
     let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
 
-    let tag_late = NoteTag::new(2002);
+    let tag = NoteTag::new(2002);
+    recipient.add_note_tag(tag).await.unwrap();
 
-    // Seed TOTAL_NOTES > BATCH_CAP notes for the late tag before it is tracked, so a single-batch
-    // fetch cannot drain the backlog. Building each note before adding it spaces the mock's
-    // timestamp cursors so they stay distinct.
+    // Seed the transport before the first fetch. Building each note before adding it gives each
+    // note a distinct mock cursor.
     for i in 0..TOTAL_NOTES {
-        let note = private_note_with_tag(recipient_account.id(), tag_late, 100 + i as u64);
+        let note = private_note_with_tag(recipient_account.id(), tag, 100 + i as u64);
         mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
     }
 
-    // First sync: the late tag isn't tracked, so none of its notes are fetched.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
-
-    // Track the late tag; one sync must drain all TOTAL_NOTES across BATCH_CAP-sized batches.
-    recipient.add_note_tag(tag_late).await.unwrap();
-    recipient.sync_state().await.unwrap();
-
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(
-        notes.len(),
-        TOTAL_NOTES,
-        "backfill must drain the late tag's full history across batches; got {} of {}",
-        notes.len(),
-        TOTAL_NOTES
-    );
-}
-
-/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
-/// tag's history: the burst is spread across syncs, backfilling at most
-/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
-#[tokio::test]
-async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
-    const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
-    const LATE_TAGS: usize = CAP + 1;
-
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
-    // A driver tag keeps steady-state polling active before the late tags are tracked.
-    let driver_tag = NoteTag::new(9_999);
-    recipient.add_note_tag(driver_tag).await.unwrap();
-
-    let late_tags: Vec<NoteTag> = (0..LATE_TAGS)
-        .map(|i| NoteTag::new(3_000 + u32::try_from(i).unwrap()))
-        .collect();
-    for (i, tag) in late_tags.iter().enumerate() {
-        let note = private_note_with_tag(recipient_account.id(), *tag, 100 + i as u64);
-        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    for page in 1..=TOTAL_NOTES.div_ceil(BATCH_CAP) {
+        recipient.sync_state().await.unwrap();
+        let expected = (page * BATCH_CAP).min(TOTAL_NOTES);
+        assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), expected);
     }
-
-    // Deliver the driver note after the late-tag notes.
-    let driver_note = private_note_with_tag(recipient_account.id(), driver_tag, 10_000);
-    mock_node
-        .write()
-        .add_note(*driver_note.header(), NoteDetails::from(driver_note.clone()).to_bytes());
-
-    // First sync: only the driver tag is tracked, so only its note arrives.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1,
-        "only the driver tag's note should arrive first"
-    );
-
-    // Track all LATE_TAGS at once, exceeding the per-sync backfill cap by one.
-    for tag in &late_tags {
-        recipient.add_note_tag(*tag).await.unwrap();
-    }
-
-    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
-    // Total = driver note + capped backfill.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1 + CAP,
-        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
-    );
-
-    // Third sync: the deferred late tag is backfilled, recovering the whole history.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1 + LATE_TAGS,
-        "the deferred tag must be backfilled on the following sync"
-    );
 }
 
 /// Verifies that an observer whose tracked tags don't match the note's tag receives nothing.

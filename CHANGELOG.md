@@ -4,7 +4,7 @@
 
 ### Fixes
 
-* [FIX][rust] Clients can track more than 128 account note tags. Note transport fetches split tracked tags into requests of at most 128 and keep a cursor for each exact tag chunk. `Client::MAX_ACCOUNT_TAGS` and `ClientError::AccountTagLimitExceeded` are deprecated because the client no longer enforces an account-tag limit; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
+* [FIX][rust] Clients can track more than 128 account note tags. Note transport fetches account- and user-source tags in requests of at most 128 and keeps a cursor for each exact tag chunk. Note- and subscription-source tags remain exclusive to the normal node sync. The sync no longer maintains or runs a separate per-tag backfill. `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded`, `NoteTransportError::PaginationDidNotTerminate`, and `NOTE_TRANSPORT_COVERED_TAGS_KEY` are deprecated; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
 
 ## 0.17.0 (2026-10-02)
 

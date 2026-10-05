@@ -44,11 +44,8 @@ pub const NOTE_TRANSPORT_CHUNK_CURSORS_KEY: &str = "note_transport_chunk_cursors
 
 type NoteTransportChunkCursors = Vec<(Vec<NoteTag>, NoteTransportCursor)>;
 
-/// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
-/// `User`- and `Account`-source tags whose retained history has already been fetched.
-/// [`Client::sync_note_transport`] diffs the currently tracked tags against this set and backfills
-/// only new tags. Reusing the settings k/v avoids a Store-trait schema change while surviving
-/// process restarts.
+/// Legacy settings key for note transport backfill state.
+#[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Settings key for the durable relay outbox: a serialized `Vec<RelayOutboxEntry>` of private notes
@@ -226,75 +223,6 @@ impl<AUTH> Client<AUTH> {
             .map_err(ClientError::StoreError)
     }
 
-    /// The set of tracked tags eligible for history backfill.
-    ///
-    /// Only `User`- and `Account`-source tags qualify: those are the tags a consumer explicitly
-    /// started tracking (via [`Client::add_note_tag`], account import, or address creation) and may
-    /// therefore have historical private notes. `Note`-source tags are created by transport
-    /// delivery and note import, so backfilling them would re-fetch tags the fetch path itself just
-    /// registered; `Subscription` tags are excluded for the same reason.
-    async fn backfill_candidate_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let tags = self
-            .store
-            .get_note_tags()
-            .await?
-            .into_iter()
-            .filter(|record| {
-                matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
-            })
-            .map(|record| record.tag)
-            .collect();
-        Ok(tags)
-    }
-
-    /// Loads the set of tags whose retained history has already been fetched.
-    ///
-    /// Returns an empty set when the key is absent (e.g. a store that predates the feature). On a
-    /// deserialization failure the entry is dropped and an empty set is returned: re-treating every
-    /// tracked tag as new only triggers a one-off backfill, which dedupes, whereas leaving
-    /// unreadable bytes in place would fail every subsequent sync.
-    async fn load_covered_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let bytes = self
-            .store
-            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY))
-            .await
-            .map_err(ClientError::StoreError)?;
-        let Some(bytes) = bytes else {
-            return Ok(BTreeSet::new());
-        };
-        match BTreeSet::<NoteTag>::read_from_bytes(&bytes) {
-            Ok(tags) => Ok(tags),
-            Err(err) => {
-                tracing::warn!(?err, "dropping unreadable covered-tags set; resetting to empty");
-                self.store
-                    .remove_setting(
-                        SettingScope::Client,
-                        String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY),
-                    )
-                    .await
-                    .map_err(ClientError::StoreError)?;
-                Ok(BTreeSet::new())
-            },
-        }
-    }
-
-    /// Persist the covered-tags set, removing the key entirely when empty so the settings table
-    /// doesn't accumulate empty-vec blobs.
-    async fn save_covered_tags(&self, tags: &BTreeSet<NoteTag>) -> Result<(), ClientError> {
-        let key = String::from(NOTE_TRANSPORT_COVERED_TAGS_KEY);
-        if tags.is_empty() {
-            self.store
-                .remove_setting(SettingScope::Client, key)
-                .await
-                .map_err(ClientError::StoreError)?;
-            return Ok(());
-        }
-        self.store
-            .set_setting(SettingScope::Client, key, tags.to_bytes())
-            .await
-            .map_err(ClientError::StoreError)
-    }
-
     /// Loads the cursor for each exact tag chunk used by the transport fetch.
     ///
     /// The transport requires a cursor to be reused only with the same tag set. A missing or
@@ -342,39 +270,44 @@ impl<AUTH> Client<AUTH> {
             .await
             .map_err(ClientError::StoreError)
     }
+
+    /// Returns the unique tracked tags that the note transport layer must fetch.
+    async fn ntl_enabled_note_tags(&self) -> Result<Vec<NoteTag>, ClientError> {
+        let tags = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| record.source.is_ntl_enabled())
+            .map(|record| record.tag)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(tags)
+    }
 }
 
 impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Per-sync cap on the number of newly tracked tags to backfill. Bounds the burst when many
-    /// tags are registered at once (e.g. restoring many accounts or addresses). Deferred tags stay
-    /// uncovered and are picked up on subsequent syncs.
+    /// Legacy per-sync cap for tag backfills.
+    #[deprecated(since = "0.17.1", note = "note transport no longer performs per-tag backfills")]
     pub const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
-
-    /// Safety cap on the per-tag backfill drain. A well-behaved server eventually returns no
-    /// forward cursor progress, ending the loop; this bound only guards against a server that
-    /// advances the cursor indefinitely without ever returning an empty batch. It is far above any
-    /// honest per-tag backlog, so reaching it signals a server bug rather than real history.
-    const MAX_BACKFILL_ITERATIONS: usize = 1_000;
 
     /// Fetch notes for tracked note tags.
     ///
-    /// The client will query the configured note transport node for all tracked note tags. To list
-    /// tracked tags please use [`Client::get_note_tags`]. To add a new note tag please use
-    /// [`Client::add_note_tag`]. Only notes directed at your addresses will be stored and readable
-    /// given the use of end-to-end encryption (unimplemented). Fetched notes will be stored into
-    /// the client's store.
+    /// The client queries the configured note transport node for tracked tags whose source enables
+    /// NTL fetching. Account- and user-source tags enable it. Note- and subscription-source tags
+    /// use the normal node sync only. To list tracked tags, use [`Client::get_note_tags`]. To add a
+    /// user-source tag, use [`Client::add_note_tag`]. Fetched notes are stored in the client store.
     ///
-    /// An internal pagination mechanism is employed to reduce the number of downloaded notes: this
-    /// fetches only notes past the stored cursor. Historical notes for a newly tracked tag are
-    /// recovered automatically by [`Client::sync_note_transport`], which backfills each new tag.
+    /// An internal pagination mechanism fetches only notes past the stored cursor for each exact
+    /// tag chunk. A chunk without a stored cursor starts from the initial cursor.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
-        let note_tags: Vec<NoteTag> =
-            self.store.get_unique_note_tags().await?.into_iter().collect();
+        let note_tags = self.ntl_enabled_note_tags().await?;
         let mut id_by_commitment = BTreeMap::new();
         let (note_files, chunk_cursors) =
             self.fetch_transport_notes_in_chunks(&note_tags, &mut id_by_commitment).await?;
@@ -383,70 +316,6 @@ where
         self.save_note_transport_cursors(&chunk_cursors).await?;
 
         Ok(())
-    }
-
-    /// Plans the backfill of historical private notes for newly tracked tags.
-    ///
-    /// This diffs the tracked `User`/`Account` tags (see [`Self::backfill_candidate_tags`]) against
-    /// the persisted covered set (see [`NOTE_TRANSPORT_COVERED_TAGS_KEY`]). It drains each newly
-    /// tracked tag from the start before that tag joins steady-state chunk polling. Tags no longer
-    /// tracked are dropped from the covered set so a later re-add backfills again. Imports dedupe,
-    /// so overlap with the steady-state stream is harmless.
-    ///
-    /// At most [`Self::MAX_BACKFILL_TAGS_PER_SYNC`] tags are backfilled per call; any remainder
-    /// stays uncovered and is picked up on the next sync.
-    ///
-    /// Returns the pruned covered set, whether pruning changed it, and the tags to backfill. Reads
-    /// only: persisting the covered set is left to the apply phase, which writes it after the
-    /// imported notes so a crash re-backfills instead of skipping a tag whose notes were never
-    /// written.
-    async fn plan_backfill(&self) -> Result<(BTreeSet<NoteTag>, bool, Vec<NoteTag>), ClientError> {
-        let candidates = self.backfill_candidate_tags().await?;
-        let loaded = self.load_covered_tags().await?;
-
-        // Drop tags no longer tracked. Keeping a removed tag marked covered would make a later
-        // re-add skip its backlog, silently missing notes that arrived while it was untracked.
-        let covered: BTreeSet<NoteTag> = loaded.intersection(&candidates).copied().collect();
-        let pruned = covered.len() != loaded.len();
-
-        let new_tags: Vec<NoteTag> = candidates
-            .difference(&covered)
-            .copied()
-            .take(Self::MAX_BACKFILL_TAGS_PER_SYNC)
-            .collect();
-
-        Ok((covered, pruned, new_tags))
-    }
-
-    /// Drain a single tag's full history from the transport, paging until the cursor stops
-    /// advancing. Uses a local cursor and never touches the global one, so it cannot regress
-    /// steady-state progress. Returns the note files from every fetched page, in page order and
-    /// none of them written.
-    async fn backfill_tag(
-        &self,
-        tag: NoteTag,
-        id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
-    ) -> Result<Vec<NoteFile>, ClientError> {
-        let mut note_files = Vec::new();
-        let mut cursor = NoteTransportCursor::init();
-        for _ in 0..Self::MAX_BACKFILL_ITERATIONS {
-            let (page_files, new_cursor) =
-                self.fetch_transport_notes(cursor, &[tag], id_by_commitment).await?;
-            note_files.extend(page_files);
-            // Terminate on any lack of forward progress. A well-behaved server returns `new_cursor
-            // == cursor` when there are no new notes for this tag (since `rcursor = max(cursor,
-            // max_seq_returned)`); using `<=` also handles implementations that return an `init()`
-            // cursor on empty batches (see the in-tree mock transport).
-
-            if new_cursor <= cursor {
-                return Ok(note_files);
-            }
-            cursor = new_cursor;
-        }
-
-        Err(ClientError::NoteTransportError(NoteTransportError::PaginationDidNotTerminate(
-            Self::MAX_BACKFILL_ITERATIONS,
-        )))
     }
 
     /// Screens the transport-delivered notes carrying a tag derived from a tracked account,
@@ -522,15 +391,12 @@ where
     ///
     /// The server paginates; this method issues one transport call and returns the note files
     /// together with the new cursor. The returned cursor equals the input cursor when the batch was
-    /// empty (i.e. no new notes). Callers that want to drain a tag's full backlog should loop until
-    /// `new_cursor == cursor` (see [`Client::backfill_tag`]). Callers that do steady-state polling
-    /// (see [`Client::sync_state`] / [`Client::fetch_private_notes`]) should call this once per
-    /// tick with the stored cursor.
+    /// empty (i.e. no new notes). Steady-state polling calls this once per chunk and sync with the
+    /// stored cursor.
     ///
     /// Each downloaded note's id is recorded in `id_by_commitment` so the caller can resolve the
     /// written records back to note ids once the final record set is known. Persistence of the
-    /// returned cursor is left to the caller so that drain loops can guard against regression of an
-    /// already-advanced stored cursor.
+    /// returned cursor is left to the caller so that notes are stored before the cursor advances.
     async fn fetch_transport_notes(
         &self,
         cursor: NoteTransportCursor,
@@ -595,9 +461,9 @@ where
 
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Runs the per-tag backfill and fetches a page of notes. This performs no node call and writes
-    /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
-    /// imports the returned files and then persists the cursor and the covered-tag set.
+    /// Fetches one page for every exact chunk of note-transport-enabled tags. This performs no node
+    /// call and writes nothing but the relay outbox, so it can run concurrently with the chain
+    /// fetch. The caller imports the returned files and then persists all chunk cursors.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -616,34 +482,7 @@ where
             tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
-        // Recover historical private notes for each newly tracked tag. This drains the tag from the
-        // start before it joins steady-state chunk polling.
-        let (mut covered, pruned, new_tags) = self.plan_backfill().await?;
-        let backfilled = !new_tags.is_empty();
-        for tag in new_tags {
-            note_transport_update
-                .note_files
-                .extend(self.backfill_tag(tag, &mut note_transport_update.id_by_commitment).await?);
-            covered.insert(tag);
-        }
-        // Exclude user and account tags whose backfill was deferred. Fetching them with a reset
-        // chunk cursor would bypass the per-sync backfill cap and could advance past their history.
-        let note_tags: Vec<NoteTag> = self
-            .store
-            .get_note_tags()
-            .await?
-            .into_iter()
-            .filter(|record| {
-                !matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
-                    || covered.contains(&record.tag)
-            })
-            .map(|record| record.tag)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        if pruned || backfilled {
-            note_transport_update.covered_tags = Some(covered);
-        }
+        let note_tags = self.ntl_enabled_note_tags().await?;
 
         let (note_files, chunk_cursors) = self
             .fetch_transport_notes_in_chunks(
@@ -657,14 +496,13 @@ where
         Ok(note_transport_update)
     }
 
-    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in three steps:
+    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in two steps:
     ///
     /// 1. Imports the fetched notes, which resolves their on-chain state and stores the records.
-    /// 2. Saves the covered-tag set, when the backfill changed it.
-    /// 3. Saves the cursor for each exact tag chunk.
+    /// 2. Saves the cursor for each exact tag chunk.
     ///
-    /// The notes are written before the covered-tag set and chunk cursors, so a crash between them
-    /// re-fetches instead of skipping notes that were never written.
+    /// The notes are written before the chunk cursors, so a crash between them re-fetches instead
+    /// of skipping notes that were never written.
     ///
     /// Returns the ids of the imported notes and the details commitments of the records written.
     pub(crate) async fn apply_note_transport_update(
@@ -674,7 +512,6 @@ where
         let NoteTransportLayerUpdate {
             note_files,
             id_by_commitment,
-            covered_tags,
             chunk_cursors,
         } = update;
 
@@ -683,10 +520,6 @@ where
             .iter()
             .filter_map(|commitment| id_by_commitment.get(commitment).copied())
             .collect();
-
-        if let Some(covered_tags) = covered_tags {
-            self.save_covered_tags(&covered_tags).await?;
-        }
 
         if let Some(chunk_cursors) = chunk_cursors {
             self.save_note_transport_cursors(&chunk_cursors).await?;
@@ -734,13 +567,11 @@ where
 /// [`Client::apply_note_transport_update`].
 #[derive(Default)]
 pub(crate) struct NoteTransportLayerUpdate {
-    /// Notes to import, backfill pages first and then the steady-state page.
+    /// Notes to import.
     note_files: Vec<NoteFile>,
     /// Note ids by details commitment, taken from the note headers the transport returned. Used to
     /// resolve the written records back to ids.
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
-    /// Covered-tag set to persist, `None` when it did not change.
-    covered_tags: Option<BTreeSet<NoteTag>>,
     /// Cursors for the exact tag chunks used by the steady-state fetch.
     chunk_cursors: Option<NoteTransportChunkCursors>,
 }

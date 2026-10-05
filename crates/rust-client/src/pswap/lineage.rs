@@ -411,34 +411,6 @@ impl PswapLineageFilter {
     }
 }
 
-// SERDE HELPERS
-// ================================================================================================
-
-/// Builds a [`PswapLineageRecord`] from its decoded fields. The only validation is decoding the
-/// `state_byte` into a known [`PswapLineageState`].
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_record_from_fields(
-    original_note_id: NoteId,
-    order_id: Felt,
-    creator_account_id: AccountId,
-    current_tip_note_id: NoteId,
-    current_depth: u32,
-    remaining_offered: AssetAmount,
-    remaining_requested: AssetAmount,
-    state_byte: u8,
-) -> Result<PswapLineageRecord, PswapLineageError> {
-    Ok(PswapLineageRecord::from_parts(
-        original_note_id,
-        order_id,
-        creator_account_id,
-        current_tip_note_id,
-        current_depth,
-        remaining_offered,
-        remaining_requested,
-        PswapLineageState::try_from_u8(state_byte)?,
-    ))
-}
-
 // VALUE CODEC
 // ================================================================================================
 
@@ -468,8 +440,9 @@ impl Deserializable for PswapLineageRecord {
         let current_depth = u32::read_from(source)?;
         let remaining_offered = AssetAmount::read_from(source)?;
         let remaining_requested = AssetAmount::read_from(source)?;
-        let state_byte = u8::read_from(source)?;
-        build_record_from_fields(
+        let state = PswapLineageState::try_from_u8(u8::read_from(source)?)
+            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
+        Ok(Self::from_parts(
             original_note_id,
             order_id,
             creator_account_id,
@@ -477,9 +450,8 @@ impl Deserializable for PswapLineageRecord {
             current_depth,
             remaining_offered,
             remaining_requested,
-            state_byte,
-        )
-        .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
+            state,
+        ))
     }
 }
 
@@ -562,10 +534,10 @@ mod tests {
         current_depth: u32,
         remaining_offered: u64,
         remaining_requested: u64,
-        state_byte: u8,
-    ) -> Result<PswapLineageRecord, PswapLineageError> {
+        state: PswapLineageState,
+    ) -> PswapLineageRecord {
         let original_note_id = miden_protocol::note::Note::from(pswap.clone()).id();
-        build_record_from_fields(
+        PswapLineageRecord::from_parts(
             original_note_id,
             pswap.order_id(),
             pswap.storage().creator_account_id(),
@@ -573,7 +545,7 @@ mod tests {
             current_depth,
             AssetAmount::new(remaining_offered).unwrap(),
             AssetAmount::new(remaining_requested).unwrap(),
-            state_byte,
+            state,
         )
     }
 
@@ -609,53 +581,23 @@ mod tests {
         }
     }
 
-    /// Happy path for `build_record_from_fields` at depth 0.
+    /// A stored record with an unknown state discriminant does not deserialize.
     #[test]
-    fn build_record_from_fields_accepts_valid_depth_zero_record() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let initial_note_id = miden_protocol::note::Note::from(pswap.clone()).id();
-
-        let record = record_from_test_pswap(
-            &pswap,
-            initial_note_id,
-            0,
-            100,
-            50,
-            PswapLineageState::Active.as_u8(),
-        )
-        .unwrap();
-
-        assert_eq!(record.current_depth, 0);
-        assert_eq!(record.remaining_offered, AssetAmount::new(100).unwrap());
-        assert_eq!(record.remaining_requested, AssetAmount::new(50).unwrap());
-        assert_eq!(record.state, PswapLineageState::Active);
-    }
-
-    /// Happy path at `current_depth > 0`.
-    #[test]
-    fn build_record_from_fields_accepts_valid_advanced_record() {
+    fn value_codec_rejects_unknown_state() {
         let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
         let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
         let note = miden_protocol::note::Note::from(pswap.clone());
         let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
-                .unwrap();
+            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
 
-        assert_eq!(record.current_depth, 3);
-        assert_eq!(record.remaining_offered, AssetAmount::new(70).unwrap());
-    }
+        // The state byte is the last field of the encoding.
+        let mut bytes = record.to_bytes();
+        *bytes.last_mut().unwrap() = 42;
 
-    /// Unknown state discriminant in a stored record bubbles up as `UnknownState`.
-    #[test]
-    fn build_record_from_fields_rejects_unknown_state() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        match record_from_test_pswap(&pswap, note.id(), 0, 100, 50, 42) {
-            Err(PswapLineageError::UnknownState(42)) => {},
-            other => panic!("expected UnknownState(42), got {other:?}"),
-        }
+        assert!(matches!(
+            PswapLineageRecord::read_from_bytes(&bytes),
+            Err(DeserializationError::InvalidValue(_))
+        ));
     }
 
     /// The mirrored scalars back the accessors with the same values the depth-0 note would yield,
@@ -668,15 +610,8 @@ mod tests {
         let expected_order_id = pswap.order_id();
 
         let note = miden_protocol::note::Note::from(pswap.clone());
-        let record = record_from_test_pswap(
-            &pswap,
-            note.id(),
-            0,
-            100,
-            50,
-            PswapLineageState::Active.as_u8(),
-        )
-        .unwrap();
+        let record =
+            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
 
         assert_eq!(record.original_note_id, note.id());
         assert_eq!(record.order_id(), expected_order_id);
@@ -691,8 +626,7 @@ mod tests {
         let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
         let note = miden_protocol::note::Note::from(pswap.clone());
         let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
-                .unwrap();
+            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active);
 
         let bytes = record.to_bytes();
         let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();

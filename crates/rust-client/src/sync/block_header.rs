@@ -57,31 +57,40 @@ impl<AUTH> Client<AUTH> {
     /// in builds without the `std` feature, the header is requested from the node and no protocol
     /// configuration is returned. The node is not asked for the full block because the genesis
     /// block body can exceed the gRPC message size limit.
+    #[cfg(feature = "std")]
     async fn fetch_genesis_block_header(
         &self,
     ) -> Result<(BlockHeader, Option<ProtocolConfig>), ClientError> {
-        #[cfg(feature = "std")]
-        {
-            let network = match self.network_id().await? {
-                NetworkId::Mainnet => Some("mainnet"),
-                NetworkId::Testnet => Some("testnet"),
-                NetworkId::Devnet => Some("devnet"),
-                NetworkId::Custom(_) => None,
-            };
-            if let Some(network) = network {
-                let url = format!("https://genesis.{network}.miden.io");
-                let bytes = reqwest::get(&url)
-                    .await
-                    .and_then(reqwest::Response::error_for_status)
-                    .map_err(|err| RpcError::ConnectionError(Box::new(err)))?
-                    .bytes()
-                    .await
-                    .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
-                let (block, protocol_config) = deserialize_genesis_block(&bytes)?;
-                return Ok((block.header().clone(), Some(protocol_config)));
-            }
-        }
+        let network = match self.network_id().await? {
+            NetworkId::Mainnet => "mainnet",
+            NetworkId::Testnet => "testnet",
+            NetworkId::Devnet => "devnet",
+            NetworkId::Custom(_) => return self.fetch_genesis_header_from_node().await,
+        };
+        let url = format!("https://genesis.{network}.miden.io");
+        let bytes = reqwest::get(&url)
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|err| RpcError::ConnectionError(Box::new(err)))?
+            .bytes()
+            .await
+            .map_err(|err| RpcError::ConnectionError(Box::new(err)))?;
+        let (block, protocol_config) = deserialize_genesis_block(&bytes)?;
+        Ok((block.header().clone(), Some(protocol_config)))
+    }
 
+    /// Fetches the genesis block header from the node. No protocol configuration is returned.
+    #[cfg(not(feature = "std"))]
+    async fn fetch_genesis_block_header(
+        &self,
+    ) -> Result<(BlockHeader, Option<ProtocolConfig>), ClientError> {
+        self.fetch_genesis_header_from_node().await
+    }
+
+    /// Fetches the genesis block header from the node. No protocol configuration is returned.
+    async fn fetch_genesis_header_from_node(
+        &self,
+    ) -> Result<(BlockHeader, Option<ProtocolConfig>), ClientError> {
         let (header, _) = self
             .rpc_api
             .get_block_header_by_number(Some(BlockNumber::GENESIS), false)

@@ -1178,13 +1178,21 @@ impl SqliteStore {
             let boundary_val = u64_to_value(up_to_nonce.as_canonical_u64());
             let mut total_deleted: usize = 0;
 
+            // `u64_to_value` stores nonces above `i64::MAX` as negative integers in the same order,
+            // so this filter compares the stored nonces as unsigned values.
+            let nonce_filter = if i64::try_from(up_to_nonce.as_canonical_u64()).is_ok() {
+                "replaced_at_nonce BETWEEN 0 AND ?"
+            } else {
+                "(replaced_at_nonce >= 0 OR replaced_at_nonce <= ?)"
+            };
+
             // Collect code commitments from headers we are about to delete.
             let candidate_code_commitments: Vec<Vec<u8>> = {
                 let mut stmt = tx
-                    .prepare(
+                    .prepare(&format!(
                         "SELECT DISTINCT code_commitment FROM historical_account_headers \
-                     WHERE id = ? AND replaced_at_nonce <= ?",
-                    )
+                     WHERE id = ? AND {nonce_filter}",
+                    ))
                     .into_store_error()?;
                 let rows = stmt
                     .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
@@ -1199,9 +1207,8 @@ impl SqliteStore {
                 ("historical_storage_map_entries", "account_id"),
                 ("historical_account_assets", "account_id"),
             ] {
-                let query = format!(
-                    "DELETE FROM {table} WHERE {account_column} = ? AND replaced_at_nonce <= ?"
-                );
+                let query =
+                    format!("DELETE FROM {table} WHERE {account_column} = ? AND {nonce_filter}");
                 total_deleted += tx
                     .execute(&query, params![&account_id_bytes, &boundary_val])
                     .into_store_error()?;

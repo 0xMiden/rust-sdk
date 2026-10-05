@@ -868,11 +868,9 @@ pub(crate) fn validate_note_parts(
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::crypto::merkle::SparseMerklePath;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::NoteType;
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -880,6 +878,8 @@ mod tests {
         ACCOUNT_ID_SENDER,
     };
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::*;
 
@@ -888,16 +888,17 @@ mod tests {
         let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::from(&[1u32; 4]));
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
         let note: Note = P2idNote::builder()
             .sender(sender)
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .unwrap()
             .into();
+
         let inclusion_proof =
             NoteInclusionProof::new(BlockNumber::from(7), 3, SparseMerklePath::default()).unwrap();
         let entry = RelayOutboxEntry {

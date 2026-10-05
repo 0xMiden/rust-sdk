@@ -40,6 +40,9 @@ pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.mid
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
 pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
+pub const NOTE_TRANSPORT_CHUNK_CURSORS_KEY: &str = "note_transport_chunk_cursors";
+
+type NoteTransportChunkCursors = Vec<(Vec<NoteTag>, NoteTransportCursor)>;
 
 /// Settings key for the note-transport backfill bookkeeping: a serialized `Vec<NoteTag>` of the
 /// `User`- and `Account`-source tags whose full history has already been fetched up to the global
@@ -57,6 +60,18 @@ pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
 
 /// Client note transport methods.
 impl<AUTH> Client<AUTH> {
+    /// Maximum number of note tags in one transport fetch request.
+    pub const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
+
+    /// Legacy name for [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`].
+    ///
+    /// This value is not a limit on the number of account tags that the client can track.
+    #[deprecated(
+        since = "0.17.1",
+        note = "use MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST; account tags are no longer limited"
+    )]
+    pub const MAX_ACCOUNT_TAGS: usize = Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST;
+
     /// Check if note transport connection is configured
     pub fn is_note_transport_enabled(&self) -> bool {
         self.note_transport_api.is_some()
@@ -279,6 +294,56 @@ impl<AUTH> Client<AUTH> {
             .await
             .map_err(ClientError::StoreError)
     }
+
+    /// Loads the cursor for each exact tag chunk used by the transport fetch.
+    ///
+    /// The transport requires a cursor to be reused only with the same tag set. A missing or
+    /// unreadable value resets all chunks so the next fetch safely reads their retained history.
+    async fn load_note_transport_chunk_cursors(
+        &self,
+    ) -> Result<NoteTransportChunkCursors, ClientError> {
+        let key = String::from(NOTE_TRANSPORT_CHUNK_CURSORS_KEY);
+        let bytes = self
+            .store
+            .get_setting(SettingScope::Client, key.clone())
+            .await
+            .map_err(ClientError::StoreError)?;
+        let Some(bytes) = bytes else {
+            return Ok(Vec::new());
+        };
+
+        match NoteTransportChunkCursors::read_from_bytes(&bytes) {
+            Ok(cursors) => Ok(cursors),
+            Err(err) => {
+                tracing::warn!(?err, "dropping unreadable note transport chunk cursors");
+                self.store
+                    .remove_setting(SettingScope::Client, key)
+                    .await
+                    .map_err(ClientError::StoreError)?;
+                Ok(Vec::new())
+            },
+        }
+    }
+
+    /// Saves the cursor for each exact tag chunk used by the transport fetch.
+    async fn save_note_transport_chunk_cursors(
+        &self,
+        cursors: &NoteTransportChunkCursors,
+    ) -> Result<(), ClientError> {
+        let key = String::from(NOTE_TRANSPORT_CHUNK_CURSORS_KEY);
+        if cursors.is_empty() {
+            self.store
+                .remove_setting(SettingScope::Client, key)
+                .await
+                .map_err(ClientError::StoreError)?;
+            return Ok(());
+        }
+
+        self.store
+            .set_setting(SettingScope::Client, key, cursors.to_bytes())
+            .await
+            .map_err(ClientError::StoreError)
+    }
 }
 
 impl<AUTH> Client<AUTH>
@@ -312,13 +377,12 @@ where
 
         let note_tags: Vec<NoteTag> =
             self.store.get_unique_note_tags().await?.into_iter().collect();
-        let cursor = self.store.get_note_transport_cursor().await?;
-
         let mut id_by_commitment = BTreeMap::new();
-        let (note_files, new_cursor) =
-            self.fetch_transport_notes(cursor, &note_tags, &mut id_by_commitment).await?;
+        let (note_files, chunk_cursors, new_cursor) =
+            self.fetch_transport_notes_in_chunks(&note_tags, &mut id_by_commitment).await?;
 
         self.import_notes(&note_files).await?;
+        self.save_note_transport_chunk_cursors(&chunk_cursors).await?;
         self.store.update_note_transport_cursor(new_cursor).await?;
 
         Ok(())
@@ -427,6 +491,39 @@ where
             .map(|record| record.tag)
             .collect();
         Ok(tags)
+    }
+
+    /// Fetches one page for each transport-sized chunk of tracked tags.
+    ///
+    /// Each chunk has its own cursor because the transport permits cursor reuse only with the exact
+    /// same tag set. A chunk starts from the beginning when its tag set changes. Imports
+    /// deduplicate notes that the reset fetch returns again.
+    async fn fetch_transport_notes_in_chunks(
+        &self,
+        tags: &[NoteTag],
+        id_by_commitment: &mut BTreeMap<NoteDetailsCommitment, NoteId>,
+    ) -> Result<(Vec<NoteFile>, NoteTransportChunkCursors, NoteTransportCursor), ClientError> {
+        let stored_cursors = self.load_note_transport_chunk_cursors().await?;
+        let mut note_files = Vec::new();
+        let mut chunk_cursors = Vec::new();
+        let mut latest_cursor = NoteTransportCursor::init();
+
+        for chunk in tags.chunks(Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
+            let cursor = stored_cursors
+                .iter()
+                .find_map(|(stored_tags, cursor)| {
+                    (stored_tags.as_slice() == chunk).then_some(*cursor)
+                })
+                .unwrap_or_else(NoteTransportCursor::init);
+            let (chunk_files, new_cursor) =
+                self.fetch_transport_notes(cursor, chunk, id_by_commitment).await?;
+
+            note_files.extend(chunk_files);
+            chunk_cursors.push((chunk.to_vec(), new_cursor));
+            latest_cursor = latest_cursor.max(new_cursor);
+        }
+
+        Ok((note_files, chunk_cursors, latest_cursor))
     }
 
     /// Fetches and returns one batch of notes from the note transport layer for the provided tags
@@ -538,27 +635,44 @@ where
                 .extend(self.backfill_tag(tag, &mut note_transport_update.id_by_commitment).await?);
             covered.insert(tag);
         }
+        // Exclude user and account tags whose backfill was deferred. Fetching them with a reset
+        // chunk cursor would bypass the per-sync backfill cap and could advance past their history.
+        let note_tags: Vec<NoteTag> = self
+            .store
+            .get_note_tags()
+            .await?
+            .into_iter()
+            .filter(|record| {
+                !matches!(record.source, NoteTagSource::User | NoteTagSource::Account(_))
+                    || covered.contains(&record.tag)
+            })
+            .map(|record| record.tag)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         if pruned || backfilled {
             note_transport_update.covered_tags = Some(covered);
         }
 
-        let cursor = self.store.get_note_transport_cursor().await?;
-        let note_tags: Vec<NoteTag> =
-            self.store.get_unique_note_tags().await?.into_iter().collect();
-        let (note_files, new_cursor) = self
-            .fetch_transport_notes(cursor, &note_tags, &mut note_transport_update.id_by_commitment)
+        let (note_files, chunk_cursors, new_cursor) = self
+            .fetch_transport_notes_in_chunks(
+                &note_tags,
+                &mut note_transport_update.id_by_commitment,
+            )
             .await?;
         note_transport_update.note_files.extend(note_files);
+        note_transport_update.chunk_cursors = Some(chunk_cursors);
         note_transport_update.cursor = Some(new_cursor);
 
         Ok(note_transport_update)
     }
 
-    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in three steps:
+    /// Writes everything [`Client::fetch_note_transport_updates`] returned, in four steps:
     ///
     /// 1. Imports the fetched notes, which resolves their on-chain state and stores the records.
     /// 2. Saves the covered-tag set, when the backfill changed it.
-    /// 3. Advances the stored note transport cursor, when a page was fetched.
+    /// 3. Saves the cursor for each exact tag chunk.
+    /// 4. Advances the legacy aggregate note transport cursor, when a page was fetched.
     ///
     /// The notes are written before the covered-tag set and the cursor, so a crash between them
     /// re-fetches instead of skipping notes that were never written.
@@ -572,6 +686,7 @@ where
             note_files,
             id_by_commitment,
             covered_tags,
+            chunk_cursors,
             cursor,
         } = update;
 
@@ -583,6 +698,10 @@ where
 
         if let Some(covered_tags) = covered_tags {
             self.save_covered_tags(&covered_tags).await?;
+        }
+
+        if let Some(chunk_cursors) = chunk_cursors {
+            self.save_note_transport_chunk_cursors(&chunk_cursors).await?;
         }
 
         if let Some(cursor) = cursor {
@@ -638,7 +757,9 @@ pub(crate) struct NoteTransportLayerUpdate {
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
     /// Covered-tag set to persist, `None` when it did not change.
     covered_tags: Option<BTreeSet<NoteTag>>,
-    /// New global cursor, from the steady-state page. `None` when no page was fetched.
+    /// Cursors for the exact tag chunks used by the steady-state fetch.
+    chunk_cursors: Option<NoteTransportChunkCursors>,
+    /// New legacy aggregate cursor. `None` when no page was fetched.
     cursor: Option<NoteTransportCursor>,
 }
 

@@ -251,6 +251,40 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
 }
 
+/// Fetches more tags than one transport request accepts by splitting them into multiple requests.
+#[tokio::test]
+async fn transport_fetch_chunks_tracked_tags() {
+    const MAX_TAGS: usize = MockClient::<FilesystemKeyStore>::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST;
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let transport = MockNoteTransportApi::with_max_tags_per_fetch(mock_node.clone(), MAX_TAGS);
+    let (mut recipient, recipient_account) =
+        create_test_user_with_transport(Arc::new(transport.clone())).await;
+
+    let added_tags: Vec<NoteTag> = (0..MAX_TAGS)
+        .map(|index| NoteTag::new(10_000 + u32::try_from(index).unwrap()))
+        .collect();
+    for tag in &added_tags {
+        recipient.add_note_tag(*tag).await.unwrap();
+    }
+
+    let delivery_tag = *added_tags.last().unwrap();
+    let note = private_note_with_tag(recipient_account.id(), delivery_tag, 1);
+    mock_node
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts(), vec![MAX_TAGS, 1]);
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|record| record.details_commitment() == note.details_commitment())
+    );
+}
+
 /// A tag added after the global cursor has advanced past its notes still receives its history:
 /// `sync_note_transport` backfills the newly tracked tag from the start, scoped to that tag alone.
 ///

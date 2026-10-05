@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.1 (2026-10-05)
+
+### Fixes
+
+* [FIX][rust] Clients can track more than 128 account note tags. Note transport fetches split tracked tags into requests of at most 128 and keep a cursor for each exact tag chunk. `Client::MAX_ACCOUNT_TAGS` and `ClientError::AccountTagLimitExceeded` are deprecated because the client no longer enforces an account-tag limit; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
+
 ## 0.17.0 (2026-10-02)
 
 ### Breaking Changes

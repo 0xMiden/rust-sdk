@@ -232,10 +232,9 @@ impl<AUTH> Client<AUTH> {
     /// A missing or unreadable value resets all tags so the next fetch safely reads their retained
     /// history.
     async fn load_note_transport_cursors(&self) -> Result<NoteTransportCursors, ClientError> {
-        let key = String::from(NOTE_TRANSPORT_CURSORS_KEY);
         let bytes = self
             .store
-            .get_setting(SettingScope::Client, key.clone())
+            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_CURSORS_KEY))
             .await
             .map_err(ClientError::StoreError)?;
         let Some(bytes) = bytes else {
@@ -245,11 +244,7 @@ impl<AUTH> Client<AUTH> {
         match NoteTransportCursors::read_from_bytes(&bytes) {
             Ok(cursors) => Ok(cursors),
             Err(err) => {
-                tracing::warn!(?err, "dropping unreadable note transport cursors");
-                self.store
-                    .remove_setting(SettingScope::Client, key)
-                    .await
-                    .map_err(ClientError::StoreError)?;
+                tracing::warn!(?err, "resetting unreadable note transport cursors");
                 Ok(BTreeMap::new())
             },
         }
@@ -351,134 +346,79 @@ where
         Ok(tags)
     }
 
-    /// Fetches bounded pages for each transport-sized group of tracked tags at the same cursor.
+    /// Fetches bounded pages for groups of at most 128 tags at the same cursor.
     ///
-    /// Each tag keeps its own cursor. Tags at the same cursor share requests of at most
-    /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags. Completed groups catch up to a common
-    /// target before they share a cursor. Failed pages leave previously fetched pages available for
-    /// import.
+    /// Regrouping uses a target known before the fetch. The furthest cursor preserves progress for
+    /// the next sync. Failed pages leave successful pages available for import.
     async fn fetch_transport_notes_in_chunks(
         &self,
         tags: &[NoteTag],
     ) -> Result<NoteTransportLayerUpdate, ClientError> {
         let api = self.get_note_transport_api()?;
-        let stored_cursors = self.load_note_transport_cursors().await?;
+        let stored = self.load_note_transport_cursors().await?;
+        let mut cursors: NoteTransportCursors = tags
+            .iter()
+            .filter_map(|tag| stored.get(tag).map(|cursor| (*tag, *cursor)))
+            .collect();
+        let targets = max_transport_sequences(&cursors);
+        let mut groups = BTreeMap::<NoteTransportCursor, Vec<NoteTag>>::new();
+        for tag in tags {
+            let cursor = cursors.get(tag).copied().unwrap_or_else(NoteTransportCursor::init);
+            groups.entry(cursor).or_default().push(*tag);
+        }
+
         let mut update = NoteTransportLayerUpdate::default();
         let mut notes = Vec::new();
-        let mut tags_by_cursor = BTreeMap::<NoteTransportCursor, Vec<NoteTag>>::new();
-        let mut cursors = BTreeMap::new();
-        for tag in tags {
-            let cursor = stored_cursors.get(tag).copied().unwrap_or_else(NoteTransportCursor::init);
-            tags_by_cursor.entry(cursor).or_default().push(*tag);
-            if let Some(cursor) = stored_cursors.get(tag) {
-                cursors.insert(*tag, *cursor);
+        let mut caught_up = BTreeSet::new();
+        for (cursor, group) in groups {
+            for chunk in group.chunks(Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
+                let mut cursor = cursor;
+                for page_index in 0..MAX_NOTE_TRANSPORT_PAGES_PER_CHUNK {
+                    let page = match api
+                        .fetch_notes_page(chunk, cursor)
+                        .await
+                        .and_then(|page| validate_transport_page(page, chunk, cursor))
+                    {
+                        Ok(page) => page,
+                        Err(error) => {
+                            update.fetch_error.get_or_insert(error.into());
+                            break;
+                        },
+                    };
+                    for (id, note, block_hint) in page.notes {
+                        update.id_by_commitment.insert(note.details_commitment(), id);
+                        notes.push((note, block_hint));
+                    }
+                    cursor = page.cursor;
+                    cursors.extend(chunk.iter().map(|tag| (*tag, cursor)));
+                    if !page.has_more {
+                        caught_up.extend(chunk.iter().copied());
+                        break;
+                    }
+                    if page_index + 1 == MAX_NOTE_TRANSPORT_PAGES_PER_CHUNK {
+                        tracing::warn!(tags = ?chunk, "note transport page budget exhausted; retaining progress for the next sync");
+                    }
+                }
             }
         }
 
-        let mut chunks = Vec::new();
-        for (cursor, cursor_tags) in tags_by_cursor {
-            for tags in cursor_tags.chunks(Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
-                chunks.push(NoteTransportChunk {
-                    tags: tags.to_vec(),
-                    cursor,
-                    remaining_pages: MAX_NOTE_TRANSPORT_PAGES_PER_CHUNK,
-                    failed: false,
-                });
-            }
-        }
-
-        for chunk in &mut chunks {
-            Self::fetch_transport_chunk(
-                api.as_ref(),
-                chunk,
-                None,
-                &mut notes,
-                &mut cursors,
-                &mut update,
-            )
-            .await;
-        }
-
-        // Fix the targets before the confirmation requests. An earlier empty response cannot prove
-        // that a later sequence has no matching notes.
-        let mut targets = BTreeMap::<u64, u64>::new();
-        for cursor in cursors.values() {
-            if let Some((nonce, sequence)) = cursor.parts() {
-                targets
-                    .entry(nonce)
-                    .and_modify(|target| *target = (*target).max(sequence))
-                    .or_insert(sequence);
-            }
-        }
-        for chunk in &mut chunks {
-            if let Some((nonce, sequence)) = chunk.cursor.parts()
+        // Keep the furthest cursor so the next target can advance. Other covered tags share the
+        // target known before the requests. An earlier empty response cannot prove coverage of a
+        // sequence learned from a later response.
+        let leaders = max_transport_sequences(&cursors);
+        for (tag, cursor) in &mut cursors {
+            if let Some((nonce, sequence)) = cursor.parts()
                 && let Some(&target) = targets.get(&nonce)
-                && sequence < target
+                && (caught_up.contains(tag) || sequence >= target)
+                && (sequence <= target || sequence < leaders[&nonce])
             {
-                Self::fetch_transport_chunk(
-                    api.as_ref(),
-                    chunk,
-                    Some((nonce, target)),
-                    &mut notes,
-                    &mut cursors,
-                    &mut update,
-                )
-                .await;
+                *cursor = NoteTransportCursor::from_parts(nonce, target);
             }
         }
 
         update.note_files = self.prepare_transport_notes(notes).await?;
         update.cursors = Some(cursors);
         Ok(update)
-    }
-
-    /// Fetches a chunk until its history ends, its target is covered, or its request budget ends.
-    async fn fetch_transport_chunk(
-        api: &dyn NoteTransportClient,
-        chunk: &mut NoteTransportChunk,
-        target: Option<(u64, u64)>,
-        notes: &mut Vec<(Note, Option<BlockNumber>)>,
-        cursors: &mut NoteTransportCursors,
-        update: &mut NoteTransportLayerUpdate,
-    ) {
-        while !chunk.failed && chunk.remaining_pages > 0 {
-            chunk.remaining_pages -= 1;
-            let page = match api
-                .fetch_notes_page(&chunk.tags, chunk.cursor)
-                .await
-                .and_then(|page| validate_transport_page(page, &chunk.tags, chunk.cursor))
-            {
-                Ok(page) => page,
-                Err(error) => {
-                    chunk.failed = true;
-                    update.fetch_error.get_or_insert(error.into());
-                    return;
-                },
-            };
-
-            for (id, note, block_hint) in page.notes {
-                update.id_by_commitment.insert(note.details_commitment(), id);
-                notes.push((note, block_hint));
-            }
-
-            let covered_target = target.filter(|&(nonce, sequence)| {
-                page.cursor.parts().is_some_and(|(page_nonce, page_sequence)| {
-                    nonce == page_nonce && (page_sequence >= sequence || !page.has_more)
-                })
-            });
-            // A confirmation page can include notes above the fixed target. Import those notes and
-            // resume from the target so completed chunks can share requests.
-            chunk.cursor = covered_target.map_or(page.cursor, |(nonce, sequence)| {
-                NoteTransportCursor::from_parts(nonce, sequence)
-            });
-            cursors.extend(chunk.tags.iter().map(|tag| (*tag, chunk.cursor)));
-            if covered_target.is_some() || !page.has_more {
-                return;
-            }
-        }
-        if !chunk.failed && chunk.remaining_pages == 0 {
-            tracing::warn!(tags = ?chunk.tags, "note transport page budget exhausted; retaining progress for the next sync");
-        }
     }
 
     /// Screens fetched notes and prepares them for import with one set of store reads.
@@ -635,11 +575,18 @@ pub(crate) struct NoteTransportLayerUpdate {
     pub(crate) fetch_error: Option<ClientError>,
 }
 
-struct NoteTransportChunk {
-    tags: Vec<NoteTag>,
-    cursor: NoteTransportCursor,
-    remaining_pages: usize,
-    failed: bool,
+/// Returns the furthest sequence for each database nonce.
+fn max_transport_sequences(cursors: &NoteTransportCursors) -> BTreeMap<u64, u64> {
+    let mut sequences = BTreeMap::<u64, u64>::new();
+    for cursor in cursors.values() {
+        if let Some((nonce, sequence)) = cursor.parts() {
+            sequences
+                .entry(nonce)
+                .and_modify(|maximum| *maximum = (*maximum).max(sequence))
+                .or_insert(sequence);
+        }
+    }
+    sequences
 }
 
 struct ValidatedTransportPage {

@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -178,7 +177,6 @@ impl Default for MockNoteTransportNode {
 #[derive(Clone, Default)]
 pub struct MockNoteTransportApi {
     pub mock_node: Arc<RwLock<MockNoteTransportNode>>,
-    max_tags_per_fetch: Option<usize>,
     fetch_tag_counts: Arc<RwLock<Vec<usize>>>,
 }
 
@@ -186,19 +184,6 @@ impl MockNoteTransportApi {
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>) -> Self {
         Self {
             mock_node,
-            max_tags_per_fetch: None,
-            fetch_tag_counts: Arc::default(),
-        }
-    }
-
-    /// Builds a mock that rejects fetches with more than `max_tags` tags.
-    pub fn with_max_tags_per_fetch(
-        mock_node: Arc<RwLock<MockNoteTransportNode>>,
-        max_tags: usize,
-    ) -> Self {
-        Self {
-            mock_node,
-            max_tags_per_fetch: Some(max_tags),
             fetch_tag_counts: Arc::default(),
         }
     }
@@ -254,14 +239,6 @@ impl NoteTransportClient for MockNoteTransportApi {
         cursor: NoteTransportCursor,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         self.fetch_tag_counts.write().push(tags.len());
-        if let Some(max_tags) = self.max_tags_per_fetch
-            && tags.len() > max_tags
-        {
-            return Err(NoteTransportError::Network(format!(
-                "fetch request has {} tags; maximum is {max_tags}",
-                tags.len(),
-            )));
-        }
         let node = self.mock_node.read();
         let (notes, cursor) = node.get_notes(tags, cursor);
         let has_more = !node.get_notes(tags, cursor).0.is_empty();

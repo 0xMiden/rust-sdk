@@ -36,5 +36,6 @@ pub enum NoteTransportError {
         "note transport tag backfill did not converge after {0} iterations: the server cursor \
          keeps advancing but never returns an empty batch"
     )]
+    #[deprecated(since = "0.17.1", note = "note transport no longer performs per-tag backfills")]
     PaginationDidNotTerminate(usize),
 }

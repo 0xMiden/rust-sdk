@@ -112,9 +112,26 @@ impl TestClient {
     ) -> Result<TransactionId, ClientError> {
         self.sync_state().await?;
 
+        if !transaction_request.expected_ntx_scripts().is_empty() {
+            let prover = self.client.prover();
+            Box::pin(self.client.ensure_ntx_scripts_registered(
+                account_id,
+                transaction_request.expected_ntx_scripts(),
+                prover,
+            ))
+            .await?;
+        }
+
         let transaction_request = self.fund_request(account_id, transaction_request);
 
-        Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+        let tx_result =
+            Box::pin(self.client.execute_transaction(account_id, transaction_request)).await?;
+        let proven_transaction = self.client.prove_transaction(&tx_result).await?;
+        let submission_height =
+            self.submit_proven_transaction_retrying(proven_transaction, &tx_result).await?;
+        self.client.apply_transaction(&tx_result, submission_height).await?;
+
+        Ok(tx_result.id())
     }
 
     /// Executes a transaction for `account_id`, folding in its funding note when it has one.
@@ -136,8 +153,10 @@ impl TestClient {
 
     /// Returns `transaction_request` with `account_id`'s funding note folded in.
     ///
-    /// Only needed for requests not going through [`Self::submit_new_transaction`] — notably a
-    /// batch, which borrows the client, so the note must be taken before the batch is created.
+    /// Only needed for requests not going through [`Self::submit_new_transaction`]. The node can
+    /// reject such a request until it knows the funding note, so submit it with
+    /// [`Self::submit_proven_transaction_retrying`]. Do not use it for a batch. A rejected batch
+    /// cannot be resubmitted.
     #[must_use]
     pub fn fund_request(
         &mut self,
@@ -713,6 +732,21 @@ impl TestClient {
             TransactionRequestBuilder::new().build_consume_notes(input_notes.to_vec())?;
         let tx_id = self.submit_new_transaction(account_id, tx_request).await?;
         info!(tx_id = %tx_id, "Consume transaction submitted");
+        Ok(tx_id)
+    }
+
+    /// Consumes `input_notes` with `account_id` and waits for the transaction to commit.
+    ///
+    /// Nearly every caller of [`Self::consume_notes`] needs the consumption to have landed before
+    /// it asserts anything, so this pairs the two.
+    pub async fn consume_notes_and_wait(
+        &mut self,
+        account_id: AccountId,
+        input_notes: &[Note],
+    ) -> Result<TransactionId> {
+        let tx_id = self.consume_notes(account_id, input_notes).await?;
+        self.wait_for_tx(tx_id).await?;
+
         Ok(tx_id)
     }
 

@@ -234,6 +234,7 @@ pub enum ClientError {
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
     #[error("expected note blocks to be screened before state sync update is built")]
     UnscreenedNoteBlocks,
+    #[deprecated(since = "0.17.1", note = "account tags are no longer limited")]
     #[error("client already tracks maximum number of account tags possible: {0}")]
     AccountTagLimitExceeded(usize),
 }
@@ -575,7 +576,7 @@ fn transaction_executor_hint(err: &TransactionExecutorError) -> Option<ErrorHint
 #[derive(Debug, Error)]
 pub enum IdPrefixFetchError {
     /// No matches were found for the ID prefix.
-    #[error("no stored notes matched the provided prefix '{0}'")]
+    #[error("no stored entry matched the {0}")]
     NoMatch(String),
     /// Multiple entities matched with the ID prefix.
     #[error(

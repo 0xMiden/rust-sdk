@@ -303,9 +303,30 @@ View transactions.
 
 #### Action Flags
 
-| Command  | Description               | Aliases |
-| -------- | ------------------------- | ------- |
-| `--list` | List tracked transactions | -l      |
+| Command       | Description                              | Aliases |
+| ------------- | ---------------------------------------- | ------- |
+| `--list`      | List tracked transactions                | `-l`    |
+| `--show <ID>` | Show the details of a single transaction | `-s`    |
+
+The `--list` flag accepts filters that narrow the listing, which is ordered by creation time, newest first:
+
+| Flag                | Description                                            | Aliases |
+| ------------------- | ------------------------------------------------------ | ------- |
+| `--account-id <ID>` | Only list transactions executed by this account        | `-a`    |
+| `--status <status>` | Only list `pending`, `committed` or `discarded` ones    |         |
+| `--limit <count>`   | Only list at most this many of the newest transactions  |         |
+
+The `--show` flag prints the transaction record, a table of its input notes and a table of its
+output notes. Each note row has the standard note name, the store state and the decoded storage of a P2ID, P2IDE,
+SWAP or PSWAP note. The reference block is the block the transaction executed against, not the
+block that included it. It accepts a partial ID:
+
+```sh
+miden-client tx --show 0x0c97ec
+```
+
+The transaction records an input note only by its nullifier. The note ID comes from the tracked
+notes with that nullifier. An untracked private note shows as `<private>`.
 
 After a transaction gets executed, two entities start being tracked:
 

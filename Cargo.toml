@@ -31,7 +31,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
-version      = "0.17.0"
+version      = "0.17.2"
 
 [profile.dev]
 codegen-units = 16
@@ -72,6 +72,8 @@ async-trait        = { version = "0.1" }
 chrono             = { version = "0.4" }
 clap               = { version = "4.5" }
 comfy-table        = { version = "7.1" }
+futures            = { version = "0.3" }
+hex                = { version = "0.4" }
 miette             = { features = ["fancy"], version = "7.6" }
 predicates         = { version = "3.0" }
 prost              = { default-features = false, version = "0.14" }
@@ -79,9 +81,8 @@ protox             = { version = "0.9.1" }
 rand               = { version = "0.10" }
 rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }
-reqwest            = { default-features = false, features = ["json"], version = "0.12" }
+reqwest            = { default-features = false, features = ["json", "rustls-tls"], version = "0.12" }
 rstest             = { version = "0.25" }
-rustix             = { features = ["fs"], version = "1.1" }
 serde              = { features = ["derive"], version = "1.0" }
 serde_json         = { version = "1.0" }
 sha2               = { default-features = false, version = "0.11" }

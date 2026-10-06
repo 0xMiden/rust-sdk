@@ -21,6 +21,7 @@ use crate::note_transport::{
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    NoteTransportPage,
     TransportNote,
 };
 
@@ -64,15 +65,26 @@ impl MockNoteTransportNode {
 
     /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
     /// its node; the mock only records the proof's block and serves it as the commitment block.
+    ///
+    /// The real service stores a note only once. The mock also ignores a note with an id that it
+    /// already stores.
     pub fn add_note_with_proof(
         &mut self,
         header: NoteHeader,
         details_bytes: Vec<u8>,
         inclusion_proof: &NoteInclusionProof,
     ) {
+        if self.contains_note(&header.id()) {
+            return;
+        }
         let block_num = inclusion_proof.location().block_num();
         self.proven_notes.insert(header.id(), block_num);
         self.add_note_after(header, details_bytes, Some(block_num));
+    }
+
+    /// Returns whether the mock stores a note with `note_id`.
+    fn contains_note(&self, note_id: &NoteId) -> bool {
+        self.notes.values().flatten().any(|(info, _)| info.header.id() == *note_id)
     }
 
     /// Returns the block named by the proof a note was stored with, or `None` when the note was not
@@ -118,6 +130,11 @@ impl MockNoteTransportNode {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
+        let cursor = if cursor.parts().is_some_and(|(nonce, _)| nonce != self.nonce) {
+            NoteTransportCursor::init()
+        } else {
+            cursor
+        };
         // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
         // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
         // `init()`.
@@ -171,11 +188,20 @@ impl Default for MockNoteTransportNode {
 #[derive(Clone, Default)]
 pub struct MockNoteTransportApi {
     pub mock_node: Arc<RwLock<MockNoteTransportNode>>,
+    fetch_tag_counts: Arc<RwLock<Vec<usize>>>,
 }
 
 impl MockNoteTransportApi {
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>) -> Self {
-        Self { mock_node }
+        Self {
+            mock_node,
+            fetch_tag_counts: Arc::default(),
+        }
+    }
+
+    /// Returns the number of tags in each fetch request.
+    pub fn fetch_tag_counts(&self) -> Vec<usize> {
+        self.fetch_tag_counts.read().clone()
     }
 }
 
@@ -214,7 +240,20 @@ impl NoteTransportClient for MockNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        Ok(self.fetch_notes(tags, cursor))
+        let page = self.fetch_notes_page(tags, cursor).await?;
+        Ok((page.notes, page.cursor))
+    }
+
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        self.fetch_tag_counts.write().push(tags.len());
+        let node = self.mock_node.read();
+        let (notes, cursor) = node.get_notes(tags, cursor);
+        let has_more = !node.get_notes(tags, cursor).0.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more })
     }
 }
 
@@ -224,10 +263,9 @@ impl NoteTransportClient for MockNoteTransportApi {
 /// Test-only [`NoteTransportClient`] decorator that injects controlled failures into
 /// `send_note_with_proof` calls.
 ///
-/// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
-/// attempt, exercising the durable outbox in
-/// [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof): without
-/// retry/persistence a failed relay would leave the recipient unable to discover the note.
+/// Reproduces the failure mode where the NTL is reachable but rejects a send. Tests use it to check
+/// how [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof)
+/// reports the failure and how a later send by the caller delivers the note.
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
 /// `send_note_with_proof` calls should fail (`fail_next`); successful calls delegate to an inner
@@ -238,6 +276,7 @@ pub struct FaultyNoteTransportApi {
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
     fail_next_fetches: AtomicUsize,
+    fail_on_fetch: AtomicUsize,
     fetch_attempts: AtomicUsize,
 }
 
@@ -250,6 +289,7 @@ impl FaultyNoteTransportApi {
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
             fail_next_fetches: AtomicUsize::new(0),
+            fail_on_fetch: AtomicUsize::new(0),
             fetch_attempts: AtomicUsize::new(0),
         }
     }
@@ -262,6 +302,11 @@ impl FaultyNoteTransportApi {
     /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
     pub fn fail_next_n_fetches(&self, n: usize) {
         self.fail_next_fetches.store(n, Ordering::SeqCst);
+    }
+
+    /// Fails one fetch attempt. Attempt numbers start at one.
+    pub fn fail_on_fetch_attempt(&self, attempt: usize) {
+        self.fail_on_fetch.store(attempt, Ordering::SeqCst);
     }
 
     /// Total `fetch_notes` calls observed (success + failure).
@@ -303,12 +348,12 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
-        if should_fail {
+        if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(
                 "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
             ));

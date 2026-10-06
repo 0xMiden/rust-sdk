@@ -14,6 +14,8 @@ use crate::db_management::errors::SqliteStoreError;
 use crate::db_management::migration::{MigrationHook, SqliteMigration, SqliteMigrator};
 use crate::db_management::schema::SchemaHash;
 
+mod m0002_drop_note_transport_outbox;
+
 // FIXTURE MIGRATIONS
 // ================================================================================================
 

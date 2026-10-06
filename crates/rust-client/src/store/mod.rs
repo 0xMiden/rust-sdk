@@ -57,6 +57,7 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
+#[allow(deprecated)]
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
@@ -661,10 +662,12 @@ pub trait Store: Send + Sync {
     // TRANSPORT
     // --------------------------------------------------------------------------------------------
 
-    /// Gets the note transport cursor.
+    /// Gets the unused aggregate note transport cursor.
     ///
-    /// This is used to reduce the number of fetched notes from the note transport network. If no
-    /// cursor exists, this returns an initial cursor.
+    /// The client stores a cursor for each tag. If the aggregate cursor does not exist, this
+    /// returns an initial cursor.
+    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    #[allow(deprecated)]
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
         let Some(cursor_bytes) = self
             .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
@@ -675,10 +678,11 @@ pub trait Store: Send + Sync {
         NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
     }
 
-    /// Updates the note transport cursor.
+    /// Updates the unused aggregate note transport cursor.
     ///
-    /// This is used to track the last cursor position when fetching notes from the note transport
-    /// network.
+    /// The client stores a cursor for each tag and does not read this value.
+    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    #[allow(deprecated)]
     async fn update_note_transport_cursor(
         &self,
         cursor: NoteTransportCursor,

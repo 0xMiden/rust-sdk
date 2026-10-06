@@ -32,7 +32,6 @@
 //!
 //! For more details on accounts, refer to the [Account] documentation.
 
-use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -82,7 +81,6 @@ pub use miden_protocol::account::{
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;
 pub use miden_protocol::errors::{AccountIdError, AddressError, NetworkIdError};
-use miden_protocol::note::NoteTag;
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -271,9 +269,6 @@ pub mod component {
 ///
 /// - **Data retrieval:** The module also provides methods to fetch account-related data.
 impl<AUTH> Client<AUTH> {
-    // Mirror of node MAX_TAGS_PER_FETCH_REQUEST. NTL allows up to 128 tags per request.
-    pub const MAX_ACCOUNT_TAGS: usize = 128;
-
     // ACCOUNT CREATION
     // --------------------------------------------------------------------------------------------
 
@@ -382,23 +377,6 @@ impl<AUTH> Client<AUTH> {
         Ok(self.rpc_api.is_account_allowed(account_id).await?)
     }
 
-    /// Returns an error if `tag` is a new account tag and the client already tracks
-    /// [`Self::MAX_ACCOUNT_TAGS`] account tags.
-    async fn validate_can_track_more_account_tags(&self, tag: NoteTag) -> Result<(), ClientError> {
-        let tracked_tags: BTreeSet<NoteTag> = self
-            .store
-            .get_account_note_tags()
-            .await?
-            .into_iter()
-            .map(|record| record.tag)
-            .collect();
-        if !tracked_tags.contains(&tag) && tracked_tags.len() >= Self::MAX_ACCOUNT_TAGS {
-            return Err(ClientError::AccountTagLimitExceeded(tracked_tags.len()));
-        }
-
-        Ok(())
-    }
-
     /// Returns whether a transaction against `account_id` creates an account that the network
     /// allowlist gates.
     ///
@@ -453,10 +431,6 @@ impl<AUTH> Client<AUTH> {
         match tracked_account {
             None => {
                 let default_address = Address::new(account.id());
-                if matches!(client_account_type, ClientAccountType::Native) {
-                    self.validate_can_track_more_account_tags(default_address.to_note_tag())
-                        .await?;
-                }
 
                 self.store
                     .insert_account(account, default_address, client_account_type)
@@ -646,8 +620,8 @@ impl<AUTH> Client<AUTH> {
 
     /// Adds an [`Address`] to the associated [`AccountId`].
     ///
-    /// If the account is native, the client tracks the [`NoteTag`] of the address. If the account
-    /// is watched, the client does not track the tag.
+    /// If the account is native, the client tracks the [`NoteTag`](crate::note::NoteTag) of the
+    /// address. If the account is watched, the client does not track the tag.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -663,23 +637,18 @@ impl<AUTH> Client<AUTH> {
             return Err(ClientError::AddressAlreadyTracked(address_bench32));
         }
 
-        let tracked_account = self.store.get_minimal_partial_account(account_id).await?;
-        match tracked_account {
-            None => Err(ClientError::AccountDataNotFound(account_id)),
-            Some(tracked_account) => {
-                if !tracked_account.is_watched() {
-                    self.validate_can_track_more_account_tags(address.to_note_tag()).await?;
-                }
-                self.store.insert_address(address, account_id).await?;
-                Ok(())
-            },
+        if self.store.get_minimal_partial_account(account_id).await?.is_none() {
+            return Err(ClientError::AccountDataNotFound(account_id));
         }
+
+        self.store.insert_address(address, account_id).await?;
+        Ok(())
     }
 
     /// Removes an [`Address`] from the account it belongs to.
     ///
-    /// If the account is native and no other address of the account has the same [`NoteTag`], the
-    /// client no longer tracks the tag.
+    /// If the account is native and no other address of the account has the same
+    /// [`NoteTag`](crate::note::NoteTag), the client no longer tracks the tag.
     ///
     /// Returns `true` if the address was tracked. If it was not tracked, this is a no-op.
     pub async fn remove_address(&mut self, address: Address) -> Result<bool, ClientError> {

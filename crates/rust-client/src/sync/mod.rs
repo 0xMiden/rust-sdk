@@ -71,7 +71,7 @@ use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::pswap::PswapChainObserver;
 use crate::rpc::AccountStateAt;
@@ -219,8 +219,6 @@ where
         let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
         let sync_summary: SyncSummary = (&state_sync_update).into();
-        debug!(sync_summary = ?sync_summary, "Sync summary computed");
-
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
         // propagated.
         state_sync.run_apply_hooks(&state_sync_update).await?;
@@ -232,7 +230,6 @@ where
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
-
         // Cache MMR so pruning can reuse in-memory MMR.
         self.cache_partial_mmr(partial_mmr).await?;
 
@@ -244,15 +241,20 @@ where
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note
-    /// transport is disabled.
+    /// transport is disabled. A failed request returns an error after successful pages and their
+    /// cursors are saved.
     pub async fn sync_note_transport(&mut self) -> Result<Vec<NoteId>, ClientError> {
         if !self.is_note_transport_enabled() {
             return Ok(Vec::new());
         }
         self.ensure_genesis_in_place().await?;
 
-        let note_transport_update = self.fetch_note_transport_updates().await?;
+        let mut note_transport_update = self.fetch_note_transport_updates().await?;
+        let fetch_error = note_transport_update.fetch_error.take();
         let (imported_ids, _) = self.apply_note_transport_update(note_transport_update).await?;
+        if let Some(error) = fetch_error {
+            return Err(error);
+        }
         Ok(imported_ids)
     }
 
@@ -275,8 +277,9 @@ where
     /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
-    /// A transport failure is logged and the chain sync continues without it, leaving the transport
-    /// cursor for the next call to retry. The sync sends no notes to the transport.
+    /// A transport failure is logged and the chain sync continues. Successful transport pages are
+    /// imported and their cursors are saved. Failed requests keep their previous positions for
+    /// retry. The sync sends no notes to the transport.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

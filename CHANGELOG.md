@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.17.1 (TBD)
+## 0.17.2 (TBD)
 
 ### Breaking Changes
 
@@ -9,6 +9,12 @@
 ### Features
 
 * [FEATURE][rust] `GrpcNoteTransportClient` retries a send that fails with a transient error: `Unavailable`, `DeadlineExceeded`, a failed connection, or `ResourceExhausted` with a `retry-after` value. It retries up to three times, with a delay that starts at 250 ms and doubles. `GrpcNoteTransportClient::with_max_retries` and `GrpcNoteTransportClient::with_retry_interval_ms` configure the retries ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+
+## 0.17.1 (2026-10-05)
+
+### Fixes
+
+* [FIX][rust] Removed the account note tag limit. Note transport fetched all tracked tag sources in requests of at most 128 tags and stored a cursor for each tag. Each request started from the lowest cursor of its tags. The import dropped notes delivered again, so tags could be added and removed without losing notes. Pagination recovered retained history without a separate backfill, with at most 32 pages per request group in each sync. Longer histories continued on later syncs. Successful pages remained available when another request failed. Added `NoteTransportClient::fetch_notes_page` with a default implementation for existing transports. Deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded`, `NoteTransportError::PaginationDidNotTerminate`, `NOTE_TRANSPORT_COVERED_TAGS_KEY`, `NOTE_TRANSPORT_CURSOR_STORE_SETTING`, `Store::get_note_transport_cursor`, and `Store::update_note_transport_cursor`; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
 
 ## 0.17.0 (2026-10-02)
 

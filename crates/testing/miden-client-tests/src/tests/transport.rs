@@ -1,7 +1,7 @@
+use std::collections::BTreeMap;
 use std::env::temp_dir;
 use std::sync::Arc;
 
-use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::builder::ClientBuilder;
@@ -18,8 +18,15 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::note_transport::{NoteTransportClient, NoteTransportCursor, NoteTransportError};
-use miden_client::store::NoteFilter;
+use miden_client::note_transport::{
+    NOTE_TRANSPORT_CURSORS_KEY,
+    NoteTransportClient,
+    NoteTransportCursor,
+    NoteTransportError,
+};
+use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
+use miden_client::store::{InputNoteRecord, NoteFilter, SettingScope};
+use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::{TestClient, create_test_store_path};
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
@@ -29,6 +36,7 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
+use miden_client::{ClientError, Deserializable};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -200,6 +208,48 @@ async fn unavailable_attachments_do_not_fail_sync() {
     assert!(notes[0].attachments().is_empty());
 }
 
+/// Repeated transport deliveries can repair unverified and invalid records.
+#[tokio::test]
+async fn transport_repeated_delivery_repairs_incomplete_records() {
+    let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
+    transport
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+    client.fetch_private_notes().await.unwrap();
+    let committed = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(committed.is_committed());
+
+    for state in [
+        UnverifiedNoteState {
+            metadata: *note.metadata(),
+            inclusion_proof: committed.inclusion_proof().unwrap().clone(),
+        }
+        .into(),
+        InvalidNoteState {
+            metadata: *note.metadata(),
+            invalid_inclusion_proof: genesis_inclusion_proof(),
+            block_note_root: Word::default(),
+        }
+        .into(),
+    ] {
+        let record = InputNoteRecord::new(
+            committed.details().clone(),
+            committed.attachments().clone(),
+            committed.created_at(),
+            state,
+        );
+        client.test_store().upsert_input_notes(&[record]).await.unwrap();
+        client
+            .test_store()
+            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into())
+            .await
+            .unwrap();
+
+        client.fetch_private_notes().await.unwrap();
+        assert!(client.get_input_note(note.id()).await.unwrap().unwrap().is_committed());
+    }
+}
+
 /// Verifies that cursor-based pagination works: a second sync only receives newly sent notes.
 #[tokio::test]
 async fn transport_cursor_pagination() {
@@ -251,208 +301,211 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
 }
 
-/// A tag added after the global cursor has advanced past its notes still receives its history:
-/// `sync_note_transport` backfills the newly tracked tag from the start, scoped to that tag alone.
-///
-/// This is the core regression test for the late-added-tag gap that motivated removing
-/// `fetch_all_private_notes`: the steady-state fetch only sees notes past the shared, forward-only
-/// cursor, so a tag started late would otherwise never see its older notes.
+/// Fetches all tag sources in bounded requests and resets unreadable cursors.
 #[tokio::test]
-async fn backfill_imports_history_for_late_added_tag() {
+async fn transport_fetch_chunks_tracked_tags() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
-    let tag_tracked = NoteTag::new(1001);
-    let tag_late = NoteTag::new(1002);
-    recipient.add_note_tag(tag_tracked).await.unwrap();
-
-    let note_late = private_note_with_tag(recipient_account.id(), tag_late, 10);
-    let note_tracked = private_note_with_tag(recipient_account.id(), tag_tracked, 20);
-
-    // Deliver the late tag's note FIRST so it gets the lower cursor, then the tracked tag's note.
-    // Syncing the tracked tag advances the global cursor to (or past) the late note's cursor.
-    mock_node
-        .write()
-        .add_note(*note_late.header(), NoteDetails::from(note_late.clone()).to_bytes());
-    mock_node
-        .write()
-        .add_note(*note_tracked.header(), NoteDetails::from(note_tracked.clone()).to_bytes());
-
-    // Sync: only the tracked tag's note is fetched; the late tag isn't tracked yet.
-    recipient.sync_state().await.unwrap();
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 1, "only the tracked tag's note should arrive first");
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.details_commitment() == note_tracked.details_commitment())
-    );
-
-    // Track the late tag.
-    recipient.add_note_tag(tag_late).await.unwrap();
-
-    // Sync: the backfill must deliver the late tag's note even though its cursor is below the
-    // global cursor. The backfill is scoped to the newly tracked tag (it fetches `&[tag_late]`), so
-    // it recovers that tag's own history without re-scanning every tag from the start.
-    recipient.sync_state().await.unwrap();
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(notes.len(), 2, "the late tag's historical note must be backfilled");
-    assert!(notes.iter().any(|n| n.details_commitment() == note_late.details_commitment()));
-}
-
-/// Removing a tag drops it from the covered set, so re-adding it backfills again. A note that
-/// arrives while the tag is untracked, and that another tag then pushes the global cursor past, can
-/// only be recovered by a from-the-start backfill. Re-adding the tag must recover it, which proves
-/// the covered set is cleared on removal (otherwise the re-added tag would be treated as already
-/// covered and the note would be lost).
-#[tokio::test]
-async fn backfill_recovers_notes_that_arrived_while_untracked() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
-    let tag_x = NoteTag::new(5005);
-    let tag_driver = NoteTag::new(5006);
-    recipient.add_note_tag(tag_driver).await.unwrap();
-    recipient.add_note_tag(tag_x).await.unwrap();
-
-    // Track and cover tag_x while it has no notes yet (so it leaves no `Note`-source tag behind),
-    // then stop tracking it.
-    recipient.sync_state().await.unwrap();
-    recipient.remove_note_tag(tag_x).await.unwrap();
-
-    // While tag_x is untracked, a note arrives for it, followed by a driver-tag note with a higher
-    // cursor. Syncing fetches the driver note and advances the global cursor past note_x, so the
-    // steady-state fetch can no longer see note_x.
-    let note_x = private_note_with_tag(recipient_account.id(), tag_x, 60);
-    let note_driver = private_note_with_tag(recipient_account.id(), tag_driver, 70);
-    mock_node
-        .write()
-        .add_note(*note_x.header(), NoteDetails::from(note_x.clone()).to_bytes());
-    mock_node
-        .write()
-        .add_note(*note_driver.header(), NoteDetails::from(note_driver.clone()).to_bytes());
-    recipient.sync_state().await.unwrap();
-
-    // note_x is not imported: tag_x was untracked, and it now sits below the global cursor.
-    let before = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert!(
-        !before.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
-        "note_x must not be imported while tag_x is untracked"
-    );
-
-    // Re-add tag_x: the backfill drains it from the start and recovers note_x.
-    recipient.add_note_tag(tag_x).await.unwrap();
-    recipient.sync_state().await.unwrap();
-    let after = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert!(
-        after.iter().any(|n| n.details_commitment() == note_x.details_commitment()),
-        "re-adding a removed tag must backfill notes that arrived while it was untracked"
-    );
-}
-
-/// The tag backfill drains a tag's history across multiple server-paginated batches.
-///
-/// Regression test for the interaction between the transport server's response-size cap and the
-/// backfill drain loop: a cap of N per response must not leave the backfill returning only the
-/// first N notes. With `BATCH_CAP` < the backlog, one sync still pulls the whole history for the
-/// newly tracked tag.
-#[tokio::test]
-async fn backfill_drains_across_batches() {
-    const BATCH_CAP: usize = 3;
-    const TOTAL_NOTES: usize = 10;
-
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(BATCH_CAP)));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-
-    let tag_late = NoteTag::new(2002);
-
-    // Seed TOTAL_NOTES > BATCH_CAP notes for the late tag before it is tracked, so a single-batch
-    // fetch cannot drain the backlog. Building each note before adding it spaces the mock's
-    // timestamp cursors so they stay distinct.
-    for i in 0..TOTAL_NOTES {
-        let note = private_note_with_tag(recipient_account.id(), tag_late, 100 + i as u64);
-        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    recipient
+        .test_store()
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), vec![0xff])
+        .await
+        .unwrap();
+    for (index, tag) in [first[0], first[1], second[0]].into_iter().enumerate() {
+        let note = seed_transport_note(&mock_node, tag, u64::try_from(index).unwrap());
+        let source = match index {
+            0 => NoteTagSource::User,
+            1 => NoteTagSource::Note(note.details_commitment()),
+            _ => NoteTagSource::Subscription(Word::default()),
+        };
+        recipient.remove_note_tag(tag).await.unwrap();
+        recipient
+            .test_store()
+            .add_note_tag(NoteTagRecord { tag, source })
+            .await
+            .unwrap();
     }
 
-    // First sync: the late tag isn't tracked, so none of its notes are fetched.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
+    recipient.fetch_private_notes().await.unwrap();
 
-    // Track the late tag; one sync must drain all TOTAL_NOTES across BATCH_CAP-sized batches.
-    recipient.add_note_tag(tag_late).await.unwrap();
-    recipient.sync_state().await.unwrap();
+    assert_eq!(transport.fetch_tag_counts(), [128, 1]);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
 
-    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-    assert_eq!(
-        notes.len(),
-        TOTAL_NOTES,
-        "backfill must drain the late tag's full history across batches; got {} of {}",
-        notes.len(),
-        TOTAL_NOTES
-    );
+    recipient.fetch_private_notes().await.unwrap();
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.len(), 129);
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 2)));
+    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 3));
+    recipient.fetch_private_notes().await.unwrap();
+    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128, 1, 128, 1]);
 }
 
-/// Test that registering more newly tracked tags than the per-sync backfill cap does not lose any
-/// tag's history: the burst is spread across syncs, backfilling at most
-/// `MAX_BACKFILL_TAGS_PER_SYNC` tags per call and picking up the remainder on the next sync.
+/// Adding a tag starts that tag from the initial cursor without changing existing tag cursors.
 #[tokio::test]
-async fn backfill_spreads_tags_exceeding_per_sync_cap_across_syncs() {
-    const CAP: usize = MockClient::<FilesystemKeyStore>::MAX_BACKFILL_TAGS_PER_SYNC;
-    const LATE_TAGS: usize = CAP + 1;
-
+async fn transport_adding_tag_preserves_existing_cursors() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let mut recipient = create_test_client_transport(mock_node.clone()).await;
+    let existing_tag = NoteTag::new(20_001);
+    let added_tag = NoteTag::new(20_002);
+    recipient.add_note_tag(existing_tag).await.unwrap();
 
-    // A driver tag tracked from the start pushes the global cursor forward. The late tags' notes
-    // are delivered before the driver note, so they sit below the advanced cursor and can only be
-    // recovered by the from-the-start backfill, not the steady-state fetch.
-    let driver_tag = NoteTag::new(9_999);
-    recipient.add_note_tag(driver_tag).await.unwrap();
+    let added_tag_note = seed_transport_note(&mock_node, added_tag, 1);
+    seed_transport_note(&mock_node, existing_tag, 2);
 
-    let late_tags: Vec<NoteTag> = (0..LATE_TAGS)
-        .map(|i| NoteTag::new(3_000 + u32::try_from(i).unwrap()))
-        .collect();
-    for (i, tag) in late_tags.iter().enumerate() {
-        let note = private_note_with_tag(recipient_account.id(), *tag, 100 + i as u64);
-        mock_node.write().add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    recipient.fetch_private_notes().await.unwrap();
+    let cursor = NoteTransportCursor::from_parts(1, 2);
+    assert_eq!(stored_note_transport_cursors(&mut recipient).await[&existing_tag], cursor);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+
+    recipient.add_note_tag(added_tag).await.unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors[&existing_tag], cursor);
+    assert_eq!(cursors[&added_tag], NoteTransportCursor::from_parts(1, 1));
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
+
+    recipient.remove_note_tag(added_tag).await.unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+    assert!(stored_note_transport_cursors(&mut recipient).await.contains_key(&added_tag));
+
+    // The imported note still tracks the tag until its note-source record is removed.
+    recipient
+        .test_store()
+        .remove_note_tag(NoteTagRecord::with_note_source(
+            added_tag,
+            added_tag_note.details_commitment(),
+        ))
+        .await
+        .unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+
+    let cursors_after_removal = stored_note_transport_cursors(&mut recipient).await;
+    assert!(!cursors_after_removal.contains_key(&added_tag));
+    assert_eq!(cursors_after_removal[&existing_tag], cursor);
+}
+
+/// Merges chunks after tag removal. The merged request starts from the lowest cursor, and the notes
+/// it delivers again do not create duplicate records.
+#[tokio::test]
+async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    // Each group stops at its own last note, so the two groups end at different positions.
+    seed_transport_note(&mock_node, first[1], 1);
+    seed_transport_note(&mock_node, second[0], 2);
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts(), [128, 1]);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 1)));
+    assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 2)));
+
+    recipient.remove_note_tag(first[0]).await.unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128]);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.len(), 128);
+    assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 2)));
+}
+
+/// A long history does not stop another group. The next sync resumes the partial history.
+#[tokio::test]
+async fn transport_page_budget_preserves_progress_and_resumes() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    for serial in 0..40 {
+        seed_transport_note(&mock_node, first[0], serial);
     }
+    seed_transport_note(&mock_node, second[0], 40);
 
-    // Deliver the driver note last so it takes the highest cursor.
-    let driver_note = private_note_with_tag(recipient_account.id(), driver_tag, 10_000);
-    mock_node
-        .write()
-        .add_note(*driver_note.header(), NoteDetails::from(driver_note.clone()).to_bytes());
+    recipient.fetch_private_notes().await.unwrap();
 
-    // First sync: only the driver tag is tracked, so just its note arrives and the global cursor
-    // advances past every late tag's note.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1,
-        "only the driver tag's note should arrive first"
-    );
+    assert_eq!(transport.fetch_tag_counts(), [vec![128; 32], vec![1]].concat());
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 32)));
+    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
 
-    // Track all LATE_TAGS at once, exceeding the per-sync backfill cap by one.
-    for tag in &late_tags {
-        recipient.add_note_tag(*tag).await.unwrap();
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts()[33..], [vec![128; 8], vec![1]].concat());
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 41);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 40)));
+    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
+}
+
+/// Requests different database nonces separately and merges tags after a cursor reset.
+#[tokio::test]
+async fn transport_groups_tags_by_database_nonce() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let first = NoteTag::new(30_000);
+    let second = NoteTag::new(30_001);
+    for tag in [first, second] {
+        recipient.add_note_tag(tag).await.unwrap();
     }
+    seed_transport_note(&mock_node, first, 1);
+    seed_transport_note(&mock_node, second, 2);
+    let stale = NoteTransportCursor::from_parts(2, 10);
+    let current = NoteTransportCursor::from_parts(1, 0);
+    let restarted = NoteTransportCursor::from_parts(1, 1);
+    let latest = NoteTransportCursor::from_parts(1, 2);
+    let cursors = BTreeMap::from([(first, stale), (second, current)]);
+    recipient
+        .test_store()
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), cursors.to_bytes())
+        .await
+        .unwrap();
+    recipient.fetch_private_notes().await.unwrap();
 
-    // Second sync: the backfill covers at most CAP late tags, so one late note stays uncovered.
-    // Total = driver note + capped backfill.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1 + CAP,
-        "one sync must backfill at most MAX_BACKFILL_TAGS_PER_SYNC tags"
-    );
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors[&first], restarted);
+    assert_eq!(cursors[&second], latest);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
 
-    // Third sync: the deferred late tag is backfilled, recovering the whole history.
-    recipient.sync_state().await.unwrap();
-    assert_eq!(
-        recipient.get_input_notes(NoteFilter::All).await.unwrap().len(),
-        1 + LATE_TAGS,
-        "the deferred tag must be backfilled on the following sync"
-    );
+    recipient.fetch_private_notes().await.unwrap();
+    assert_eq!(transport.fetch_tag_counts(), [1, 1, 2]);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert!(cursors.values().all(|cursor| *cursor == latest));
+}
+
+/// A later page failure preserves progress, allows other chunks to finish, and permits retry.
+#[tokio::test]
+async fn transport_chunk_failure_preserves_successful_pages() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+    let transport = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
+    transport.fail_on_fetch_attempt(2);
+    let mut recipient = create_test_client_with_transport(transport.clone()).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    seed_transport_note(&mock_node, first[0], 1);
+    seed_transport_note(&mock_node, first[0], 2);
+    seed_transport_note(&mock_node, second[0], 3);
+    let first_cursor = NoteTransportCursor::from_parts(1, 1);
+    let second_cursor = NoteTransportCursor::from_parts(1, 3);
+
+    let summary = recipient.sync_state().await.unwrap();
+    assert_eq!(summary.new_private_notes.len(), 2);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors.get(&first[0]), Some(&first_cursor));
+    assert_eq!(cursors.get(&second[0]), Some(&second_cursor));
+
+    recipient.sync_note_transport().await.unwrap();
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
+    let cursors = stored_note_transport_cursors(&mut recipient).await;
+    assert_eq!(cursors[&first[0]], NoteTransportCursor::from_parts(1, 2));
+    assert_eq!(cursors[&second[0]], second_cursor);
 }
 
 /// Verifies that an observer whose tracked tags don't match the note's tag receives nothing.
@@ -1130,7 +1183,7 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     );
 }
 
-/// A delivery of a note being consumed locally is skipped and the cursor advances (#2345).
+/// A delivery of a note being consumed locally is skipped and its tag cursor advances (#2345).
 #[tokio::test]
 async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -1166,7 +1219,7 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         "the consumed note should be in a processing state"
     );
 
-    let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+    let cursors_before = stored_note_transport_cursors(&mut client).await;
     // The same note arrives via transport while the consume is in flight.
     mock_node
         .write()
@@ -1178,8 +1231,15 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         "the redundant delivery must not be re-imported"
     );
 
-    let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
-    assert!(cursor_after > cursor_before, "cursor must advance past the skipped delivery");
+    let cursors_after = stored_note_transport_cursors(&mut client).await;
+    assert_eq!(cursors_after.len(), cursors_before.len());
+    let mut advanced = false;
+    for (tag, cursor_before) in &cursors_before {
+        let persisted_cursor = cursors_after.get(tag).expect("each tag must keep its cursor");
+        assert!(persisted_cursor >= cursor_before, "a tag cursor must not move backward");
+        advanced |= persisted_cursor > cursor_before;
+    }
+    assert!(advanced, "a tag cursor must advance past the skipped delivery");
     client.sync_state().await.unwrap();
 
     let records = client.get_input_notes(NoteFilter::All).await.unwrap();
@@ -1190,7 +1250,7 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     assert_eq!(matching, 1, "the skipped delivery must not create or overwrite a record");
 }
 
-/// A failed fetch propagates and leaves the cursor unchanged for retry.
+/// A failed fetch propagates and leaves the tag cursor state unchanged for retry.
 #[tokio::test]
 async fn transport_fetch_failure_leaves_cursor_for_retry() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -1374,6 +1434,31 @@ async fn transport_delivery_for_unrequested_tag_errors() {
 // HELPERS
 // ================================================================================================
 
+fn seed_transport_note(
+    mock_node: &Arc<RwLock<MockNoteTransportNode>>,
+    tag: NoteTag,
+    seed: u64,
+) -> Note {
+    let note = private_note_with_tag(ACCOUNT_ID_SENDER.try_into().unwrap(), tag, seed);
+    mock_node
+        .write()
+        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
+    note
+}
+
+async fn two_transport_chunks(client: &mut TestClient) -> (Vec<NoteTag>, Vec<NoteTag>) {
+    let max_tags = MockClient::<FilesystemKeyStore>::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST;
+    for index in 0..=max_tags {
+        client
+            .add_note_tag(NoteTag::new(30_000 + u32::try_from(index).unwrap()))
+            .await
+            .unwrap();
+    }
+    let tags: Vec<_> =
+        client.test_store().get_unique_note_tags().await.unwrap().into_iter().collect();
+    (tags[..max_tags].to_vec(), tags[max_tags..].to_vec())
+}
+
 /// An inclusion proof that names the genesis block. The mock transport does not verify proofs, so
 /// the path is empty; the recipient scans for the commitment from genesis.
 fn genesis_inclusion_proof() -> NoteInclusionProof {
@@ -1392,10 +1477,10 @@ fn dummy_asset() -> Asset {
     FungibleAsset::new(faucet_id, 100).unwrap().into()
 }
 
-/// Asserts that an invalid delivery on the transport is not imported, that it keeps the stored
-/// cursor on its page, and that it does not stop the chain sync.
+/// Asserts that an invalid delivery on the transport is not imported, that it keeps the stored tag
+/// cursors on their pages, and that it does not stop the chain sync.
 async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
-    let cursor_before = client.test_store().get_note_transport_cursor().await.unwrap();
+    let cursors_before = stored_note_transport_cursors(client).await;
 
     assert!(
         client.sync_note_transport().await.is_err(),
@@ -1409,22 +1494,31 @@ async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
 
     assert!(summary.new_private_notes.is_empty(), "invalid delivery must not import");
     assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
-    let cursor_after = client.test_store().get_note_transport_cursor().await.unwrap();
-    assert_eq!(cursor_after, cursor_before, "cursor must not advance past the invalid delivery");
+    let cursors_after = stored_note_transport_cursors(client).await;
+    assert_eq!(
+        cursors_after, cursors_before,
+        "tag cursors must not advance past the invalid delivery"
+    );
+}
+
+async fn stored_note_transport_cursors(
+    client: &mut TestClient,
+) -> BTreeMap<NoteTag, NoteTransportCursor> {
+    let bytes = client
+        .test_store()
+        .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_CURSORS_KEY))
+        .await
+        .unwrap();
+
+    bytes
+        .map(|bytes| BTreeMap::<NoteTag, NoteTransportCursor>::read_from_bytes(&bytes).unwrap())
+        .unwrap_or_default()
 }
 
 pub async fn create_test_client_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
 ) -> TestClient {
-    let (builder, _) = create_test_client_builder().await;
-    let transport_client = MockNoteTransportApi::new(mock_node);
-    let builder_w_transport = builder.note_transport(Arc::new(transport_client));
-
-    let mut client = TestClient::from(builder_w_transport.build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
-
-    client
+    create_test_client_with_transport(Arc::new(MockNoteTransportApi::new(mock_node))).await
 }
 
 pub async fn create_test_user_transport(

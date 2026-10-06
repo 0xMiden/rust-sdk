@@ -4229,30 +4229,26 @@ async fn insert_random_account(client: &mut TestClient) -> Result<AccountId, Cli
 
 async fn fill_account_tags(client: &mut TestClient) -> AccountId {
     let mut account_id = None;
-    for _ in 0..MockClient::<()>::MAX_ACCOUNT_TAGS {
+    for _ in 0..MockClient::<()>::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST {
         account_id = Some(insert_random_account(client).await.unwrap());
     }
     account_id.unwrap()
 }
 
 #[tokio::test]
-async fn account_add_fails_if_tag_limit_exceeded() {
+async fn account_add_allows_tags_beyond_transport_request_limit() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
     client.add_note_tag(NoteTag::new(u32::MAX)).await.unwrap();
     let account_id = fill_account_tags(&mut client).await;
 
-    let err = insert_random_account(&mut client).await.unwrap_err();
-    assert!(matches!(err, ClientError::AccountTagLimitExceeded(_)));
+    insert_random_account(&mut client).await.unwrap();
 
     let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
         .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)
         .unwrap();
     let address = Address::new(account_id).with_routing_parameters(routing_params);
-    for _ in 0..2 {
-        let err = client.add_address(address.clone(), account_id).await.unwrap_err();
-        assert!(matches!(err, ClientError::AccountTagLimitExceeded(_)));
-    }
+    client.add_address(address, account_id).await.unwrap();
 }
 
 #[tokio::test]

@@ -34,7 +34,7 @@ use rand::Rng;
 use tracing::info;
 
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
+use crate::funding::fee_faucet_id;
 
 // PASS-THROUGH TRANSACTIONS (change sender from Alice -> Pass-through account)
 // ================================================================================================

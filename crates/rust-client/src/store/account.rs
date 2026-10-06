@@ -35,8 +35,8 @@ impl AccountRecordData {
 ///
 /// This drives two pieces of behavior:
 ///
-/// - **Note sync:** native accounts have their derived note tag registered so `sync_state` pulls
-///   notes targeted at them. Watched accounts do not.
+/// - **Note sync:** the store derives a note tag from each address of a native account, so
+///   `sync_state` pulls notes targeted at the account. Watched accounts have no derived tags.
 /// - **Transaction execution:** native accounts can be used as the source of a transaction; watched
 ///   accounts cannot, because the client doesn't hold the keys / authority for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

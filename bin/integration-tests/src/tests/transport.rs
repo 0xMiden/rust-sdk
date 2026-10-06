@@ -107,8 +107,7 @@ pub async fn test_transport_note_inclusion_proof_and_consumption(
     );
 
     // Consume the note
-    let tx_id = recipient.consume_notes(recipient_account.id(), &[note]).await?;
-    recipient.wait_for_tx(tx_id).await?;
+    recipient.consume_notes_and_wait(recipient_account.id(), &[note]).await?;
 
     // Verify balance
     recipient
@@ -252,8 +251,7 @@ pub async fn test_transport_multiple_notes_different_blocks(
     );
 
     // Consume all notes
-    let tx_id = recipient.consume_notes(recipient_account.id(), &minted_notes).await?;
-    recipient.wait_for_tx(tx_id).await?;
+    recipient.consume_notes_and_wait(recipient_account.id(), &minted_notes).await?;
 
     // Verify total balance (10 + 20 + 30 = 60)
     recipient

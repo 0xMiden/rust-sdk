@@ -17,7 +17,7 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 # Fallback in case the pid file is stale.
-for bin in miden-validator miden-node miden-ntx-builder miden-remote-prover; do
+for bin in miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service; do
     pkill -f "$CACHE/install/bin/$bin" 2>/dev/null || true
 done
 

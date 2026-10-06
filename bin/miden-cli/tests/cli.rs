@@ -974,13 +974,13 @@ async fn notes_show_prints_decoded_storage_and_consumer_transaction() -> Result<
         "Exportable",
     ];
 
-    // The client stores the P2IDE note only as an output note. No sync ran after the transfer, so
-    // the target account does not have it as an input note yet.
+    // The target and the reclaimer are local accounts. Thus the client also stores the P2IDE note
+    // as an expected input note when it applies the transfer.
     let stdout = notes_show_stdout(&temp_dir, &note_id)?;
     let information = horizontal_table_rows(&stdout, "Note Information");
     assert_eq!(labels(&information), info_labels, "{stdout}");
     assert_eq!(information[0], ["ID", note_id.as_str()], "{stdout}");
-    assert_eq!(information[1], ["Record", "Output"], "{stdout}");
+    assert_eq!(information[1], ["Record", "Input, Output"], "{stdout}");
     assert_eq!(information[2], ["Standard Note", "P2IDE"], "{stdout}");
     assert_eq!(information[10], ["Sender", sender_account_id.as_str()], "{stdout}");
 

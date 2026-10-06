@@ -21,6 +21,7 @@ use crate::note_transport::{
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    NoteTransportPage,
     TransportNote,
 };
 
@@ -118,6 +119,11 @@ impl MockNoteTransportNode {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
+        let cursor = if cursor.parts().is_some_and(|(nonce, _)| nonce != self.nonce) {
+            NoteTransportCursor::init()
+        } else {
+            cursor
+        };
         // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
         // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
         // `init()`.
@@ -171,11 +177,20 @@ impl Default for MockNoteTransportNode {
 #[derive(Clone, Default)]
 pub struct MockNoteTransportApi {
     pub mock_node: Arc<RwLock<MockNoteTransportNode>>,
+    fetch_tag_counts: Arc<RwLock<Vec<usize>>>,
 }
 
 impl MockNoteTransportApi {
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>) -> Self {
-        Self { mock_node }
+        Self {
+            mock_node,
+            fetch_tag_counts: Arc::default(),
+        }
+    }
+
+    /// Returns the number of tags in each fetch request.
+    pub fn fetch_tag_counts(&self) -> Vec<usize> {
+        self.fetch_tag_counts.read().clone()
     }
 }
 
@@ -214,7 +229,20 @@ impl NoteTransportClient for MockNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        Ok(self.fetch_notes(tags, cursor))
+        let page = self.fetch_notes_page(tags, cursor).await?;
+        Ok((page.notes, page.cursor))
+    }
+
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        self.fetch_tag_counts.write().push(tags.len());
+        let node = self.mock_node.read();
+        let (notes, cursor) = node.get_notes(tags, cursor);
+        let has_more = !node.get_notes(tags, cursor).0.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more })
     }
 }
 
@@ -238,6 +266,7 @@ pub struct FaultyNoteTransportApi {
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
     fail_next_fetches: AtomicUsize,
+    fail_on_fetch: AtomicUsize,
     fetch_attempts: AtomicUsize,
 }
 
@@ -250,6 +279,7 @@ impl FaultyNoteTransportApi {
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
             fail_next_fetches: AtomicUsize::new(0),
+            fail_on_fetch: AtomicUsize::new(0),
             fetch_attempts: AtomicUsize::new(0),
         }
     }
@@ -262,6 +292,11 @@ impl FaultyNoteTransportApi {
     /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
     pub fn fail_next_n_fetches(&self, n: usize) {
         self.fail_next_fetches.store(n, Ordering::SeqCst);
+    }
+
+    /// Fails one fetch attempt. Attempt numbers start at one.
+    pub fn fail_on_fetch_attempt(&self, attempt: usize) {
+        self.fail_on_fetch.store(attempt, Ordering::SeqCst);
     }
 
     /// Total `fetch_notes` calls observed (success + failure).
@@ -303,12 +338,12 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
-        if should_fail {
+        if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(
                 "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
             ));

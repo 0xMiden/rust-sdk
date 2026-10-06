@@ -8,7 +8,8 @@ use miden_client::Word;
 use miden_client::block::BlockHeader;
 use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
 use miden_client::note::BlockNumber;
-use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
+use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
+use miden_client::store::{BlockRelevance, PartialBlockchainFilter, SettingScope, StoreError};
 use miden_client::utils::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 
@@ -131,6 +132,27 @@ impl SqliteStore {
         with_write_tx(conn, |tx| {
             Self::insert_block_header_tx(tx, block_header, has_client_notes)?;
             Self::insert_partial_blockchain_nodes_tx(tx, nodes)
+        })
+    }
+
+    /// Inserts the genesis block header and, if present, its protocol configuration in one
+    /// transaction.
+    pub(crate) fn insert_genesis(
+        conn: &mut Connection,
+        block_header: &BlockHeader,
+        protocol_config: Option<&ProtocolConfig>,
+    ) -> Result<(), StoreError> {
+        with_write_tx(conn, |tx| {
+            Self::insert_block_header_tx(tx, block_header, false)?;
+            if let Some(protocol_config) = protocol_config {
+                Self::set_setting(
+                    tx,
+                    SettingScope::Client,
+                    &protocol_config_setting_key(protocol_config.to_commitment()),
+                    &protocol_config.to_bytes(),
+                )?;
+            }
+            Ok(())
         })
     }
 

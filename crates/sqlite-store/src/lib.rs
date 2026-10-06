@@ -30,6 +30,7 @@ use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
 use miden_client::note::{BlockNumber, NoteScript, Nullifier};
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::store::{
     AccountRecord,
     AccountStatus,
@@ -283,6 +284,19 @@ impl Store for SqliteStore {
         let nodes = nodes.to_vec();
         self.interact_with_connection(move |conn| {
             SqliteStore::insert_block_header(conn, &block_header, &nodes, has_client_notes)
+        })
+        .await
+    }
+
+    async fn insert_genesis(
+        &self,
+        block_header: &BlockHeader,
+        protocol_config: Option<&ProtocolConfig>,
+    ) -> Result<(), StoreError> {
+        let block_header = block_header.clone();
+        let protocol_config = protocol_config.cloned();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::insert_genesis(conn, &block_header, protocol_config.as_ref())
         })
         .await
     }

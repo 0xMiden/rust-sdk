@@ -54,13 +54,6 @@ const MAX_NOTE_TRANSPORT_PAGES_PER_GROUP: usize = 32;
 #[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
 pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
-/// Settings key for the durable relay outbox: a serialized `Vec<RelayOutboxEntry>` of private notes
-/// whose transport delivery has not yet succeeded. [`Client::send_private_note_with_proof`] appends
-/// (replacing any entry with the same note id) before relaying; [`Client::flush_relay_outbox`]
-/// drains entries that re-send successfully. Reusing the settings k/v avoids a Store-trait schema
-/// change while surviving process restarts.
-pub const NOTE_TRANSPORT_OUTBOX_KEY: &str = "note_transport_outbox";
-
 /// Client note transport methods.
 impl<AUTH> Client<AUTH> {
     /// Maximum number of note tags in one transport fetch request.
@@ -101,11 +94,12 @@ impl<AUTH> Client<AUTH> {
     /// the note is committed and the sender has synced past it; see
     /// [`OutputNoteRecord::inclusion_proof`](crate::store::OutputNoteRecord::inclusion_proof).
     ///
-    /// **Durability.** The note and its proof are persisted to the outbox before the transport
-    /// call. If the call fails or is interrupted, the entry stays in the outbox and is retried on
-    /// the next [`Client::flush_relay_outbox`] (which [`Client::sync_note_transport`] runs), so a
-    /// transient transport failure does not drop the note. The receiver dedupes by note id, so a
-    /// re-send after a partial success is harmless.
+    /// **Failures.** The client does not keep the note for a later attempt, and no sync sends it
+    /// again. An error means that the note did not reach the network or that the result is not
+    /// known. A send is idempotent by note id: the network stores a note only once, and the
+    /// recipient imports it only once. The caller can therefore send the same note again, now or
+    /// later. For a note that this client created, the output note record keeps the note and its
+    /// inclusion proof, so a later attempt can read both from the store.
     pub async fn send_private_note_with_proof(
         &mut self,
         note: Note,
@@ -114,119 +108,13 @@ impl<AUTH> Client<AUTH> {
     ) -> Result<(), ClientError> {
         let api = self.get_note_transport_api()?;
 
-        let note = TransportNote::from(note);
-        let note_id = note.header().id();
         // The address is reserved for end-to-end encryption of the note details:
         // address.key().encrypt(note.details().to_bytes()).
         let _ = address;
 
-        // Persist the payload before the network call so a failed or interrupted send leaves a
-        // recoverable record rather than losing the only copy with the call frame. The proof
-        // travels with the entry so a retried send relays the same value.
-        let entry = RelayOutboxEntry { note, inclusion_proof };
-        let mut outbox = self.load_relay_outbox().await?;
-        // Replace any existing entry for this note id so the latest payload wins when a
-        // still-pending note is re-sent.
-        outbox.retain(|e| e.note.header().id() != note_id);
-        outbox.push(entry.clone());
-        self.save_relay_outbox(outbox).await?;
-
-        entry.relay(api.as_ref()).await?;
-
-        // Relay succeeded — drop the entry. A failed store write here is tolerable: the next flush
-        // re-sends and the receiver dedupes by note id, so a stale entry never causes loss.
-        let mut outbox = self.load_relay_outbox().await?;
-        outbox.retain(|e| e.note.header().id() != note_id);
-        self.save_relay_outbox(outbox).await?;
+        api.send_note_with_proof(TransportNote::from(note), inclusion_proof).await?;
 
         Ok(())
-    }
-
-    /// Re-attempt every relay payload in the durable outbox. Each entry is a private note whose
-    /// previous transport delivery failed. Successful re-sends are dropped; failures are kept for
-    /// the next call. Every entry is attempted independently, so one persistently-failing note does
-    /// not block the others.
-    ///
-    /// [`Client::sync_note_transport`] runs this automatically and ignores its error, so a relay
-    /// failure can't block a sync. Callers driving retries themselves can invoke it directly and
-    /// inspect the returned error.
-    pub async fn flush_relay_outbox(&self) -> Result<(), ClientError> {
-        let api = self.get_note_transport_api()?;
-
-        let entries = self.load_relay_outbox().await?;
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        // Attempt every entry independently so a single persistently-failing note can't block the
-        // rest. The outbox holds only the caller's own failed sends, so it stays small and this is
-        // not a meaningful burst.
-        let mut remaining = Vec::new();
-        let mut last_err: Option<NoteTransportError> = None;
-
-        for entry in entries {
-            match entry.relay(api.as_ref()).await {
-                Ok(()) => {},
-                Err(err) => {
-                    tracing::warn!(?err, "relay-outbox entry retry failed; will retry next sync");
-                    remaining.push(entry);
-                    last_err = Some(err);
-                },
-            }
-        }
-
-        self.save_relay_outbox(remaining).await?;
-
-        if let Some(err) = last_err {
-            return Err(err.into());
-        }
-        Ok(())
-    }
-
-    /// Load the durable relay outbox.
-    ///
-    /// Returns an empty `Vec` if the outbox key is absent. On deserialization failure (schema
-    /// mismatch or storage corruption) the entry is dropped and an empty `Vec` is returned —
-    /// leaving unreadable bytes in place would block every subsequent relay because each sync would
-    /// re-read them.
-    async fn load_relay_outbox(&self) -> Result<Vec<RelayOutboxEntry>, ClientError> {
-        let bytes = self
-            .store
-            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
-            .await
-            .map_err(ClientError::StoreError)?;
-        let Some(bytes) = bytes else {
-            return Ok(Vec::new());
-        };
-        match Vec::<RelayOutboxEntry>::read_from_bytes(&bytes) {
-            Ok(entries) => Ok(entries),
-            Err(err) => {
-                tracing::warn!(?err, "dropping unreadable relay outbox; resetting to empty");
-                self.store
-                    .remove_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_OUTBOX_KEY))
-                    .await
-                    .map_err(ClientError::StoreError)?;
-                Ok(Vec::new())
-            },
-        }
-    }
-
-    /// Persist the relay outbox, removing the key entirely when empty so the settings table doesn't
-    /// accumulate empty-vec blobs.
-    async fn save_relay_outbox(&self, entries: Vec<RelayOutboxEntry>) -> Result<(), ClientError> {
-        let key = String::from(NOTE_TRANSPORT_OUTBOX_KEY);
-        if entries.is_empty() {
-            self.store
-                .remove_setting(SettingScope::Client, key)
-                .await
-                .map_err(ClientError::StoreError)?;
-            return Ok(());
-        }
-        let bytes = entries.to_bytes();
-        self.store
-            .set_setting(SettingScope::Client, key, bytes)
-            .await
-            .map_err(ClientError::StoreError)
     }
 
     /// Loads the cursor for each tag used by the transport fetch.
@@ -435,9 +323,9 @@ where
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
     /// Fetches bounded pages for each group of tracked tags. This performs no node call and writes
-    /// nothing but the relay outbox, so it can run concurrently with the chain fetch. The caller
-    /// imports the returned files and then persists all tag cursors. A failed request preserves
-    /// successful pages in the returned update.
+    /// nothing, so it can run concurrently with the chain fetch. The caller imports the returned
+    /// files and then persists all tag cursors. A failed request preserves successful pages in the
+    /// returned update.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -445,14 +333,6 @@ where
     ) -> Result<NoteTransportLayerUpdate, ClientError> {
         if !self.is_note_transport_enabled() {
             return Ok(NoteTransportLayerUpdate::default());
-        }
-
-        // Drain any private notes whose previous relay attempt failed. A flush error is logged, not
-        // propagated: a failing relay must not block the sync, and the entries stay durable for the
-        // next attempt. This is the one write this phase performs; it touches only the outbox
-        // setting, which is independent of everything the apply phase writes.
-        if let Err(err) = self.flush_relay_outbox().await {
-            tracing::warn!(?err, "relay outbox flush failed during sync; entries retained");
         }
 
         self.fetch_transport_notes_in_chunks().await
@@ -774,23 +654,6 @@ impl NoteInfo {
     }
 }
 
-// RELAY OUTBOX
-// ================================================================================================
-
-/// A private note whose transport delivery has not yet succeeded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RelayOutboxEntry {
-    note: TransportNote,
-    inclusion_proof: NoteInclusionProof,
-}
-
-impl RelayOutboxEntry {
-    /// Sends the note and its inclusion proof through the transport.
-    async fn relay(&self, api: &dyn NoteTransportClient) -> Result<(), NoteTransportError> {
-        api.send_note_with_proof(self.note.clone(), self.inclusion_proof.clone()).await
-    }
-}
-
 // SERIALIZATION
 // ================================================================================================
 
@@ -808,21 +671,6 @@ impl Deserializable for TransportNote {
         let details = NoteDetails::read_from_bytes(&details_bytes)?;
         Self::new(header, details)
             .map_err(|error| DeserializationError::InvalidValue(format!("{error}")))
-    }
-}
-
-impl Serializable for RelayOutboxEntry {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.inclusion_proof.write_into(target);
-    }
-}
-
-impl Deserializable for RelayOutboxEntry {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = TransportNote::read_from(source)?;
-        let inclusion_proof = NoteInclusionProof::read_from(source)?;
-        Ok(Self { note, inclusion_proof })
     }
 }
 
@@ -889,21 +737,7 @@ pub(crate) fn validate_note_parts(
 
 #[cfg(test)]
 mod tests {
-    use miden_protocol::account::AccountId;
-    use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::merkle::SparseMerklePath;
-    use miden_protocol::note::NoteType;
-    use miden_protocol::testing::account_id::{
-        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
-        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
-        ACCOUNT_ID_SENDER,
-    };
-    use miden_standards::note::P2idNote;
-    use rand::SeedableRng;
-    use rand_chacha::ChaCha20Rng;
-
     use super::*;
-    use crate::rng::draw_word;
 
     #[test]
     fn transport_rejects_invalid_pagination() {
@@ -920,31 +754,5 @@ mod tests {
             };
             assert!(validate_transport_page(page, &[], cursor).is_err());
         }
-    }
-
-    #[test]
-    fn relay_outbox_entry_round_trips() {
-        let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = ChaCha20Rng::seed_from_u64(0);
-        let note: Note = P2idNote::builder()
-            .sender(sender)
-            .target(target)
-            .asset(FungibleAsset::new(faucet, 100).unwrap())
-            .note_type(NoteType::Private)
-            .serial_number(draw_word(&mut rng))
-            .build()
-            .unwrap()
-            .into();
-
-        let inclusion_proof =
-            NoteInclusionProof::new(BlockNumber::from(7), 3, SparseMerklePath::default()).unwrap();
-        let entry = RelayOutboxEntry {
-            note: TransportNote::from(note),
-            inclusion_proof,
-        };
-
-        assert_eq!(RelayOutboxEntry::read_from_bytes(&entry.to_bytes()).unwrap(), entry);
     }
 }

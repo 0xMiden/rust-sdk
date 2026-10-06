@@ -279,7 +279,7 @@ where
     ///
     /// A transport failure is logged and the chain sync continues. Successful transport pages are
     /// imported and their cursors are saved. Failed requests keep their previous positions for
-    /// retry. The relay outbox is persisted during the fetch and retried on the next sync.
+    /// retry. The sync sends no notes to the transport.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

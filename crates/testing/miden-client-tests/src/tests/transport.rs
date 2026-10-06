@@ -915,21 +915,11 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
     assert!(record.is_consumed());
 }
 
-/// A private note must reach the recipient even when the sender's first relay attempt fails,
-/// provided the transport later recovers.
-///
-/// `send_private_note_with_proof` persists the payload in a durable outbox, so a relay that fails
-/// is retried instead of dropped. Without persistence the recipient would never learn about the
-/// note.
-///
-/// The test does not constrain where the retry happens (inline, on `sync_state`, or through an
-/// explicit `flush_relay_outbox`): it polls by alternating sender and recipient `sync_state` calls
-/// until the note arrives or the budget is exhausted.
+/// A failed send returns the error to the caller. The client keeps no copy of the note, so a later
+/// sync sends nothing, also when the transport accepts sends again.
 #[tokio::test]
-async fn private_note_relay_recovers_after_transient_ntl_failure() {
+async fn failed_send_returns_error_and_sync_does_not_resend() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-
-    // Fail the next relay attempt, then recover — a single transient transport failure.
     let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
     let (mut sender, sender_account) =
         create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
@@ -946,108 +936,112 @@ async fn private_note_relay_recovers_after_transient_ntl_failure() {
         .build()
         .unwrap()
         .into();
-    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by details commitment.
-    let note_commitment = note.details_commitment();
 
-    // First relay attempt — the faulty NTL rejects it. We don't assert on the return value: the
-    // relay may fail here and be retried later.
-    let _ = sender
-        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
-        .await;
-
-    // Drive both clients forward; the retry must deliver the note within a few rounds.
-    let mut delivered = false;
-    for _ in 0..5 {
-        let _ = sender.sync_state().await;
-        recipient.sync_state().await.unwrap();
-        let received = recipient.get_input_notes(NoteFilter::All).await.unwrap();
-        if received.iter().any(|n| n.details_commitment() == note_commitment) {
-            delivered = true;
-            break;
-        }
-    }
-
-    assert!(
-        delivered,
-        "a single transient NTL failure permanently lost a private note — sender debited, \
-         recipient never learns of it. send_attempts={}",
-        faulty.send_attempts()
-    );
-
-    // The relay must actually be retried — a single attempt that succeeded by chance is not
-    // durability.
-    assert!(
-        faulty.send_attempts() >= 2,
-        "the relay must be retried; observed only {} relay attempt(s)",
-        faulty.send_attempts()
-    );
-}
-
-/// The durable outbox entry survives a failed `send_private_note_with_proof` and is re-sent by an
-/// explicit `flush_relay_outbox`, without a full sync. A second flush is a no-op once the entry has
-/// drained.
-#[tokio::test]
-async fn flush_relay_outbox_retries_failed_relay_without_full_sync() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-
-    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
-    let (mut sender, sender_account) =
-        create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
-    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
-
-    let note: Note = P2idNote::builder()
-        .sender(sender_account.id())
-        .target(recipient_account.id())
-        .asset(dummy_asset())
-        .note_type(NoteType::Private)
-        .generate_serial_number(sender.rng())
-        .build()
-        .unwrap()
-        .into();
-    // Transport-delivered notes carry no metadata (hence no `NoteId`); match by details commitment.
-    let note_commitment = note.details_commitment();
-
-    // First relay fails; the payload must survive in the outbox.
-    let first_attempt = sender
-        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
+    let result = sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
         .await;
     assert!(
-        first_attempt.is_err(),
-        "expected NTL failure on first attempt, got {first_attempt:?}"
+        matches!(result, Err(ClientError::NoteTransportError(NoteTransportError::Network(_)))),
+        "the transport error must reach the caller, got {result:?}"
     );
+    assert_eq!(mock_node.read().proven_block(&note.id()), None);
 
-    // Recipient sees nothing yet — the NTL never received the note.
+    // The faulty transport used up its single failure, so a send from the sync would succeed.
+    sender
+        .sync_state()
+        .await
+        .expect("sync_state must not depend on the failed send");
+    assert_eq!(faulty.send_attempts(), 1, "a sync must not send the note again");
+
     recipient.sync_state().await.unwrap();
     assert!(
         recipient.get_input_notes(NoteFilter::All).await.unwrap().is_empty(),
-        "recipient should not yet see the note (NTL was empty after the failed relay)",
+        "the recipient must not receive a note that no send delivered"
     );
+}
 
-    // Explicit flush re-sends (the faulty API has used up its single rejection).
-    sender.flush_relay_outbox().await.expect("flush should re-send the queued note");
-    assert!(faulty.send_attempts() >= 2, "flush must re-attempt the relay");
+/// After a failed send, the caller can send the same note again. The second send delivers the note
+/// with its proof.
+#[tokio::test]
+async fn caller_retry_after_failed_send_delivers_note() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
+    let (mut sender, sender_account) =
+        create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    let first_attempt = sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
+        .await;
+    assert!(first_attempt.is_err(), "expected the injected failure, got {first_attempt:?}");
+
+    sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
+        .await
+        .expect("the second send must succeed");
+    assert_eq!(faulty.send_attempts(), 2);
+    assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
 
     recipient.sync_state().await.unwrap();
-    assert!(
-        recipient
-            .get_input_notes(NoteFilter::All)
-            .await
-            .unwrap()
-            .iter()
-            .any(|n| n.details_commitment() == note_commitment),
-        "recipient should receive the note after the flush re-send",
-    );
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].details_commitment(), note.details_commitment());
+}
 
-    // A second flush is a no-op: the entry was removed when the retry succeeded.
-    let attempts_after_first_flush = faulty.send_attempts();
-    sender.flush_relay_outbox().await.expect("second flush should succeed (no-op)");
-    assert_eq!(
-        faulty.send_attempts(),
-        attempts_after_first_flush,
-        "outbox should be empty after a successful flush; second flush must not re-send",
-    );
+/// A send is idempotent by note id. A second send of a delivered note succeeds, the transport keeps
+/// one copy, and the recipient stores the note once.
+#[tokio::test]
+async fn resending_a_delivered_note_is_harmless() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
+    let recipient_address = Address::new(recipient_account.id())
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+
+    let note: Note = P2idNote::builder()
+        .sender(sender_account.id())
+        .target(recipient_account.id())
+        .asset(dummy_asset())
+        .note_type(NoteType::Private)
+        .generate_serial_number(sender.rng())
+        .build()
+        .unwrap()
+        .into();
+
+    sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
+        .await
+        .unwrap();
+    // The recipient receives the note before the second send, so the second send cannot deliver it
+    // a second time.
+    recipient.sync_state().await.unwrap();
+
+    sender
+        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
+        .await
+        .expect("a second send of the same note must succeed");
+
+    let (stored, _) = mock_node
+        .read()
+        .get_notes(&[note.metadata().tag()], NoteTransportCursor::init());
+    assert_eq!(stored.len(), 1, "the transport must keep one copy of the note");
+
+    recipient.sync_state().await.unwrap();
+    let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
+    assert_eq!(notes.len(), 1, "the recipient must store the note once");
+    assert_eq!(notes[0].details_commitment(), note.details_commitment());
 }
 
 /// A note is routed by the tag in its own metadata, not by who can consume it, and an
@@ -1123,52 +1117,6 @@ async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_con
     client.sync_state().await.unwrap();
     let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1, "a note the tracked account can consume must be stored");
-}
-
-/// A relay that keeps failing must not block `sync_state`. The outbox flush runs at the start of
-/// the transport step; if its error propagated, a single undeliverable note would wedge every
-/// subsequent sync. The entry must stay in the outbox for later retry while the sync itself
-/// succeeds.
-#[tokio::test]
-async fn persistent_relay_failure_does_not_block_sync_state() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-
-    // Fail effectively forever, modelling a note the NTL never accepts.
-    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), usize::MAX));
-    let (mut sender, sender_account) =
-        create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
-    let (_recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
-
-    let note: Note = P2idNote::builder()
-        .sender(sender_account.id())
-        .target(recipient_account.id())
-        .asset(dummy_asset())
-        .note_type(NoteType::Private)
-        .generate_serial_number(sender.rng())
-        .build()
-        .unwrap()
-        .into();
-
-    // The relay fails and the payload is persisted to the outbox.
-    let _ = sender
-        .send_private_note_with_proof(note, &recipient_address, genesis_inclusion_proof())
-        .await;
-
-    // sync_state flushes the outbox (which fails) but must still complete: the relay failure is
-    // logged, not propagated.
-    sender
-        .sync_state()
-        .await
-        .expect("sync_state must not fail when an outbox entry can't be relayed");
-
-    // The undeliverable entry is retained for a future attempt, not dropped.
-    let direct = sender.flush_relay_outbox().await;
-    assert!(
-        direct.is_err(),
-        "directly flushing an undeliverable entry should surface the error"
-    );
 }
 
 /// A private note committed more than the fallback lookback window before the recipient's sync
@@ -1368,38 +1316,6 @@ async fn transport_send_with_proof() {
     let notes = recipient.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].details_commitment(), note.details_commitment());
-}
-
-/// A relay with a proof that fails stays in the outbox with its proof, and the flush re-sends it
-/// through the with-proof path.
-#[tokio::test]
-async fn flush_relay_outbox_resends_with_proof() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let faulty = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 1));
-    let (mut sender, sender_account) =
-        create_test_user_with_transport(faulty.clone() as Arc<dyn NoteTransportClient>).await;
-    let (_recipient, recipient_account) = create_test_user_transport(mock_node.clone()).await;
-    let recipient_address = Address::new(recipient_account.id())
-        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
-
-    let note: Note = P2idNote::builder()
-        .sender(sender_account.id())
-        .target(recipient_account.id())
-        .asset(dummy_asset())
-        .note_type(NoteType::Private)
-        .generate_serial_number(sender.rng())
-        .build()
-        .unwrap()
-        .into();
-    let first_attempt = sender
-        .send_private_note_with_proof(note.clone(), &recipient_address, genesis_inclusion_proof())
-        .await;
-    assert!(first_attempt.is_err(), "expected NTL failure on first attempt");
-    assert_eq!(mock_node.read().proven_block(&note.id()), None);
-
-    sender.flush_relay_outbox().await.expect("flush should re-send the queued note");
-    assert_eq!(faulty.send_attempts(), 2, "flush must re-attempt the relay once");
-    assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
 }
 
 /// A delivery whose details don't match the header's commitment fails the transport sync. The

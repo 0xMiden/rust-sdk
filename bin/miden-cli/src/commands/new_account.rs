@@ -6,11 +6,22 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Parser, ValueEnum};
 use miden_client::Client;
 use miden_client::account::component::{
-    AccountComponent, AccountComponentMetadata, BurnPolicy, FungibleFaucet, InitStorageData,
-    InitStorageDataError, MIDEN_PACKAGE_EXTENSION, MintPolicy, TokenName, TokenPolicyManager,
+    AccountComponent,
+    AccountComponentMetadata,
+    BurnPolicy,
+    FungibleFaucet,
+    InitStorageData,
+    InitStorageDataError,
+    MIDEN_PACKAGE_EXTENSION,
+    MintPolicy,
+    TokenName,
+    TokenPolicyManager,
 };
 use miden_client::account::{
-    Account, AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
+    Account,
+    AccountBuilder,
+    AccountBuilderSchemaCommitmentExt,
+    AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
@@ -848,8 +859,15 @@ fn process_packages(
 mod tests {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
-        BasicWallet, FeltSchema, SchemaType, StorageSchema, StorageSlotSchema, TokenName,
-        ValueSlotSchema, WordSchema, WordValue,
+        BasicWallet,
+        FeltSchema,
+        SchemaType,
+        StorageSchema,
+        StorageSlotSchema,
+        TokenName,
+        ValueSlotSchema,
+        WordSchema,
+        WordValue,
     };
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};

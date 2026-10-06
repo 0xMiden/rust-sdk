@@ -6,7 +6,6 @@ use alloc::{format, vec};
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
@@ -18,12 +17,11 @@ use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
 use crate::note_transport::NoteTransportClient;
-use crate::protocol_config::protocol_config_setting_key;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::{Endpoint, NodeRpcClient};
 #[cfg(feature = "tonic")]
 use crate::rpc::{GrpcClient, VerifyingRpcClient};
-use crate::store::{SettingScope, Store, StoreError};
+use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
@@ -610,6 +608,28 @@ async fn store_genesis(
     block_header: BlockHeader,
     protocol_config: ProtocolConfig,
 ) -> Result<(), ClientError> {
+    validate_genesis(&block_header, &protocol_config)?;
+
+    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
+        if stored.commitment() != block_header.commitment() {
+            return Err(ClientError::ChainValidationError(format!(
+                "stored genesis block commitment {} does not match {}",
+                stored.commitment(),
+                block_header.commitment()
+            )));
+        }
+        return Ok(());
+    }
+
+    store.insert_genesis(&block_header, Some(&protocol_config)).await?;
+    Ok(())
+}
+
+/// Checks that `block_header` is the genesis block header and that it commits to `protocol_config`.
+fn validate_genesis(
+    block_header: &BlockHeader,
+    protocol_config: &ProtocolConfig,
+) -> Result<(), ClientError> {
     if block_header.block_num() != BlockNumber::GENESIS {
         return Err(ClientError::ChainValidationError(format!(
             "expected genesis block header, got block {}",
@@ -623,28 +643,6 @@ async fn store_genesis(
             "genesis protocol configuration commitment mismatch: expected {expected_commitment}, got {actual_commitment}"
         )));
     }
-
-    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
-        if stored.commitment() != block_header.commitment() {
-            return Err(ClientError::ChainValidationError(format!(
-                "stored genesis block commitment {} does not match {}",
-                stored.commitment(),
-                block_header.commitment()
-            )));
-        }
-        return Ok(());
-    }
-
-    // Genesis is untracked since there are no client notes associated with it, so no MMR nodes are
-    // stored.
-    store.insert_block_header(&block_header, &[], false).await?;
-    store
-        .set_setting(
-            SettingScope::Client,
-            protocol_config_setting_key(actual_commitment),
-            protocol_config.to_bytes(),
-        )
-        .await?;
     Ok(())
 }
 

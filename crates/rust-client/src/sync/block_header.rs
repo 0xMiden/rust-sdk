@@ -6,7 +6,6 @@ use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use tracing::warn;
 #[cfg(feature = "std")]
@@ -18,10 +17,9 @@ use {
     miden_protocol::utils::serde::{ByteReader, Deserializable, SliceReader},
 };
 
-use crate::protocol_config::protocol_config_setting_key;
 use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::ResolvedSyncNotesBlock;
-use crate::store::{BlockRelevance, SettingScope, StoreError};
+use crate::store::{BlockRelevance, StoreError};
 #[cfg(feature = "testing")]
 use crate::test_utils::mock::MockRpcApi;
 use crate::{CachedPartialMmr, Client, ClientError};
@@ -114,19 +112,8 @@ impl<AUTH> Client<AUTH> {
 
         let (genesis, protocol_config) = self.fetch_genesis_block_header().await?;
 
-        // Genesis is untracked since there are no client notes associated with it, so we fetch no
-        // MMR proof and pass no nodes.
-        self.store.insert_block_header(&genesis, &[], false).await?;
         // Without a protocol configuration here, the first sync from genesis stores it.
-        if let Some(protocol_config) = protocol_config {
-            self.store
-                .set_setting(
-                    SettingScope::Client,
-                    protocol_config_setting_key(protocol_config.to_commitment()),
-                    protocol_config.to_bytes(),
-                )
-                .await?;
-        }
+        self.store.insert_genesis(&genesis, protocol_config.as_ref()).await?;
         self.rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         Ok(())
     }

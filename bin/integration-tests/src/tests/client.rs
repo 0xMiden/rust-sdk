@@ -126,9 +126,9 @@ pub async fn test_multiple_tx_on_same_block(client_config: ClientConfig) -> Resu
 
     // Submit both requests as a single proven batch via the node's `SubmitProvenBatch` path.
     let mut batch = client.new_transaction_batch();
-    batch.push(from_account_id, tx_request_1).await?;
-    batch.push(from_account_id, tx_request_2).await?;
-    let block_num = batch.submit().await?;
+    client.push_to_batch(&mut batch, from_account_id, tx_request_1).await?;
+    client.push_to_batch(&mut batch, from_account_id, tx_request_2).await?;
+    let block_num = client.submit_transaction_batch(batch).await?;
 
     info!(
         submitted_at = block_num.as_u32(),

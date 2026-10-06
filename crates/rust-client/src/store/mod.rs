@@ -61,7 +61,12 @@ use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCu
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
-use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
+use crate::transaction::{
+    BatchStoreUpdate,
+    TransactionRecord,
+    TransactionStatusVariant,
+    TransactionStoreUpdate,
+};
 
 /// Contains [`ClientDataStore`] to automatically implement [`DataStore`] for anything that
 /// implements [`Store`]. This isn't public because it's an implementation detail to instantiate the
@@ -232,16 +237,17 @@ pub trait Store: Send + Sync {
     /// part of the update.
     async fn apply_transaction(&self, tx_update: TransactionStoreUpdate) -> Result<(), StoreError>;
 
-    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Semantically equivalent to
-    /// calling [`Store::apply_transaction`] for each update in order, but with an all-or-nothing
-    /// guarantee — on any error no update is visible.
+    /// Applies a [`BatchStoreUpdate`] atomically. On any error no part of the update is visible.
     ///
-    /// Used by `BatchBuilder::submit` to persist a batch's results. Backends that cannot provide
-    /// true atomicity must document that limitation explicitly in their impl — there is no blanket
-    /// default.
+    /// The store inserts each transaction and applies its account patch in batch order, then
+    /// applies the merged note updates and tags once.
+    ///
+    /// Used by `Client::submit_transaction_batch` to persist a batch's results. Backends that
+    /// cannot provide true atomicity must document that limitation explicitly in their impl — there
+    /// is no blanket default.
     async fn apply_transaction_batch(
         &self,
-        tx_updates: Vec<TransactionStoreUpdate>,
+        batch_update: BatchStoreUpdate,
     ) -> Result<(), StoreError>;
 
     // NOTES

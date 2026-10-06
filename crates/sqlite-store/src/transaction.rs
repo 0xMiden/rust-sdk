@@ -5,9 +5,11 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use miden_client::Word;
-use miden_client::note::ToInputNoteCommitments;
+use miden_client::note::{BlockNumber, ToInputNoteCommitments};
 use miden_client::store::{StoreError, TransactionFilter, TransactionFilterQuery};
 use miden_client::transaction::{
+    BatchStoreUpdate,
+    ExecutedTransaction,
     TransactionDetails,
     TransactionId,
     TransactionRecord,
@@ -166,32 +168,71 @@ impl SqliteStore {
         })
     }
 
-    /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Either every update in the slice
-    /// is persisted or none are. Executes in order inside a single [`rusqlite::Transaction`].
+    /// Applies a [`BatchStoreUpdate`] atomically inside a single [`rusqlite::Transaction`]. Either
+    /// the whole update is persisted or nothing is.
+    ///
+    /// Each transaction is inserted and its account patch applied in batch order. The merged note
+    /// updates and tags are applied once, after all the transactions.
     pub(crate) fn apply_transaction_batch(
         conn: &mut Connection,
-        tx_updates: &[TransactionStoreUpdate],
+        batch_update: &BatchStoreUpdate,
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
-            for update in tx_updates {
-                Self::apply_transaction_in_txn(tx, &mut forest, update)?;
+            for executed_transaction in batch_update.executed_transactions() {
+                Self::insert_transaction_in_txn(
+                    tx,
+                    &mut forest,
+                    executed_transaction,
+                    batch_update.submission_height(),
+                )?;
             }
+
+            apply_note_updates_tx(tx, batch_update.note_updates())?;
+            for tag_record in batch_update.new_tags() {
+                add_note_tag_tx(tx, tag_record)?;
+            }
+
             Ok(())
         })
     }
 
     /// Applies a transaction's store update within the provided rusqlite transaction. Does NOT
     /// commit — caller is responsible for commit/rollback.
-    ///
-    /// The storage-map-root pre-read is performed via the transaction so that each call sees writes
-    /// made by prior calls within the same outer transaction.
     pub(crate) fn apply_transaction_in_txn(
         db_tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
         tx_update: &TransactionStoreUpdate,
     ) -> Result<(), StoreError> {
-        let executed_transaction = tx_update.executed_transaction();
+        Self::insert_transaction_in_txn(
+            db_tx,
+            smt_forest,
+            tx_update.executed_transaction(),
+            tx_update.submission_height(),
+        )?;
+
+        // Note Updates
+        apply_note_updates_tx(db_tx, tx_update.note_updates())?;
+
+        // Note tags
+        for tag_record in tx_update.new_tags() {
+            add_note_tag_tx(db_tx, tag_record)?;
+        }
+
+        Ok(())
+    }
+
+    /// Inserts the record of an executed transaction and applies its account patch within the
+    /// provided rusqlite transaction.
+    ///
+    /// The storage-map-root pre-read is performed via the transaction so that each call sees writes
+    /// made by prior calls within the same outer transaction.
+    fn insert_transaction_in_txn(
+        db_tx: &Transaction<'_>,
+        smt_forest: &mut ScopedAccountForest<'_, '_>,
+        executed_transaction: &ExecutedTransaction,
+        submission_height: BlockNumber,
+    ) -> Result<(), StoreError> {
         let account_patch = executed_transaction.account_patch();
 
         // Build transaction record
@@ -210,7 +251,7 @@ impl SqliteStore {
             input_note_nullifiers: nullifiers,
             output_notes: output_notes.clone(),
             block_num: executed_transaction.block_header().block_num(),
-            submission_height: tx_update.submission_height(),
+            submission_height,
             expiration_block_num: executed_transaction.expiration_block_num(),
             creation_timestamp: super::current_timestamp_u64(),
         };
@@ -232,17 +273,7 @@ impl SqliteStore {
             &executed_transaction.initial_account().into(),
             executed_transaction.final_account(),
             account_patch,
-        )?;
-
-        // Note Updates
-        apply_note_updates_tx(db_tx, tx_update.note_updates())?;
-
-        // Note tags
-        for tag_record in tx_update.new_tags() {
-            add_note_tag_tx(db_tx, tag_record)?;
-        }
-
-        Ok(())
+        )
     }
 }
 

@@ -307,10 +307,10 @@ impl<AUTH> Client<AUTH> {
     /// A network that enforces an account allowlist creates an account on chain only when the
     /// account is registered. The first transaction of an account is what creates it, so the
     /// account must be registered before that transaction is submitted.
-    /// [`Client::submit_new_transaction`] and [`BatchBuilder::submit`] ask the node first, and fail
-    /// with [`ClientError::AccountNotAllowlisted`] for an account the network does not accept. Only
-    /// account creation is gated: an account that already exists on chain is never checked, and
-    /// network accounts are exempt.
+    /// [`Client::submit_new_transaction`] and [`Client::submit_transaction_batch`] ask the node
+    /// first, and fail with [`ClientError::AccountNotAllowlisted`] for an account the network does
+    /// not accept. Only account creation is gated: an account that already exists on chain is never
+    /// checked, and network accounts are exempt.
     ///
     /// The account must be tracked by the client, must not be deployed on chain yet, and must not
     /// be a network account. The invitation code must exist on the node and must not be bound to
@@ -339,7 +339,6 @@ impl<AUTH> Client<AUTH> {
     ///   case the account stays registered, so a retry fails with
     ///   [`ClientError::AccountAlreadyAllowed`] and the account has to be funded another way.
     ///
-    /// [`BatchBuilder::submit`]: crate::transaction::BatchBuilder::submit
     /// [`RegisterAccountError`]: crate::rpc::RegisterAccountError
     pub async fn register_account(
         &self,

@@ -125,10 +125,12 @@ pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -
     let unregistered_request = service_funded_deploy_request(&client, &unregistered).await?;
 
     let mut batch = client.new_transaction_batch();
-    batch.push(registered.id(), registered_request).await?;
-    batch.push(unregistered.id(), unregistered_request).await?;
+    client.push_to_batch(&mut batch, registered.id(), registered_request).await?;
+    client
+        .push_to_batch(&mut batch, unregistered.id(), unregistered_request)
+        .await?;
 
-    let Err(error) = batch.submit().await else {
+    let Err(error) = client.submit_transaction_batch(batch).await else {
         bail!("a batch creating an unregistered account should be refused")
     };
     assert_rejected_before_submission(&error, &unregistered);

@@ -168,7 +168,7 @@ On a network that does not enforce the allowlist the node already allows every a
 
 ### Checking before submitting
 
-`Client::submit_new_transaction` and `BatchBuilder::submit` ask the node whether the network accepts the creation of an account before they submit a transaction that creates one, and fail with `ClientError::AccountNotAllowlisted` when it does not. The check runs after the transaction is executed and proven, so it does not save that work. Register the account first. `Client::is_account_allowed` asks the node the same question directly, and answers `true` on a network that does not enforce an allowlist.
+`Client::submit_new_transaction` and `Client::submit_transaction_batch` ask the node whether the network accepts the creation of an account before they submit a transaction that creates one, and fail with `ClientError::AccountNotAllowlisted` when it does not. The check runs after the transaction is executed and proven, so it does not save that work. Register the account first. `Client::is_account_allowed` asks the node the same question directly, and answers `true` on a network that does not enforce an allowlist.
 
 ## Execute transaction
 

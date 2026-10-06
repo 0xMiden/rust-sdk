@@ -6,22 +6,11 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Parser, ValueEnum};
 use miden_client::Client;
 use miden_client::account::component::{
-    AccountComponent,
-    AccountComponentMetadata,
-    BurnPolicy,
-    FungibleFaucet,
-    InitStorageData,
-    InitStorageDataError,
-    MIDEN_PACKAGE_EXTENSION,
-    MintPolicy,
-    TokenName,
-    TokenPolicyManager,
+    AccountComponent, AccountComponentMetadata, BurnPolicy, FungibleFaucet, InitStorageData,
+    InitStorageDataError, MIDEN_PACKAGE_EXTENSION, MintPolicy, TokenName, TokenPolicyManager,
 };
 use miden_client::account::{
-    Account,
-    AccountBuilder,
-    AccountBuilderSchemaCommitmentExt,
-    AccountType,
+    Account, AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
@@ -101,40 +90,63 @@ impl AuthArgs {
     }
 }
 
-/// Source of the init storage data for a new account.
-enum InitStorageDataSource {
-    /// A TOML file, given with `--init-storage-data-path`.
-    Path(PathBuf),
+/// Inputs for the init storage data of a new account.
+struct InitStorageInputs {
+    /// The optional TOML file, given with `--init-storage-data-path`.
+    path: Option<PathBuf>,
     /// The parsed `--init-storage-value` entries. Each entry holds the data of one flag.
-    Values(Vec<InitStorageData>),
+    values: Vec<InitStorageData>,
 }
 
-impl InitStorageDataSource {
-    /// Creates the source from the command arguments. The TOML file takes precedence.
+impl InitStorageInputs {
+    /// Creates the source from the command arguments.
     fn new(path: Option<&PathBuf>, values: &[InitStorageData]) -> Self {
-        match path {
-            Some(path) => Self::Path(path.clone()),
-            None => Self::Values(values.to_vec()),
+        Self {
+            path: path.cloned(),
+            values: values.to_vec(),
         }
     }
 
     /// Loads the init storage data and the optional fungible faucet metadata.
     ///
-    /// Only a TOML file can supply fungible faucet metadata.
+    /// The `--init-storage-value` entries override the entries of the TOML file. A value entry
+    /// replaces the file value with the same name. Map entries for a slot replace all the map
+    /// entries of that slot in the file. Only a TOML file can supply fungible faucet metadata.
     fn load(self) -> Result<(InitStorageData, Option<FungibleFaucetMetadata>), CliError> {
-        match self {
-            Self::Path(path) => load_init_storage_data(&path),
-            Self::Values(values) => {
-                let init_data = merge_init_storage_values(&values).map_err(|err| {
-                    CliError::InitDataError(
-                        Box::new(err),
-                        "conflicting --init-storage-value entries".to_string(),
-                    )
-                })?;
-                Ok((init_data, None))
-            },
-        }
+        let (mut init_data, faucet_metadata) = match &self.path {
+            Some(path) => load_init_storage_data(path)?,
+            None => (InitStorageData::default(), None),
+        };
+
+        let overrides = merge_init_storage_values(&self.values).map_err(|err| {
+            CliError::InitDataError(
+                Box::new(err),
+                "conflicting --init-storage-value entries".to_string(),
+            )
+        })?;
+        override_init_storage_data(&mut init_data, &overrides).map_err(|err| {
+            CliError::InitDataError(
+                Box::new(err),
+                "--init-storage-value entries conflict with the init storage data file".to_string(),
+            )
+        })?;
+
+        Ok((init_data, faucet_metadata))
     }
+}
+
+/// Writes the entries of `overrides` into `init_data` and replaces the existing entries.
+fn override_init_storage_data(
+    init_data: &mut InitStorageData,
+    overrides: &InitStorageData,
+) -> Result<(), InitStorageDataError> {
+    for (name, value) in overrides.values() {
+        init_data.set_value(name.clone(), value.clone())?;
+    }
+    for (slot_name, entries) in overrides.maps() {
+        init_data.set_map_values(slot_name.clone(), entries.clone())?;
+    }
+    Ok(())
 }
 
 /// Merges the init storage data of several `--init-storage-value` entries into one.
@@ -208,12 +220,11 @@ pub struct NewWalletCmd {
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
     /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
     /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
-    /// the flag to set more values.
+    /// the flag to set more values. The values override the entries of `--init-storage-data-path`.
     #[arg(
         long = "init-storage-value",
         value_name = "SLOT=VALUE",
-        value_parser = parse_init_storage_value,
-        conflicts_with = "init_storage_data_path"
+        value_parser = parse_init_storage_value
     )]
     pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the wallet can be created and used for execution without a node.
@@ -241,10 +252,7 @@ impl NewWalletCmd {
             &keystore,
             self.account_type.into(),
             &package_paths,
-            InitStorageDataSource::new(
-                self.init_storage_data_path.as_ref(),
-                &self.init_storage_values,
-            ),
+            InitStorageInputs::new(self.init_storage_data_path.as_ref(), &self.init_storage_values),
             self.offline,
             self.auth.choice()?,
         )
@@ -329,12 +337,11 @@ pub struct NewAccountCmd {
     /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
     /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
     /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
-    /// the flag to set more values.
+    /// the flag to set more values. The values override the entries of `--init-storage-data-path`.
     #[arg(
         long = "init-storage-value",
         value_name = "SLOT=VALUE",
-        value_parser = parse_init_storage_value,
-        conflicts_with = "init_storage_data_path"
+        value_parser = parse_init_storage_value
     )]
     pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the account can be created and used for execution without a node.
@@ -357,10 +364,7 @@ impl NewAccountCmd {
             &keystore,
             self.account_type.into(),
             &self.packages,
-            InitStorageDataSource::new(
-                self.init_storage_data_path.as_ref(),
-                &self.init_storage_values,
-            ),
+            InitStorageInputs::new(self.init_storage_data_path.as_ref(), &self.init_storage_values),
             self.offline,
             self.auth.choice()?,
         )
@@ -656,7 +660,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     keystore: &CliKeyStore,
     account_type: AccountType,
     package_paths: &[PathBuf],
-    init_storage_data_source: InitStorageDataSource,
+    init_storage_inputs: InitStorageInputs,
     offline: bool,
     auth_choice: AuthChoice,
 ) -> Result<Account, CliError> {
@@ -672,7 +676,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let packages = load_packages(&cli_config, package_paths)?;
     debug!("Loaded {} packages", packages.len());
     debug!("Loading initialization storage data...");
-    let (init_storage_data, faucet_metadata) = init_storage_data_source.load()?;
+    let (init_storage_data, faucet_metadata) = init_storage_inputs.load()?;
     debug!("Loaded initialization storage data");
 
     // `FungibleFaucet` requires every storage slot to be initialized. When the user provides a
@@ -844,15 +848,8 @@ fn process_packages(
 mod tests {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
-        BasicWallet,
-        FeltSchema,
-        SchemaType,
-        StorageSchema,
-        StorageSlotSchema,
-        TokenName,
-        ValueSlotSchema,
-        WordSchema,
-        WordValue,
+        BasicWallet, FeltSchema, SchemaType, StorageSchema, StorageSlotSchema, TokenName,
+        ValueSlotSchema, WordSchema, WordValue,
     };
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
@@ -993,16 +990,37 @@ mod tests {
     }
 
     #[test]
-    fn init_storage_value_conflicts_with_init_storage_data_path() {
-        let err =
-            parse_new_account(&["--init-storage-value", r#"my::slot="1""#, "-i", "init_data.toml"])
-                .expect_err("--init-storage-value and -i should conflict");
+    fn init_storage_values_override_init_storage_data_file() {
+        let mut init_data = InitStorageData::from_toml(
+            r#"
+            "my::slot" = "1"
+            "my::other" = "2"
+            "my::map" = [{ key = "0x01", value = "0x10" }, { key = "0x02", value = "0x20" }]
+            "#,
+        )
+        .unwrap();
+        let overrides = load_init_storage_values(&[
+            r#"my::slot="3""#,
+            r#"my::map=[{ key = "0x03", value = "0x30" }]"#,
+        ])
+        .unwrap();
 
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        override_init_storage_data(&mut init_data, &overrides).unwrap();
+
+        let value = |name: &str| init_data.value_entry(&name.parse().unwrap()).cloned();
+        // Check my::slot has the override value
+        assert_eq!(value("my::slot"), Some(WordValue::Atomic("3".into())));
+        // Check my::other keeps the original value from the file
+        assert_eq!(value("my::other"), Some(WordValue::Atomic("2".into())));
+        // Check my::map has the override value
+        assert_eq!(
+            init_data.map_entries(&"my::map".parse().unwrap()).unwrap(),
+            &vec![(WordValue::Atomic("0x03".into()), WordValue::Atomic("0x30".into()))]
+        );
     }
 
     #[test]
-    fn init_storage_data_source_appends_map_entries_and_rejects_conflicts() {
+    fn init_storage_values_append_map_entries_and_reject_conflicts() {
         let init_data = load_init_storage_values(&[
             r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
             r#"my::map=[{ key = "0x02", value = "0x20" }]"#,
@@ -1053,7 +1071,7 @@ mod tests {
         let args: Vec<&str> =
             entries.iter().flat_map(|entry| ["--init-storage-value", entry]).collect();
         let cmd = parse_new_account(&args).unwrap();
-        InitStorageDataSource::Values(cmd.init_storage_values)
+        InitStorageInputs::new(None, &cmd.init_storage_values)
             .load()
             .map(|(data, _)| data)
     }

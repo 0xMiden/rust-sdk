@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.17.2 (TBD)
+## 0.17.2 (2026-10-06)
 
 ### Breaking Changes
 
@@ -9,6 +9,10 @@
 ### Features
 
 * [FEATURE][rust] `GrpcNoteTransportClient` retries a send that fails with a transient error: `Unavailable`, `DeadlineExceeded`, a failed connection, or `ResourceExhausted` with a `retry-after` value. It retries up to three times, with a delay that starts at 250 ms and doubles. `GrpcNoteTransportClient::with_max_retries` and `GrpcNoteTransportClient::with_retry_interval_ms` configure the retries ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+
+### Changes
+
+* Updated the workspace version to `0.17.2` and the locked protocol dependencies to `0.17.1`.
 
 ## 0.17.1 (2026-10-05)
 

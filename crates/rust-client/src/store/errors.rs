@@ -36,6 +36,8 @@ pub enum StoreError {
     AssetVaultError(#[from] AssetVaultError),
     #[error("account data wasn't found for account id {0}")]
     AccountDataNotFound(AccountId),
+    #[error("note tags of account {0} are derived from its addresses and cannot be stored")]
+    AccountNoteTagNotStorable(AccountId),
     #[error("account patch error")]
     AccountPatchError(#[from] AccountPatchError),
     #[error("account error")]

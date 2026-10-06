@@ -29,7 +29,7 @@ use miden_client::account::{
 use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
-use miden_client::note::{BlockNumber, NoteScript, NoteTag, Nullifier};
+use miden_client::note::{BlockNumber, NoteScript, Nullifier};
 use miden_client::protocol_config::ProtocolConfig;
 use miden_client::store::{
     AccountRecord,
@@ -170,10 +170,6 @@ impl Store for SqliteStore {
 
     async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
         self.interact_with_connection(SqliteStore::get_note_tags).await
-    }
-
-    async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
-        self.interact_with_connection(SqliteStore::get_unique_note_tags).await
     }
 
     async fn add_note_tag(&self, tag: NoteTagRecord) -> Result<bool, StoreError> {

@@ -6,7 +6,6 @@ use miden_client::keystore::Keystore;
 use miden_client::testing::common::TestClient;
 
 use crate::ClientConfig;
-use crate::fee_funding::AccountLock;
 
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
@@ -53,15 +52,6 @@ impl AgglayerConfig {
             bridge: Self::load_account_file(&dir, Self::BRIDGE_FILE)?,
             faucet: Self::load_account_file(&dir, Self::FAUCET_FILE)?,
         })
-    }
-
-    /// Claims the agglayer accounts for the calling test, waiting for whichever test holds them.
-    ///
-    /// Every agglayer test drives the same four accounts, so two at once would build transactions
-    /// from the same nonce. One lock keyed on the bridge covers all four, where a lock per account
-    /// could deadlock. The guard must stay alive for the whole test.
-    pub fn claim(&self) -> Result<AccountLock> {
-        AccountLock::acquire(self.bridge_id())
     }
 
     pub fn bridge_admin_id(&self) -> AccountId {

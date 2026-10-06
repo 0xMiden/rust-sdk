@@ -378,11 +378,10 @@ pub trait Store: Send + Sync {
     /// Inserts the genesis block header and, if present, its protocol configuration.
     ///
     /// The header is untracked and has no MMR authentication nodes. The protocol configuration is
-    /// stored under
-    /// [`protocol_config_setting_key`](crate::protocol_config::protocol_config_setting_key) in
-    /// [`SettingScope::Client`]. The default implementation does two separate writes, so a failure
-    /// between them can leave the header without its protocol configuration. Implementations should
-    /// override this method to do both writes in one transaction.
+    /// stored under [`protocol_config_setting_key`] in [`SettingScope::Client`]. The default
+    /// implementation does two separate writes, so a failure between them can leave the header
+    /// without its protocol configuration. Implementations should override this method to do both
+    /// writes in one transaction.
     async fn insert_genesis(
         &self,
         block_header: &BlockHeader,

@@ -130,14 +130,6 @@ impl<AUTH> Client<AUTH> {
             Err(err) => Err(ClientError::StoreError(err)),
         }
     }
-
-    /// Saves the cursor for each tag used by the transport fetch.
-    async fn save_note_transport_cursors(
-        &self,
-        cursors: &NoteTransportCursors,
-    ) -> Result<(), ClientError> {
-        self.store.set_note_transport_cursors(cursors).await.map_err(ClientError::StoreError)
-    }
 }
 
 impl<AUTH> Client<AUTH>
@@ -349,7 +341,7 @@ where
             .collect();
 
         if let Some(cursors) = cursors {
-            self.save_note_transport_cursors(&cursors).await?;
+            self.store.set_note_transport_cursors(&cursors).await?;
         }
         if let Some(error) = fetch_error {
             tracing::warn!(?error, "note transport fetch failed; saved successful pages for retry");

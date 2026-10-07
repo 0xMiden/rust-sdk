@@ -594,7 +594,11 @@ impl Store for SqliteStore {
         let cursors = cursors.clone();
         self.interact_with_connection(move |conn| {
             if cursors.is_empty() {
-                SqliteStore::remove_setting(conn, SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY)?;
+                SqliteStore::remove_setting(
+                    conn,
+                    SettingScope::Client,
+                    NOTE_TRANSPORT_CURSORS_KEY,
+                )?;
                 return Ok(());
             }
             SqliteStore::set_client_setting(conn, NOTE_TRANSPORT_CURSORS_KEY, &cursors)

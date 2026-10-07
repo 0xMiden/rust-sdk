@@ -12,6 +12,8 @@
 * [BREAKING][behavior][rust,store] Account note tags are derived from the addresses of native accounts instead of being stored. `Store::get_note_tags` returns only the stored tags, the new provided `Store::get_account_note_tags` returns the account tags, and `get_unique_note_tags` returns both sets. `add_note_tag` and `apply_transaction` reject account-source tags with the new `StoreError::AccountNoteTagNotStorable`. A SQLite migration removes the stored account tags ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId` ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [BREAKING][param][rust] The `Store` trait has typed methods for the client settings: `get_pswap_lineage`, `get_pswap_order_id_by_tip`, `get_pswap_lineages`, `upsert_pswap_lineage`, `get_note_transport_cursors`, `set_note_transport_cursors`, `get_protocol_config` and `insert_protocol_config`. They have default bodies that use the `settings` table. `PswapLineageFilter` is public. Added `PswapLineageRecord::from_parts`, `TransactionEncryptionKey::from_parts`, `TransactionEncryptionKey::scheme` and `TransactionEncryptionKey::genesis_commitment` ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
+* [BREAKING][arch][store] The SQLite store writes the client settings as protobuf messages: the note transport cursors, the RPC limits, the transaction encryption key, the protocol configurations and the PSWAP lineages. Requires a new client database ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
 
 ### Features
 
@@ -33,8 +35,6 @@
 ### Breaking Changes
 
 * [BREAKING][removal][rust,store] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely. Store migration 2 drops the stale outbox row, so notes queued by earlier versions are not re-sent ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
-* [BREAKING][param][rust] The `Store` trait has typed methods for the client settings: `get_pswap_lineage`, `get_pswap_order_id_by_tip`, `get_pswap_lineages`, `upsert_pswap_lineage`, `get_note_transport_covered_tags`, `set_note_transport_covered_tags`, `get_protocol_config` and `insert_protocol_config`. They have default bodies that use the `settings` table. `PswapLineageFilter` is public. Added `PswapLineageRecord::from_parts`, `TransactionEncryptionKey::from_parts`, `TransactionEncryptionKey::scheme` and `TransactionEncryptionKey::genesis_commitment` ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
-* [BREAKING][arch][store] The SQLite store writes the client settings as protobuf messages: the note transport cursor and covered tags, the RPC limits, the transaction encryption key, the protocol configurations and the PSWAP lineages. Requires a new client database ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
 
 ### Features
 

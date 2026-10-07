@@ -275,6 +275,7 @@ pub mod config;
 #[allow(hidden_glob_reexports)]
 mod errors;
 mod info;
+mod package_registry;
 #[allow(hidden_glob_reexports)]
 mod utils;
 

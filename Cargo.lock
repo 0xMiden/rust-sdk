@@ -2876,6 +2876,7 @@ dependencies = [
  "rand 0.10.3",
  "regex",
  "serde",
+ "serde_json",
  "serial_test",
  "thiserror",
  "tokio",

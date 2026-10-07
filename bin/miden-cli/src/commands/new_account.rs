@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -37,6 +36,7 @@ use crate::commands::account::set_default_account_if_unset;
 use crate::commands::keys::{ECDSA_SCHEME_NAME, FALCON_SCHEME_NAME, scheme_name};
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::package_registry::{PackageSpec, resolve_registry_artifact};
 use crate::utils::parse_ecdsa_public_key;
 use crate::{CliKeyStore, client_binary_name};
 
@@ -215,6 +215,9 @@ pub struct NewWalletCmd {
     pub account_type: CliAccountType,
     /// Optional list of paths specifying additional components in the form of packages to add to
     /// the account.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long)]
     pub extra_packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -332,6 +335,9 @@ pub struct NewAccountCmd {
     /// any package contributes a `FungibleFaucet` component, the resulting account is treated as a
     /// fungible faucet (and an implicit `TokenPolicyManager` is installed when not already
     /// provided).
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -390,11 +396,12 @@ impl NewAccountCmd {
 // HELPERS
 // ================================================================================================
 
-/// Reads [[`miden_core::vm::Package`]]s from the given file paths.
+/// Reads [[`miden_core::vm::Package`]]s from the given package arguments.
 ///
 /// A bare name resolves to a package in the configured package directory. The CLI writes those
-/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is
-/// and is read as untrusted, so its MAST forest is validated.
+/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is. A
+/// `name@version` reference resolves to a package file in the local package registry. The CLI reads
+/// `.masp` paths and registry packages as untrusted, so it validates their MAST forest.
 pub(crate) fn load_packages(
     cli_config: &CliConfig,
     package_paths: &[PathBuf],
@@ -403,33 +410,18 @@ pub(crate) fn load_packages(
 
     let packages_dir = &cli_config.package_directory;
     for path in package_paths {
-        // If a user passes in a file with the `.masp` file extension, then we leave the path as is;
-        // since it probably is a full path (this is the case with cargo-miden for instance).
-        let (path, trusted) = match path.extension() {
-            None => {
-                let path = path.with_extension(MIDEN_PACKAGE_EXTENSION);
-                Ok((packages_dir.join(path), true))
+        let mut expected_name = None;
+        let (path, trusted) = match PackageSpec::parse(path)? {
+            PackageSpec::File(path) => (path, false),
+            PackageSpec::Directory(path) => {
+                (packages_dir.join(path.with_extension(MIDEN_PACKAGE_EXTENSION)), true)
             },
-            Some(extension) => {
-                if extension == OsStr::new(MIDEN_PACKAGE_EXTENSION) {
-                    Ok((path.clone(), false))
-                } else {
-                    let error = std::io::Error::new(
-                        std::io::ErrorKind::InvalidFilename,
-                        format!(
-                            "{} has an invalid file extension: '{}'. \
-                            Expected: {MIDEN_PACKAGE_EXTENSION}",
-                            path.display(),
-                            extension.display()
-                        ),
-                    );
-                    Err(CliError::AccountComponentError(
-                        Box::new(error),
-                        format!("refuesed to read {}", path.display()),
-                    ))
-                }
+            PackageSpec::Registry { name, version } => {
+                let path = resolve_registry_artifact(&name, version.as_deref())?;
+                expected_name = Some(name);
+                (path, false)
             },
-        }?;
+        };
 
         let bytes = fs::read(&path).map_err(|e| {
             CliError::AccountComponentError(
@@ -449,6 +441,19 @@ pub(crate) fn load_packages(
                 format!("failed to deserialize Package in {}", path.display()),
             )
         })?;
+
+        // The registry index and its artifact files can go out of sync. A name check makes sure
+        // that the file contains the package that the user asked for.
+        if let Some(expected_name) = expected_name
+            && AsRef::<str>::as_ref(&package.name) != expected_name
+        {
+            return Err(CliError::PackageRegistry(format!(
+                "the registry entry for `{expected_name}` points to {}, which contains the \
+                 package `{}`",
+                path.display(),
+                package.name
+            )));
+        }
 
         packages.push(package);
     }

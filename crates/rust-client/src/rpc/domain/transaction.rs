@@ -6,7 +6,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, Nullifier};
 use miden_protocol::transaction::{InputNoteCommitment, TransactionHeader};
 
-use super::note::{CommittedNote, note_id_from_proto, note_inclusion_proof_from_proto};
+use super::note::CommittedNote;
 use super::nullifier::nullifier_from_proto;
 use crate::rpc::{RpcConversionError, RpcError, generated as proto};
 
@@ -69,20 +69,21 @@ impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
         let (transaction_header, output_notes, erased_output_notes) =
             convert_transaction_header(proto_header, value.output_note_proofs)?;
 
-        let consumed_note_refs =
-            value
-                .consumed_note_refs
-                .into_iter()
-                .map(|r| {
-                    let nullifier = nullifier_from_proto(r.nullifier.ok_or(
-                        RpcError::ExpectedDataMissing("consumed_note_ref.nullifier".into()),
-                    )?)?;
-                    let note_id = note_id_from_proto(r.note_id.ok_or(
-                        RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()),
-                    )?)?;
-                    Ok((nullifier, note_id))
-                })
-                .collect::<Result<Vec<_>, RpcError>>()?;
+        let consumed_note_refs = value
+            .consumed_note_refs
+            .into_iter()
+            .map(|r| {
+                let nullifier =
+                    nullifier_from_proto(r.nullifier.ok_or(RpcError::ExpectedDataMissing(
+                        "consumed_note_ref.nullifier".into(),
+                    ))?)?;
+                let note_id: NoteId = r
+                    .note_id
+                    .ok_or(RpcError::ExpectedDataMissing("consumed_note_ref.note_id".into()))?
+                    .decode_and_verify()?;
+                Ok((nullifier, note_id))
+            })
+            .collect::<Result<Vec<_>, RpcError>>()?;
 
         Ok(Self {
             block_num,
@@ -110,7 +111,8 @@ fn convert_transaction_header(
     // Build a map of note_id to inclusion_proof from the separate proofs field.
     let mut proof_map: BTreeMap<NoteId, NoteInclusionProof> = BTreeMap::new();
     for proto_proof in output_note_proofs {
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_proof)?;
+        let (note_id, inclusion_proof): (NoteId, NoteInclusionProof) =
+            proto_proof.decode_and_verify()?;
         proof_map.insert(note_id, inclusion_proof);
     }
 

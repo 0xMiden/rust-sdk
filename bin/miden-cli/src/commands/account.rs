@@ -7,13 +7,14 @@ use comfy_table::{Cell, ContentArrangement, presets};
 use miden_client::account::component::{FungibleFaucet, MIDEN_PACKAGE_EXTENSION};
 use miden_client::account::{
     AccountCode,
-    AccountHeader,
     AccountId,
     AccountInterfaceExt,
+    PartialAccount,
+    PartialStorage,
     StorageSlotType,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::{AccountStorageHeader, Asset, TokenSymbol};
+use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
 use miden_client::rpc::domain::account::{GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
@@ -219,19 +220,20 @@ async fn show_account<AUTH>(
     account_id: AccountId,
     cli_config: &CliConfig,
 ) -> Result<(), CliError> {
-    let summary = load_account_summary(client, account_id, &cli_config.rpc).await?;
+    let account = load_partial_account(client, account_id, &cli_config.rpc).await?;
 
     let network_id = cli_config.network_id()?;
-    let token_symbol = summary
-        .storage_header
+    let token_symbol = account
+        .storage()
+        .header()
         .find_slot_header_by_name(FungibleFaucet::token_config_slot())
         .and_then(|slot| decode_token_config(account_id, slot.value()).ok())
         .map(|(symbol, _)| symbol.to_string());
-    print_summary_table(&summary, network_id, token_symbol.as_deref());
+    print_summary_table(&account, network_id, token_symbol.as_deref());
 
     // Vault Table
     {
-        let assets = &summary.assets;
+        let assets = account.vault().assets();
         println!("Assets: ");
 
         let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
@@ -265,7 +267,7 @@ async fn show_account<AUTH>(
 
         let mut table = create_dynamic_table(&["Slot Name", "Slot Type", "Value/Commitment"]);
 
-        for slot in summary.storage_header.slots() {
+        for slot in account.storage().header().slots() {
             let item = slot.value();
 
             // Last entry is reserved so I don't think the user cares about it. Also, to keep the
@@ -537,33 +539,30 @@ async fn resolve_account_code<AUTH>(
     )))
 }
 
-/// The account data that `account show` displays.
+/// Loads `account_id` as a [`PartialAccount`], falling back to fetching it from the network when
+/// the client does not track it locally.
 ///
-/// The storage holds only the slot headers. Storage map entries are not loaded because the command
-/// shows only the map roots.
-struct AccountSummary {
-    header: AccountHeader,
-    code: AccountCode,
-    storage_header: AccountStorageHeader,
-    assets: Vec<Asset>,
-}
-
-/// Loads the summary for `account_id`, falling back to fetching it from the network when the client
-/// does not track it locally.
-///
-/// The network fetch requests the vault but no storage map entries.
-async fn load_account_summary<AUTH>(
+/// The partial account holds the full vault and only the storage slot headers. Storage map entries
+/// are not loaded because `account show` shows only the map roots.
+async fn load_partial_account<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
     rpc_config: &RpcConfig,
-) -> Result<AccountSummary, CliError> {
+) -> Result<PartialAccount, CliError> {
+    let account_error =
+        |err| CliError::Account(err, format!("failed to build partial account {account_id}"));
+
     if let Some(account) = client.get_account(account_id).await? {
-        return Ok(AccountSummary {
-            header: AccountHeader::from(&account),
-            code: account.code().clone(),
-            storage_header: account.storage().to_header(),
-            assets: account.vault().assets().collect(),
-        });
+        let (id, vault, storage, code, nonce, seed) = account.into_parts();
+        return PartialAccount::new(
+            id,
+            nonce,
+            code,
+            PartialStorage::new_minimal(&storage),
+            PartialVault::new_full(vault),
+            seed,
+        )
+        .map_err(account_error);
     }
 
     println!("Account {account_id} is not tracked by the client. Fetching from the network...");
@@ -593,17 +592,24 @@ async fn load_account_summary<AUTH>(
         "Account {account_id} is private and not tracked by the client",
     )))?;
 
-    Ok(AccountSummary {
-        header: details.header,
-        code: details.code,
-        storage_header: details.storage_details.header,
-        assets: details.vault_details.assets,
-    })
+    let vault = AssetVault::new(&details.vault_details.assets)
+        .map_err(|err| CliError::Input(format!("Invalid vault for account {account_id}: {err}")))?;
+    let storage = PartialStorage::new(details.storage_details.header, []).map_err(account_error)?;
+
+    PartialAccount::new(
+        account_id,
+        details.header.nonce(),
+        details.code,
+        storage,
+        PartialVault::new_full(vault),
+        None,
+    )
+    .map_err(account_error)
 }
 
 /// Prints a summary table with account information.
 fn print_summary_table(
-    summary: &AccountSummary,
+    account: &PartialAccount,
     network_id: NetworkId,
     token_symbol: Option<&str>,
 ) {
@@ -614,33 +620,27 @@ fn print_summary_table(
 
     table.add_row(vec![
         Cell::new("Address"),
-        Cell::new(account_bech_32(summary.header.id(), &summary.code, network_id)),
+        Cell::new(account_bech_32(account.id(), account.code(), network_id)),
     ]);
-    table.add_row(vec![Cell::new("Account ID (hex)"), Cell::new(summary.header.id().to_string())]);
+    table.add_row(vec![Cell::new("Account ID (hex)"), Cell::new(account.id().to_string())]);
     table.add_row(vec![
         Cell::new("Account Commitment"),
-        Cell::new(summary.header.to_commitment().to_string()),
+        Cell::new(account.to_commitment().to_string()),
     ]);
     table.add_row(vec![Cell::new("Kind"), Cell::new(account_kind_display_name(token_symbol))]);
-    table.add_row(vec![
-        Cell::new("Type"),
-        Cell::new(summary.header.id().account_type().to_string()),
-    ]);
+    table.add_row(vec![Cell::new("Type"), Cell::new(account.id().account_type().to_string())]);
     table.add_row(vec![
         Cell::new("Code Commitment"),
-        Cell::new(summary.header.code_commitment().to_string()),
+        Cell::new(account.code().commitment().to_string()),
     ]);
-    table.add_row(vec![
-        Cell::new("Vault Root"),
-        Cell::new(summary.header.vault_root().to_string()),
-    ]);
+    table.add_row(vec![Cell::new("Vault Root"), Cell::new(account.vault().root().to_string())]);
     table.add_row(vec![
         Cell::new("Storage Root"),
-        Cell::new(summary.header.storage_commitment().to_string()),
+        Cell::new(account.storage().commitment().to_string()),
     ]);
     table.add_row(vec![
         Cell::new("Nonce"),
-        Cell::new(summary.header.nonce().as_canonical_u64().to_string()),
+        Cell::new(account.nonce().as_canonical_u64().to_string()),
     ]);
 
     println!("{table}\n");

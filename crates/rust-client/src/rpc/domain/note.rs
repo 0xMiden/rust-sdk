@@ -26,19 +26,6 @@ use miden_protocol::{Felt, Word};
 use super::{MissingFieldHelper, RpcConversionError};
 use crate::rpc::{RpcError, generated as proto};
 
-/// Reads a note ID off the wire. A free function because both types are foreign, so there can be no
-/// `TryFrom` impl.
-pub(crate) fn note_id_from_proto(value: proto::note::NoteId) -> Result<NoteId, RpcConversionError> {
-    Ok(value.decode_and_verify()?)
-}
-
-/// Reads a note inclusion proof and the ID of the note it proves.
-pub(crate) fn note_inclusion_proof_from_proto(
-    value: proto::note::NoteInclusionProof,
-) -> Result<(NoteId, NoteInclusionProof), RpcConversionError> {
-    Ok(value.decode_and_verify()?)
-}
-
 /// Aggregates individual attachment commitments into the note's attachments commitment.
 ///
 /// The element layout mirrors [`NoteAttachments`]' own sequential commitment, so this yields the
@@ -483,7 +470,8 @@ impl TryFrom<proto::rpc::NoteSyncRecord> for CommittedNote {
             proto::rpc::SyncNotesResponse::missing_field(stringify!(notes.inclusion_proof)),
         )?;
 
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_inclusion_proof)?;
+        let (note_id, inclusion_proof): (NoteId, NoteInclusionProof) =
+            proto_inclusion_proof.decode_and_verify()?;
 
         let committed = CommittedNote::new(note_id, metadata, inclusion_proof);
 
@@ -551,7 +539,8 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
         let proto_inclusion_proof = value
             .inclusion_proof
             .ok_or_else(|| proto::rpc::CommittedNote::missing_field(stringify!(inclusion_proof)))?;
-        let (note_id, inclusion_proof) = note_inclusion_proof_from_proto(proto_inclusion_proof)?;
+        let (note_id, inclusion_proof): (NoteId, NoteInclusionProof) =
+            proto_inclusion_proof.decode_and_verify()?;
 
         let note = value
             .note

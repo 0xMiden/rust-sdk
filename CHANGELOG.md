@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-### Fixes
-
-* [FIX][rust] The `InputNoteRecord` conversions into `Note`, `InputNote` and `NoteTagRecord` are now `TryFrom` impls, so `Note::try_from(record)` compiles. Existing `.try_into()` calls are unaffected ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
-
-## 0.17.0-rc.2 (2026-09-23)
 ### Features
 
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
@@ -28,6 +23,7 @@
 
 ### Fixes
 
+* [FIX][rust] Implemented `TryFrom` for the `InputNoteRecord` conversions to `Note`, `InputNote`, and `NoteTagRecord`. Existing `.try_into()` calls remain supported ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 

@@ -1,12 +1,14 @@
 use alloc::boxed::Box;
 
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteId;
+use miden_protocol::errors::TransactionVerifierError;
+use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::transaction::TransactionId;
 
 use super::ProvenBatchSubmission;
 use crate::rpc::RpcError;
 use crate::store::StoreError;
-use crate::transaction::TransactionStoreUpdateError;
+use crate::transaction::{BatchStoreUpdate, TransactionStoreUpdateError};
 
 /// Errors specific to `BatchBuilder` construction and operation.
 #[derive(Debug, thiserror::Error)]
@@ -16,7 +18,23 @@ pub enum BatchBuilderError {
     #[error("input note {0} is already consumed by an earlier transaction in this batch")]
     DuplicateInputNote(NoteId),
 
-    /// `submit` was called on a builder with zero successful pushes.
+    /// A transaction that another party proved consumes an input note that an earlier transaction
+    /// in this batch already consumes. The note is identified by its nullifier, because a proven
+    /// transaction does not show the ids of its authenticated input notes.
+    #[error(
+        "input note with nullifier {0} is already consumed by an earlier transaction in this batch"
+    )]
+    DuplicateNullifier(Nullifier),
+
+    /// The proof of a transaction that another party proved does not verify.
+    #[error("proof of transaction {tx_id} does not verify")]
+    InvalidTransactionProof {
+        tx_id: TransactionId,
+        #[source]
+        source: TransactionVerifierError,
+    },
+
+    /// `submit_transaction_batch` was called on a batch with zero successful pushes.
     #[error("batch is empty — push at least one transaction before submitting")]
     Empty,
 
@@ -35,9 +53,8 @@ pub enum BatchBuilderError {
         source: RpcError,
     },
 
-    /// The node accepted the batch (RPC returned `block_num`), but building one of the per-tx
-    /// [`crate::transaction::TransactionStoreUpdate`]s failed. Callers should trigger `sync_state`
-    /// to reconcile.
+    /// The node accepted the batch (RPC returned `block_num`), but building the
+    /// [`BatchStoreUpdate`] failed. Callers should trigger `sync_state` to reconcile.
     #[error(
         "batch was accepted at block {block_num} but building store updates failed; sync_state to reconcile"
     )]
@@ -47,13 +64,16 @@ pub enum BatchBuilderError {
         source: TransactionStoreUpdateError,
     },
 
-    /// The node accepted the batch (RPC returned `block_num`), but applying the per-tx updates to
-    /// the local store failed. Callers should trigger `sync_state` to reconcile.
+    /// The node accepted the batch (RPC returned `block_num`), but applying the update to the local
+    /// store failed. The update is attached and can be applied again with
+    /// [`Client::apply_batch_update`](crate::Client::apply_batch_update).
     #[error(
-        "batch was accepted at block {block_num} but applying to the store failed; sync_state to reconcile"
+        "batch was accepted at block {block_num} but applying to the store failed. The pending \
+         store update is attached and can be applied again via `apply_batch_update`"
     )]
     BatchSubmittedButApplyFailed {
         block_num: BlockNumber,
+        pending_update: Box<BatchStoreUpdate>,
         #[source]
         source: StoreError,
     },

@@ -48,7 +48,7 @@ use miden_client::store::{
     TransactionFilter,
 };
 use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
-use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
+use miden_client::transaction::{BatchStoreUpdate, TransactionRecord, TransactionStoreUpdate};
 use miden_client::utils::Serializable;
 use miden_client_proto as proto;
 use miden_protocol::Felt;
@@ -209,10 +209,10 @@ impl Store for SqliteStore {
 
     async fn apply_transaction_batch(
         &self,
-        tx_updates: Vec<TransactionStoreUpdate>,
+        batch_update: BatchStoreUpdate,
     ) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::apply_transaction_batch(conn, &tx_updates)
+            SqliteStore::apply_transaction_batch(conn, &batch_update)
         })
         .await
     }

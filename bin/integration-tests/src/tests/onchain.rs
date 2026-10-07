@@ -570,9 +570,9 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
             .build_consume_notes(vec![note.clone()])
             .unwrap();
         info!(index = i, "Pushing consume tx into batch");
-        batch.push(wallet_account.id(), tx_request).await?;
+        client.push_to_batch(&mut batch, wallet_account.id(), tx_request).await?;
     }
-    let submission_tip = batch.submit().await?;
+    let submission_tip = client.submit_transaction_batch(batch).await?;
     info!(submission_tip = submission_tip.as_u32(), "Submitted 3-tx consume batch");
 
     // Sync until the three consume txs are committed, then capture their batch block.

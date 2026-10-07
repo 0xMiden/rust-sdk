@@ -12,6 +12,8 @@
 * [BREAKING][behavior][rust,store] Account note tags are derived from the addresses of native accounts instead of being stored. `Store::get_note_tags` returns only the stored tags, the new provided `Store::get_account_note_tags` returns the account tags, and `get_unique_note_tags` returns both sets. `add_note_tag` and `apply_transaction` reject account-source tags with the new `StoreError::AccountNoteTagNotStorable`. A SQLite migration removes the stored account tags ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][param][rust] `Client::remove_address` no longer takes an `AccountId` ([#2653](https://github.com/0xMiden/rust-sdk/pull/2653)).
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [BREAKING][param][rust] `BatchBuilder` no longer borrows the `Client`, so the client stays usable while a batch is built. `Client::new_transaction_batch` takes `&self`, `BatchBuilder::push` is replaced by `Client::push_to_batch(&mut batch, account_id, request)`, and `BatchBuilder::submit` is replaced by `Client::submit_transaction_batch(batch)` ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
+* [BREAKING][param][rust,store] `Store::apply_transaction_batch` takes one `BatchStoreUpdate` instead of a `Vec<TransactionStoreUpdate>`. The update holds the executed transactions of the batch in order, with their note updates and tags merged, and is built by the new `Client::get_batch_store_update`. `BatchBuilderError::BatchSubmittedButApplyFailed` carries it as `pending_update`, to apply again with the new `Client::apply_batch_update` ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [BREAKING][removal][rust] Removed `miden_client::store::AccountUpdates`, an unused duplicate of `miden_client::sync::AccountUpdates` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 * [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 
@@ -20,11 +22,14 @@
 * [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][rust] Added `BatchBuilder::push_proven_transaction`, which adds a transaction that another party executed and proved to a batch. The client does not have to track its account and does not record it locally ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 
 ### Fixes
 
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FIX][rust] Submitting a transaction batch calls the registered `TransactionObserver`s for each of its transactions, as `submit_new_transaction` does ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
+* [FIX][rust] `Client::submit_transaction_batch` anchors the batch at the sync height of the client. A batch no longer fails with `StoreError::BlockHeaderNotFound` when the client syncs between the pushes and the submission ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 
 ### Fixes
 

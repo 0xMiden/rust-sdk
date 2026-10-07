@@ -405,6 +405,25 @@ impl NoteUpdateTracker {
     // UPDATE METHODS
     // --------------------------------------------------------------------------------------------
 
+    /// Merges the note updates of a later transaction into this tracker. A note in both trackers
+    /// takes the record from `later`. A note that this tracker inserts stays an insert, so the
+    /// store writes the full record.
+    pub(crate) fn merge(&mut self, later: NoteUpdateTracker) {
+        for (commitment, update) in later.input_notes {
+            let update_type = match self.input_notes.get(&commitment) {
+                Some(earlier) if earlier.update_type == NoteUpdateType::Insert => {
+                    NoteUpdateType::Insert
+                },
+                _ => update.update_type,
+            };
+            self.insert_input_note(update.note, update_type);
+        }
+
+        for update in later.output_notes.into_values() {
+            self.insert_output_note(update.note, update.update_type);
+        }
+    }
+
     /// Inserts the new public note data into the tracker. This method doesn't check the relevance
     /// of the note, so it should only be used for notes that are guaranteed to be relevant to the
     /// client.

@@ -23,7 +23,7 @@ use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::CommittedNote;
 use crate::store::data_store::ClientDataStore;
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
-use crate::sync::{NoteUpdateAction, OnNoteReceived};
+use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use crate::transaction::{
     AdviceMap,
     InputNote,
@@ -324,9 +324,11 @@ impl OnNoteReceived for NoteScreener {
 
         match public_note {
             Some(public_note) => {
-                // If tracked by the user, keep note regardless of inputs and extra checks
+                // If its tag was added by the user, keep note regardless of inputs and extra checks.
                 if let Some(metadata) = public_note.metadata()
-                    && self.store.get_unique_note_tags().await?.contains(&metadata.tag())
+                    && self.store.get_note_tags().await?.iter().any(|record| {
+                        record.source == NoteTagSource::User && record.tag == metadata.tag()
+                    })
                 {
                     return Ok(NoteUpdateAction::Insert(public_note));
                 }

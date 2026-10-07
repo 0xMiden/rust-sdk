@@ -5,6 +5,7 @@ use core::fmt::Display;
 
 use miden_protocol::account::{
     Account,
+    AccountCode,
     AccountHeader,
     AccountId,
     AccountStorage,
@@ -44,8 +45,8 @@ impl AccountRecordData {
 ///
 /// This drives two pieces of behavior:
 ///
-/// - **Note sync:** native accounts have their derived note tag registered so `sync_state` pulls
-///   notes targeted at them. Watched accounts do not.
+/// - **Note sync:** the store derives a note tag from each address of a native account, so
+///   `sync_state` pulls notes targeted at the account. Watched accounts have no derived tags.
 /// - **Transaction execution:** native accounts can be used as the source of a transaction; watched
 ///   accounts cannot, because the client doesn't hold the keys / authority for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,12 +197,19 @@ pub struct AccountStateUpdate {
     storage: StorageUpdate,
     /// The vault update to apply.
     vault: VaultUpdate,
+    /// The account code that `new_header` commits to.
+    code: AccountCode,
 }
 
 impl AccountStateUpdate {
     /// Creates a new update that advances the account to `new_header`.
-    pub fn new(new_header: AccountHeader, storage: StorageUpdate, vault: VaultUpdate) -> Self {
-        Self { new_header, storage, vault }
+    pub fn new(
+        new_header: AccountHeader,
+        storage: StorageUpdate,
+        vault: VaultUpdate,
+        code: AccountCode,
+    ) -> Self {
+        Self { new_header, storage, vault, code }
     }
 
     /// Returns the account ID for this update.
@@ -227,6 +235,11 @@ impl AccountStateUpdate {
     /// Returns the vault update.
     pub fn vault(&self) -> &VaultUpdate {
         &self.vault
+    }
+
+    /// Returns the account code that the new header commits to.
+    pub fn code(&self) -> &AccountCode {
+        &self.code
     }
 }
 

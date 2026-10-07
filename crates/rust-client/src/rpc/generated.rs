@@ -5,6 +5,8 @@ mod std_gen {
     include!(concat!(env!("OUT_DIR"), "/rpc_std.rs"));
 }
 #[cfg(feature = "std")]
+pub use std_gen::miden::node::v1 as rpc;
+#[cfg(feature = "std")]
 pub use std_gen::*;
 
 #[cfg(not(feature = "std"))]
@@ -26,5 +28,7 @@ pub use miden_objects::proto::{
     protocol_config,
     transaction,
 };
+#[cfg(not(feature = "std"))]
+pub use nostd_gen::miden::node::v1 as rpc;
 #[cfg(not(feature = "std"))]
 pub use nostd_gen::*;

@@ -1327,7 +1327,7 @@ impl StateSync {
             None => VaultUpdate::Full(details.vault_details.assets),
         };
 
-        Ok(AccountStateUpdate::new(details.header, storage, vault))
+        Ok(AccountStateUpdate::new(details.header, storage, vault, details.code))
     }
 
     /// Builds the storage update for an account with at least one oversized map.

@@ -6,7 +6,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
-use miden_protocol::account::{AccountCodeInterface, AccountId};
+use miden_protocol::Word;
+use miden_protocol::account::{AccountCodeInterface, AccountCodeUpgrade, AccountId};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::MerkleError;
@@ -14,7 +15,6 @@ use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::errors::{
     AccountError,
     AssetError,
-    AssetVaultError,
     NoteError,
     StorageMapError,
     TransactionInputError,
@@ -37,7 +37,6 @@ use miden_protocol::transaction::{
     TransactionScript,
 };
 use miden_protocol::vm::AdviceMap;
-use miden_protocol::{MastForestScriptError, Word};
 use miden_standards::account::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_standards::errors::CodeBuilderError;
 use miden_standards::tx_script::{
@@ -55,6 +54,7 @@ use miden_tx::utils::serde::{
 use thiserror::Error;
 
 mod builder;
+mod code_upgrade;
 pub use builder::{
     PaymentNoteDescription,
     PswapTransactionData,
@@ -145,6 +145,9 @@ pub struct TransactionRequest {
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
     expected_ntx_scripts: Vec<NoteScript>,
+    /// New code of the executing account, set through
+    /// [`TransactionRequestBuilder::account_code_upgrade`].
+    account_code_upgrade: Option<AccountCodeUpgrade>,
 }
 
 impl TransactionRequest {
@@ -273,6 +276,11 @@ impl TransactionRequest {
         &self.expected_ntx_scripts
     }
 
+    /// Returns the new code that the transaction gives to the executing account, if any.
+    pub fn account_code_upgrade(&self) -> Option<&AccountCodeUpgrade> {
+        self.account_code_upgrade.as_ref()
+    }
+
     // STATE MUTATORS
     // --------------------------------------------------------------------------------------------
 
@@ -370,6 +378,7 @@ impl TransactionRequest {
             expected_output_recipients,
             advice_map,
             merkle_store,
+            account_code_upgrade,
             ..
         } = self;
 
@@ -385,6 +394,10 @@ impl TransactionRequest {
 
         if let Some(auth_argument) = self.auth_arg {
             tx_args = tx_args.with_auth_args(auth_argument);
+        }
+
+        if let Some(account_code_upgrade) = account_code_upgrade {
+            tx_args = tx_args.with_account_code_upgrade(account_code_upgrade);
         }
 
         tx_args
@@ -473,6 +486,7 @@ impl Serializable for TransactionRequest {
         self.auth_arg.write_into(target);
         self.fee_conversion_salt.write_into(target);
         self.expected_ntx_scripts.write_into(target);
+        self.account_code_upgrade.write_into(target);
     }
 }
 
@@ -523,6 +537,7 @@ impl Deserializable for TransactionRequest {
         let auth_arg = Option::<Word>::read_from(source)?;
         let fee_conversion_salt = Option::<Word>::read_from(source)?;
         let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
+        let account_code_upgrade = Option::<AccountCodeUpgrade>::read_from(source)?;
 
         let request = TransactionRequest {
             block_numbers,
@@ -541,6 +556,7 @@ impl Deserializable for TransactionRequest {
             auth_arg,
             fee_conversion_salt,
             expected_ntx_scripts,
+            account_code_upgrade,
         };
         request
             .validate()
@@ -609,6 +625,14 @@ pub enum TransactionRequestError {
     )]
     InvalidForeignAccountId(AccountId),
     #[error(
+        "inputs for foreign account {account_id} do not open against the account tree of the \
+         transaction's reference block {block_num}"
+    )]
+    ForeignAccountNotAtReferenceBlock {
+        account_id: AccountId,
+        block_num: BlockNumber,
+    },
+    #[error(
         "note {0} cannot be used as an authenticated input: it does not have a valid inclusion proof"
     )]
     InputNoteNotAuthenticated(NoteId),
@@ -636,14 +660,10 @@ pub enum TransactionRequestError {
          caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
-    #[error("invalid transaction script")]
-    InvalidTransactionScript(#[from] MastForestScriptError),
     #[error("merkle proof error")]
     MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
     NoInputNotesNorAccountChange,
-    #[error("note not found: {0}")]
-    NoteNotFound(String),
     #[error("failed to create note")]
     NoteCreationError(#[from] NoteError),
     #[error("note failed validation")]
@@ -674,12 +694,6 @@ pub enum TransactionRequestError {
     TransactionInputError(#[from] TransactionInputError),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
-    #[error("asset vault error")]
-    AssetVaultError(#[from] AssetVaultError),
-    #[error(
-        "unsupported authentication scheme ID {0}; supported schemes are: RpoFalcon512 (0) and EcdsaK256Keccak (1)"
-    )]
-    UnsupportedAuthSchemeId(u8),
 }
 
 // TESTS
@@ -699,19 +713,21 @@ mod tests {
         StorageSlotName,
     };
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
-    use miden_protocol::note::{NoteTag, NoteType};
+    use miden_protocol::block::account_tree::AccountTree;
+    use miden_protocol::note::{Note, NoteRecipient, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::InputNote;
+    use miden_protocol::transaction::{AccountInputs, InputNote};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_tx::utils::serde::{Deserializable, Serializable};
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::{
         BlockNumber,
@@ -780,12 +796,13 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
         let note = P2idNote::builder()
             .sender(sender_id)
             .target(target_id)
             .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut RandomCoin::new(Word::default()))
+            .serial_number(rng.random())
             .build()
             .unwrap();
 
@@ -801,6 +818,36 @@ mod tests {
         assert!(TransactionRequest::read_from_bytes(&tx_request.to_bytes()).is_err());
     }
 
+    #[test]
+    fn expected_output_recipients_keep_own_output_note_recipients() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let note: Note = P2idNote::builder()
+            .sender(AccountId::try_from(ACCOUNT_ID_SENDER).unwrap())
+            .target(AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap())
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(NoteType::Private)
+            .serial_number(rng.random())
+            .build()
+            .unwrap()
+            .into();
+        let recipient = note.recipient();
+        let other = NoteRecipient::new(
+            rng.random(),
+            recipient.script().clone(),
+            recipient.storage().clone(),
+        );
+
+        let tx_request = TransactionRequestBuilder::new()
+            .own_output_notes([note.clone()])
+            .expected_output_recipients([other])
+            .build()
+            .unwrap();
+
+        assert_eq!(tx_request.expected_output_own_notes(), [note]);
+        assert_eq!(tx_request.expected_output_recipients().count(), 2);
+    }
+
     fn assert_transaction_request_serialization_with<F>(auth_component: F)
     where
         F: FnOnce() -> AccountComponent,
@@ -809,7 +856,7 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
 
         let mut notes = vec![];
         for i in 0..7 {
@@ -818,7 +865,7 @@ mod tests {
                 .target(target_id)
                 .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
                 .note_type(NoteType::Private)
-                .generate_serial_number(&mut rng)
+                .serial_number(rng.random())
                 .build()
                 .expect("note creation failed");
             notes.push(note.into());
@@ -826,7 +873,7 @@ mod tests {
 
         let mut advice_vec: Vec<(Word, Vec<Felt>)> = vec![];
         for i in 0u32..10 {
-            advice_vec.push((rng.draw_word(), vec![Felt::from(i)]));
+            advice_vec.push((rng.random(), vec![Felt::from(i)]));
         }
 
         let account = AccountBuilder::new(Default::default())
@@ -846,7 +893,7 @@ mod tests {
             .input_notes(vec![(notes.pop().unwrap(), None)])
             .explicit_input_notes(vec![(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.draw_word()),
+                Some(rng.random()),
             )])
             .expected_output_recipients(vec![notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
@@ -866,8 +913,8 @@ mod tests {
                 ForeignAccount::private(&account).unwrap(),
             ])
             .own_output_notes(vec![notes.pop().unwrap(), notes.pop().unwrap()])
-            .script_arg(rng.draw_word())
-            .auth_arg(rng.draw_word())
+            .script_arg(rng.random())
+            .auth_arg(rng.random())
             .expected_ntx_scripts(vec![notes.first().unwrap().recipient().script().clone()])
             .build()
             .unwrap();
@@ -877,5 +924,12 @@ mod tests {
 
         let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
         assert_eq!(tx_request, deserialized_tx_request);
+
+        let tree = AccountTree::with_entries([(account.id(), account.to_commitment())]).unwrap();
+        let inputs = AccountInputs::new((&account).into(), tree.open(account.id()));
+        let mut request = tx_request;
+        request.foreign_accounts.insert(inputs.id(), ForeignAccount::Prefetched(inputs));
+        let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
+        assert_eq!(request, decoded);
     }
 }

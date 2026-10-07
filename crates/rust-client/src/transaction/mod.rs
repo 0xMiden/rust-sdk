@@ -83,7 +83,7 @@ use miden_protocol::note::{
     NoteTag,
 };
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
@@ -104,11 +104,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
-use crate::store::data_store::{
-    ClientDataStore,
-    build_partial_mmr_with_paths,
-    get_block_headers_with_fallback,
-};
+use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
     AccountRecord,
@@ -167,6 +163,7 @@ mod result;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_protocol::transaction::{
+    AccountInputs,
     ExecutedTransaction,
     InputNote,
     InputNotes,
@@ -190,6 +187,7 @@ pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
 pub use miden_standards::tx_script::{
     ExpirationTransactionScript,
+    SendNotesTransactionScript,
     SendNotesTransactionScriptError,
 };
 pub use miden_tx::auth::TransactionAuthenticator;
@@ -350,8 +348,9 @@ where
     /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
     /// commitment bound into the signed transaction summary).
     ///
-    /// Foreign account proofs are fetched at the anchor's block, so requests with foreign accounts
-    /// additionally require the node to serve account state at that block.
+    /// Foreign accounts are fetched at the anchor's block unless declared as
+    /// [`ForeignAccount::Prefetched`], so a node that no longer serves account state at that block
+    /// only affects accounts that are not prefetched.
     ///
     /// # Errors
     ///
@@ -363,7 +362,7 @@ where
     /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
     ///   expiration block has already been reached, which the network would reject.
     pub async fn execute_transaction_at(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
@@ -417,12 +416,14 @@ where
             return Err(StoreError::BlockHeaderNotFound(future_block).into());
         }
 
-        let block_headers =
-            get_block_headers_with_fallback(&self.store, &self.rpc_api, &tracked_blocks).await?;
-
         let peaks = self.store.get_current_blockchain_peaks().await?;
-        let partial_mmr =
-            build_partial_mmr_with_paths(&self.store, &self.rpc_api, peaks, &block_headers).await?;
+        let (partial_mmr, block_headers) = build_partial_mmr_and_headers_with_fallback(
+            &self.store,
+            &self.rpc_api,
+            peaks,
+            &tracked_blocks,
+        )
+        .await?;
 
         let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
 
@@ -566,7 +567,7 @@ where
         };
 
         validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
-        TransactionResult::new(executed_transaction, prep.future_notes)
+        Ok(TransactionResult::new(executed_transaction, prep.future_notes))
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and
@@ -686,8 +687,9 @@ where
             None => self.store.get_sync_height().await?,
         };
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_num).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
+            .await?;
 
         let ignore_invalid_notes = transaction_request.ignore_invalid_input_notes();
         let block_numbers = transaction_request.block_numbers().clone();
@@ -702,6 +704,19 @@ where
                     .0
             },
         };
+
+        // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
+        // names the account and the block; inside the executor it would only be a kernel failure.
+        for inputs in &foreign_account_inputs {
+            if inputs.compute_account_root().ok() != Some(reference_header.account_root()) {
+                return Err(TransactionRequestError::ForeignAccountNotAtReferenceBlock {
+                    account_id: inputs.id(),
+                    block_num,
+                }
+                .into());
+            }
+        }
+
         attach_native_fee_conversion_info(
             &mut transaction_request,
             &account_code_interface,
@@ -1183,19 +1198,29 @@ where
     ///
     /// For any [`ForeignAccount::Public`] in `foreign_accounts`, these pieces of data are retrieved
     /// from the network. For any [`ForeignAccount::Private`] account, inner data is used and only a
-    /// proof of the account's existence on the network is fetched.
-    async fn retrieve_foreign_account_inputs(
+    /// proof of the account's existence on the network is fetched. A [`ForeignAccount::Prefetched`]
+    /// account is returned as is.
+    ///
+    /// Each witness opens against the account tree of `block_num`, so the results are valid only
+    /// for a transaction whose reference block is exactly `block_num`. Declared as
+    /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
+    /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
+    /// it is the sync height at execution time, so do not sync between fetching and executing. Only
+    /// the given accounts are fetched; this method does not discover the accounts a transaction
+    /// loads, such as faucets whose asset callbacks it triggers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if account data cannot be fetched or converted to transaction inputs.
+    pub async fn get_foreign_account_inputs(
         &self,
-        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        foreign_accounts: impl IntoIterator<Item = ForeignAccount>,
         block_num: BlockNumber,
     ) -> Result<Vec<AccountInputs>, ClientError> {
-        if foreign_accounts.is_empty() {
-            return Ok(Vec::new());
-        }
+        let foreign_accounts = foreign_accounts.into_iter();
+        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.size_hint().0);
 
-        let mut return_foreign_account_inputs = Vec::with_capacity(foreign_accounts.len());
-
-        for foreign_account in foreign_accounts.into_values() {
+        for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
                 ForeignAccount::Public(account_id, storage_requirements) => {
                     fetch_public_account_inputs(
@@ -1215,6 +1240,7 @@ where
 
                     AccountInputs::new(partial_account, witness)
                 },
+                ForeignAccount::Prefetched(inputs) => inputs,
             };
 
             return_foreign_account_inputs.push(foreign_account_inputs);
@@ -1259,8 +1285,9 @@ where
     ) -> Result<(ClientDataStore, BlockNumber), ClientError> {
         let block_ref = self.get_sync_height().await?;
 
-        let foreign_account_inputs =
-            self.retrieve_foreign_account_inputs(foreign_accounts, block_ref).await?;
+        let foreign_account_inputs = self
+            .get_foreign_account_inputs(foreign_accounts.into_values(), block_ref)
+            .await?;
 
         let account_code = self
             .store
@@ -1966,7 +1993,6 @@ mod tests {
     };
     use miden_protocol::asset::{AssetId, FungibleAsset};
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::protocol_config::ProtocolConfig;
     use miden_protocol::testing::account_id::{
@@ -1993,6 +2019,8 @@ mod tests {
     };
     use miden_standards::account::wallets::BasicWallet;
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     use super::{
         AccountComponentInterface,
@@ -2012,14 +2040,14 @@ mod tests {
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
 
         P2idNote::builder()
             .sender(sender)
             .target(target_id)
             .asset(FungibleAsset::new(faucet_id, 100).unwrap())
             .note_type(NoteType::Public)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .expect("note creation failed")
             .into()

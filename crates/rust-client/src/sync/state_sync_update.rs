@@ -316,6 +316,10 @@ impl TransactionUpdateTracker {
 
     /// Applies the necessary state transitions to the [`TransactionUpdateTracker`] when a
     /// transaction is included in a block.
+    ///
+    /// The included transaction is matched to a local pending transaction by its ID only. The node
+    /// reports the original transaction ID, so a record with an unknown ID is an external
+    /// transaction of a tracked account.
     pub fn apply_transaction_inclusion(&mut self, record: &RpcTransactionRecord, timestamp: u64) {
         let header = &record.transaction_header;
         let account_id = header.account_id();
@@ -325,18 +329,7 @@ impl TransactionUpdateTracker {
             return;
         }
 
-        // Fallback for transactions with unauthenticated input notes: the node authenticates these
-        // notes during processing, which changes the transaction ID. Match by account ID and
-        // pre-transaction state instead.
-        if let Some(transaction) = self.transactions.values_mut().find(|tx| {
-            tx.details.account_id == account_id
-                && tx.details.init_account_state == header.initial_state_commitment()
-        }) {
-            transaction.commit_transaction(record.block_num, timestamp);
-            return;
-        }
-
-        // No local transaction matched. This is an external transaction by a tracked account.
+        // No local transaction has this ID. This is an external transaction by a tracked account.
         // Record the nullifier→account mappings so we can attribute note consumption to tracked
         // accounts during nullifier processing.
         for commitment in header.input_notes().iter() {
@@ -450,10 +443,10 @@ pub(crate) fn build_storage_patch(
     changed_map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     complete_map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
 ) -> Result<AccountStoragePatch, AccountPatchError> {
-    let is_full_state = new_header.nonce() == ONE;
+    let is_new_account = new_header.nonce() == ONE;
 
     let value_entries = value_slot_updates.into_iter().map(|(slot_name, new_value)| {
-        let value_patch = if is_full_state {
+        let value_patch = if is_new_account {
             StorageValuePatch::Create { value: new_value }
         } else {
             StorageValuePatch::Update { value: new_value }
@@ -462,7 +455,7 @@ pub(crate) fn build_storage_patch(
     });
 
     let changed_maps = changed_map_entries.into_iter().map(|(slot_name, entries)| {
-        let map_patch = if is_full_state {
+        let map_patch = if is_new_account {
             StorageMapPatch::Create { entries }
         } else {
             StorageMapPatch::Update { entries }
@@ -488,8 +481,15 @@ mod tests {
     use miden_protocol::Felt;
     use miden_protocol::account::{StorageMapKey, StorageMapPatchEntries};
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
+    use miden_protocol::transaction::{
+        InputNoteCommitment,
+        InputNotes,
+        RawOutputNotes,
+        TransactionHeader,
+    };
 
     use super::*;
+    use crate::transaction::TransactionDetails;
 
     fn account_id() -> AccountId {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap()
@@ -619,5 +619,65 @@ mod tests {
         let patch = build_patch(2, vec![], map_entries).unwrap();
 
         assert!(patch.updated_map(&map_slot).is_some());
+    }
+
+    // TRANSACTION INCLUSION TESTS
+    // --------------------------------------------------------------------------------------------
+
+    fn rpc_transaction(init_state: u64, final_state: u64, nullifier: u64) -> RpcTransactionRecord {
+        let input_notes = InputNotes::new_unchecked(vec![InputNoteCommitment::from(
+            Nullifier::from_raw(word(nullifier)),
+        )]);
+
+        RpcTransactionRecord {
+            block_num: BlockNumber::from(5u32),
+            transaction_header: TransactionHeader::new(
+                account_id(),
+                word(init_state),
+                word(final_state),
+                input_notes,
+                vec![],
+            )
+            .unwrap(),
+            output_notes: vec![],
+            erased_output_notes: vec![],
+            consumed_note_refs: vec![],
+        }
+    }
+
+    fn pending_transaction(init_state: u64, final_state: u64, nullifier: u64) -> TransactionRecord {
+        let id = rpc_transaction(init_state, final_state, nullifier).transaction_header.id();
+        let details = TransactionDetails {
+            account_id: account_id(),
+            init_account_state: word(init_state),
+            final_account_state: word(final_state),
+            input_note_nullifiers: vec![word(nullifier)],
+            output_notes: RawOutputNotes::new(vec![]).unwrap(),
+            block_num: BlockNumber::from(1u32),
+            submission_height: BlockNumber::from(1u32),
+            expiration_block_num: BlockNumber::from(100u32),
+            creation_timestamp: 0,
+        };
+
+        TransactionRecord::new(id, details, None, TransactionStatus::Pending)
+    }
+
+    /// An included transaction with an unknown ID is external, even when it shares the account and
+    /// the initial and final states with a local pending transaction.
+    #[test]
+    fn inclusion_with_unknown_id_does_not_commit_local_transaction() {
+        let local = pending_transaction(10, 11, 1);
+        let local_id = local.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![local]);
+
+        let included = rpc_transaction(10, 11, 2);
+        assert_ne!(included.transaction_header.id(), local_id);
+        tracker.apply_transaction_inclusion(&included, 0);
+
+        assert!(tracker.committed_transactions().next().is_none());
+        assert_eq!(
+            tracker.external_nullifier_account(&Nullifier::from_raw(word(2))),
+            Some(account_id())
+        );
     }
 }

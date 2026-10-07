@@ -27,9 +27,8 @@ use miden_client::auth::{
     TransactionAuthenticator,
 };
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::keystore::Keystore;
-use miden_client::note::NoteId;
+use miden_client::note::{NoteId, NoteTag};
 use miden_client::note_transport::{
     NOTE_TRANSPORT_MAINNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
@@ -55,10 +54,10 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Deserializable, Felt, Word};
+use miden_client::{self, Deserializable, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
-use miden_client_integration_tests::{ClientConfig, fee_funding};
+use miden_client_integration_tests::funding;
 use miden_client_sqlite_store::SqliteStore;
 use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
@@ -302,6 +301,37 @@ fn silent_initialization_uses_default_values() {
         !local_config_path.exists(),
         "Should not create local config during silent initialization"
     );
+}
+
+#[test]
+#[serial_test::file_serial]
+fn loaded_config_directory_is_logged_at_debug_level() {
+    let miden_home = set_isolated_miden_home();
+
+    let temp_dir = temp_dir().join(format!("cli-test-{}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // Without a local config, the global one is loaded.
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    account_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(format!("Loaded configuration from {} (Global)", miden_home.display())));
+
+    // With a local config, that one is loaded instead.
+    let mut init_cmd = cargo_bin_cmd!("miden-client");
+    init_cmd.args(["init", "--local", "--network", "localhost"]);
+    init_cmd.current_dir(&temp_dir).assert().success();
+
+    let mut account_cmd = cargo_bin_cmd!("miden-client");
+    account_cmd.args(["account"]).env("RUST_LOG", "debug");
+    // The local directory is derived from the current directory, which the OS may canonicalize.
+    account_cmd.current_dir(&temp_dir).assert().success().stdout(contains(format!(
+        "Loaded configuration from {} (Local)",
+        temp_dir.canonicalize().unwrap().join(MIDEN_DIR).display()
+    )));
 }
 
 #[test]
@@ -638,6 +668,180 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     Ok(())
 }
 
+/// Mints an asset and then inspects the resulting transaction through `tx`, covering both the
+/// single-transaction view and the listing filters against the same mint.
+#[tokio::test]
+async fn tx_show_and_list_filters() -> Result<()> {
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let wallet_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Private);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
+
+    sync_cli(&temp_dir);
+
+    let (transaction_id, output_note_id) =
+        mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
+
+    // A prefix of the ID has to resolve to the same transaction.
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["tx", "--show", &transaction_id[..10]]);
+    show_cmd
+        .current_dir(&temp_dir)
+        .assert()
+        .success()
+        .stdout(contains(transaction_id.as_str()))
+        .stdout(contains(fungible_faucet_account_id.as_str()))
+        .stdout(contains(output_note_id.as_str()))
+        .stdout(contains("Account State Before"))
+        // The minted note is a P2ID note, so its decoded storage names the wallet.
+        .stdout(contains(format!("target: {wallet_account_id}")))
+        .stdout(contains("Expected Full"));
+
+    // The faucet executed the mint, and with no sync in between it is still pending.
+    let filters_keeping_the_transaction: [&[&str]; 2] = [
+        &["tx", "--list", "--account-id", fungible_faucet_account_id.as_str()],
+        &["tx", "--list", "--status", "pending"],
+    ];
+    for args in filters_keeping_the_transaction {
+        let mut list_cmd = cargo_bin_cmd!("miden-client");
+        list_cmd.args(args);
+        list_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains(transaction_id.as_str()));
+    }
+
+    let filters_dropping_the_transaction: [&[&str]; 2] = [
+        &["tx", "--list", "--account-id", wallet_account_id.as_str()],
+        &["tx", "--list", "--status", "committed"],
+    ];
+    for args in filters_dropping_the_transaction {
+        let mut list_cmd = cargo_bin_cmd!("miden-client");
+        list_cmd.args(args);
+        list_cmd
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains(transaction_id.as_str()).not());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tx_list_filters_conflict_with_show() {
+    let temp_dir = init_cli().1;
+
+    // The command also fails when the prefix matches no transaction, so the conflict is checked
+    // against the parser's message instead of the exit code alone.
+    let conflicts = [
+        (["--account-id", "0x1234"], "--account-id <ID>"),
+        (["--status", "pending"], "--status <status>"),
+        (["--limit", "1"], "--limit <count>"),
+    ];
+
+    for (filter, rejected_flag) in conflicts {
+        let mut show_cmd = cargo_bin_cmd!("miden-client");
+        show_cmd.args(["tx", "--show", "0x1234"]).args(filter);
+        show_cmd.current_dir(&temp_dir).assert().failure().stderr(contains(format!(
+            "the argument '--show <ID>' cannot be used with '{rejected_flag}'"
+        )));
+    }
+}
+
+/// Sends a P2IDE note and checks that `tx --show` prints the note's row with its decoded storage.
+#[tokio::test]
+async fn tx_show_decodes_p2ide_note_storage() -> Result<()> {
+    const RECLAIM_HEIGHT: &str = "100000";
+    const TIMELOCK_HEIGHT: &str = "50000";
+
+    let (store_path, temp_dir, endpoint) = init_cli();
+
+    let sender_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    let target_account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+    // The faucet is public, so `tx --show` can fetch its token metadata from the node.
+    let fungible_faucet_account_id = new_faucet_cli(&temp_dir, AccountType::Public);
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &fungible_faucet_account_id).await?;
+    fund_cli_account(&temp_dir, &store_path, &endpoint, &sender_account_id).await?;
+
+    sync_cli(&temp_dir);
+    let (_, minted_note_id) = mint_cli(&temp_dir, &sender_account_id, &fungible_faucet_account_id);
+    sync_until_committed_note(&temp_dir);
+    consume_note_cli(&temp_dir, &sender_account_id, &[&minted_note_id]);
+
+    let mut transfer_cmd = cargo_bin_cmd!("miden-client");
+    transfer_cmd.args([
+        "transfer",
+        "--sender",
+        &sender_account_id,
+        "--target",
+        &target_account_id,
+        "--asset",
+        &format!("25::{fungible_faucet_account_id}"),
+        "-n",
+        "private",
+        "--recall-height",
+        RECLAIM_HEIGHT,
+        "--timelock-height",
+        TIMELOCK_HEIGHT,
+        "--force",
+    ]);
+    let output = transfer_cmd.current_dir(&temp_dir).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout)?;
+    let id_after = |keyword: &str| {
+        stdout
+            .split_whitespace()
+            .skip_while(|&word| word != keyword)
+            .find(|word| word.starts_with("0x"))
+            .unwrap_or_else(|| {
+                panic!("the transfer should report an ID after {keyword}:\n{stdout}")
+            })
+            .to_string()
+    };
+    let (transaction_id, note_id) = (id_after("Transaction"), id_after("Output"));
+
+    // The store is the ground truth for the note's expected height.
+    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    let record = client
+        .get_output_note(NoteId::try_from_hex(&note_id)?)
+        .await?
+        .expect("the transfer should store its output note");
+
+    let mut show_cmd = cargo_bin_cmd!("miden-client");
+    show_cmd.args(["tx", "--show", &transaction_id]);
+    let output = show_cmd.current_dir(&temp_dir).output()?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout)?;
+
+    let target_tag = NoteTag::with_account_target(AccountId::from_hex(&target_account_id)?);
+    // The faucet that `new_faucet_cli` creates uses the BTC symbol with 10 decimals.
+    let expected_row = vec![
+        note_id.clone(),
+        "P2IDE".to_string(),
+        "Private".to_string(),
+        target_tag.to_string(),
+        "Expected Full".to_string(),
+        record.expected_height().to_string(),
+        format!(
+            "target: {target_account_id}\nreclaim height: {RECLAIM_HEIGHT}\n\
+             timelock height: {TIMELOCK_HEIGHT}"
+        ),
+        "0.0000000025 BTC".to_string(),
+    ];
+    // On a chain that charges fees, the transaction also creates a TX_FEE note.
+    let rows = table_rows(&stdout, "Output Notes:");
+    let p2ide_row = rows
+        .iter()
+        .find(|row| row[0] == note_id)
+        .unwrap_or_else(|| panic!("the output notes should include {note_id}:\n{stdout}"));
+    assert_eq!(p2ide_row, &expected_row);
+
+    Ok(())
+}
+
 // ACCOUNT SHOW TESTS
 // ================================================================================================
 
@@ -946,7 +1150,7 @@ async fn cli_export_import_note() -> Result<()> {
     sync_cli(&temp_dir_1);
 
     // Let's try and mint
-    let note_to_export_id =
+    let (_, note_to_export_id) =
         mint_cli(&temp_dir_1, &first_basic_account_id, &fungible_faucet_account_id);
 
     // Export without type fails
@@ -1068,7 +1272,7 @@ async fn cli_export_import_account() -> Result<()> {
     assert!(client_2.get_account(AccountId::from_hex(&wallet_id)?).await.is_ok());
     sync_cli(&temp_dir_2);
 
-    let note_id = mint_cli(&temp_dir_2, &wallet_id, &faucet_id);
+    let (_, note_id) = mint_cli(&temp_dir_2, &wallet_id, &faucet_id);
 
     // Wait until the note is committed on the node
     sync_until_committed_note(&temp_dir_2);
@@ -1302,7 +1506,7 @@ async fn consume_unauthenticated_note() -> Result<()> {
     sync_cli(&temp_dir);
 
     // Mint
-    let note_id = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
+    let (_, note_id) = mint_cli(&temp_dir, &wallet_account_id, &fungible_faucet_account_id);
 
     // Wait for the mint transaction to be committed on the node
     sync_until_committed_transaction(&temp_dir);
@@ -1888,7 +2092,11 @@ fn sync_cli(cli_path: &Path) -> SyncResult {
 
 /// Mints 100 units of the corresponding faucet using the cli and checks that the command runs
 /// successfully given account using the CLI given by `cli_path`.
-fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String {
+///
+/// Returns the ID of the transaction and the ID of the note that the mint created, as the command
+/// reports them. Both come from the command itself, so they do not depend on what else the store
+/// holds.
+fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> (String, String) {
     let mut mint_cmd = cargo_bin_cmd!("miden-client");
     mint_cmd.args([
         "mint",
@@ -1909,13 +2117,17 @@ fn mint_cli(cli_path: &Path, target_account_id: &str, faucet_id: &str) -> String
         String::from_utf8_lossy(&output.stderr)
     );
 
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .split_whitespace()
-        .skip_while(|&word| word != "Output")
-        .find(|word| word.starts_with("0x"))
-        .unwrap()
-        .to_string()
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let id_after = |keyword: &str| {
+        stdout
+            .split_whitespace()
+            .skip_while(|&word| word != keyword)
+            .find(|word| word.starts_with("0x"))
+            .unwrap_or_else(|| panic!("the mint should report an ID after {keyword}:\n{stdout}"))
+            .to_string()
+    };
+
+    (id_after("Transaction"), id_after("Output"))
 }
 
 /// Shows note details using the cli and checks that the command runs successfully given account
@@ -1971,6 +2183,48 @@ fn consume_note_cli(cli_path: &Path, account_id: &str, note_ids: &[&str]) {
     cli_args.extend_from_slice(note_ids);
     consume_note_cmd.args(&cli_args);
     consume_note_cmd.current_dir(cli_path).assert().success();
+}
+
+/// Returns the body rows of the table that directly follows the `title` line in `stdout`.
+///
+/// A cell that spans more than one line is returned with its lines joined by newlines.
+fn table_rows(stdout: &str, title: &str) -> Vec<Vec<String>> {
+    let mut lines = stdout.lines().skip_while(|line| line.trim() != title).skip(1).peekable();
+    // A section without rows prints a message instead of a table.
+    if !lines.peek().is_some_and(|line| line.starts_with('┌')) {
+        return Vec::new();
+    }
+    let body = lines
+        .skip_while(|line| !line.starts_with('╞'))
+        .skip(1)
+        .take_while(|line| !line.starts_with('└'));
+
+    let join_cells = |row: Vec<Vec<&str>>| -> Vec<String> {
+        row.into_iter()
+            .map(|lines| {
+                lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n")
+            })
+            .collect()
+    };
+
+    let mut rows = Vec::new();
+    let mut row: Vec<Vec<&str>> = Vec::new();
+    for line in body {
+        if line.starts_with('├') {
+            rows.push(join_cells(std::mem::take(&mut row)));
+            continue;
+        }
+        let cells = line.trim().trim_matches('│').split('┆').map(str::trim);
+        if row.is_empty() {
+            row = cells.map(|cell| vec![cell]).collect();
+        } else {
+            row.iter_mut().zip(cells).for_each(|(lines, cell)| lines.push(cell));
+        }
+    }
+    if !row.is_empty() {
+        rows.push(join_cells(row));
+    }
+    rows
 }
 
 /// Creates a new faucet account using the CLI given by `cli_path`.
@@ -2089,16 +2343,10 @@ async fn create_rust_client(
         std::sync::Arc::new(sqlite_store)
     };
 
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-
-    let rng = Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()));
-
     let keystore = FilesystemKeyStore::new(keystore_path.to_path_buf())?;
 
     let client = ClientBuilder::new()
         .grpc_client(&endpoint, Some(10_000))
-        .rng(rng)
         .store(store)
         .authenticator(Arc::new(keystore.clone()))
         .build()
@@ -2128,9 +2376,7 @@ async fn fund_cli_account(
 ) -> Result<()> {
     let mut client = cli_funding_client(cli_path, store_path, endpoint).await?;
 
-    client.deploy_account(AccountId::from_hex(account_id)?).await?;
-
-    client.flush_funder().await
+    client.deploy_account(AccountId::from_hex(account_id)?).await
 }
 
 /// Builds a client over the CLI's own store and keystore, with a fee funder attached so it can pay
@@ -2140,10 +2386,7 @@ async fn cli_funding_client(
     store_path: &Path,
     endpoint: &Endpoint,
 ) -> Result<TestClient> {
-    let fee_funder = fee_funding::load(
-        &ClientConfig::new(endpoint.clone(), 10_000),
-        fee_funding::funders_path_from_env().as_deref(),
-    )?;
+    let fee_funder = funding::load(funding::funding_service_from_env().as_deref())?;
 
     let (client, _) =
         create_rust_client_with_cli_keystore(store_path, cli_path, endpoint.clone()).await?;
@@ -2941,8 +3184,7 @@ fn setup_remote_call_test() -> (PathBuf, String, PathBuf) {
     // since this one has to be committed on-chain on a fee-free chain too.
     block_on(async {
         let mut client = cli_funding_client(&target_dir, &target_store_path, &endpoint).await?;
-        client.deploy_account(AccountId::from_hex(&account_id)?).await?;
-        client.flush_funder().await
+        client.deploy_account(AccountId::from_hex(&account_id)?).await
     })
     .expect("failed to deploy the call-test account");
     sync_cli(&target_dir);

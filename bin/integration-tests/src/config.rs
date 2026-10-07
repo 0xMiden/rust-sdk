@@ -1,12 +1,12 @@
 use std::env::temp_dir;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use miden_client::RemoteTransactionProver;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::grpc_support::{DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT};
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::note_transport::{
@@ -16,12 +16,10 @@ use miden_client::note_transport::{
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
-use miden_client::{Felt, RemoteTransactionProver};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
-use rand::RngExt;
 use uuid::Uuid;
 
-use crate::fee_funding;
+use crate::funding;
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -79,8 +77,7 @@ pub struct ClientConfig {
     /// service.
     pub note_transport_endpoint: Option<NoteTransportEndpoint>,
     /// Funder the account-creating test helpers draw the native fee asset from. Shared by every
-    /// client built from this config and its clones, so consecutive payments from one wallet chain
-    /// off each other's nonce.
+    /// client built from this config and its clones.
     pub fee_funder: Option<Arc<dyn FeeFunder>>,
 }
 
@@ -117,20 +114,12 @@ impl ClientConfig {
         self
     }
 
-    /// Loads the pre-funded wallets at `funders`, one `.mac` account file or a directory of them,
-    /// as the fee funder. A path naming no funder file leaves the config without one, which is all
-    /// a fee-free chain needs.
-    pub fn with_funders(self, funders: Option<&Path>) -> Result<Self> {
-        let fee_funder = fee_funding::load(&self, funders)?;
+    /// Sets the funding service the fee funder draws the native asset from.
+    ///
+    /// Naming none leaves the config without a funder, which is all a fee-free chain needs.
+    pub fn with_funding_service(self, funding_service: Option<&str>) -> Result<Self> {
+        let fee_funder = funding::load(funding_service)?;
         Ok(self.with_fee_funder(fee_funder))
-    }
-
-    /// Waits until a block carries every payment the fee funder has submitted.
-    pub async fn flush_funder(&self) -> Result<()> {
-        match &self.fee_funder {
-            Some(funder) => funder.flush().await,
-            None => Ok(()),
-        }
     }
 
     /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
@@ -145,11 +134,6 @@ impl ClientConfig {
         let store_config = create_test_store_path();
         let auth_path = create_test_auth_path();
 
-        let mut rng = rand::rng();
-        let coin_seed: [u64; 4] = rng.random();
-
-        let rng = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
-
         let keystore = FilesystemKeyStore::new(auth_path.clone()).with_context(|| {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
@@ -161,7 +145,6 @@ impl ClientConfig {
 
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)
-            .rng(Box::new(rng))
             .sqlite_store(store_config)
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(None);

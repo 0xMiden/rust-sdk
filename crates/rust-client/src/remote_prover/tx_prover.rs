@@ -101,12 +101,12 @@ impl RemoteTransactionProver {
 // CONVERSIONS
 // ================================================================================================
 
-impl TryFrom<proto::Proof> for ProvenTransaction {
+impl TryFrom<proto::ProveResponse> for ProvenTransaction {
     type Error = TransactionProverError;
 
-    fn try_from(response: proto::Proof) -> Result<Self, Self::Error> {
+    fn try_from(response: proto::ProveResponse) -> Result<Self, Self::Error> {
         match response.proof {
-            Some(proto::proof::Proof::Transaction(transaction)) => transaction
+            Some(proto::prove_response::Proof::Transaction(transaction)) => transaction
                 .decode_fields()
                 .map_err(|err| {
                     TransactionProverError::other_with_source(
@@ -121,10 +121,10 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
                         err,
                     )
                 }),
-            Some(proto::proof::Proof::Batch(_)) => Err(TransactionProverError::other(
+            Some(proto::prove_response::Proof::Batch(_)) => Err(TransactionProverError::other(
                 "expected a transaction proof, got a batch proof",
             )),
-            Some(proto::proof::Proof::Block(_)) => Err(TransactionProverError::other(
+            Some(proto::prove_response::Proof::Block(_)) => Err(TransactionProverError::other(
                 "expected a transaction proof, got a block proof",
             )),
             None => Err(TransactionProverError::other("prover returned no proof")),
@@ -132,10 +132,10 @@ impl TryFrom<proto::Proof> for ProvenTransaction {
     }
 }
 
-impl From<&TransactionInputs> for proto::ProofRequest {
+impl From<&TransactionInputs> for proto::ProveRequest {
     fn from(tx_inputs: &TransactionInputs) -> Self {
-        proto::ProofRequest {
-            request: Some(proto::proof_request::Request::Transaction(tx_inputs.into())),
+        proto::ProveRequest {
+            request: Some(proto::prove_request::Request::Transaction(tx_inputs.into())),
         }
     }
 }

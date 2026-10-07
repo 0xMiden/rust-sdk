@@ -7,7 +7,7 @@ use crate::rpc::errors::GrpcError;
 // GET ACCOUNT ERROR
 // ================================================================================================
 
-// Error codes match `miden-node/crates/store/src/errors.rs::GetAccountError`.
+// Error codes match `GetAccountErrorCode` in `miden-node/crates/rpc/src/server/api/error_codes.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum GetAccountError {
     /// Internal server error (code 0)

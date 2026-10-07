@@ -674,30 +674,6 @@ impl AccountProof {
     }
 }
 
-#[cfg(feature = "tonic")]
-impl TryFrom<proto::rpc::GetAccountResponse> for AccountProof {
-    type Error = RpcError;
-    fn try_from(account_proof: proto::rpc::GetAccountResponse) -> Result<Self, Self::Error> {
-        let Some(witness) = account_proof.witness else {
-            return Err(RpcError::ExpectedDataMissing(
-                "GetAccount returned an account without witness".to_string(),
-            ));
-        };
-
-        let details: Option<AccountDetails> = {
-            match account_proof.details {
-                None => None,
-                Some(details) => Some(
-                    details
-                        .into_domain(&BTreeMap::new(), &AccountStorageRequirements::default())?,
-                ),
-            }
-        };
-        AccountProof::new(witness.decode_and_verify()?, details)
-            .map_err(|err| RpcError::InvalidResponse(format!("{err}")))
-    }
-}
-
 // ACCOUNT STORAGE REQUEST
 // ================================================================================================
 

@@ -20,12 +20,12 @@ Writes, into `OUTPUT_DIR`:
 - `faucet_operator.mac`: the wallet owning the native faucet, written **with** its secret key. It
   is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
 - `funding_account.mac`: the public funding account `miden-validator genesis` requires, written
-  **with** its secret key. The node's funding service pays registered accounts out of it.
+  **with** its secret key. The node's funding service pays out of it.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
 - `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).
 - `accounts.toml`: references the accounts above (except the native faucet and the funding
-  account) via named `[[account]]` entries and declares the funder wallets.
+  account) via named `[[account]]` entries.
 
 The genesis block is then built with:
 
@@ -44,12 +44,11 @@ them on the command line.
 
 Every transaction settles its fee out of the vault of the account it runs against, so the native
 faucet is generated here rather than by the node: its ID has to be known while the other accounts
-are built, or their vaults could not reference it. `MIDEN_VERIFICATION_BASE_FEE` overrides the base
-fee (`0` gives a fee-free chain) and `MIDEN_NUM_FUNDER_WALLETS` how many funders are declared.
+are built, or their vaults could not reference it.
 
-Seeded with the native asset: the `[[wallet]]` funders, which the node writes as
-`wallet_<index>.mac` and `start-test-node.sh` copies to `./data/funders/`, the funding account,
-and every genesis account that transacts, which nothing can top up afterwards.
+Seeded with the native asset: the funding account, which the node's funding service pays out of and
+which holds far more than a whole run hands out, and every genesis account that transacts, which
+nothing can top up afterwards.
 
 ## AggLayer genesis
 

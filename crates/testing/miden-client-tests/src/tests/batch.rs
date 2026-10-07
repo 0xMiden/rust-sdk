@@ -38,6 +38,8 @@ use miden_protocol::account::{
     StorageSlot,
     StorageSlotName,
 };
+use miden_protocol::note::{Note, NoteId};
+use miden_protocol::transaction::ExecutedTransaction;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
@@ -1019,5 +1021,166 @@ async fn batch_builder_dedup_rejects_duplicate_input_note_across_accounts() {
         Ok(_) => {
             panic!("expected BatchBuilderError::DuplicateInputNote({note_id}), got Ok(_)")
         },
+    }
+}
+
+/// Builds a client on a mock chain with two `IncrNonce` accounts and one P2ANY note. The client
+/// tracks only the first account. The second account belongs to another party.
+async fn setup_client_with_untracked_account()
+-> (TestClient, MockRpcApi, AccountId, AccountId, Note) {
+    let mut chain_builder = MockChainBuilder::new();
+    let local_account = chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let other_account = chain_builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+    let note = chain_builder.add_p2any_note(other_account.id(), NoteType::Public, []).unwrap();
+    let rpc_api = MockRpcApi::new(chain_builder.build().unwrap());
+
+    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
+    let mut client = ClientBuilder::new()
+        .rpc(Arc::new(rpc_api.clone()))
+        .sqlite_store(create_test_store_path())
+        .authenticator(Arc::new(keystore))
+        .tx_discard_delta(None)
+        .build()
+        .await
+        .unwrap();
+    client.ensure_genesis_in_place().await.unwrap();
+    seed_mock_transaction_encryption_key(&mut client).await;
+
+    client.add_account(&local_account, false).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    (TestClient::from(client), rpc_api, local_account.id(), other_account.id(), note)
+}
+
+/// Executes a transaction of `account_id` that consumes `notes` on the mock chain, as another party
+/// does before it gives the transaction to the batch.
+async fn execute_on_mock_chain(
+    rpc_api: &MockRpcApi,
+    account_id: AccountId,
+    notes: impl IntoIterator<Item = NoteId>,
+) -> ExecutedTransaction {
+    let tx = rpc_api
+        .mock_chain
+        .read()
+        .build_transaction(MockTransactionInput::AccountId(account_id))
+        .authenticated_input_notes(notes)
+        .build()
+        .unwrap();
+    Box::pin(tx.execute()).await.unwrap()
+}
+
+/// A batch submits a transaction that another party proved for an account that the client does not
+/// track, next to a transaction of the client. The client syncs after the pushes, so the batch
+/// references a later block than both transactions. Only the transaction of the client is recorded
+/// locally, and the block commits both.
+#[tokio::test]
+async fn batch_builder_submits_proven_transaction_of_untracked_account() {
+    let (mut client, rpc_api, local_id, other_id, _note) =
+        Box::pin(setup_client_with_untracked_account()).await;
+
+    let executed = execute_on_mock_chain(&rpc_api, other_id, []).await;
+    let proven = LocalTransactionProver::default().prove(executed.clone()).unwrap();
+    let other_commitment =
+        rpc_api.mock_chain.read().committed_account(other_id).unwrap().to_commitment();
+
+    let block_num = Box::pin(async {
+        let mut batch = client.new_transaction_batch();
+        client
+            .push_to_batch(&mut batch, local_id, TransactionRequestBuilder::new().build().unwrap())
+            .await?;
+        batch.push_proven_transaction(proven, executed)?;
+        assert_eq!(batch.len(), 2);
+
+        rpc_api.prove_block();
+        client.sync_state().await?;
+        client.submit_transaction_batch(batch).await
+    })
+    .await
+    .expect("a batch with a transaction of another party must submit");
+    assert_eq!(block_num, rpc_api.get_chain_tip_block_num());
+
+    let attempts = rpc_api.submitted_batch_sealed_inputs();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(
+        attempts[0].len(),
+        2,
+        "the transaction of the other party needs sealed inputs too"
+    );
+
+    let recorded = client.get_transactions(TransactionFilter::All).await.unwrap();
+    assert_eq!(recorded.len(), 1, "only the transaction of the client is recorded");
+    assert_eq!(recorded[0].details.account_id, local_id);
+    assert!(client.get_account(other_id).await.unwrap().is_none());
+
+    rpc_api.prove_block();
+    assert_ne!(
+        rpc_api.mock_chain.read().committed_account(other_id).unwrap().to_commitment(),
+        other_commitment,
+        "the block must commit the transaction of the other party"
+    );
+}
+
+/// A transaction that another party proved cannot consume a note that a transaction of the client
+/// already consumes in the batch. The check runs before the proof check, so a dummy proof is
+/// enough.
+#[tokio::test]
+async fn batch_builder_rejects_proven_transaction_with_consumed_nullifier() {
+    let (client, rpc_api, local_id, other_id, note) =
+        Box::pin(setup_client_with_untracked_account()).await;
+
+    let mut batch = client.new_transaction_batch();
+    let request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.clone()])
+        .unwrap();
+    Box::pin(client.push_to_batch(&mut batch, local_id, request)).await.unwrap();
+
+    let executed = execute_on_mock_chain(&rpc_api, other_id, [note.id()]).await;
+    let proven = LocalTransactionProver::default().prove_dummy(executed.clone()).unwrap();
+    match batch.push_proven_transaction(proven, executed) {
+        Err(BatchBuilderError::DuplicateNullifier(nullifier)) => {
+            assert_eq!(nullifier, note.nullifier());
+        },
+        other => panic!("expected DuplicateNullifier, got {other:?}"),
+    }
+    assert_eq!(batch.len(), 1);
+}
+
+/// A transaction whose proof does not verify is rejected at the push.
+#[tokio::test]
+async fn batch_builder_rejects_proven_transaction_with_invalid_proof() {
+    let (client, rpc_api, _local_id, other_id, _note) =
+        Box::pin(setup_client_with_untracked_account()).await;
+
+    let executed = execute_on_mock_chain(&rpc_api, other_id, []).await;
+    let proven = LocalTransactionProver::default().prove_dummy(executed.clone()).unwrap();
+    let tx_id = proven.id();
+
+    let mut batch = client.new_transaction_batch();
+    match batch.push_proven_transaction(proven, executed) {
+        Err(BatchBuilderError::InvalidTransactionProof { tx_id: id, .. }) => assert_eq!(id, tx_id),
+        other => panic!("expected InvalidTransactionProof({tx_id}), got {other:?}"),
+    }
+    assert!(batch.is_empty());
+}
+
+/// A transaction that references a block above the sync height of the client fails the submission.
+#[tokio::test]
+async fn batch_builder_rejects_transaction_ahead_of_sync_height() {
+    let (mut client, rpc_api, _local_id, other_id, _note) =
+        Box::pin(setup_client_with_untracked_account()).await;
+
+    // The chain moves on without a client sync, and the other party references the new tip.
+    rpc_api.prove_block();
+    let executed = execute_on_mock_chain(&rpc_api, other_id, []).await;
+    let proven = LocalTransactionProver::default().prove(executed.clone()).unwrap();
+    let ref_block = proven.ref_block_num();
+
+    let mut batch = client.new_transaction_batch();
+    batch.push_proven_transaction(proven, executed).unwrap();
+    match Box::pin(client.submit_transaction_batch(batch)).await {
+        Err(ClientError::StoreError(StoreError::BlockHeaderNotFound(block_num))) => {
+            assert_eq!(block_num, ref_block);
+        },
+        other => panic!("expected BlockHeaderNotFound({ref_block}), got {other:?}"),
     }
 }

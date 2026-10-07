@@ -1,7 +1,9 @@
 use alloc::boxed::Box;
 
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteId;
+use miden_protocol::errors::TransactionVerifierError;
+use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::transaction::TransactionId;
 
 use super::ProvenBatchSubmission;
 use crate::rpc::RpcError;
@@ -15,6 +17,22 @@ pub enum BatchBuilderError {
     /// client-side to fail fast before hitting the node.
     #[error("input note {0} is already consumed by an earlier transaction in this batch")]
     DuplicateInputNote(NoteId),
+
+    /// A transaction that another party proved consumes an input note that an earlier transaction
+    /// in this batch already consumes. The note is identified by its nullifier, because a proven
+    /// transaction does not show the ids of its authenticated input notes.
+    #[error(
+        "input note with nullifier {0} is already consumed by an earlier transaction in this batch"
+    )]
+    DuplicateNullifier(Nullifier),
+
+    /// The proof of a transaction that another party proved does not verify.
+    #[error("proof of transaction {tx_id} does not verify")]
+    InvalidTransactionProof {
+        tx_id: TransactionId,
+        #[source]
+        source: TransactionVerifierError,
+    },
 
     /// `submit_transaction_batch` was called on a batch with zero successful pushes.
     #[error("batch is empty — push at least one transaction before submitting")]

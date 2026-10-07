@@ -390,3 +390,87 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     Ok(())
 }
+
+/// Integration test for a batch that carries a transaction of another party.
+///
+/// Client A pushes a P2ID transfer from its wallet to the wallet of client B. Client B executes and
+/// proves a transaction that consumes that note, and gives the proven transaction with its inputs
+/// to client A. Client A does not track the wallet of client B. It pushes the proven transaction
+/// after its own transaction and submits the batch.
+///
+/// Asserts that both transactions commit, that client A records only its own transaction, and that
+/// the wallet of client B holds the transferred amount.
+pub async fn test_batch_builder_pushes_transaction_of_another_party(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let mut client_a = client_config.clone().into_client().await?;
+    let mut client_b = client_config.into_client().await?;
+    client_a.wait_for_node().await;
+
+    let (wallet_a, faucet_account) = client_a.setup_wallet_and_faucet(AccountType::Private).await?;
+    let wallet_a_id = wallet_a.id();
+    let faucet_account_id = faucet_account.id();
+
+    let tx_id = client_a
+        .mint_and_consume(wallet_a_id, faucet_account_id, NoteType::Private)
+        .await?;
+    client_a.wait_for_tx(tx_id).await?;
+
+    let wallet_b_id = client_b.insert_wallet(AccountType::Private).await?.id();
+    client_b.sync_state().await?;
+
+    let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
+    let req_send = TransactionRequestBuilder::new()
+        .build_pay_to_id(
+            PaymentNoteDescription::new(vec![Asset::from(asset)], wallet_a_id, wallet_b_id),
+            NoteType::Private,
+            client_a.rng(),
+        )
+        .unwrap();
+    let in_batch_note = req_send
+        .expected_output_own_notes()
+        .pop()
+        .expect("pay_to_id should produce exactly one note");
+
+    // Client B consumes the note before it exists on chain, and proves the transaction itself.
+    let req_consume = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![in_batch_note])
+        .unwrap();
+    let tx_result_b = client_b.execute_transaction(wallet_b_id, req_consume).await?;
+    let proven_b = client_b.prove_transaction(&tx_result_b).await?;
+
+    // The batch references the sync height of client A, so client A syncs up to the reference block
+    // of client B first.
+    client_a.sync_state().await?;
+    let mut batch = client_a.new_transaction_batch();
+    client_a.push_to_batch(&mut batch, wallet_a_id, req_send).await?;
+    batch.push_proven_transaction(proven_b, tx_result_b.clone())?;
+    let block_num = client_a.submit_transaction_batch(batch).await?;
+    info!(
+        block_num = block_num.as_u32(),
+        "Batch with a transaction of another party submitted"
+    );
+
+    // Client A does not record the transaction of client B, so client B records it.
+    client_b.apply_transaction(&tx_result_b, block_num).await?;
+
+    let [a_committed] =
+        poll_committed_counts(&mut client_a, [(wallet_a_id, 2)], "another party").await?;
+    assert!(a_committed >= 2, "expected ≥ 2 committed txs for wallet A, got {a_committed}");
+    assert!(client_a.get_account(wallet_b_id).await?.is_none());
+    let a_transactions = client_a.get_transactions(TransactionFilter::All).await?;
+    assert!(
+        a_transactions.iter().all(|tx| tx.details.account_id != wallet_b_id),
+        "client A must not record the transaction of client B"
+    );
+
+    client_b.wait_for_tx(tx_result_b.id()).await?;
+    let b_balance = client_b
+        .account_reader(wallet_b_id)
+        .get_balance(faucet_account_id)
+        .await
+        .context("failed to find the balance of wallet B after the batch")?;
+    assert_eq!(b_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
+
+    Ok(())
+}

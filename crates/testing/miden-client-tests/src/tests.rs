@@ -258,7 +258,12 @@ async fn insert_basic_account() {
 async fn insert_ecdsa_account() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    let account = client.insert_wallet(AccountType::Private).await.unwrap();
+    let (account, _) = client
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).auth_scheme(ECDSA_K256_KECCAK_SCHEME_ID),
+        )
+        .await
+        .unwrap();
 
     assert_account_inserted(&client, &account).await;
 }
@@ -276,7 +281,12 @@ async fn insert_faucet_account() {
 async fn insert_ecdsa_faucet_account() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    let account = client.insert_faucet(AccountType::Private).await.unwrap();
+    let (account, _) = client
+        .insert_account(
+            AccountSetup::faucet(AccountType::Private).auth_scheme(ECDSA_K256_KECCAK_SCHEME_ID),
+        )
+        .await
+        .unwrap();
 
     assert_account_inserted(&client, &account).await;
 }

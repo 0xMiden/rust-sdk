@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+* [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
+
 ### Breaking Changes
 
 * [BREAKING][removal][rust] Removed `miden_client::rng::{draw_felt, draw_word}` helpers, `Felt` or `Word` can be generated with `rng.random::<Felt>()` and `rng.random::<Word>()` (via `rand::RngExt`) ([#2665](https://github.com/0xMiden/rust-sdk/pull/2665)).
@@ -10,6 +14,8 @@
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [BREAKING][param][rust] `BatchBuilder` no longer borrows the `Client`, so the client stays usable while a batch is built. `Client::new_transaction_batch` takes `&self`, `BatchBuilder::push` is replaced by `Client::push_to_batch(&mut batch, account_id, request)`, and `BatchBuilder::submit` is replaced by `Client::submit_transaction_batch(batch)` ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [BREAKING][param][rust,store] `Store::apply_transaction_batch` takes one `BatchStoreUpdate` instead of a `Vec<TransactionStoreUpdate>`. The update holds the executed transactions of the batch in order, with their note updates and tags merged, and is built by the new `Client::get_batch_store_update`. `BatchBuilderError::BatchSubmittedButApplyFailed` carries it as `pending_update`, to apply again with the new `Client::apply_batch_update` ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
+* [BREAKING][removal][rust] Removed `miden_client::store::AccountUpdates`, an unused duplicate of `miden_client::sync::AccountUpdates` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
+* [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 
 ### Features
 
@@ -28,6 +34,26 @@
 ### Fixes
 
 * [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
+
+## 0.17.2 (2026-10-06)
+
+### Breaking Changes
+
+* [BREAKING][removal][rust,store] Removed the note transport relay outbox, along with `Client::flush_relay_outbox` and `NOTE_TRANSPORT_OUTBOX_KEY`. `Client::send_private_note_with_proof` now sends directly and returns the transport result, and syncs no longer re-send failed notes. Sends are idempotent by note id, so callers can retry safely. Store migration 2 drops the stale outbox row, so notes queued by earlier versions are not re-sent ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+
+### Features
+
+* [FEATURE][rust] `GrpcNoteTransportClient` retries a send that fails with a transient error: `Unavailable`, `DeadlineExceeded`, a failed connection, or `ResourceExhausted` with a `retry-after` value. It retries up to three times, with a delay that starts at 250 ms and doubles. `GrpcNoteTransportClient::with_max_retries` and `GrpcNoteTransportClient::with_retry_interval_ms` configure the retries ([#2663](https://github.com/0xMiden/rust-sdk/pull/2663)).
+
+### Changes
+
+* Updated the workspace version to `0.17.2` and the locked protocol dependencies to `0.17.1`.
+
+## 0.17.1 (2026-10-05)
+
+### Fixes
+
+* [FIX][rust] Removed the account note tag limit. Note transport fetched all tracked tag sources in requests of at most 128 tags and stored a cursor for each tag. Each request started from the lowest cursor of its tags. The import dropped notes delivered again, so tags could be added and removed without losing notes. Pagination recovered retained history without a separate backfill, with at most 32 pages per request group in each sync. Longer histories continued on later syncs. Successful pages remained available when another request failed. Added `NoteTransportClient::fetch_notes_page` with a default implementation for existing transports. Deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded`, `NoteTransportError::PaginationDidNotTerminate`, `NOTE_TRANSPORT_COVERED_TAGS_KEY`, `NOTE_TRANSPORT_CURSOR_STORE_SETTING`, `Store::get_note_transport_cursor`, and `Store::update_note_transport_cursor`; use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit.
 
 ## 0.17.0 (2026-10-02)
 

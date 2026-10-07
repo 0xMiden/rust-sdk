@@ -533,7 +533,7 @@ where
         .await?;
 
     validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
-    TransactionResult::new(executed_transaction, prep.future_notes)
+    Ok(TransactionResult::new(executed_transaction, prep.future_notes))
 }
 
 /// Promotes a batch submission failure whose outcome is unknown, attaching everything a retry

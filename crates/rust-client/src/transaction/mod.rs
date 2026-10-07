@@ -362,7 +362,7 @@ where
     /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
     ///   expiration block has already been reached, which the network would reject.
     pub async fn execute_transaction_at(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
@@ -567,7 +567,7 @@ where
         };
 
         validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
-        TransactionResult::new(executed_transaction, prep.future_notes)
+        Ok(TransactionResult::new(executed_transaction, prep.future_notes))
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and

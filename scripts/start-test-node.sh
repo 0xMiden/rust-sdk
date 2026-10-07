@@ -77,9 +77,16 @@ ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
     miden-note-transport)
 
-# Resolve the pinned node source from Cargo.lock: a git pin takes precedence, otherwise use the
-# crates.io version locked for `miden-node-proto-build`.
-SRC_LINE="$(grep -m1 'source = "git+https://github.com/0xMiden/node' "$ROOT/Cargo.lock" || true)"
+# Resolve the node source from Cargo.lock. By default, install the crates.io version that
+# Cargo.lock locks for `miden-node-proto-build`. A git pin of the node in Cargo.lock takes
+# precedence.
+#
+# Read the source from the proto builder package so fork pins also select the matching node.
+SRC_LINE="$(awk '/^name = "miden-node-proto-build"$/ { package = 1; next } package && /^source = / { print; exit } package && /^\[\[package\]\]/ { exit }' "$ROOT/Cargo.lock")"
+case "$SRC_LINE" in
+    'source = "git+'*) ;;
+    *) SRC_LINE="" ;;
+esac
 if [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
     SRC="${SRC_LINE#*\"git+}"; SRC="${SRC%\"}"

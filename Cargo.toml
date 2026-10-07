@@ -94,6 +94,10 @@ tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
 
+[patch.crates-io]
+# Remove this patch when a node release includes IsInvitationCodeValid.
+miden-node-proto-build = { git = "https://github.com/0xnullifier/node", branch = "feat/rpc/invitation-code-validation" }
+
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]
 # Pedantic lints are set to a lower priority which allows lints in the group to be selectively enabled.

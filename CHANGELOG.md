@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][rust,cli] Added `Client::is_invitation_code_valid` and the `account --check-invitation-code` flag, backed by the node's `IsInvitationCodeValid` endpoint. (#PR)
+
 ## 0.17.2 (2026-10-06)
 
 ### Breaking Changes

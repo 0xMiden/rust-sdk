@@ -3281,9 +3281,8 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dff2108180c527d2257bbf75601c8753d9b35ee06238e8ff7048d9d8dc2fc06e"
+version = "0.17.2"
+source = "git+https://github.com/0xnullifier/node?branch=feat%2Frpc%2Finvitation-code-validation#e8e6c4bec20b5b21a5fe59a6cc9f1bad0891ebc0"
 dependencies = [
  "build-rs",
  "codegen",

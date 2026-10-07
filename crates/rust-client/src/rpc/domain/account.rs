@@ -36,6 +36,13 @@ impl Debug for proto::rpc::RegisterAccountRequest {
     }
 }
 
+/// Hides the invitation code, which is a secret that must not reach logs or error messages.
+impl Debug for proto::rpc::IsInvitationCodeValidRequest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IsInvitationCodeValidRequest").finish_non_exhaustive()
+    }
+}
+
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================
 
@@ -908,4 +915,21 @@ pub enum AccountProofError {
         "the received code commitment doesn't match the received account header's code commitment"
     )]
     InconsistentCodeCommitment,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proto;
+    use crate::alloc::string::ToString;
+
+    #[test]
+    fn invitation_code_validation_request_debug_hides_code() {
+        let code = "secret-invitation-code";
+        let request =
+            proto::rpc::IsInvitationCodeValidRequest { invitation_code: code.to_string() };
+
+        let debug = format!("{request:?}");
+        assert!(debug.contains("IsInvitationCodeValidRequest"));
+        assert!(!debug.contains(code));
+    }
 }

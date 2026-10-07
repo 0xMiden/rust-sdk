@@ -97,6 +97,14 @@ The `--inspect` flag lists the procedures an account exposes, grouped into resol
 
 A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt. The network operator hands out the invitation codes. A code is case-sensitive, binds to one account, and cannot be reused for another.
 
+Check an invitation code before registration:
+
+```sh
+miden-client account --check-invitation-code <CODE>
+```
+
+The command prints one line that states whether the code can be used. It does not print or consume the code. Unknown and registered codes cannot be used. A node that does not enforce the allowlist accepts every code. An empty code returns an error when enforcement is enabled.
+
 Register the account after creating it and before its first transaction:
 
 ```sh

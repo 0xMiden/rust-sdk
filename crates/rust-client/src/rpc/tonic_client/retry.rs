@@ -141,10 +141,14 @@ mod tests {
 
     #[test]
     fn reads_retry_both_transient_codes() {
-        let endpoint = RpcEndpoint::GetBlockHeaderByNumber;
-
-        assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
-        assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
+        for endpoint in [
+            RpcEndpoint::GetBlockHeaderByNumber,
+            RpcEndpoint::IsAccountAllowed,
+            RpcEndpoint::IsInvitationCodeValid,
+        ] {
+            assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
+            assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));
+        }
     }
 
     #[test]

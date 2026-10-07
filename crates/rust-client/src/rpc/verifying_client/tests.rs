@@ -318,6 +318,10 @@ impl NodeRpcClient for CannedTransport {
         unimplemented!("not used in these tests")
     }
 
+    async fn is_invitation_code_valid(&self, _invitation_code: &str) -> Result<bool, RpcError> {
+        unimplemented!("not used in these tests")
+    }
+
     async fn is_account_allowed(&self, _account_id: AccountId) -> Result<bool, RpcError> {
         unimplemented!("not used in these tests")
     }

@@ -125,19 +125,37 @@ CREATE TABLE foreign_account_code(
     FOREIGN KEY (code_commitment) REFERENCES account_code(commitment)
 ) STRICT;
 
+-- SQLite does not index foreign key child columns automatically. These indices prevent account
+-- code garbage collection from scanning a complete table for each candidate commitment.
+CREATE INDEX idx_latest_account_headers_code_commitment ON latest_account_headers(code_commitment);
+CREATE INDEX idx_historical_account_headers_code_commitment ON historical_account_headers(code_commitment);
+CREATE INDEX idx_foreign_account_code_code_commitment ON foreign_account_code(code_commitment);
+
+-- ── Account witnesses ────────────────────────────────────────────────────
+
+-- A row registers the account. The witness stays NULL until the first refresh fills it in.
+--
+-- The sync writes the witness together with the sync height. Thus, a stored witness always opens
+-- under the account root of the block at the sync height.
+CREATE TABLE account_witnesses (
+    account_id BLOB NOT NULL,  -- serialized account ID
+    witness    BLOB NULL,      -- serialized AccountWitness; NULL until the first refresh
+
+    PRIMARY KEY (account_id)
+) WITHOUT ROWID;
+
 -- ── Transactions ─────────────────────────────────────────────────────────
 
 CREATE TABLE transactions (
     id BLOB NOT NULL,                                -- Transaction ID (commitment of various components)
     details BLOB NOT NULL,                           -- Serialized transaction details
     script_root BLOB,                                -- Transaction script root
-    block_num INTEGER,                               -- Block number for the block against which the transaction was executed.
     status_variant INTEGER NOT NULL,                 -- Status variant identifier
     status BLOB NOT NULL,                            -- Serialized transaction status
     FOREIGN KEY (script_root) REFERENCES transaction_scripts(script_root),
     PRIMARY KEY (id)
 ) WITHOUT ROWID, STRICT;
-CREATE INDEX idx_transactions_uncommitted ON transactions(status_variant);
+CREATE INDEX idx_transactions_pending ON transactions(status_variant) WHERE status_variant = 0;
 
 
 CREATE TABLE transaction_scripts (
@@ -168,10 +186,10 @@ CREATE TABLE input_notes (
     PRIMARY KEY (details_commitment),
     FOREIGN KEY (script_root) REFERENCES notes_scripts(script_root)
 ) WITHOUT ROWID, STRICT;
-CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant);
+CREATE INDEX idx_input_notes_state ON input_notes(state_discriminant, nullifier);
 CREATE INDEX idx_input_notes_nullifier ON input_notes(nullifier);
 CREATE INDEX idx_input_notes_note_id ON input_notes(note_id);
-CREATE INDEX idx_input_notes_consumption ON input_notes(consumed_block_height, consumed_tx_order);
+CREATE INDEX idx_input_notes_consumption ON input_notes(consumer_account_id, consumed_block_height, consumed_tx_order);
 CREATE INDEX idx_input_notes_script_root ON input_notes(script_root);
 
 CREATE TABLE output_notes (

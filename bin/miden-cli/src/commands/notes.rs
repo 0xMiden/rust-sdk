@@ -167,7 +167,7 @@ async fn show_note<AUTH: Keystore + Sync>(
     if matches!(input_note_record, Err(IdPrefixFetchError::NoMatch(_)))
         && matches!(output_note_record, Err(IdPrefixFetchError::NoMatch(_)))
     {
-        return Err(CliError::Import(
+        return Err(CliError::Input(
             "The specified note ID hex prefix did not match any note".to_string(),
         ));
     }
@@ -176,7 +176,7 @@ async fn show_note<AUTH: Keystore + Sync>(
     if matches!(input_note_record, Err(IdPrefixFetchError::MultipleMatches(_)))
         || matches!(output_note_record, Err(IdPrefixFetchError::MultipleMatches(_)))
     {
-        return Err(CliError::Import(
+        return Err(CliError::Input(
             "The specified note ID hex prefix matched with more than one note.".to_string(),
         ));
     }
@@ -189,7 +189,7 @@ async fn show_note<AUTH: Keystore + Sync>(
         (Some(input_record), Some(output_record))
             if input_record.id() != Some(output_record.id()) =>
         {
-            return Err(CliError::Import(
+            return Err(CliError::Input(
                 "The specified note ID hex prefix matched with more than one note.".to_string(),
             ));
         },
@@ -272,15 +272,8 @@ async fn show_note<AUTH: Keystore + Sync>(
     let assets = assets.iter();
 
     for asset in assets {
-        let (asset_type, faucet, amount) = match asset.as_fungible() {
-            Some(fungible_asset) => {
-                let (faucet, amount) =
-                    resolver.format_fungible_asset(client, &fungible_asset).await?;
-                ("Fungible Asset", faucet, amount)
-            },
-            None => ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string()),
-        };
-        table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+        let formatted = resolver.format_asset(client, asset).await?;
+        table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
     }
     println!("{table}");
 
@@ -345,27 +338,40 @@ async fn send<AUTH: Keystore + Sync>(
     note_id: &str,
     address: &str,
 ) -> Result<(), CliError> {
-    let note_record = get_input_note_with_id_prefix(client, note_id)
-        .await
-        .map_err(|e| CliError::Input(format!("note not found: {e}")))?;
-
-    let block_hint = note_record.inclusion_proof().map(|proof| proof.location().block_num());
-    let note: Note = note_record
-        .try_into()
-        .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+    let (note, inclusion_proof) = match get_output_note_with_id_prefix(client, note_id).await {
+        Ok(record) => {
+            let proof = record.inclusion_proof().cloned();
+            let note: Note = record
+                .try_into()
+                .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+            (note, proof)
+        },
+        Err(IdPrefixFetchError::NoMatch(_)) => {
+            let record = get_input_note_with_id_prefix(client, note_id)
+                .await
+                .map_err(|e| CliError::Input(format!("note not found: {e}")))?;
+            let proof = record.inclusion_proof().cloned();
+            let note: Note = record
+                .try_into()
+                .map_err(|e| CliError::from(ClientError::NoteRecordConversionError(e)))?;
+            (note, proof)
+        },
+        Err(err) => return Err(CliError::Input(format!("note not found: {err}"))),
+    };
     let (address_network_id, address) =
         Address::decode(address).map_err(|e| CliError::Input(e.to_string()))?;
     validate_network_eq(&address_network_id, &configured_network_id()?)?;
 
-    match block_hint {
-        Some(block_hint) => {
-            client.send_private_note_with_block_hint(note, &address, block_hint).await?;
-        },
-        None => {
-            #[allow(deprecated)]
-            client.send_private_note(note, &address).await?;
-        },
-    }
+    // The transport verifies the proof before it stores the note, so a note can only be sent once
+    // its transaction is committed and this client has synced past it.
+    let Some(inclusion_proof) = inclusion_proof else {
+        return Err(CliError::Input(format!(
+            "note {} has no inclusion proof yet; wait for its transaction to be committed, sync \
+             and retry",
+            note.id().to_hex()
+        )));
+    };
+    client.send_private_note_with_proof(note, &address, inclusion_proof).await?;
 
     Ok(())
 }
@@ -440,7 +446,7 @@ fn note_consumption_status_type(note_consumption_status: &NoteConsumptionStatus)
     .clone()
 }
 
-fn note_record_type(note_record_metadata: Option<&NoteMetadata>) -> String {
+pub(crate) fn note_record_type(note_record_metadata: Option<&NoteMetadata>) -> String {
     match note_record_metadata {
         Some(metadata) => match metadata.note_type() {
             miden_client::note::NoteType::Private => "Private",

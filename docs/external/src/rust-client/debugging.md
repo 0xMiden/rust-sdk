@@ -5,7 +5,7 @@ sidebar_position: 7
 
 # DAP Debugging
 
-The Miden client supports interactive debugging via the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). You can debug both raw Miden Assembly scripts and Rust programs compiled to Miden via `midenc`. This lets you step through execution, set breakpoints, and inspect stack/memory state using any DAP-compatible client (e.g. VS Code, the `miden-debug` TUI).
+The Miden client supports interactive debugging via the [Debug Adapter Protocol (DAP)](https://microsoft.github.io/debug-adapter-protocol/). You can debug compiled transaction script packages built from Miden Assembly or Rust with `midenc` or `miden build`. This lets you step through execution, set breakpoints, and inspect stack/memory state using any DAP-compatible client (e.g. VS Code, the `miden-debug` TUI).
 
 ## Feature flags
 
@@ -66,18 +66,30 @@ pub proc main
 end
 ```
 
-### 3. Start the DAP server
+### 3. Compile the script
+
+Compile the script into a library package with full debug information:
+
+```bash
+midenc test_debug.masm --lib --debug full -o test_debug.masp
+```
+
+For a Rust transaction script project, use `miden build` and pass its generated
+`.masp` package instead. Use a toolchain compatible with the client.
+The package must export exactly one transaction script.
+
+### 4. Start the DAP server
 
 ```bash
 miden-client exec \
-  --script-path test_debug.masm \
+  --package test_debug.masp \
   --start-debug-adapter 127.0.0.1:4711
 ```
 
-The client will compile the script, start a debug adapter server, and wait for a DAP client to
-connect before executing.
+The client loads the compiled package, starts a debug adapter server, and waits for a DAP
+client to connect. The client does not compile sources.
 
-### 4. Connect a debugger
+### 5. Connect a debugger
 
 In a separate terminal, connect the `miden-debug` TUI:
 
@@ -92,14 +104,16 @@ You can now step through execution, inspect the stack, and set breakpoints.
 
 When `--start-debug-adapter` is passed:
 
-1. The client compiles the transaction script from its filesystem path so source locations point at
-   the real file.
+1. The client loads the transaction script and its debug information from the package. Source
+   stepping uses the package's source locations. Keep the matching source files available at the
+   recorded paths if your debugger needs to display them.
 2. The transaction executor runs with the DAP program executor, which binds a TCP listener on the
    specified address and waits for a DAP client connection.
 3. Once connected, the DAP client controls execution: continue, step, breakpoints, and state
    inspection.
-4. If the DAP client requests a restart, the client refreshes the cached source file, recompiles the
-   script from disk, and starts a new debug session.
+4. If the DAP client requests a restart, the client reloads the package and starts a new debug
+   session. After editing sources, rebuild the package before requesting a restart. Restart does
+   not run the compiler.
 
 ## Extracting recorded advice mutations
 
@@ -134,7 +148,7 @@ snapshot* of the session once it ends:
 
 ```bash
 miden-client exec \
-  --script-path test_debug.masm \
+  --package test_debug.masp \
   --start-debug-adapter 127.0.0.1:4711 \
   --record session.mdsnap
 ```

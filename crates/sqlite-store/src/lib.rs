@@ -27,9 +27,9 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::asset::{Asset, AssetVault, AssetWitness};
-use miden_client::block::BlockHeader;
+use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
-use miden_client::note::{BlockNumber, NoteScript, NoteTag, Nullifier};
+use miden_client::note::{BlockNumber, NoteScript, Nullifier};
 use miden_client::store::{
     AccountRecord,
     AccountStatus,
@@ -50,6 +50,7 @@ use miden_client::store::{
 use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_client::utils::Serializable;
+use miden_client_proto as proto;
 use miden_protocol::Felt;
 use miden_protocol::account::StorageMapWitness;
 use miden_protocol::asset::AssetId;
@@ -168,10 +169,6 @@ impl Store for SqliteStore {
 
     async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
         self.interact_with_connection(SqliteStore::get_note_tags).await
-    }
-
-    async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
-        self.interact_with_connection(SqliteStore::get_unique_note_tags).await
     }
 
     async fn add_note_tag(&self, tag: NoteTagRecord) -> Result<bool, StoreError> {
@@ -441,6 +438,46 @@ impl Store for SqliteStore {
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_foreign_account_code(conn, account_ids)
+        })
+        .await
+    }
+
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::track_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn untrack_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::untrack_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError> {
+        self.interact_with_connection(SqliteStore::tracked_account_witnesses).await
+    }
+
+    async fn get_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<AccountWitness>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_account_witness(conn, account_id)
+        })
+        .await
+    }
+
+    async fn update_account_witness(
+        &self,
+        account_id: AccountId,
+        witness: &AccountWitness,
+    ) -> Result<bool, StoreError> {
+        let witness = witness.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::update_account_witness(conn, account_id, &witness)
         })
         .await
     }

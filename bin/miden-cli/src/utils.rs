@@ -1,12 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::ParseIntError;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
-use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::crypto::ecdsa_k256_keccak;
+use miden_client::note::standards::{PswapNoteStorage, SwapNoteStorage};
+use miden_client::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote};
 use miden_client::transaction::{ExecutedTransaction, InputNote};
+use miden_client::utils::{Deserializable, hex_to_bytes};
 use miden_client::vm::MIN_STACK_DEPTH;
 use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
 use serde::Deserialize;
@@ -213,20 +218,8 @@ pub async fn print_executed_transaction<AUTH>(
         let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
 
         for asset in patch.vault().updated_assets() {
-            match asset.as_fungible() {
-                Some(fungible) => {
-                    let (faucet_fmt, amount_fmt) =
-                        resolver.format_fungible_asset(client, &fungible).await?;
-                    table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
-                },
-                None => {
-                    table.add_row(vec![
-                        "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
-                        "1",
-                    ]);
-                },
-            }
+            let formatted = resolver.format_asset(client, &asset).await?;
+            table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
         }
 
         for asset_id in patch.vault().removed_asset_ids() {
@@ -413,6 +406,43 @@ struct FaucetTomlEntry {
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
     toml: BTreeMap<String, FaucetTomlEntry>,
+    /// Holds the outcome of every faucet lookup for the lifetime of the resolver. It caches misses
+    /// as well as hits, so several assets from the same untracked faucet cause at most one RPC
+    /// fetch.
+    cache: Mutex<BTreeMap<AccountId, Option<FaucetMetadata>>>,
+}
+
+/// An asset formatted for display in a CLI table.
+pub struct FormattedAsset {
+    /// True for a fungible asset. False for a non-fungible asset.
+    pub is_fungible: bool,
+    /// The token symbol when it is known. Otherwise, the faucet address for a fungible asset or the
+    /// faucet prefix for a non-fungible asset.
+    pub faucet: String,
+    /// The token amount for a fungible asset, or "1" for a non-fungible asset.
+    pub amount: String,
+}
+
+impl FormattedAsset {
+    /// Returns the asset type label used in table cells.
+    pub fn type_label(&self) -> &'static str {
+        if self.is_fungible {
+            "Fungible Asset"
+        } else {
+            "Non Fungible Asset"
+        }
+    }
+}
+
+/// Renders the asset as its amount and faucet on one line.
+impl core::fmt::Display for FormattedAsset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} {}", self.amount, self.faucet)?;
+        if !self.is_fungible {
+            f.write_str(" (non-fungible)")?;
+        }
+        Ok(())
+    }
 }
 
 impl FaucetMetadataResolver {
@@ -465,7 +495,10 @@ impl FaucetMetadataResolver {
             parsed.insert(symbol, FaucetTomlEntry { account_id, decimals: entry.decimals });
         }
 
-        Ok(Self { toml: parsed })
+        Ok(Self {
+            toml: parsed,
+            cache: Mutex::new(BTreeMap::new()),
+        })
     }
 
     /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
@@ -491,28 +524,73 @@ impl FaucetMetadataResolver {
         client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
+        // 0) in-memory cache. It also holds misses, so an untracked faucet is fetched at most once.
+        // The lock is scoped so the guard drops before the `await` below.
+        {
+            let cache = self.cache.lock().expect("faucet metadata cache mutex is poisoned");
+            if let Some(cached) = cache.get(&faucet_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // A transient RPC error is not cached. A later lookup can then retry instead of reading a
+        // cached miss.
+        let resolved = match self.resolve_uncached(client, faucet_id).await {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
+                return Ok(None);
+            },
+        };
+
+        self.cache
+            .lock()
+            .expect("faucet metadata cache mutex is poisoned")
+            .insert(faucet_id, resolved.clone());
+        Ok(resolved)
+    }
+
+    /// Runs the full lookup without consulting the in-memory cache: TOML → settings store → RPC
+    /// fetch. On RPC success, the result is persisted to the settings store. A failed RPC fetch
+    /// returns an error, so the caller does not cache it as a miss.
+    async fn resolve_uncached<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        faucet_id: AccountId,
+    ) -> Result<Option<FaucetMetadata>, CliError> {
         // 1) & 2) local sources (TOML + settings store)
         if let Some(meta) = self.resolve_local(client, faucet_id).await? {
             return Ok(Some(meta));
         }
         // 3) RPC fetch
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        match client.fetch_remote_token_metadata(faucet_id).await {
-            Ok(Some(meta)) => {
-                if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
-                    tracing::warn!(
-                        "failed to persist faucet metadata for {}: {err}",
-                        faucet_id.to_hex(),
-                    );
-                }
-                Ok(Some(meta))
-            },
-            Ok(None) => Ok(None),
-            Err(err) => {
-                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
-                Ok(None)
-            },
+        let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
+            return Ok(None);
+        };
+        if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+            tracing::warn!("failed to persist faucet metadata for {}: {err}", faucet_id.to_hex());
         }
+        Ok(Some(meta))
+    }
+
+    /// Formats an asset for display. A fungible asset is resolved through [`Self::resolve`]. A
+    /// non-fungible asset shows its faucet prefix and an amount of one.
+    pub async fn format_asset<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        asset: &Asset,
+    ) -> Result<FormattedAsset, CliError> {
+        Ok(match asset.as_fungible() {
+            Some(fungible) => {
+                let (faucet, amount) = self.format_fungible_asset(client, &fungible).await?;
+                FormattedAsset { is_fungible: true, faucet, amount }
+            },
+            None => FormattedAsset {
+                is_fungible: false,
+                faucet: asset.faucet_id().prefix().to_hex(),
+                amount: "1".to_string(),
+            },
+        })
     }
 
     /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet
@@ -611,6 +689,145 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
     Err(format!("address `{address_str}` does not encode an account ID"))
 }
 
+// NOTE STORAGE DECODING
+// ================================================================================================
+
+/// Placeholder shown for a field that the client can't fill in.
+pub(crate) const NO_VALUE: &str = "-";
+
+/// Renders the decoded storage of a P2ID, P2IDE, SWAP or PSWAP note one field per line.
+///
+/// Other notes, and storage that doesn't decode, are shown as the empty-value placeholder.
+pub(crate) async fn format_standard_note_storage<AUTH>(
+    client: &Client<AUTH>,
+    resolver: &FaucetMetadataResolver,
+    standard_note: Option<StandardNote>,
+    items: &[Felt],
+) -> Result<String, CliError> {
+    let fields = match standard_note {
+        Some(StandardNote::P2ID) => P2idNoteStorage::try_from(items)
+            .map(|storage| vec![format!("target: {}", storage.target())])
+            .ok(),
+        Some(StandardNote::P2IDE) => P2ideNoteStorage::try_from(items)
+            .map(|storage| {
+                let mut fields = vec![format!("target: {}", storage.target())];
+                if let Some(height) = storage.reclaim_height() {
+                    fields.push(format!("reclaim height: {height}"));
+                }
+                if let Some(height) = storage.timelock_height() {
+                    fields.push(format!("timelock height: {height}"));
+                }
+                fields
+            })
+            .ok(),
+        Some(StandardNote::SWAP) => match SwapNoteStorage::try_from(items) {
+            Ok(storage) => Some(vec![
+                format!(
+                    "requested: {}",
+                    resolver.format_asset(client, &storage.requested_asset()).await?
+                ),
+                format!("payback note: {}", storage.payback_note_type()),
+            ]),
+            Err(_) => None,
+        },
+        Some(StandardNote::PSWAP) => match PswapNoteStorage::try_from(items) {
+            Ok(storage) => {
+                let requested = Asset::from(*storage.min_requested_asset());
+                let mut fields = vec![
+                    format!("creator: {}", storage.creator_account_id()),
+                    format!("requested: {}", resolver.format_asset(client, &requested).await?),
+                ];
+                // A zero fill step means that the note accepts fills of any size.
+                if storage.min_fill_step() != AssetAmount::ZERO
+                    && let Ok(fill_step) = FungibleAsset::new(
+                        storage.requested_faucet_id(),
+                        storage.min_fill_step().as_u64(),
+                    )
+                {
+                    fields.push(format!(
+                        "min fill step: {}",
+                        resolver.format_asset(client, &Asset::from(fill_step)).await?
+                    ));
+                }
+                fields.push(format!("payback note: {}", storage.payback_note_type()));
+                Some(fields)
+            },
+            Err(_) => None,
+        },
+        _ => None,
+    };
+
+    Ok(fields.map_or_else(|| NO_VALUE.to_string(), |fields| fields.join("\n")))
+}
+
+// ECDSA PUBLIC KEY PARSING
+// ================================================================================================
+
+/// Byte length of a SEC1-compressed secp256k1 public key (parity prefix plus x coordinate).
+pub(crate) const ECDSA_COMPRESSED_KEY_BYTES: usize = 33;
+/// Byte length of a SEC1-uncompressed secp256k1 public key (`0x04` prefix plus both coordinates).
+pub(crate) const ECDSA_UNCOMPRESSED_KEY_BYTES: usize = 65;
+
+/// SPKI (RFC 5280) ASN.1 DER header declaring an uncompressed secp256k1 EC public key. The 65-byte
+/// SEC1 point follows these bytes directly. Layout:
+///
+/// ```text
+/// 30 56           SEQUENCE (86 bytes)
+///   30 10         SEQUENCE, AlgorithmIdentifier (16 bytes)
+///     06 07 2a 86 48 ce 3d 02 01   OID 1.2.840.10045.2.1 (ecPublicKey)
+///     06 05 2b 81 04 00 0a         OID 1.3.132.0.10 (secp256k1)
+///   03 42 00      BIT STRING (66 bytes, no unused bits): the SEC1 point
+/// ```
+const SECP256K1_SPKI_HEADER: [u8; 23] = [
+    0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+    0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
+];
+
+fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
+    CliError::InvalidArgument(format!("invalid ECDSA public key: {err}"))
+}
+
+/// Parses a hex-encoded secp256k1 public key in SEC1 format.
+///
+/// Accepts the 33-byte compressed and the 65-byte uncompressed encoding (the form Ledger and other
+/// Ethereum-style signers export), both with a mandatory `0x` prefix. The point is fully validated:
+/// an uncompressed key whose coordinates do not lie on the curve is rejected.
+pub(crate) fn parse_ecdsa_public_key(
+    encoded: &str,
+) -> Result<ecdsa_k256_keccak::PublicKey, CliError> {
+    let hex_digits = encoded.strip_prefix("0x").ok_or_else(|| {
+        CliError::InvalidArgument(
+            "ECDSA public key must use a 0x-prefixed hexadecimal encoding".to_string(),
+        )
+    })?;
+
+    match hex_digits.len() {
+        len if len == ECDSA_COMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_COMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(invalid_ecdsa_key)
+        },
+        len if len == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 => {
+            let bytes =
+                hex_to_bytes::<ECDSA_UNCOMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
+            // Wrapping the point in an SPKI document lets the DER constructor validate both
+            // coordinates against the curve equation. Compressing the point locally instead would
+            // drop the y coordinate and silently accept a corrupted key whose y parity happens to
+            // match.
+            let mut der = Vec::with_capacity(SECP256K1_SPKI_HEADER.len() + bytes.len());
+            der.extend_from_slice(&SECP256K1_SPKI_HEADER);
+            der.extend_from_slice(&bytes);
+            ecdsa_k256_keccak::PublicKey::from_der(&der).map_err(invalid_ecdsa_key)
+        },
+        len => Err(CliError::InvalidArgument(format!(
+            "unsupported ECDSA public key length: expected {} (compressed) or {} (uncompressed) \
+            hexadecimal digits after the 0x prefix, got {len}",
+            ECDSA_COMPRESSED_KEY_BYTES * 2,
+            ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -619,12 +836,15 @@ mod tests {
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+    use miden_client::utils::Serializable;
 
     use super::{
         FaucetMetadataResolver,
         RawFaucetEntry,
         TokenParseError,
         base_units_to_tokens,
+        hex_to_bytes,
+        parse_ecdsa_public_key,
         tokens_to_base_units,
     };
 
@@ -706,5 +926,82 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    // ECDSA PUBLIC KEY PARSING
+    // --------------------------------------------------------------------------------------------
+
+    /// The secp256k1 generator point (even y coordinate) in both SEC1 encodings.
+    const GEN_COMPRESSED: &str =
+        "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    const GEN_UNCOMPRESSED: &str = "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b1\
+        6f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+
+    /// The point 6·G (odd y coordinate), so the odd-parity branch of the uncompressed encoding is
+    /// exercised as well.
+    const SIX_GEN_COMPRESSED: &str =
+        "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+    const SIX_GEN_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057\
+        a1460297556ae12777aacfbb620f3be96017f45c560de80f0f6518fe4a03c870c36b075f297";
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_compressed_key() {
+        let key = parse_ecdsa_public_key(GEN_COMPRESSED).expect("compressed key should parse");
+
+        let expected = hex_to_bytes::<33>(GEN_COMPRESSED).unwrap();
+        assert_eq!(key.to_bytes(), expected);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_even_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_odd_y() {
+        let from_uncompressed =
+            parse_ecdsa_public_key(SIX_GEN_UNCOMPRESSED).expect("uncompressed key should parse");
+        let from_compressed = parse_ecdsa_public_key(SIX_GEN_COMPRESSED).unwrap();
+
+        assert_eq!(from_uncompressed, from_compressed);
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_missing_hex_prefix() {
+        let err = parse_ecdsa_public_key(&GEN_COMPRESSED[2..])
+            .expect_err("a key without the 0x prefix should be rejected");
+
+        assert!(err.to_string().contains("0x"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_invalid_length() {
+        let err = parse_ecdsa_public_key("0x1234")
+            .expect_err("a key with an unsupported length should be rejected");
+
+        assert!(err.to_string().contains("length"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_compressed_x_not_on_curve() {
+        // x = 5 has no square root of x³ + 7 on secp256k1, so no point has this x coordinate.
+        let not_on_curve = "0x020000000000000000000000000000000000000000000000000000000000000005";
+
+        parse_ecdsa_public_key(not_on_curve)
+            .expect_err("a compressed key with no matching curve point should be rejected");
+    }
+
+    #[test]
+    fn parse_ecdsa_public_key_rejects_uncompressed_point_not_on_curve() {
+        // (1, 1) does not satisfy the curve equation.
+        let not_on_curve =
+            format!("0x04{}{}", format_args!("{:064x}", 1), format_args!("{:064x}", 1));
+
+        parse_ecdsa_public_key(&not_on_curve)
+            .expect_err("an uncompressed point off the curve should be rejected");
     }
 }

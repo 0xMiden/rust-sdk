@@ -31,7 +31,9 @@ impl<AUTH> Client<AUTH> {
     /// the client and don't need to be added here. That is, notes for managed accounts will be
     /// retrieved automatically by the client when syncing.
     pub async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, ClientError> {
-        self.store.get_note_tags().await.map_err(Into::into)
+        let mut tags = self.store.get_note_tags().await?;
+        tags.extend(self.store.get_account_note_tags().await?);
+        Ok(tags)
     }
 
     /// Adds a note tag for the client to track. This tag's source will be marked as `User`.
@@ -68,7 +70,10 @@ pub struct NoteTagRecord {
 /// the user and tags that are added automatically by the client to track notes .
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum NoteTagSource {
-    /// Tag for notes directed to a tracked account.
+    /// Tag of an address of a tracked native account.
+    ///
+    /// The store derives these tags from the addresses of the native accounts and does not keep
+    /// them. See [`Store::get_account_note_tags`](crate::store::Store::get_account_note_tags).
     Account(AccountId),
     /// Tag for tracked expected notes, identified by the note's details commitment.
     Note(NoteDetailsCommitment),

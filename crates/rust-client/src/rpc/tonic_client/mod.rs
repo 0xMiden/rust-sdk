@@ -46,8 +46,8 @@ use super::encryption::{
     SealedTransactionInputs,
     ValidatorAttestation,
 };
-use super::generated::rpc::AccountRequest;
-use super::generated::rpc::account_request::AccountDetailRequest;
+use super::generated::rpc::GetAccountRequest as ProtoGetAccountRequest;
+use super::generated::rpc::get_account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::limits::RpcLimits;
@@ -119,6 +119,15 @@ impl BlockPagination {
             return Err(RpcError::PaginationError(
                 "invalid pagination: block_num went backwards".to_owned(),
             ));
+        }
+
+        // The node must not answer with a page that ends past the requested window. The cursor is
+        // trusted downstream, so an out-of-window cursor is rejected here.
+        if block_num > self.block_to {
+            return Err(RpcError::PaginationError(format!(
+                "invalid pagination: block_num {block_num} is past the requested block_to {}",
+                self.block_to
+            )));
         }
 
         let target_block = self.block_to.min(chain_tip);
@@ -333,7 +342,7 @@ impl GrpcClient {
         )
         .await?;
         rpc_api
-            .status(())
+            .status(proto::rpc::StatusRequest {})
             .await
             .map_err(|status| self.rpc_error_from_status(RpcEndpoint::Status, status))
             .map(tonic::Response::into_inner)
@@ -377,10 +386,19 @@ impl NodeRpcClient for GrpcClient {
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
         let api_response = self
             .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_transaction_encryption_key(()).await })
+                Box::pin(async move {
+                    rpc_api
+                        .get_transaction_encryption_key(
+                            proto::rpc::GetTransactionEncryptionKeyRequest {},
+                        )
+                        .await
+                })
             })
             .await?;
-        let response = api_response.into_inner();
+        let response = api_response
+            .into_inner()
+            .key
+            .ok_or(RpcError::ExpectedDataMissing("TransactionEncryptionKey".to_owned()))?;
 
         // An undecodable attestation is skipped rather than failing the whole response, so that one
         // junk entry served by the relaying operator cannot hide a valid attestation behind it.
@@ -443,6 +461,7 @@ impl NodeRpcClient for GrpcClient {
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
+        let request = proto::rpc::SubmitProvenTxRequest { submission: Some(request) };
         let api_response = self
             .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
                 let request = request.clone();
@@ -468,6 +487,7 @@ impl NodeRpcClient for GrpcClient {
                 .collect(),
         };
 
+        let request = proto::rpc::SubmitProvenTxBatchRequest { submission: Some(request) };
         let api_response = self
             .call_with_retry(RpcEndpoint::SubmitProvenBatch, |mut rpc_api| {
                 let request = request.clone();
@@ -483,7 +503,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
-        let request = proto::rpc::BlockHeaderByNumberRequest {
+        let request = proto::rpc::GetBlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
             include_protocol_config: None,
@@ -532,7 +552,7 @@ impl NodeRpcClient for GrpcClient {
         let limits = self.get_rpc_limits().await?;
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::rpc::NotesByIdRequest {
+            let request = proto::rpc::GetNotesByIdRequest {
                 note_ids: chunk.iter().map(proto::note::NoteId::from).collect(),
             };
 
@@ -623,7 +643,7 @@ impl NodeRpcClient for GrpcClient {
             AccountStateAt::ChainTip => None,
         };
 
-        let proto_request = AccountRequest {
+        let proto_request = ProtoGetAccountRequest {
             account_id: Some(account_id.into()),
             block_num,
             details: account_details,
@@ -829,7 +849,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        let request = proto::rpc::BlockRequest {
+        let request = proto::rpc::GetBlockByNumberRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
         };
@@ -844,7 +864,7 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::rpc::NoteScriptByRootRequest { root: Some(root.into()) };
+        let request = proto::rpc::GetNoteScriptByRootRequest { root: Some(root.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
@@ -1016,7 +1036,7 @@ impl NodeRpcClient for GrpcClient {
 
         let response = self
             .call_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_limits(()).await })
+                Box::pin(async move { rpc_api.get_limits(proto::rpc::GetLimitsRequest {}).await })
             })
             .await?;
         let limits = RpcLimits::try_from(response.into_inner()).map_err(RpcError::from)?;
@@ -1042,7 +1062,9 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        let request = proto::note::NoteId::from(&note_id);
+        let request = proto::rpc::GetNetworkNoteStatusRequest {
+            note_id: Some(proto::note::NoteId::from(&note_id)),
+        };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
@@ -1102,7 +1124,7 @@ impl From<&Status> for GrpcError {
 /// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
 /// not requested, and also when the block is not proven yet, so an absent proof is not an error.
 fn decode_block_response(
-    response: proto::rpc::MaybeBlock,
+    response: proto::rpc::GetBlockByNumberResponse,
 ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
     // The response carries the block and its proof in separate fields, so the block message holds a
     // signed block and never a proven one.
@@ -1153,7 +1175,7 @@ mod tests {
     #[test]
     fn decode_block_response_reads_a_requested_proof() {
         let (block, proof_message) = genesis_block_messages();
-        let response = proto::rpc::MaybeBlock {
+        let response = proto::rpc::GetBlockByNumberResponse {
             block: Some(block),
             proof: Some(proof_message.clone()),
         };
@@ -1168,7 +1190,7 @@ mod tests {
     #[test]
     fn decode_block_response_omits_an_absent_proof() {
         let (block, _) = genesis_block_messages();
-        let response = proto::rpc::MaybeBlock { block: Some(block), proof: None };
+        let response = proto::rpc::GetBlockByNumberResponse { block: Some(block), proof: None };
 
         let (_block, proof) = decode_block_response(response).unwrap();
 
@@ -1178,7 +1200,7 @@ mod tests {
     #[test]
     fn decode_block_response_rejects_malformed_proof_bytes() {
         let (block, _) = genesis_block_messages();
-        let response = proto::rpc::MaybeBlock {
+        let response = proto::rpc::GetBlockByNumberResponse {
             block: Some(block),
             proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
         };
@@ -1190,7 +1212,7 @@ mod tests {
 
     #[test]
     fn decode_block_response_rejects_an_absent_block() {
-        let response = proto::rpc::MaybeBlock { block: None, proof: None };
+        let response = proto::rpc::GetBlockByNumberResponse { block: None, proof: None };
 
         let res = decode_block_response(response);
 
@@ -1208,6 +1230,14 @@ mod tests {
         let mut pagination = BlockPagination::new(10_u32.into(), 20_u32.into());
 
         let res = pagination.advance(9_u32.into(), 20_u32.into());
+        assert!(matches!(res, Err(RpcError::PaginationError(_))));
+    }
+
+    #[test]
+    fn block_pagination_errors_when_block_num_passes_block_to() {
+        let mut pagination = BlockPagination::new(10_u32.into(), 20_u32.into());
+
+        let res = pagination.advance(21_u32.into(), 100_u32.into());
         assert!(matches!(res, Err(RpcError::PaginationError(_))));
     }
 

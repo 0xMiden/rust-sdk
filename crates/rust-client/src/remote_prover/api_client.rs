@@ -11,7 +11,7 @@ pub(crate) mod api_client_wrapper {
     use core::time::Duration;
 
     use crate::remote_prover::RemoteProverClientError;
-    use crate::remote_prover::generated::api_client::ApiClient as ProtoClient;
+    use crate::remote_prover::generated::prover_service_client::ProverServiceClient as ProtoClient;
 
     pub type InnerClient = ProtoClient<tonic_web_wasm_client::Client>;
 
@@ -45,7 +45,7 @@ pub(crate) mod api_client_wrapper {
     use core::time::Duration;
 
     use crate::remote_prover::RemoteProverClientError;
-    use crate::remote_prover::generated::api_client::ApiClient as ProtoClient;
+    use crate::remote_prover::generated::prover_service_client::ProverServiceClient as ProtoClient;
 
     pub type InnerClient = ProtoClient<tonic::transport::Channel>;
 

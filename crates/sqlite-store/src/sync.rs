@@ -1,6 +1,5 @@
 #![allow(clippy::items_after_statements)]
 
-use std::collections::BTreeSet;
 use std::vec::Vec;
 
 use miden_client::Word;
@@ -17,7 +16,7 @@ use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
-use crate::{insert_sql, subst, with_write_tx};
+use crate::{insert_sql, proto, subst, with_write_tx};
 
 impl SqliteStore {
     pub(crate) fn get_note_tags(conn: &mut Connection) -> Result<Vec<NoteTagRecord>, StoreError> {
@@ -37,22 +36,6 @@ impl SqliteStore {
                 })
             })
             .collect::<Result<Vec<NoteTagRecord>, _>>()
-    }
-
-    pub(crate) fn get_unique_note_tags(
-        conn: &mut Connection,
-    ) -> Result<BTreeSet<NoteTag>, StoreError> {
-        const QUERY: &str = "SELECT DISTINCT tag FROM tags";
-
-        conn.prepare_cached(QUERY)
-            .into_store_error()?
-            .query_map([], |row| row.get(0))
-            .expect("no binding parameters used in query")
-            .map(|result| {
-                let tag: Vec<u8> = result.into_store_error()?;
-                NoteTag::read_from_bytes(&tag).map_err(StoreError::DataDeserializationError)
-            })
-            .collect::<Result<BTreeSet<NoteTag>, _>>()
     }
 
     pub(super) fn add_note_tag(
@@ -89,7 +72,7 @@ impl SqliteStore {
         with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
             // Update blockchain checkpoint (block number and peaks) only if moving forward.
-            let new_peaks_bytes = partial_blockchain_updates.new_peaks.peaks().to_vec().to_bytes();
+            let new_peaks_bytes = proto::encode_mmr_peaks(&partial_blockchain_updates.new_peaks);
             const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
                 UPDATE blockchain_checkpoint \
                 SET block_num = ?1, partial_blockchain_peaks = ?2 \
@@ -166,6 +149,12 @@ impl SqliteStore {
                 Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
             }
 
+            // Writes only land for accounts registered for witness prefetching; the rest are
+            // no-ops, so the sync does not have to know which ones those are.
+            for (account_id, witness) in account_updates.account_witnesses() {
+                Self::update_account_witness_tx(db_tx, *account_id, witness)?;
+            }
+
             if let Some(config) = &protocol_config {
                 Self::set_setting(
                     db_tx,
@@ -182,10 +171,18 @@ impl SqliteStore {
 
 /// Inserts the tag record, relying on the `(tag, source)` primary key for idempotency across
 /// concurrent connections. Returns whether a new row was inserted.
+///
+/// Returns [`StoreError::AccountNoteTagNotStorable`] for a record with an account source. The store
+/// derives these records from the addresses of the native accounts. No operation removes a stored
+/// copy, so the client would track its tag forever.
 pub(super) fn add_note_tag_tx(
     tx: &Transaction<'_>,
     tag: &NoteTagRecord,
 ) -> Result<bool, StoreError> {
+    if let NoteTagSource::Account(account_id) = tag.source {
+        return Err(StoreError::AccountNoteTagNotStorable(account_id));
+    }
+
     const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
     let inserted = tx
         .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])

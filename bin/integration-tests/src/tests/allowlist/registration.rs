@@ -7,14 +7,14 @@
 use anyhow::{Context, Result, ensure};
 use miden_client::rpc::RegisterAccountError;
 
-use super::funding::request_funds;
 use super::invitations::create_invitation_code;
 use super::{
     assert_registration_rejected,
     assert_rejected_before_submission,
-    funded_deploy_request,
     funding_notes,
     insert_unfunded_wallet,
+    registered_deploy_request,
+    service_funded_deploy_request,
 };
 use crate::ClientConfig;
 
@@ -50,7 +50,7 @@ pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig
         notes.len()
     );
 
-    let deploy = funded_deploy_request(&mut client, &account).await?;
+    let deploy = registered_deploy_request(&mut client, &account).await?;
     let transaction_id = client.submit_new_transaction(account.id(), deploy).await?;
     client.wait_for_tx(transaction_id).await?;
 
@@ -76,8 +76,7 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
 
     // The second account is still unregistered, so the node refuses to create it on chain. It is
     // funded, so the only thing that stops the deploy is the allowlist.
-    request_funds(&second).await?;
-    let deploy = funded_deploy_request(&mut client, &second).await?;
+    let deploy = service_funded_deploy_request(&client, &second).await?;
     let error = client
         .submit_new_transaction(second.id(), deploy)
         .await

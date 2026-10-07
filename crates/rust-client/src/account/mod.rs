@@ -42,6 +42,8 @@ pub use miden_protocol::account::{
     Account,
     AccountBuilder,
     AccountCode,
+    AccountCodePatch,
+    AccountCodeUpgrade,
     AccountComponent,
     AccountComponentCode,
     AccountDelta,
@@ -79,7 +81,6 @@ pub use miden_protocol::account::{
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;
 pub use miden_protocol::errors::{AccountIdError, AddressError, NetworkIdError};
-use miden_protocol::note::NoteTag;
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -157,7 +158,6 @@ use crate::errors::ClientError;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
-use crate::sync::NoteTagRecord;
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -242,6 +242,7 @@ pub mod component {
         TransferPolicy,
         TransferPolicyError,
     };
+    pub use miden_standards::account::upgrade::UpgradeManager;
     pub use miden_standards::account::wallets::BasicWallet;
 }
 
@@ -312,12 +313,13 @@ impl<AUTH> Client<AUTH> {
     /// does not send the code for an account the node already allows.
     ///
     /// When the network operator runs a funding service, the node pays the registered account a
-    /// public P2ID note with the native asset. The node answers once that note is committed, so
-    /// this call can take a few blocks. The note is not part of the response, and the client does
-    /// not see it until [`Client::sync_state`] runs. The client tracks the note tag of every
-    /// account it owns, so the sync imports the note and [`Client::get_consumable_notes`] lists it.
-    /// The account then consumes the note in its first transaction. That transaction creates the
-    /// account on chain and pays its fee out of the received funds.
+    /// public P2ID note with the native asset. The node answers once the funding service queues the
+    /// note, before the note is committed. The note is not part of the response, and the client
+    /// does not see it until a [`Client::sync_state`] runs after the note is committed. The client
+    /// tracks the note tag of every account it owns, so that sync imports the note and
+    /// [`Client::get_consumable_notes`] lists it. Sync again until the note arrives. The account
+    /// then consumes the note in its first transaction. That transaction creates the account on
+    /// chain and pays its fee out of the received funds.
     ///
     /// # Errors
     ///
@@ -398,8 +400,10 @@ impl<AUTH> Client<AUTH> {
         Ok(NetworkAccount::new(account).is_err())
     }
 
-    /// Inserts `account` into the store (or overwrites it if `overwrite` is true) and registers the
-    /// per-account note tag if `client_account_type` is [`ClientAccountType::Native`].
+    /// Inserts `account` into the store (or overwrites it if `overwrite` is true).
+    ///
+    /// If `client_account_type` is [`ClientAccountType::Native`], the client tracks the note tag of
+    /// the default address of the account.
     ///
     /// Switching the [`ClientAccountType`] of an already-tracked account is not supported and
     /// returns [`ClientError::AccountWatchedMismatch`].
@@ -429,17 +433,9 @@ impl<AUTH> Client<AUTH> {
                 let default_address = Address::new(account.id());
 
                 self.store
-                    .insert_account(account, default_address.clone(), client_account_type)
+                    .insert_account(account, default_address, client_account_type)
                     .await
                     .map_err(ClientError::StoreError)?;
-
-                if matches!(client_account_type, ClientAccountType::Native) {
-                    // Set the default address note tag so sync pulls notes.
-                    let default_address_note_tag = default_address.to_note_tag();
-                    let note_tag_record =
-                        NoteTagRecord::with_account_source(default_address_note_tag, account.id());
-                    self.store.add_note_tag(note_tag_record).await?;
-                }
 
                 Ok(())
             },
@@ -451,8 +447,8 @@ impl<AUTH> Client<AUTH> {
 
                 if client_account_type != tracked_account.client_account_type() {
                     // Switching between Watched and Native after the account is tracked is not
-                    // supported: the per-account note tag and any client-side state derived from
-                    // that mode are set up at insertion time and not migrated on the fly.
+                    // supported. The store keeps the mode that the account has at insertion and
+                    // does not change it on update.
                     return Err(ClientError::AccountWatchedMismatch(account.id()));
                 }
 
@@ -505,9 +501,9 @@ impl<AUTH> Client<AUTH> {
     /// Starts watching an on-chain account ([`ClientAccountType::Watched`]).
     ///
     /// Like [`Self::import_account_by_id`], the account is fetched from the network by its ID.
-    /// Unlike `import_account_by_id`, the account is added without registering its derived note
-    /// tag: `sync_state` will keep the account's commitment, nonce and storage up to date but will
-    /// **not** pull notes targeted at it.
+    /// Unlike `import_account_by_id`, the client does not track the note tags of the addresses of
+    /// the account. `sync_state` will keep the account's commitment, nonce and storage up to date
+    /// but will **not** pull notes targeted at it.
     ///
     /// If the account is already being tracked as watched its state is overwritten. Switching an
     /// already-tracked native account to watched is not supported.
@@ -523,6 +519,49 @@ impl<AUTH> Client<AUTH> {
     ) -> Result<(), ClientError> {
         let account = self.fetch_public_account(account_id).await?;
         self.add_account_inner(&account, ClientAccountType::Watched, true).await
+    }
+
+    // ACCOUNT WITNESS PREFETCHING
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose account witness [`Client::sync_chain`] keeps up to date, so that
+    /// transactions using it as a foreign account resolve the witness locally. This trades one
+    /// request per transaction for one per sync.
+    ///
+    /// A [`ForeignAccount::Private`](crate::transaction::ForeignAccount) needs nothing else, since
+    /// the caller supplies the account data. A
+    /// [`ForeignAccount::Public`](crate::transaction::ForeignAccount) additionally has to be
+    /// tracked by this client, so that its code, storage and vault come from the store as well;
+    /// registering an untracked public account costs a request per sync and saves none.
+    ///
+    /// The witness is fetched by the next sync, not by this call. Transactions assume that a sync
+    /// ran after the account was registered.
+    ///
+    /// The account is not validated against the network here. The sync fails while a registered
+    /// account has no witness that the node can return, so an account that is not in the account
+    /// tree blocks the sync until it is unregistered.
+    ///
+    /// Registering an already registered account is a no-op and keeps any cached witness.
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    pub async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        self.store.track_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Stops keeping the account's witness up to date and drops the cached one.
+    ///
+    /// Returns `true` if the account was registered. Transactions using it keep working, falling
+    /// back to fetching the witness from the node.
+    pub async fn untrack_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        self.store.untrack_account_witness(account_id).await.map_err(Into::into)
+    }
+
+    /// Returns the IDs of every account registered via [`Client::track_account_witness`].
+    pub async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, ClientError> {
+        self.store.tracked_account_witnesses().await.map_err(Into::into)
     }
 
     /// Fetches a public [`Account`] from the network, returning a typed error when the account
@@ -579,8 +618,10 @@ impl<AUTH> Client<AUTH> {
         Ok(faucet_metadata_from_token_config(*slot_header.value()))
     }
 
-    /// Adds an [`Address`] to the associated [`AccountId`], alongside its derived [`NoteTag`]. If
-    /// the account is tracked as watched, the note tag is not registered.
+    /// Adds an [`Address`] to the associated [`AccountId`].
+    ///
+    /// If the account is native, the client tracks the [`NoteTag`](crate::note::NoteTag) of the
+    /// address. If the account is watched, the client does not track the tag.
     ///
     /// # Errors
     /// - If the account is not found on the network.
@@ -596,44 +637,22 @@ impl<AUTH> Client<AUTH> {
             return Err(ClientError::AddressAlreadyTracked(address_bench32));
         }
 
-        let tracked_account = self.store.get_minimal_partial_account(account_id).await?;
-        match tracked_account {
-            None => Err(ClientError::AccountDataNotFound(account_id)),
-            Some(tracked_account) => {
-                self.store.insert_address(address.clone(), account_id).await?;
-                // Watched accounts intentionally have no derived note tag registered to avoid sync
-                // state pulling notes for them.
-                if !tracked_account.is_watched() {
-                    let derived_note_tag: NoteTag = address.to_note_tag();
-                    let note_tag_record =
-                        NoteTagRecord::with_account_source(derived_note_tag, account_id);
-                    self.store.add_note_tag(note_tag_record).await?;
-                }
-                Ok(())
-            },
+        if self.store.get_minimal_partial_account(account_id).await?.is_none() {
+            return Err(ClientError::AccountDataNotFound(account_id));
         }
+
+        self.store.insert_address(address, account_id).await?;
+        Ok(())
     }
 
-    /// Removes an [`Address`] from the associated [`AccountId`], alongside its derived [`NoteTag`].
+    /// Removes an [`Address`] from the account it belongs to.
     ///
-    /// Returns `true` if the address was tracked. If it wasn't, this is a no-op: the derived tag is
-    /// left in place, since it may have been registered by something other than this address.
-    pub async fn remove_address(
-        &mut self,
-        address: Address,
-        account_id: AccountId,
-    ) -> Result<bool, ClientError> {
-        let derived_note_tag = address.to_note_tag();
-        let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account_id);
-        if !self.store.remove_address(address).await? {
-            return Ok(false);
-        }
-        // Remove the note tag if no other address are associated with it.
-        let addresses = self.store.get_addresses_by_account_id(account_id).await?;
-        if addresses.iter().all(|address| address.to_note_tag() != derived_note_tag) {
-            self.store.remove_note_tag(note_tag_record).await?;
-        }
-        Ok(true)
+    /// If the account is native and no other address of the account has the same
+    /// [`NoteTag`](crate::note::NoteTag), the client no longer tracks the tag.
+    ///
+    /// Returns `true` if the address was tracked. If it was not tracked, this is a no-op.
+    pub async fn remove_address(&mut self, address: Address) -> Result<bool, ClientError> {
+        Ok(self.store.remove_address(address).await?)
     }
 
     // ACCOUNT DATA RETRIEVAL

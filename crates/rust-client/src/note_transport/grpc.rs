@@ -15,11 +15,17 @@ use miden_objects::{
     Verify,
 };
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteDetails, NoteDetailsCommitment, NoteHeader, NoteTag};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::note::{
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteHeader,
+    NoteInclusionProof,
+    NoteTag,
+};
+use miden_protocol::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 use thiserror::Error;
-use tonic::{Code, Request};
+use tonic::{Code, Request, Status};
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 #[cfg(target_arch = "wasm32")]
@@ -30,15 +36,16 @@ use {
     tonic::transport::{Channel, ClientTlsConfig},
 };
 
-use super::generated::note_transport::api_client::ApiClient;
+use super::generated::note_transport::note_transport_service_client::NoteTransportServiceClient;
 use super::generated::note_transport::{
     FetchNotesCursor,
     FetchNotesRequest,
     FetchedNote,
-    SendNoteRequest,
-    TransportNote,
+    SendNoteWithProofRequest,
+    TransportNote as ProtoTransportNote,
 };
-use super::{NoteInfo, NoteTransportCursor, NoteTransportError};
+use super::{NoteInfo, NoteTransportCursor, NoteTransportError, NoteTransportPage, TransportNote};
+use crate::grpc_support::{async_sleep, extract_retry_after};
 
 // FETCHED NOTE DECODING
 // ================================================================================================
@@ -64,10 +71,8 @@ impl TryFrom<FetchedNote> for DecodedFetchedNote {
             .ok_or_else(|| ConversionError::missing_field::<FetchedNote>("details"))?
             .decode_and_verify()
             .context("details")?;
-        let block_hint = note
-            .committed_in_block
-            .or(note.after_block_num)
-            .map(|block_num| BlockNumber::from(block_num.block_num));
+        let block_hint =
+            note.committed_in_block.map(|block_num| BlockNumber::from(block_num.block_num));
 
         Ok(Self { header, details, block_hint })
     }
@@ -110,6 +115,15 @@ impl Verify for DecodedFetchedNote {
     }
 }
 
+/// Builds the wire representation of a transport note.
+fn proto_transport_note(note: TransportNote) -> ProtoTransportNote {
+    let (header, details) = note.into_parts();
+    ProtoTransportNote {
+        header: Some(header.into()),
+        details: Some(details.into()),
+    }
+}
+
 // GRPC CLIENT
 // ================================================================================================
 
@@ -135,7 +149,7 @@ async fn connect_channel(
         .await
         .map_err(|e| NoteTransportError::Connection(Box::new(e)))?;
     Ok(ConnectedClient {
-        client: ApiClient::new(channel.clone()),
+        client: NoteTransportServiceClient::new(channel.clone()),
         health_client: HealthClient::new(channel),
     })
 }
@@ -151,7 +165,7 @@ async fn connect_channel(
     let wasm_client =
         tonic_web_wasm_client::Client::new_with_options(String::from(endpoint), fetch_options);
     Ok(ConnectedClient {
-        client: ApiClient::new(wasm_client.clone()),
+        client: NoteTransportServiceClient::new(wasm_client.clone()),
         health_client: HealthClient::new(wasm_client),
     })
 }
@@ -159,17 +173,22 @@ async fn connect_channel(
 /// Inner state holding the connected gRPC clients.
 #[derive(Clone)]
 struct ConnectedClient {
-    client: ApiClient<Service>,
+    client: NoteTransportServiceClient<Service>,
     health_client: HealthClient<Service>,
 }
 
 /// gRPC client for the note transport network.
 ///
-/// The connection is established lazily on first use.
+/// The connection is established lazily on first use. A send that fails with a transient error is
+/// retried a bounded number of times, see [`GrpcNoteTransportClient::send_note_with_proof`].
 pub struct GrpcNoteTransportClient {
     inner: RwLock<Option<ConnectedClient>>,
     endpoint: String,
     timeout_ms: u64,
+    /// Maximum number of retries of a send after a transient failure.
+    max_retries: u32,
+    /// Delay before the first retry of a send, in milliseconds.
+    retry_interval_ms: u64,
 }
 
 impl GrpcNoteTransportClient {
@@ -180,7 +199,26 @@ impl GrpcNoteTransportClient {
             inner: RwLock::new(None),
             endpoint,
             timeout_ms,
+            max_retries: DEFAULT_SEND_MAX_RETRIES,
+            retry_interval_ms: DEFAULT_SEND_RETRY_INTERVAL_MS,
         }
+    }
+
+    /// Sets the maximum number of retries of a send after a transient failure. Defaults to `3`. A
+    /// value of `0` disables the retries.
+    #[must_use]
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Sets the delay before the first retry of a send, in milliseconds. Each subsequent retry
+    /// waits twice as long as the retry before it. A `retry-after` value from the service replaces
+    /// this delay. Defaults to `250` ms.
+    #[must_use]
+    pub fn with_retry_interval_ms(mut self, retry_interval_ms: u64) -> Self {
+        self.retry_interval_ms = retry_interval_ms;
+        self
     }
 
     /// Ensures the client is connected and returns the connected state.
@@ -195,7 +233,7 @@ impl GrpcNoteTransportClient {
     }
 
     /// Get a clone of the main client, connecting if needed.
-    async fn api(&self) -> Result<ApiClient<Service>, NoteTransportError> {
+    async fn api(&self) -> Result<NoteTransportServiceClient<Service>, NoteTransportError> {
         Ok(self.ensure_connected().await?.client)
     }
 
@@ -204,53 +242,37 @@ impl GrpcNoteTransportClient {
         Ok(self.ensure_connected().await?.health_client)
     }
 
-    /// Pushes a note to the note transport network.
+    /// Pushes a note to the note transport network together with its inclusion proof.
     ///
-    /// The note header and details use the node's typed Protobuf messages.
-    pub async fn send_note(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_inner(header, details, None).await
-    }
-
-    /// Pushes a note to the note transport network, relaying a block hint for the recipient.
+    /// The service verifies the proof against its node before it stores the note. It relays the
+    /// commitment block to recipients as the exact inclusion block.
     ///
-    /// `block_hint` is forwarded as the request's `after_block_num`. It identifies the block from
-    /// which the recipient should start scanning for the note's commitment.
-    pub async fn send_note_with_block_hint(
+    /// The service stores a note only once and returns success for a note it already stores. A
+    /// repeated send is therefore safe, and this method retries a send that fails with a transient
+    /// error. The retries stop after the limit that [`Self::with_max_retries`] sets. The method
+    /// then returns the last error.
+    pub async fn send_note_with_proof(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-        block_hint: BlockNumber,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError> {
-        self.send_note_inner(header, details, Some(block_hint.as_u32())).await
-    }
-
-    /// Sends a note with an optional block hint.
-    async fn send_note_inner(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-        after_block_num: Option<u32>,
-    ) -> Result<(), NoteTransportError> {
-        let details = NoteDetails::read_from_bytes(&details)?;
-        let request = SendNoteRequest {
-            note: Some(TransportNote {
-                header: Some(header.into()),
-                details: Some(details.into()),
-            }),
-            after_block_num: after_block_num.map(BlockNumber::from).map(Into::into),
+        let note_id = note.header().id();
+        let request = SendNoteWithProofRequest {
+            inclusion_proof: Some((&note_id, &inclusion_proof).into()),
+            note: Some(proto_transport_note(note)),
         };
 
-        self.api()
-            .await?
-            .send_note(Request::new(request))
-            .await
-            .map_err(|e| NoteTransportError::Network(format!("Send note failed: {e:?}")))?;
-
-        Ok(())
+        send_with_retry(self.max_retries, self.retry_interval_ms, || {
+            let request = request.clone();
+            async move {
+                let mut api = self.api().await.map_err(SendFailure::Connect)?;
+                api.send_note_with_proof(Request::new(request))
+                    .await
+                    .map_err(SendFailure::Status)?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Downloads notes for given tags from the note transport network.
@@ -261,6 +283,16 @@ impl GrpcNoteTransportClient {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        let page = self.fetch_notes_page(tags, cursor).await?;
+        Ok((page.notes, page.cursor))
+    }
+
+    /// Fetches one page with the service's continuation flag.
+    pub async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
         let tags_int = tags.iter().map(NoteTag::as_u32).collect();
         let request = FetchNotesRequest {
             tags: tags_int,
@@ -285,23 +317,23 @@ impl GrpcNoteTransportClient {
 
         let response = response.into_inner();
 
-        // Decode each note on its own. A note that does not decode, or whose details do not match
-        // its header, is dropped: failing the fetch would keep the cursor on this page and stall
-        // the sync on a single bad delivery.
-        let mut notes = Vec::with_capacity(response.notes.len());
-        for note in response.notes {
-            match note.decode_and_verify() {
-                Ok(note) => notes.push(note),
-                Err(error) => {
-                    tracing::warn!(?error, "dropping a transport note that does not decode");
-                },
-            }
-        }
+        // The service rejects notes that do not decode or whose details do not match their header.
+        // A fetched note that fails these checks shows that the service misbehaves, so the fetch
+        // fails.
+        let notes = response
+            .notes
+            .into_iter()
+            .map(|note| note.decode_and_verify().map_err(NoteTransportError::InvalidFetchedNote))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let cursor = response
             .cursor
             .ok_or_else(|| NoteTransportError::Network("fetch response has no cursor".into()))?;
-        Ok((notes, NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence)))
+        Ok(NoteTransportPage {
+            notes,
+            cursor: NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence),
+            has_more: response.has_more,
+        })
     }
 
     /// gRPC-standardized server health-check.
@@ -334,21 +366,12 @@ impl GrpcNoteTransportClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl super::NoteTransportClient for GrpcNoteTransportClient {
-    async fn send_note(
+    async fn send_note_with_proof(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError> {
-        self.send_note(header, details).await
-    }
-
-    async fn send_note_with_block_hint(
-        &self,
-        header: NoteHeader,
-        details: Vec<u8>,
-        block_hint: BlockNumber,
-    ) -> Result<(), NoteTransportError> {
-        self.send_note_with_block_hint(header, details, block_hint).await
+        self.send_note_with_proof(note, inclusion_proof).await
     }
 
     async fn fetch_notes(
@@ -358,6 +381,115 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
     ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
         self.fetch_notes(tags, cursor).await
     }
+
+    async fn fetch_notes_page(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        self.fetch_notes_page(tags, cursor).await
+    }
+}
+
+// SEND RETRY
+// ================================================================================================
+
+/// Default maximum number of retries of a send after a transient failure.
+const DEFAULT_SEND_MAX_RETRIES: u32 = 3;
+
+/// Default delay before the first retry of a send, in milliseconds.
+const DEFAULT_SEND_RETRY_INTERVAL_MS: u64 = 250;
+
+/// The reason that one send attempt failed.
+#[derive(Debug)]
+enum SendFailure {
+    /// The client could not connect to the service. The request did not reach the service.
+    Connect(NoteTransportError),
+    /// The call returned an error status, from the service or from the local gRPC stack.
+    Status(Status),
+}
+
+impl SendFailure {
+    fn into_error(self) -> NoteTransportError {
+        match self {
+            Self::Connect(err) => err,
+            Self::Status(status) => {
+                NoteTransportError::Network(format!("Send note with proof failed: {status:?}"))
+            },
+        }
+    }
+}
+
+/// Runs `attempt` until it succeeds, until it fails with an error that a retry cannot fix, or until
+/// `max_retries` retries have failed. Returns the error of the last attempt.
+async fn send_with_retry<F, Fut>(
+    max_retries: u32,
+    retry_interval_ms: u64,
+    mut attempt: F,
+) -> Result<(), NoteTransportError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<(), SendFailure>>,
+{
+    let mut retry = 0;
+    loop {
+        let failure = match attempt().await {
+            Ok(()) => return Ok(()),
+            Err(failure) => failure,
+        };
+
+        let delay = if retry < max_retries {
+            retry_delay(&failure, retry, retry_interval_ms)
+        } else {
+            None
+        };
+        let Some(delay) = delay else {
+            return Err(failure.into_error());
+        };
+
+        tracing::warn!(
+            ?failure,
+            retry = retry + 1,
+            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            "note transport send failed, retrying after delay",
+        );
+        async_sleep(delay).await;
+        retry += 1;
+    }
+}
+
+/// Returns the delay before retry number `retry` (counted from zero) of a send that failed with
+/// `failure`. Returns `None` when a retry cannot get a different result.
+///
+/// The service stores a note only once, so a retry is safe also when an earlier attempt reached the
+/// service. These failures are retried:
+///
+/// - A failed connection. The request did not reach the service.
+/// - `Unavailable`. The local gRPC stack returns it when the connection breaks. The service returns
+///   it when it cannot reach its node.
+/// - `DeadlineExceeded`. The service returns it when its node does not answer in time.
+/// - `ResourceExhausted` with a `retry-after` value, which a rate limiter returns. Without that
+///   value, the service rejects a note that is too large or reports that its storage is full. A
+///   retry gets the same result.
+///
+/// The delay starts at `retry_interval_ms` and doubles with each retry. A non-zero `retry-after`
+/// value replaces it.
+fn retry_delay(failure: &SendFailure, retry: u32, retry_interval_ms: u64) -> Option<Duration> {
+    let backoff =
+        Duration::from_millis(retry_interval_ms.saturating_mul(2u64.saturating_pow(retry)));
+    let status = match failure {
+        SendFailure::Connect(_) => return Some(backoff),
+        SendFailure::Status(status) => status,
+    };
+
+    let retry_after = extract_retry_after(status);
+    let retryable = match status.code() {
+        Code::Unavailable | Code::DeadlineExceeded => true,
+        Code::ResourceExhausted => retry_after.is_some(),
+        _ => false,
+    };
+
+    retryable.then(|| retry_after.filter(|delay| !delay.is_zero()).unwrap_or(backoff))
 }
 
 // TESTS
@@ -367,17 +499,19 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
 mod tests {
     use alloc::string::ToString;
 
-    use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::crypto::rand::RandomCoin;
     use miden_protocol::note::{Note, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
+    use rand::{RngExt, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
+    use tonic::metadata::MetadataMap;
 
     use super::*;
 
@@ -386,14 +520,14 @@ mod tests {
         let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::from(&[seed; 4]));
+        let mut rng = ChaCha20Rng::seed_from_u64(u64::from(seed));
 
         P2idNote::builder()
             .sender(sender)
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .generate_serial_number(&mut rng)
+            .serial_number(rng.random())
             .build()
             .unwrap()
             .into()
@@ -403,7 +537,6 @@ mod tests {
         FetchedNote {
             header: Some((*header).into()),
             details: Some(details.into()),
-            after_block_num: None,
             committed_in_block: None,
         }
     }
@@ -412,7 +545,7 @@ mod tests {
     fn matching_note_decodes() {
         let note = private_note(1);
         let mut fetched = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        fetched.after_block_num = Some(BlockNumber::from(7).into());
+        fetched.committed_in_block = Some(BlockNumber::from(9).into());
 
         let info = fetched.decode_and_verify().unwrap();
 
@@ -421,18 +554,6 @@ mod tests {
             NoteDetails::read_from_bytes(&info.details_bytes).unwrap().commitment(),
             note.details_commitment()
         );
-        assert_eq!(info.block_hint, Some(BlockNumber::from(7)));
-    }
-
-    #[test]
-    fn committed_block_takes_precedence_over_sender_hint() {
-        let note = private_note(2);
-        let mut fetched = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        fetched.after_block_num = Some(BlockNumber::from(7).into());
-        fetched.committed_in_block = Some(BlockNumber::from(9).into());
-
-        let info = fetched.decode_and_verify().unwrap();
-
         assert_eq!(info.block_hint, Some(BlockNumber::from(9)));
     }
 
@@ -450,18 +571,45 @@ mod tests {
         assert_eq!(error.details, note_a.details_commitment());
     }
 
+    // SEND RETRY
+    // --------------------------------------------------------------------------------------------
+
+    fn status_failure(code: Code) -> SendFailure {
+        SendFailure::Status(Status::new(code, "test failure"))
+    }
+
+    fn status_failure_with_retry_after(code: Code, seconds: &str) -> SendFailure {
+        let mut metadata = MetadataMap::new();
+        metadata.insert("retry-after", seconds.parse().unwrap());
+        SendFailure::Status(Status::with_metadata(code, "test failure", metadata))
+    }
+
+    fn connect_failure() -> SendFailure {
+        SendFailure::Connect(NoteTransportError::Network("connection refused".to_string()))
+    }
+
     #[test]
-    fn missing_header_or_details_are_rejected() {
-        let note = private_note(5);
+    fn retry_delay_retries_only_transient_failures() {
+        for failure in [
+            connect_failure(),
+            status_failure(Code::Unavailable),
+            status_failure(Code::DeadlineExceeded),
+            status_failure_with_retry_after(Code::ResourceExhausted, "2"),
+        ] {
+            assert!(retry_delay(&failure, 0, 250).is_some(), "{failure:?}");
+        }
 
-        let mut without_header = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        without_header.header = None;
-        let error = without_header.decode_and_verify().unwrap_err();
-        assert!(error.to_string().contains("header"), "{error}");
-
-        let mut without_details = fetched_note(note.header(), NoteDetails::from(note.clone()));
-        without_details.details = None;
-        let error = without_details.decode_and_verify().unwrap_err();
-        assert!(error.to_string().contains("details"), "{error}");
+        // Without `retry-after`, `ResourceExhausted` means a note that is too large or a full
+        // storage. A `retry-after` value does not make a permanent failure retryable.
+        for failure in [
+            status_failure(Code::ResourceExhausted),
+            status_failure(Code::InvalidArgument),
+            status_failure(Code::FailedPrecondition),
+            status_failure(Code::Internal),
+            status_failure(Code::Cancelled),
+            status_failure_with_retry_after(Code::InvalidArgument, "1"),
+        ] {
+            assert_eq!(retry_delay(&failure, 0, 250), None, "{failure:?}");
+        }
     }
 }

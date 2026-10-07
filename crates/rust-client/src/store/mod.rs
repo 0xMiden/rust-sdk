@@ -40,6 +40,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks, PartialMmr};
@@ -56,11 +57,12 @@ use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
+#[allow(deprecated)]
 use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
-use crate::transaction::{TransactionRecord, TransactionStoreUpdate};
+use crate::transaction::{TransactionRecord, TransactionStatusVariant, TransactionStoreUpdate};
 
 /// Contains [`ClientDataStore`] to automatically implement [`DataStore`] for anything that
 /// implements [`Store`]. This isn't public because it's an implementation detail to instantiate the
@@ -77,13 +79,7 @@ mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
-pub use account::{
-    AccountRecord,
-    AccountRecordData,
-    AccountStatus,
-    AccountUpdates,
-    ClientAccountType,
-};
+pub use account::{AccountRecord, AccountRecordData, AccountStatus, ClientAccountType};
 
 pub use crate::sync::PublicAccountUpdate;
 mod note_record;
@@ -223,6 +219,12 @@ pub trait Store: Send + Sync {
     /// - Updating the input notes that are being processed by the transaction.
     /// - Inserting the new tracked tags into the store.
     /// - Inserting the transaction into the store to track.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AccountNoteTagNotStorable`] if a new tag has a
+    /// [`NoteTagSource::Account`](crate::sync::NoteTagSource::Account) source. The store applies no
+    /// part of the update.
     async fn apply_transaction(&self, tx_update: TransactionStoreUpdate) -> Result<(), StoreError>;
 
     /// Applies a batch of [`TransactionStoreUpdate`]s atomically. Semantically equivalent to
@@ -438,7 +440,7 @@ pub trait Store: Send + Sync {
 
     /// Inserts an [`Account`] to the store, alongside its initial [`Address`].
     ///
-    /// Tag registration is the caller's responsibility — see [`Self::add_note_tag`].
+    /// If the account is native, the address adds a tag to [`Self::get_account_note_tags`].
     ///
     /// # Errors
     ///
@@ -479,7 +481,7 @@ pub trait Store: Send + Sync {
 
     /// Adds an [`Address`] to an [`Account`].
     ///
-    /// Tag registration is the caller's responsibility — see [`Self::add_note_tag`].
+    /// If the account is native, the address adds a tag to [`Self::get_account_note_tags`].
     async fn insert_address(
         &self,
         address: Address,
@@ -488,8 +490,53 @@ pub trait Store: Send + Sync {
 
     /// Removes an [`Address`]. Returns `true` if the address was tracked.
     ///
-    /// Tag removal is the caller's responsibility — see [`Self::remove_note_tag`].
+    /// The tag of the address stays in [`Self::get_account_note_tags`] while another address of the
+    /// account has the same tag.
     async fn remove_address(&self, address: Address) -> Result<bool, StoreError>;
+
+    // ACCOUNT WITNESSES
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers an account whose [`AccountWitness`] should be refreshed on every sync, so that
+    /// transactions using it as a foreign account can resolve the witness locally.
+    ///
+    /// No-op if the account is already registered; a cached witness is left in place. The witness
+    /// itself is filled in by the next sync.
+    ///
+    /// Returns `true` if the account was not registered before this call.
+    async fn track_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
+
+    /// Stops refreshing the account's witness and drops any cached one.
+    ///
+    /// Returns `true` if the account was registered.
+    async fn untrack_account_witness(&self, account_id: AccountId) -> Result<bool, StoreError>;
+
+    /// Retrieves the ID of every registered account, whether or not a witness has been cached for
+    /// it yet.
+    async fn tracked_account_witnesses(&self) -> Result<Vec<AccountId>, StoreError>;
+
+    /// Retrieves the cached [`AccountWitness`]. The witness opens under the account root of the
+    /// block at the sync height.
+    ///
+    /// Returns `None` when the account is not registered or has not been refreshed yet.
+    async fn get_account_witness(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<AccountWitness>, StoreError>;
+
+    /// Caches an [`AccountWitness`] for a registered account, replacing any previous one.
+    ///
+    /// Returns `false` if the account is not registered, in which case nothing is written.
+    /// Registering is [`Self::track_account_witness`]'s job alone.
+    ///
+    /// The caller must verify the witness against the account root of the block at the sync height
+    /// first. The read path does not check the witness, so a bad witness stored here surfaces later
+    /// as a kernel assertion during execution rather than as a chain validation error at sync time.
+    async fn update_account_witness(
+        &self,
+        account_id: AccountId,
+        witness: &AccountWitness,
+    ) -> Result<bool, StoreError>;
 
     // SETTINGS
     // --------------------------------------------------------------------------------------------
@@ -526,18 +573,59 @@ pub trait Store: Send + Sync {
     // SYNC
     // --------------------------------------------------------------------------------------------
 
-    /// Returns the note tag records that the client is interested in.
+    /// Returns the stored note tag records that the client is interested in.
+    ///
+    /// The result does not contain the records of [`Self::get_account_note_tags`].
     async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError>;
 
+    /// Returns the note tag records of the tracked native accounts.
+    ///
+    /// The store does not keep these records. This method derives them from the addresses of the
+    /// native accounts, with [`Address::to_note_tag`]. Each record has a
+    /// [`NoteTagSource::Account`](crate::sync::NoteTagSource::Account) source. Two addresses of one
+    /// account with the same tag give one record. Watched accounts give no records.
+    async fn get_account_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
+        let mut tags = BTreeSet::new();
+        for account_id in self.get_account_ids().await? {
+            let is_native = self
+                .get_minimal_partial_account(account_id)
+                .await?
+                .is_some_and(|record| !record.is_watched());
+            if !is_native {
+                continue;
+            }
+            for address in self.get_addresses_by_account_id(account_id).await? {
+                tags.insert((address.to_note_tag(), account_id));
+            }
+        }
+
+        Ok(tags
+            .into_iter()
+            .map(|(tag, account_id)| NoteTagRecord::with_account_source(tag, account_id))
+            .collect())
+    }
+
     /// Returns the unique note tags (without source) that the client is interested in.
+    ///
+    /// The result contains the tags of [`Self::get_note_tags`] and of
+    /// [`Self::get_account_note_tags`].
     async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
-        Ok(self.get_note_tags().await?.into_iter().map(|r| r.tag).collect())
+        let mut tags: BTreeSet<NoteTag> =
+            self.get_note_tags().await?.into_iter().map(|r| r.tag).collect();
+        tags.extend(self.get_account_note_tags().await?.into_iter().map(|r| r.tag));
+        Ok(tags)
     }
 
     /// Adds a note tag to the list of tags that the client is interested in.
     ///
     /// If the tag was already being tracked, returns false since no new tags were actually added.
     /// Otherwise true.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AccountNoteTagNotStorable`] if the source of `tag` is
+    /// [`NoteTagSource::Account`](crate::sync::NoteTagSource::Account). The store derives these
+    /// records from the addresses of the native accounts.
     async fn add_note_tag(&self, tag: NoteTagRecord) -> Result<bool, StoreError>;
 
     /// Removes a note tag from the list of tags that the client is interested in.
@@ -568,10 +656,12 @@ pub trait Store: Send + Sync {
     // TRANSPORT
     // --------------------------------------------------------------------------------------------
 
-    /// Gets the note transport cursor.
+    /// Gets the unused aggregate note transport cursor.
     ///
-    /// This is used to reduce the number of fetched notes from the note transport network. If no
-    /// cursor exists, this returns an initial cursor.
+    /// The client stores a cursor for each tag. If the aggregate cursor does not exist, this
+    /// returns an initial cursor.
+    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    #[allow(deprecated)]
     async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
         let Some(cursor_bytes) = self
             .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
@@ -582,10 +672,11 @@ pub trait Store: Send + Sync {
         NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
     }
 
-    /// Updates the note transport cursor.
+    /// Updates the unused aggregate note transport cursor.
     ///
-    /// This is used to track the last cursor position when fetching notes from the note transport
-    /// network.
+    /// The client stores a cursor for each tag and does not read this value.
+    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    #[allow(deprecated)]
     async fn update_note_transport_cursor(
         &self,
         cursor: NoteTransportCursor,
@@ -857,6 +948,7 @@ pub enum PartialBlockchainFilter {
 
 /// Filters for narrowing the set of transactions returned by the client's store.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TransactionFilter {
     /// Return all transactions.
     All,
@@ -865,6 +957,23 @@ pub enum TransactionFilter {
     Uncommitted,
     /// Return a list of the transaction that matches the provided [`TransactionId`]s.
     Ids(Vec<TransactionId>),
+    /// Return the transactions that match every criterion of the query, newest first.
+    Query(TransactionFilterQuery),
+}
+
+/// The criteria of [`TransactionFilter::Query`]. A criterion that is `None` matches every
+/// transaction.
+///
+/// Transactions are ordered by creation time, newest first. Transactions with the same creation
+/// time are ordered by descending ID.
+#[derive(Debug, Clone, Default)]
+pub struct TransactionFilterQuery {
+    /// Keep only the transactions executed by this account.
+    pub account_id: Option<AccountId>,
+    /// Keep only the transactions in this status.
+    pub status: Option<TransactionStatusVariant>,
+    /// Keep only the newest transactions, at most this many.
+    pub limit: Option<u32>,
 }
 
 // NOTE FILTER

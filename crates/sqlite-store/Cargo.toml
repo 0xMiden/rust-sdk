@@ -14,8 +14,9 @@ doctest    = false
 
 [dependencies]
 # Miden dependencies
-miden-client   = { features = ["std"], workspace = true }
-miden-protocol = { workspace = true }
+miden-client       = { features = ["std"], workspace = true }
+miden-client-proto = { workspace = true }
+miden-protocol     = { workspace = true }
 
 # Workspace dependencies
 anyhow      = { workspace = true }

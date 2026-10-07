@@ -83,7 +83,7 @@ use miden_protocol::account::{
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note,
     NoteAssets,
@@ -128,9 +128,11 @@ use miden_standards::tx_script::SendNotesTransactionScriptError;
 use miden_testing::{MockChain, MockChainBuilder, MockTransactionInput};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use rstest::rstest;
 
 mod batch;
+mod code_upgrade;
 mod fees;
 mod rpc;
 pub mod store;
@@ -1065,11 +1067,6 @@ async fn import_processing_note_returns_error() {
     ));
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). The
-// `send_notes_script.rs::move_asset_to_note_body` helper only emits the `pad(21)->pad(16)` stack
-// reduction inside the per-asset loop, so a zero-asset output note created from a basic wallet
-// returns at stack depth 21 and the VM rejects the transaction with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
 #[tokio::test]
 async fn note_without_asset() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
@@ -1501,15 +1498,12 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain.
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore_path = std::env::temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -1608,14 +1602,11 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain. This client never saw the note before.
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -1652,22 +1643,16 @@ async fn setup_prunable_block_scenario(
     let mut builder = MockChainBuilder::new();
     let mock_account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
 
-    let note_first = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 0].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
-    let note_second = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 1].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_first = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(0))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
+    let note_second = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
 
     let spawn_note_1 = builder.add_spawn_note(std::slice::from_ref(&note_first)).unwrap();
     let spawn_note_2 = builder.add_spawn_note(std::slice::from_ref(&note_second)).unwrap();
@@ -1709,14 +1694,11 @@ async fn setup_prunable_block_scenario(
     chain.add_pending_executed_transaction(&tx).unwrap();
     chain.prove_next_block().unwrap();
 
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None)
@@ -2332,15 +2314,12 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
     let mut records = Vec::with_capacity(NOTE_COUNT);
     let mut expected_ids = BTreeSet::new();
     for i in 0..NOTE_COUNT {
-        let note = NoteBuilder::new(
-            faucet_id,
-            RandomCoin::new([i as u64, 0, 0, 0].map(Felt::new_unchecked).into()),
-        )
-        .script(script.clone())
-        .note_storage([target.suffix(), target.prefix().as_felt()])
-        .unwrap()
-        .build()
-        .unwrap();
+        let note = NoteBuilder::new(faucet_id, ChaCha20Rng::seed_from_u64(i as u64))
+            .script(script.clone())
+            .note_storage([target.suffix(), target.prefix().as_felt()])
+            .unwrap()
+            .build()
+            .unwrap();
         expected_ids.insert(note.id());
 
         let metadata = *note.metadata();
@@ -3324,15 +3303,10 @@ async fn pswap_cancel_test() {
 // model Alice and Bob as two genuinely separate clients (as they are in production), rather than
 // two accounts colocated on one store.
 async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> TestClient {
-    let mut seed_rng = rand::rng();
-    let coin_seed: [u64; 4] = seed_rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(mock_rpc_api.clone()))
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore.clone()))
         .tx_discard_delta(None)
@@ -4202,19 +4176,27 @@ async fn account_add_address_after_creation() {
     assert!(client.add_address(basic_wallet_address.clone(), account.id()).await.is_ok());
 
     // We can remove the default address and the note tag is still present
-    assert!(client.remove_address(default_address.clone(), account.id()).await.unwrap());
+    assert!(client.remove_address(default_address.clone()).await.unwrap());
     let derived_note_tag = default_address.to_note_tag();
     let note_tag_record = NoteTagRecord::with_account_source(derived_note_tag, account.id());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
 
     // If we remove all addresses, note tag should be removed
-    assert!(client.remove_address(basic_wallet_address.clone(), account.id()).await.unwrap());
+    assert!(client.remove_address(basic_wallet_address.clone()).await.unwrap());
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(!note_tags.contains(&note_tag_record));
+    assert!(
+        !client
+            .test_store()
+            .get_unique_note_tags()
+            .await
+            .unwrap()
+            .contains(&derived_note_tag)
+    );
 
     // Removing an address that isn't tracked reports that nothing was removed
-    assert!(!client.remove_address(basic_wallet_address, account.id()).await.unwrap());
+    assert!(!client.remove_address(basic_wallet_address).await.unwrap());
 
     // Then add it again
     assert!(client.add_address(default_address, account.id()).await.is_ok());
@@ -4222,6 +4204,82 @@ async fn account_add_address_after_creation() {
     // Derived note tag should now be available
     let note_tags = client.get_note_tags().await.unwrap();
     assert!(note_tags.contains(&note_tag_record));
+    assert!(
+        client
+            .test_store()
+            .get_unique_note_tags()
+            .await
+            .unwrap()
+            .contains(&derived_note_tag)
+    );
+}
+
+async fn insert_random_account(client: &mut TestClient) -> Result<AccountId, ClientError> {
+    let mut init_seed = [0u8; 32];
+
+    loop {
+        client.rng().fill_bytes(&mut init_seed);
+
+        let account = AccountBuilder::new(init_seed)
+            .account_type(AccountType::Private)
+            .with_component(AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(EMPTY_WORD),
+                AuthSchemeId::Falcon512Poseidon2,
+            )))
+            .with_component(BasicWallet)
+            .build()
+            .unwrap();
+
+        let tag = Address::new(account.id()).to_note_tag();
+        if client.get_note_tags().await?.iter().any(|record| record.tag == tag) {
+            continue;
+        }
+
+        match client.add_account(&account, false).await {
+            Err(ClientError::AccountAlreadyTracked(_)) => {},
+            result => return result.map(|()| account.id()),
+        }
+    }
+}
+
+async fn fill_account_tags(client: &mut TestClient) -> AccountId {
+    let mut account_id = None;
+    for _ in 0..MockClient::<()>::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST {
+        account_id = Some(insert_random_account(client).await.unwrap());
+    }
+    account_id.unwrap()
+}
+
+#[tokio::test]
+async fn account_add_allows_tags_beyond_transport_request_limit() {
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    client.add_note_tag(NoteTag::new(u32::MAX)).await.unwrap();
+    let account_id = fill_account_tags(&mut client).await;
+
+    insert_random_account(&mut client).await.unwrap();
+
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)
+        .unwrap();
+    let address = Address::new(account_id).with_routing_parameters(routing_params);
+    client.add_address(address, account_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn import_watched_account_by_id_ignores_tag_limit() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+    let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
+    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
+    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+
+    fill_account_tags(&mut client).await;
+
+    client.import_watched_account_by_id(account.id()).await.unwrap();
 }
 
 #[tokio::test]
@@ -4233,13 +4291,9 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     let account_id = account.id();
     let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
     let arc_rpc_api = Arc::new(rpc_api);
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
     let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .build()
@@ -4279,11 +4333,68 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     assert!(!account_record.is_watched());
 }
 
-// TODO: fix - blocked by an upstream miden-standards bug (0.16.0-alpha.2). Creating the zero-asset
-// output note from a basic wallet hits `send_notes_script.rs::move_asset_to_note_body`, whose
-// `pad(21)->pad(16)` stack reduction only runs inside the per-asset loop; with no assets the tx
-// script returns at stack depth 21 and the VM rejects it with `InvalidStackDepthOnReturn`.
-// Re-enable once the standards send-notes script handles zero-asset notes.
+#[tokio::test]
+async fn add_address_to_watched_account_does_not_track_its_tag() {
+    let mut mock_chain_builder = MockChainBuilder::new();
+    let account = mock_chain_builder
+        .add_existing_mock_account(miden_testing::Auth::IncrNonce)
+        .unwrap();
+    let account_id = account.id();
+    let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
+    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
+    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
+    client.ensure_genesis_in_place().await.unwrap();
+
+    client.import_watched_account_by_id(account_id).await.unwrap();
+
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)
+        .unwrap();
+    let address = Address::new(account_id).with_routing_parameters(routing_params);
+    client.add_address(address.clone(), account_id).await.unwrap();
+
+    let addresses = client.test_store().get_addresses_by_account_id(account_id).await.unwrap();
+    assert!(addresses.contains(&address));
+
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(
+        !note_tags
+            .iter()
+            .any(|record| matches!(record.source, NoteTagSource::Account(_))),
+        "a watched account must not have account note tags, got {note_tags:?}"
+    );
+    let unique_tags = client.test_store().get_unique_note_tags().await.unwrap();
+    assert!(!unique_tags.contains(&address.to_note_tag()));
+    assert!(!unique_tags.contains(&Address::new(account_id).to_note_tag()));
+}
+
+#[tokio::test]
+async fn removing_user_tag_keeps_equal_account_tag() {
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+    let account_id = insert_random_account(&mut client).await.unwrap();
+    let account_tag = Address::new(account_id).to_note_tag();
+    let account_record = NoteTagRecord::with_account_source(account_tag, account_id);
+    let user_record = NoteTagRecord {
+        tag: account_tag,
+        source: NoteTagSource::User,
+    };
+
+    assert!(client.add_note_tag(account_tag).await.unwrap());
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(note_tags.contains(&account_record));
+    assert!(note_tags.contains(&user_record));
+
+    assert!(client.remove_note_tag(account_tag).await.unwrap());
+    let note_tags = client.get_note_tags().await.unwrap();
+    assert!(note_tags.contains(&account_record));
+    assert!(!note_tags.contains(&user_record));
+    assert!(client.test_store().get_unique_note_tags().await.unwrap().contains(&account_tag));
+
+    // The user API cannot remove an account tag.
+    assert!(!client.remove_note_tag(account_tag).await.unwrap());
+    assert!(client.get_note_tags().await.unwrap().contains(&account_record));
+}
+
 #[tokio::test]
 async fn consume_note_with_custom_script() {
     let (mut client, mock_rpc_api) = create_test_client().await;
@@ -4496,14 +4607,14 @@ async fn sync_committed_private_note_with_attachments(
 
     // 2. Build a PRIVATE P2ID note carrying the attachments.
     let attachments = build_attachments(target.id());
-    let mut note_rng = RandomCoin::new([1, 2, 3, 4].map(Felt::new_unchecked).into());
+    let mut note_rng = ChaCha20Rng::seed_from_u64(1234);
     let private_note: Note = P2idNote::builder()
         .sender(sender.id())
         .target(target.id())
         .asset(note_asset)
         .note_type(NoteType::Private)
         .attachments(attachments.clone().into_vec())
-        .generate_serial_number(&mut note_rng)
+        .serial_number(note_rng.random())
         .build()
         .unwrap()
         .into();
@@ -4536,9 +4647,7 @@ async fn sync_committed_private_note_with_attachments(
     if serve_attachments {
         rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
     }
-
-    let rng =
-        RandomCoin::new(rand::random::<[u64; 4]>().map(|v| Felt::new_unchecked(v >> 1)).into());
+    let rng = ChaCha20Rng::seed_from_u64(1234);
     let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mut client = ClientBuilder::new()
         .rpc(rpc_api.clone())
@@ -4736,16 +4845,11 @@ async fn sync_large_public_account() {
 
     // 4. Build a client and add the ORIGINAL (pre-tx) account.
     // The pre-tx commitment differs from on-chain, which triggers sync.
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
 
     let mut client = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .build()
@@ -4800,10 +4904,6 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::smt::Smt;
 
-    let mut rng_seed = rand::rng();
-    let coin_seed: [u64; 4] = rng_seed.random();
-    let rng = RandomCoin::new(coin_seed.map(Felt::new_unchecked).into());
-
     let reference_rpc = MockRpcApi::default();
     let (expected_genesis, _) = reference_rpc
         .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
@@ -4816,7 +4916,6 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(MockRpcApi::default()))
         .sqlite_store(create_test_store_path())
-        .rng(Box::new(rng))
         .authenticator(Arc::new(keystore))
         .build()
         .await
@@ -4880,11 +4979,6 @@ pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<Filesy
 }
 
 pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>, MockRpcApi) {
-    let mut rng = rand::rng();
-    let coin_seed: [u64; 4] = rng.random();
-
-    let rng = RandomCoin::new(coin_seed.map(|v| Felt::new_unchecked(v >> 1)).into());
-
     let keystore_path = temp_dir();
     let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
 
@@ -4893,7 +4987,6 @@ pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>,
 
     let builder = ClientBuilder::new()
         .rpc(arc_rpc_api)
-        .rng(Box::new(rng))
         .sqlite_store(create_test_store_path())
         .authenticator(Arc::new(keystore))
         .tx_discard_delta(None);
@@ -4907,23 +5000,17 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
 
-    let note_first = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 0].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_first = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(0))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
 
-    let note_second = NoteBuilder::new(
-        mock_account.id(),
-        RandomCoin::new([0, 0, 0, 1].map(Felt::new_unchecked).into()),
-    )
-    .note_type(NoteType::Public)
-    .tag(NoteTag::new(0).into())
-    .build()
-    .unwrap();
+    let note_second = NoteBuilder::new(mock_account.id(), ChaCha20Rng::seed_from_u64(1))
+        .note_type(NoteType::Public)
+        .tag(NoteTag::new(0).into())
+        .build()
+        .unwrap();
     let spawn_note_1 =
         mock_chain_builder.add_spawn_note(std::slice::from_ref(&note_first)).unwrap();
     let spawn_note_2 =

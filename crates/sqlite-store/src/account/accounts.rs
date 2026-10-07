@@ -53,6 +53,7 @@ use crate::{
     column_value_as_u64,
     insert_sql,
     int_array,
+    proto,
     subst,
     u64_to_value,
     with_write_tx,
@@ -211,7 +212,7 @@ impl SqliteStore {
             .into_store_error()?
             .map(|result| {
                 let (id, code): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-                Ok((AccountId::read_from_bytes(&id)?, AccountCode::read_from_bytes(&code)?))
+                Ok((AccountId::read_from_bytes(&id)?, proto::decode_unchecked(&code)?))
             })
             .collect::<Result<BTreeMap<AccountId, AccountCode>, _>>()
     }
@@ -420,8 +421,11 @@ impl SqliteStore {
         account_code: &AccountCode,
     ) -> Result<(), StoreError> {
         const QUERY: &str = insert_sql!(account_code { commitment, code } | IGNORE);
-        tx.execute(QUERY, params![account_code.commitment().to_bytes(), account_code.to_bytes()])
-            .into_store_error()?;
+        tx.execute(
+            QUERY,
+            params![account_code.commitment().to_bytes(), proto::encode(account_code)],
+        )
+        .into_store_error()?;
         Ok(())
     }
 
@@ -450,6 +454,34 @@ impl SqliteStore {
                 account_id,
                 init_account_state.to_commitment(),
             )));
+        }
+
+        // The header refers to the account code by its commitment, so a code upgrade must store the
+        // new code before the header.
+        match patch.code().as_code() {
+            Some(code) => {
+                if code.commitment() != final_account_state.code_commitment() {
+                    return Err(StoreError::DatabaseError(format!(
+                        "apply_account_patch: patch code commitment {} for account {} does not \
+                         match the final code commitment {}",
+                        code.commitment(),
+                        account_id,
+                        final_account_state.code_commitment(),
+                    )));
+                }
+                Self::insert_account_code(tx, code)?;
+            },
+            None => {
+                if init_account_state.code_commitment() != final_account_state.code_commitment() {
+                    return Err(StoreError::DatabaseError(format!(
+                        "apply_account_patch: patch for account {} changes the code commitment \
+                         from {} to {} but does not contain the new code",
+                        account_id,
+                        init_account_state.code_commitment(),
+                        final_account_state.code_commitment(),
+                    )));
+                }
+            },
         }
 
         // Archive old header and insert the new one
@@ -923,6 +955,10 @@ impl SqliteStore {
         )
         .into_store_error()?;
 
+        // The new state can have upgraded code. The header refers to the code by its commitment, so
+        // store the code before the header.
+        Self::insert_account_code(tx, new_account_state.code())?;
+
         // Archive the old header to historical and write the new one to latest. A state that is
         // still undeployed keeps its seed
         let new_seed = new_account_state.seed().filter(|_| new_account_state.is_new());
@@ -1142,13 +1178,21 @@ impl SqliteStore {
             let boundary_val = u64_to_value(up_to_nonce.as_canonical_u64());
             let mut total_deleted: usize = 0;
 
+            // `u64_to_value` stores nonces above `i64::MAX` as negative integers in the same order,
+            // so this filter compares the stored nonces as unsigned values.
+            let nonce_filter = if i64::try_from(up_to_nonce.as_canonical_u64()).is_ok() {
+                "replaced_at_nonce BETWEEN 0 AND ?"
+            } else {
+                "(replaced_at_nonce >= 0 OR replaced_at_nonce <= ?)"
+            };
+
             // Collect code commitments from headers we are about to delete.
             let candidate_code_commitments: Vec<Vec<u8>> = {
                 let mut stmt = tx
-                    .prepare(
+                    .prepare(&format!(
                         "SELECT DISTINCT code_commitment FROM historical_account_headers \
-                     WHERE id = ? AND replaced_at_nonce <= ?",
-                    )
+                     WHERE id = ? AND {nonce_filter}",
+                    ))
                     .into_store_error()?;
                 let rows = stmt
                     .query_map(params![&account_id_bytes, &boundary_val], |row| row.get(0))
@@ -1163,9 +1207,8 @@ impl SqliteStore {
                 ("historical_storage_map_entries", "account_id"),
                 ("historical_account_assets", "account_id"),
             ] {
-                let query = format!(
-                    "DELETE FROM {table} WHERE {account_column} = ? AND replaced_at_nonce <= ?"
-                );
+                let query =
+                    format!("DELETE FROM {table} WHERE {account_column} = ? AND {nonce_filter}");
                 total_deleted += tx
                     .execute(&query, params![&account_id_bytes, &boundary_val])
                     .into_store_error()?;

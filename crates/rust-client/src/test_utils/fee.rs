@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
-use miden_protocol::block::BlockNumber;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::ProvenTransaction;
 
 use super::common::TestClient;
@@ -52,8 +52,8 @@ impl TestClient {
         self.fee_funder().cloned().context(
             "this chain charges a transaction fee, so every account a test creates has to be \
              funded before it can transact, but this client has no fee funder. Supply the \
-             funding service to draw from (see the integration tests' `--funding-service` \
-             argument)",
+             funding service to draw from (the integration tests read it from \
+             MIDEN_FUNDING_SERVICE_URL)",
         )
     }
 
@@ -69,13 +69,7 @@ impl TestClient {
     pub async fn deploy_accounts(&mut self, account_ids: &[AccountId]) -> Result<()> {
         let mut undeployed = Vec::with_capacity(account_ids.len());
         for account_id in account_ids.iter().copied() {
-            // A zero nonce is what marks an account as never having transacted, so it reads the
-            // nonce alone rather than reconstructing the account.
-            let nonce =
-                self.account_reader(account_id).nonce().await.with_context(|| {
-                    format!("account {account_id} is not tracked by the client")
-                })?;
-            if nonce == Felt::ZERO {
+            if !self.is_deployed(account_id).await? {
                 undeployed.push(account_id);
             }
         }
@@ -155,6 +149,28 @@ impl TestClient {
         Ok(())
     }
 
+    /// Returns whether `account_id` exists on chain. A zero nonce marks an account that has never
+    /// transacted, so this reads the nonce alone rather than reconstructing the account.
+    pub async fn is_deployed(&self, account_id: AccountId) -> Result<bool> {
+        let nonce = self
+            .account_reader(account_id)
+            .nonce()
+            .await
+            .with_context(|| format!("account {account_id} is not tracked by the client"))?;
+
+        Ok(nonce != Felt::ZERO)
+    }
+
+    /// Returns the genesis block header from the client's store.
+    pub async fn genesis_header(&self) -> Result<BlockHeader> {
+        let (genesis, _) = self
+            .get_block_header_by_num(BlockNumber::GENESIS)
+            .await?
+            .context("the genesis block header is not in the client's store")?;
+
+        Ok(genesis)
+    }
+
     /// Returns whether the chain charges a non-zero fee per transaction, read from the genesis
     /// header.
     ///
@@ -162,12 +178,19 @@ impl TestClient {
     /// change, so asserting a transaction left a commitment untouched only holds on a fee-free
     /// chain.
     pub async fn chain_charges_fees(&self) -> Result<bool> {
-        let (genesis, _) = self
-            .get_block_header_by_num(BlockNumber::GENESIS)
-            .await?
-            .context("the genesis block header is not in the client's store")?;
+        Ok(self.genesis_header().await?.fee_parameters().verification_base_fee() != 0)
+    }
 
-        Ok(genesis.fee_parameters().verification_base_fee() != 0)
+    /// Returns the faucet the chain charges fees in, as the genesis header's protocol configuration
+    /// names it.
+    pub async fn fee_faucet_id(&self) -> Result<AccountId> {
+        let genesis = self.genesis_header().await?;
+
+        Ok(self
+            .get_protocol_config(genesis.protocol_config_commitment())
+            .await?
+            .fee_asset_id()
+            .faucet_id())
     }
 
     /// Submits a proven transaction. Resubmits it if the node rejects it assuming it consumes an

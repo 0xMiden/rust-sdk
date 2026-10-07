@@ -25,7 +25,6 @@ const UNKNOWN_INVITATION_CODE: &str = "miden-client-test-invitation-that-was-nev
 /// then registered with a real code and deploys.
 pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let account = insert_unfunded_wallet(&mut client, None).await?;
 
@@ -60,7 +59,6 @@ pub async fn test_allowlist_unknown_code_is_rejected(client_config: ClientConfig
 /// An invitation code binds to one account and cannot be used for another.
 pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
     insert_unfunded_wallet(&mut client, Some(&invitation_code))

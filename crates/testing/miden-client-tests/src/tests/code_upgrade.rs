@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use std::env::temp_dir;
 
 use miden_client::ClientError;
 use miden_client::account::component::{
@@ -24,10 +23,8 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
-use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{AccountCodeUpgradeAttachment, Note, NoteType, UpgradeNote};
-use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::standards::account_component::MockProceduresComponent;
 use miden_client::transaction::{
@@ -36,7 +33,6 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionScript,
 };
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
@@ -45,7 +41,7 @@ use miden_protocol::{Felt, Word};
 use miden_testing::{Auth, MockChainBuilder};
 use rstest::rstest;
 
-use crate::tests::seed_mock_transaction_encryption_key;
+use crate::tests::mock_client_builder;
 
 // HELPERS
 // ================================================================================================
@@ -166,16 +162,7 @@ fn rpc_api_with_accounts(accounts: &[&Account]) -> MockRpcApi {
 
 /// Returns a client over `rpc_api` that tracks `account`.
 async fn client_tracking(rpc_api: MockRpcApi, account: &Account) -> MockClient<FilesystemKeyStore> {
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(rpc_api))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(rpc_api)).await.build().await.unwrap();
     client.add_account(account, false).await.unwrap();
     client
 }
@@ -360,17 +347,6 @@ async fn send_upgrade_note(
     note
 }
 
-async fn stored_account(client: &mut MockClient<FilesystemKeyStore>, account: &Account) -> Account {
-    client
-        .test_store()
-        .get_account(account.id())
-        .await
-        .unwrap()
-        .expect("the account should be tracked")
-        .try_into()
-        .unwrap()
-}
-
 // TESTS
 // ================================================================================================
 
@@ -402,7 +378,11 @@ async fn local_code_upgrade_replaces_account_code() {
         .await
         .unwrap();
 
-    let stored = stored_account(&mut client, &account).await;
+    let stored = client
+        .get_account(account.id())
+        .await
+        .unwrap()
+        .expect("the account should be tracked");
     assert_eq!(stored.code(), &upgraded_code);
     assert_eq!(stored.to_commitment(), executed_tx.final_account().to_commitment());
 
@@ -422,7 +402,7 @@ async fn local_code_upgrade_replaces_account_code() {
 async fn local_code_upgrade_with_storage_changes() {
     let (account, upgraded_code) = upgradeable_account();
     let rpc_api = rpc_api_with(&account);
-    let mut client = client_tracking(rpc_api.clone(), &account).await;
+    let client = client_tracking(rpc_api.clone(), &account).await;
 
     let request = valid_upgrade_request(&client, &upgraded_code, true);
     let result = Box::pin(client.execute_transaction(account.id(), request)).await.unwrap();
@@ -439,7 +419,11 @@ async fn local_code_upgrade_with_storage_changes() {
         .await
         .unwrap();
 
-    let stored = stored_account(&mut client, &account).await;
+    let stored = client
+        .get_account(account.id())
+        .await
+        .unwrap()
+        .expect("the account should be tracked");
     assert_eq!(stored, expected);
     assert_eq!(stored.code(), &upgraded_code);
     assert_ne!(stored.storage().to_commitment(), account.storage().to_commitment());
@@ -481,7 +465,7 @@ async fn invalid_code_upgrade_is_rejected(
         ),
         _ => (existing_account.clone(), rpc_api_with(&existing_account)),
     };
-    let mut client = client_tracking(rpc_api, &account).await;
+    let client = client_tracking(rpc_api, &account).await;
 
     let new_code_commitment = upgraded_code.commitment();
     let code_entry = AccountCodeUpgrade::new(upgraded_code).to_advice_map_entry();
@@ -516,7 +500,14 @@ async fn invalid_code_upgrade_is_rejected(
     let messages = error_chain(&error);
     assert!(messages.contains(expected_error), "unexpected error: {messages}");
 
-    assert_eq!(stored_account(&mut client, &account).await, account);
+    assert_eq!(
+        client
+            .get_account(account.id())
+            .await
+            .unwrap()
+            .expect("the account should be tracked"),
+        account
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -560,7 +551,11 @@ async fn synced_code_upgrade_stores_new_code(
 
     observer.sync_state().await.unwrap();
 
-    let stored = stored_account(&mut observer, &account).await;
+    let stored = observer
+        .get_account(account.id())
+        .await
+        .unwrap()
+        .expect("the account should be tracked");
     assert_eq!(stored, expected);
     assert_eq!(stored.code(), &upgraded_code);
 }
@@ -572,7 +567,7 @@ async fn account_code_upgrade_without_upgrade_manager_is_rejected() {
     let account = wallet_account(8);
     let (_, other_code) = upgradeable_account();
     let rpc_api = rpc_api_with(&account);
-    let mut client = client_tracking(rpc_api, &account).await;
+    let client = client_tracking(rpc_api, &account).await;
 
     let request = TransactionRequestBuilder::new().build_account_code_upgrade(other_code).unwrap();
     let error = Box::pin(client.execute_transaction(account.id(), request)).await.unwrap_err();
@@ -587,7 +582,14 @@ async fn account_code_upgrade_without_upgrade_manager_is_rejected() {
     let messages = error_chain(&error);
     assert!(messages.contains(&expected_error), "unexpected error: {messages}");
 
-    assert_eq!(stored_account(&mut client, &account).await, account);
+    assert_eq!(
+        client
+            .get_account(account.id())
+            .await
+            .unwrap()
+            .expect("the account should be tracked"),
+        account
+    );
 }
 
 /// The owner of an account sends an upgrade note to the account. The account consumes the note, and
@@ -628,7 +630,11 @@ async fn upgrade_note_from_owner_upgrades_target_code(
         .await
         .unwrap();
 
-    let stored = stored_account(&mut client, &target).await;
+    let stored = client
+        .get_account(target.id())
+        .await
+        .unwrap()
+        .expect("the account should be tracked");
     assert_eq!(stored.code(), &upgraded_code);
     assert_eq!(stored.to_commitment(), executed_tx.final_account().to_commitment());
 }
@@ -658,5 +664,12 @@ async fn upgrade_note_from_other_sender_is_rejected() {
         "unexpected error: {messages}"
     );
 
-    assert_eq!(stored_account(&mut client, &target).await, target);
+    assert_eq!(
+        client
+            .get_account(target.id())
+            .await
+            .unwrap()
+            .expect("the account should be tracked"),
+        target
+    );
 }

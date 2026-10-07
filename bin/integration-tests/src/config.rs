@@ -155,12 +155,8 @@ impl ClientConfig {
 
         if let Some(transport) = &self.note_transport_endpoint {
             let transport_url = transport.to_url();
-            let transport_timeout = std::env::var("MIDEN_TEST_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(10_000);
             let nt_client =
-                Arc::new(GrpcNoteTransportClient::new(transport_url.clone(), transport_timeout));
+                Arc::new(GrpcNoteTransportClient::new(transport_url.clone(), self.rpc_timeout_ms));
             builder = builder.note_transport(nt_client);
         }
 

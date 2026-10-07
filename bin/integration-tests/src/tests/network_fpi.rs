@@ -28,7 +28,6 @@ use crate::ClientConfig;
 /// successfully), note script updates the counter of the network (counter) account.
 pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.sync_state().await?;
 
     let (foreign_account, proc_root) = deploy_foreign_account(
         &mut client,

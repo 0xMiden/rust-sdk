@@ -1,12 +1,19 @@
+use std::env::temp_dir;
+use std::sync::Arc;
+
 use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
+use miden_client::builder::ClientBuilder;
+use miden_client::keystore::FilesystemKeyStore;
 use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
 use miden_client::store::{SettingScope, StoreError};
+use miden_client::testing::common::create_test_store_path;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
+use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
-use super::{TestClient, create_test_client, create_test_client_builder};
+use super::{TestClient, create_test_client, prebuilt_rpc_api};
 
 /// Returns the current protocol configuration for `faucet`.
 fn protocol_config_for(faucet: u128) -> ProtocolConfig {
@@ -15,11 +22,20 @@ fn protocol_config_for(faucet: u128) -> ProtocolConfig {
 
 #[tokio::test]
 async fn the_first_sync_stores_the_protocol_config() {
-    let (builder, rpc) = create_test_client_builder().await;
-    let mut client = TestClient::from(builder.build().await.unwrap());
+    let rpc = prebuilt_rpc_api().await;
+    // Nothing is seeded into this client's store.
+    let mut client = TestClient::from(
+        ClientBuilder::new()
+            .rpc(Arc::new(rpc.clone()))
+            .sqlite_store(create_test_store_path())
+            .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
+            .build()
+            .await
+            .unwrap(),
+    );
     let config = rpc.protocol_config();
 
-    // Nothing seeded this client, so the store starts without the configuration.
+    // The store starts without the configuration.
     assert!(matches!(
         client.get_protocol_config(config.to_commitment()).await,
         Err(ClientError::StoreError(StoreError::ProtocolConfigNotFound(_)))
@@ -32,8 +48,17 @@ async fn the_first_sync_stores_the_protocol_config() {
 
 #[tokio::test]
 async fn storing_a_configuration_does_not_replace_another() {
-    let (builder, rpc) = create_test_client_builder().await;
-    let mut client = TestClient::from(builder.build().await.unwrap());
+    let rpc = prebuilt_rpc_api().await;
+    // Nothing is seeded into this client's store.
+    let mut client = TestClient::from(
+        ClientBuilder::new()
+            .rpc(Arc::new(rpc.clone()))
+            .sqlite_store(create_test_store_path())
+            .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
+            .build()
+            .await
+            .unwrap(),
+    );
 
     let held = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     client.seed_protocol_config(held.clone()).await.unwrap();

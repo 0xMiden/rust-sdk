@@ -11,7 +11,6 @@ use miden_client::account::component::{
     UpgradeManager,
 };
 use miden_client::account::{
-    Account,
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountCode,
@@ -30,7 +29,6 @@ use rand::Rng;
 
 use super::network_transaction::{COUNTER_CONTRACT, COUNTER_SLOT_NAME, zero_fee_policy_manager};
 use crate::ClientConfig;
-use crate::funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================
@@ -118,17 +116,6 @@ fn upgrade_request(
         .context("failed to build the upgrade transaction request")
 }
 
-/// Returns the account as the client store has it.
-async fn stored_account(client: &mut TestClient, account_id: AccountId) -> Result<Account> {
-    client
-        .test_store()
-        .get_account(account_id)
-        .await?
-        .with_context(|| format!("account {account_id} is not tracked"))?
-        .try_into()
-        .context("failed to read the stored account")
-}
-
 /// Returns the components of an upgradeable network account owned by `owner`.
 ///
 /// The account allowlists the upgrade note, and P2ID so that its deploy can consume a funding note.
@@ -140,7 +127,7 @@ async fn upgradeable_network_components(
     let roots: BTreeSet<NoteScriptRoot> =
         [UpgradeNote::script_root(), P2idNote::script_root()].into_iter().collect();
     let fee_policy_manager =
-        zero_fee_policy_manager(fee_faucet_id(client).await?, roots.iter().copied());
+        zero_fee_policy_manager(client.fee_faucet_id().await?, roots.iter().copied());
     let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow!(err))
         .context("failed to build the network account auth component")?;
@@ -162,7 +149,6 @@ async fn network_account_code_upgrade_via_upgrade_note(
     expected_num_chunks: usize,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let owner = client.insert_wallet(AccountType::Public).await?;
 
@@ -225,7 +211,10 @@ async fn network_account_code_upgrade_via_upgrade_note(
     }
     ensure!(upgraded, "the network account should have the upgraded code after sync");
 
-    let stored = stored_account(&mut client, network_account.id()).await?;
+    let stored = client
+        .get_account(network_account.id())
+        .await?
+        .with_context(|| format!("account {} is not tracked", network_account.id()))?;
     assert_eq!(stored.code(), &upgraded_code);
 
     let node_account = client
@@ -275,7 +264,6 @@ pub async fn test_public_account_code_upgrade_syncs_to_other_client(
 ) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.into_client().await?;
-    client_1.sync_state().await?;
 
     let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
     let public_key_commitment = key.public_key().to_commitment();
@@ -310,12 +298,18 @@ pub async fn test_public_account_code_upgrade_syncs_to_other_client(
         client_1.execute_tx_and_sync(account.id(), request).await?;
         let expected_counter = Word::from([Felt::from(expected_count), ZERO, ZERO, ZERO]);
 
-        let stored_1 = stored_account(&mut client_1, account.id()).await?;
+        let stored_1 = client_1
+            .get_account(account.id())
+            .await?
+            .with_context(|| format!("account {} is not tracked", account.id()))?;
         assert_eq!(stored_1.code(), new_code);
         assert_eq!(stored_1.storage().get_item(&COUNTER_SLOT_NAME)?, expected_counter);
 
         client_2.sync_state().await?;
-        let stored_2 = stored_account(&mut client_2, account.id()).await?;
+        let stored_2 = client_2
+            .get_account(account.id())
+            .await?
+            .with_context(|| format!("account {} is not tracked", account.id()))?;
         assert_eq!(stored_2.code(), new_code);
         assert_eq!(stored_2.storage().get_item(&COUNTER_SLOT_NAME)?, expected_counter);
         assert_eq!(stored_2.to_commitment(), stored_1.to_commitment());

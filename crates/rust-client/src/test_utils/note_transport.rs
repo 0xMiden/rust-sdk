@@ -55,12 +55,16 @@ impl MockNoteTransportNode {
     /// Build a mock that caps each `get_notes` response at `max_batch` entries.
     pub fn with_max_batch(max_batch: usize) -> Self {
         Self {
-            notes: BTreeMap::default(),
-            nonce: 1,
-            next_sequence: 1,
             max_batch: Some(max_batch),
-            proven_notes: BTreeMap::default(),
+            ..Self::new()
         }
+    }
+
+    /// Stores `info` under `tag` at the next cursor position.
+    fn push(&mut self, tag: NoteTag, info: NoteInfo) {
+        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
@@ -106,10 +110,7 @@ impl MockNoteTransportNode {
         block_hint: Option<BlockNumber>,
     ) {
         let tag = header.metadata().tag();
-        let info = NoteInfo { header, details_bytes, block_hint };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
-        self.next_sequence += 1;
-        self.notes.entry(tag).or_default().push((info, cursor));
+        self.push(tag, NoteInfo { header, details_bytes, block_hint });
     }
 
     /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag.
@@ -119,10 +120,7 @@ impl MockNoteTransportNode {
         header: NoteHeader,
         details_bytes: Vec<u8>,
     ) {
-        let info = NoteInfo { header, details_bytes, block_hint: None };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
-        self.next_sequence += 1;
-        self.notes.entry(tag).or_default().push((info, cursor));
+        self.push(tag, NoteInfo { header, details_bytes, block_hint: None });
     }
 
     pub fn get_notes(

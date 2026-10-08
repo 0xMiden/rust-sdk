@@ -324,7 +324,8 @@ impl OnNoteReceived for NoteScreener {
 
         match public_note {
             Some(public_note) => {
-                // If its tag was added by the user, keep note regardless of inputs and extra checks.
+                // If its tag was added by the user, keep note regardless of inputs and extra
+                // checks.
                 if let Some(metadata) = public_note.metadata()
                     && self.store.get_note_tags().await?.iter().any(|record| {
                         record.source == NoteTagSource::User && record.tag == metadata.tag()

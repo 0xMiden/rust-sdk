@@ -288,6 +288,65 @@ async fn is_account_allowed_is_true_when_the_node_does_not_enforce() {
     assert!(rpc_api.is_account_allowed(account_id()).await.unwrap());
 }
 
+#[tokio::test]
+async fn is_invitation_code_valid_follows_the_registrations() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+    rpc_api.enforce_account_allowlist();
+
+    assert!(!rpc_api.is_invitation_code_valid("unknown-code").await.unwrap());
+    rpc_api.add_invitation_code(INVITATION_CODE);
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+
+    rpc_api.register_account(INVITATION_CODE, account_id()).await.unwrap();
+
+    assert!(!rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+}
+
+#[tokio::test]
+async fn is_invitation_code_valid_is_true_when_the_node_does_not_enforce() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+
+    assert!(rpc_api.is_invitation_code_valid("unknown-code").await.unwrap());
+    assert!(rpc_api.is_invitation_code_valid("").await.unwrap());
+    rpc_api.add_invitation_code(INVITATION_CODE);
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+    rpc_api.register_account(INVITATION_CODE, account_id()).await.unwrap();
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+}
+
+#[tokio::test]
+async fn is_invitation_code_valid_rejects_empty_codes_when_enforced() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+    rpc_api.enforce_account_allowlist();
+
+    assert!(matches!(
+        rpc_api.is_invitation_code_valid("").await,
+        Err(RpcError::RequestError {
+            endpoint: RpcEndpoint::IsInvitationCodeValid,
+            error_kind: GrpcError::InvalidArgument,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn is_invitation_code_valid_serves_staged_failure_once() {
+    let rpc_api = MockRpcApi::new(MockChain::new());
+    rpc_api.fail_next_call(
+        RpcEndpoint::IsInvitationCodeValid,
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::IsInvitationCodeValid,
+            error_kind: GrpcError::Unavailable,
+            endpoint_error: None,
+            source: None,
+        },
+    );
+
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.is_err());
+    assert!(rpc_api.is_invitation_code_valid(INVITATION_CODE).await.unwrap());
+}
+
 // ALLOWLIST CHECK BEFORE SUBMISSION
 // ================================================================================================
 

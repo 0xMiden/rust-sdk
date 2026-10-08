@@ -74,12 +74,22 @@ pub struct AccountCmd {
     /// Invitation code that registers the account named by --register.
     #[arg(long, value_name = "CODE", requires = "register")]
     invitation_code: Option<String>,
+    /// Checks whether an invitation code can still be used without consuming it.
+    #[arg(long, group = "action", value_name = "CODE")]
+    check_invitation_code: Option<String>,
 }
 
 impl AccountCmd {
     pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
+            AccountCmd { check_invitation_code: Some(code), .. } => {
+                if client.is_invitation_code_valid(code).await? {
+                    println!("The invitation code can be used.");
+                } else {
+                    println!("The invitation code cannot be used.");
+                }
+            },
             AccountCmd {
                 list: false,
                 show: Some(id),

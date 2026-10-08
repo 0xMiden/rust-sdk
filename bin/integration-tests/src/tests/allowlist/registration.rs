@@ -86,3 +86,34 @@ pub async fn test_allowlist_code_is_single_use(client_config: ClientConfig) -> R
 
     Ok(())
 }
+
+/// Validation does not consume a code. Registration makes the code invalid.
+pub async fn test_allowlist_invitation_code_validation(client_config: ClientConfig) -> Result<()> {
+    let mut client = client_config.into_client().await?;
+    client.wait_for_node().await;
+
+    ensure!(
+        !client.is_invitation_code_valid(UNKNOWN_INVITATION_CODE).await?,
+        "an unknown invitation code must be invalid"
+    );
+
+    let invitation_code = create_invitation_code().await?;
+    ensure!(
+        client.is_invitation_code_valid(&invitation_code).await?,
+        "an unused invitation code must be valid"
+    );
+    ensure!(
+        client.is_invitation_code_valid(&invitation_code).await?,
+        "validation must not consume an invitation code"
+    );
+
+    let account = insert_unfunded_wallet(&mut client, None).await?;
+    client.register_account(account.id(), &invitation_code).await?;
+
+    ensure!(
+        !client.is_invitation_code_valid(&invitation_code).await?,
+        "a registered invitation code must be invalid"
+    );
+
+    Ok(())
+}

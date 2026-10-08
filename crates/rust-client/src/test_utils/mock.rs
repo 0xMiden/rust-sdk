@@ -100,6 +100,8 @@ pub struct MockRpcApi {
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
     /// Invitation code each account was registered with, recorded by `register_account`.
     registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
+    /// Invitation codes that tests have made available for registration.
+    invitation_codes: Arc<RwLock<BTreeSet<String>>>,
     /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
     /// the allowlist answers `true` for every account, which is the default here so that tests
     /// which deploy accounts need no registration.
@@ -138,6 +140,7 @@ impl MockRpcApi {
             get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            invitation_codes: Arc::new(RwLock::new(BTreeSet::new())),
             allowlist_enforced: Arc::new(AtomicBool::new(false)),
             is_account_allowed_calls: Arc::new(AtomicUsize::new(0)),
             submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
@@ -148,6 +151,11 @@ impl MockRpcApi {
     /// enforces the account allowlist. Without this the mock answers `true` for every account.
     pub fn enforce_account_allowlist(&self) {
         self.allowlist_enforced.store(true, Ordering::SeqCst);
+    }
+
+    /// Adds an invitation code for validation queries.
+    pub fn add_invitation_code(&self, invitation_code: &str) {
+        self.invitation_codes.write().insert(String::from(invitation_code));
     }
 
     /// Id of the first account updated in the mock chain's proven blocks, in block then
@@ -844,8 +852,7 @@ impl NodeRpcClient for MockRpcApi {
             return Err(error);
         }
 
-        // The mock holds no invitations, so it accepts any code and records the pair. Stage a
-        // failure with `fail_next_call` to exercise a rejection.
+        // Registration accepts any code. Use `fail_next_call` to test a rejection.
         self.registered_accounts
             .write()
             .insert(account_id, String::from(invitation_code));
@@ -867,6 +874,28 @@ impl NodeRpcClient for MockRpcApi {
         }
 
         Ok(self.registered_accounts.read().contains_key(&account_id))
+    }
+
+    async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::IsInvitationCodeValid) {
+            return Err(error);
+        }
+
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        if invitation_code.is_empty() {
+            return Err(RpcError::RequestError {
+                endpoint: RpcEndpoint::IsInvitationCodeValid,
+                error_kind: crate::rpc::GrpcError::InvalidArgument,
+                endpoint_error: None,
+                source: None,
+            });
+        }
+
+        Ok(self.invitation_codes.read().contains(invitation_code)
+            && !self.registered_accounts.read().values().any(|code| code == invitation_code))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

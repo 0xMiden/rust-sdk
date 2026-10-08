@@ -718,6 +718,20 @@ impl NodeRpcClient for GrpcClient {
         Ok(response.into_inner().allowed)
     }
 
+    async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
+        let request =
+            proto::rpc::IsInvitationCodeValidRequest { invitation_code: invitation_code.into() };
+
+        let response = self
+            .call_with_retry(RpcEndpoint::IsInvitationCodeValid, |mut rpc_api| {
+                let request = request.clone();
+                Box::pin(async move { rpc_api.is_invitation_code_valid(request).await })
+            })
+            .await?;
+
+        Ok(response.into_inner().valid)
+    }
+
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
     /// [`SyncNotesBlock`]s.
     ///

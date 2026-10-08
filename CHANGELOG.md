@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.2 (2026-10-08)
+
+### Features
+
+* [FEATURE][rust,cli] Integrated node 0.17.3 RPC specs. Added `Client::is_invitation_code_valid` and the `account --check-invitation-code` flag, backed by the node's `IsInvitationCodeValid` endpoint ([#2686](https://github.com/0xMiden/rust-sdk/pull/2686)).
+
 ## 0.17.2 (2026-10-06)
 
 ### Breaking Changes

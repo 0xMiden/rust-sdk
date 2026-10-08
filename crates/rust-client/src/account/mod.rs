@@ -379,6 +379,20 @@ impl<AUTH> Client<AUTH> {
         Ok(self.rpc_api.is_account_allowed(account_id).await?)
     }
 
+    /// Returns whether the invitation code can be used to register an account.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the code
+    /// exists and is not registered to an account. Unknown and registered codes return `false`. An
+    /// empty code returns an error when enforcement is enabled. This query does not consume the
+    /// code or identify the account that holds it. See [`Client::register_account`] to register an
+    /// account.
+    pub async fn is_invitation_code_valid(
+        &self,
+        invitation_code: &str,
+    ) -> Result<bool, ClientError> {
+        Ok(self.rpc_api.is_invitation_code_valid(invitation_code).await?)
+    }
+
     /// Returns whether a transaction against `account_id` creates an account that the network
     /// allowlist gates.
     ///

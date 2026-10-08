@@ -473,6 +473,15 @@ pub trait NodeRpcClient: Send + Sync {
     /// on chain is not checked.
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError>;
 
+    /// Returns whether the invitation code can be used, using the `/IsInvitationCodeValid`
+    /// endpoint.
+    ///
+    /// The node answers `true` when it does not enforce an account allowlist, or when the code
+    /// exists and is not registered to an account. Unknown and registered codes return `false`. An
+    /// empty code returns `INVALID_ARGUMENT` when enforcement is enabled. This query does not
+    /// consume the code or identify the account that holds it.
+    async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError>;
+
     /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
     /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
     /// set.
@@ -733,6 +742,7 @@ pub enum RpcEndpoint {
     GetAccount,
     RegisterAccount,
     IsAccountAllowed,
+    IsInvitationCodeValid,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNotesById,
@@ -758,6 +768,7 @@ impl RpcEndpoint {
             RpcEndpoint::GetAccount => "GetAccount",
             RpcEndpoint::RegisterAccount => "RegisterAccount",
             RpcEndpoint::IsAccountAllowed => "IsAccountAllowed",
+            RpcEndpoint::IsInvitationCodeValid => "IsInvitationCodeValid",
             RpcEndpoint::GetBlockByNumber => "GetBlockByNumber",
             RpcEndpoint::GetBlockHeaderByNumber => "GetBlockHeaderByNumber",
             RpcEndpoint::GetNotesById => "GetNotesById",
@@ -794,6 +805,7 @@ impl RpcEndpoint {
             | RpcEndpoint::SyncNullifiers
             | RpcEndpoint::GetAccount
             | RpcEndpoint::IsAccountAllowed
+            | RpcEndpoint::IsInvitationCodeValid
             | RpcEndpoint::GetBlockByNumber
             | RpcEndpoint::GetBlockHeaderByNumber
             | RpcEndpoint::GetNotesById
@@ -820,6 +832,7 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::GetAccount => write!(f, "get_account"),
             RpcEndpoint::RegisterAccount => write!(f, "register_account"),
             RpcEndpoint::IsAccountAllowed => write!(f, "is_account_allowed"),
+            RpcEndpoint::IsInvitationCodeValid => write!(f, "is_invitation_code_valid"),
             RpcEndpoint::GetBlockByNumber => write!(f, "get_block_by_number"),
             RpcEndpoint::GetBlockHeaderByNumber => {
                 write!(f, "get_block_header_by_number")

@@ -307,6 +307,10 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
         self.0.is_account_allowed(account_id).await
     }
 
+    async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
+        self.0.is_invitation_code_valid(invitation_code).await
+    }
+
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
         let script = self.0.get_note_script_by_root(root).await?;
         if let Some(script) = &script {

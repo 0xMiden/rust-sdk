@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changes
+
+* Updated the workspace version to `0.17.3`.
+
 ### Features
 
 * [FEATURE][rust,cli] Added `Client::is_invitation_code_valid` and the `account --check-invitation-code` flag, backed by the node's `IsInvitationCodeValid` endpoint. (#PR)

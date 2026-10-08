@@ -200,6 +200,7 @@ pub mod component {
     pub use miden_standards::account::auth::*;
     pub use miden_standards::account::components::StandardAccountComponent;
     pub use miden_standards::account::faucets::{
+        AssetStatus,
         Description,
         ExternalLink,
         FungibleFaucet,
@@ -207,11 +208,15 @@ pub mod component {
         FungibleFaucetError,
         LogoURI,
         NonFungibleFaucet,
+        NonFungibleFaucetBuilder,
+        NonFungibleFaucetError,
         TokenMetadata,
         TokenMetadataError,
         TokenName,
         create_network_fungible_faucet,
+        create_network_non_fungible_faucet,
         create_singlesig_user_fungible_faucet,
+        create_user_non_fungible_faucet,
     };
     pub use miden_standards::account::fees::{
         BasicConstantFeePolicy,

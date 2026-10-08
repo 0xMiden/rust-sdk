@@ -96,7 +96,7 @@ uuid               = { version = "1.10" }
 
 [patch.crates-io]
 # Remove this patch when a node release includes IsInvitationCodeValid.
-miden-node-proto-build = { git = "https://github.com/0xnullifier/node", branch = "feat/rpc/invitation-code-validation" }
+miden-node-proto-build = { branch = "feat/rpc/invitation-code-validation", git = "https://github.com/0xnullifier/node" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

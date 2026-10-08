@@ -227,14 +227,12 @@ async fn show_account<AUTH>(
         .map(|faucet| faucet.symbol().to_string());
     print_summary_table(&account, network_id, token_symbol.as_deref());
 
-    // Vault Table
+    // Vault Tables
     {
-        let assets = account.vault().assets();
-        println!("Assets: ");
-
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
-        for asset in assets {
-            let (asset_type, faucet, amount) = match asset.as_fungible() {
+        let mut fungible_table = create_dynamic_table(&["Faucet", "Amount"]);
+        let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID"]);
+        for asset in account.vault().assets() {
+            match asset.as_fungible() {
                 Some(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
@@ -244,17 +242,19 @@ async fn show_account<AUTH>(
                         },
                         Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
                     };
-                    ("Fungible Asset", faucet, amount)
+                    fungible_table.add_row(vec![faucet, amount]);
                 },
                 None => {
-                    // TODO: Display non-fungible assets more clearly.
-                    ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string())
+                    non_fungible_table
+                        .add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
                 },
-            };
-            table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+            }
         }
 
-        println!("{table}\n");
+        println!("Fungible assets: ");
+        println!("{fungible_table}\n");
+        println!("Non fungible assets: ");
+        println!("{non_fungible_table}\n");
     }
 
     // Storage Table

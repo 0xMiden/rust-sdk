@@ -215,23 +215,42 @@ pub async fn print_executed_transaction<AUTH>(
         println!("Account Vault will not be changed.");
     } else {
         let resolver = load_faucet_metadata_resolver()?;
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
+        let mut fungible_table = create_dynamic_table(&["Faucet ID", "New Amount"]);
+        let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 
         for asset in patch.vault().updated_assets() {
-            let formatted = resolver.format_asset(client, &asset).await?;
-            table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
+            if asset.is_fungible() {
+                let formatted = resolver.format_asset(client, &asset).await?;
+                fungible_table.add_row(vec![formatted.faucet, formatted.amount]);
+            } else {
+                non_fungible_table.add_row(vec![
+                    asset.faucet_id().to_hex(),
+                    asset.id().to_string(),
+                    "added".to_string(),
+                ]);
+            }
         }
 
         for asset_id in patch.vault().removed_asset_ids() {
-            table.add_row(vec![
-                "Removed Asset",
-                &asset_id.faucet_id().prefix().to_hex(),
-                "removed",
-            ]);
+            if asset_id.composition().is_none() {
+                non_fungible_table.add_row(vec![
+                    asset_id.faucet_id().to_hex(),
+                    asset_id.to_string(),
+                    "removed".to_string(),
+                ]);
+            } else {
+                fungible_table.add_row(vec![asset_id.faucet_id().to_hex(), "removed".to_string()]);
+            }
         }
 
-        println!("Vault changes:");
-        println!("{table}");
+        if !fungible_table.is_empty() {
+            println!("Fungible asset changes:");
+            println!("{fungible_table}");
+        }
+        if !non_fungible_table.is_empty() {
+            println!("Non fungible asset changes:");
+            println!("{non_fungible_table}");
+        }
     }
 
     // NONCE
@@ -421,17 +440,6 @@ pub struct FormattedAsset {
     pub faucet: String,
     /// The token amount for a fungible asset, or "1" for a non-fungible asset.
     pub amount: String,
-}
-
-impl FormattedAsset {
-    /// Returns the asset type label used in table cells.
-    pub fn type_label(&self) -> &'static str {
-        if self.is_fungible {
-            "Fungible Asset"
-        } else {
-            "Non Fungible Asset"
-        }
-    }
 }
 
 /// Renders the asset as its amount and faucet on one line.

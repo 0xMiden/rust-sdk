@@ -20,6 +20,7 @@
 * [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FEATURE][cli] `account --show` no longer fetches storage map entries for an account that the client does not track ([#2680](https://github.com/0xMiden/rust-sdk/pull/2680)).
 
 ### Fixes
 

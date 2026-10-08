@@ -57,7 +57,7 @@ miden-tx        = { default-features = false, version = "0.17" }
 miden-tx-batch  = { default-features = false, version = "0.17" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.17" }
+miden-node-proto-build = { default-features = false, version = "0.17.3" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.35" }
@@ -93,10 +93,6 @@ tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
-
-[patch.crates-io]
-# Remove this patch when a node release includes IsInvitationCodeValid.
-miden-node-proto-build = { branch = "feat/rpc/invitation-code-validation", git = "https://github.com/0xnullifier/node" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

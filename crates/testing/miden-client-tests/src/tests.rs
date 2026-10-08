@@ -122,6 +122,7 @@ use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
 use miden_standards::account::faucets::{
+    AssetStatus,
     FungibleFaucet,
     NonFungibleFaucet,
     TokenName,
@@ -930,11 +931,12 @@ async fn mint_transaction() {
 }
 
 #[tokio::test]
-async fn mint_non_fungible_transaction() {
+async fn mint_and_burn_non_fungible_transaction() {
     // generate test client with a random store name
-    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
 
     let faucet = insert_new_non_fungible_faucet(&mut client, AccountType::Private).await;
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
 
     client.sync_state().await.unwrap();
 
@@ -942,23 +944,53 @@ async fn mint_non_fungible_transaction() {
     let salt = Word::from([1, 2, 3, 4u32]);
     let commitment = NonFungibleFaucet::compute_asset_commitment(user_data, salt);
     let asset = NonFungibleAsset::from_parts(faucet.id(), commitment);
-    let target_id = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
 
-    let transaction_request = TransactionRequestBuilder::new()
-        .build_mint_non_fungible_asset(asset, target_id, NoteType::Private, client.rng())
+    // Mint the NFT to the wallet, and consume the mint note with the wallet.
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, wallet.id(), NoteType::Private, client.rng())
         .unwrap();
 
-    let transaction_result = Box::pin(client.execute_transaction(faucet.id(), transaction_request))
+    let mint_notes = mint_request.expected_output_own_notes();
+    assert_eq!(mint_notes.len(), 1);
+    let note_assets: Vec<Asset> = mint_notes[0].assets().iter().copied().collect();
+    assert_eq!(note_assets, vec![Asset::from(asset)]);
+
+    client
+        .execute_tx_and_consume_output_notes(mint_request, faucet.id(), wallet.id())
         .await
         .unwrap();
-    let executed_tx = transaction_result.executed_transaction();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
 
-    assert_eq!(executed_tx.account_patch().final_nonce(), Some(ONE));
+    let wallet_account = client.get_account(wallet.id()).await.unwrap().unwrap();
+    assert!(wallet_account.vault().assets().any(|vault_asset| vault_asset == asset.into()));
 
-    let output_notes = executed_tx.output_notes();
-    assert_eq!(output_notes.num_notes(), 1);
-    let note_assets: Vec<Asset> = output_notes.get_note(0).assets().iter().copied().collect();
-    assert_eq!(note_assets, vec![Asset::from(asset)]);
+    let faucet_account = client.get_account(faucet.id()).await.unwrap().unwrap();
+    assert_eq!(
+        NonFungibleFaucet::get_asset_status(faucet_account.storage(), commitment).unwrap(),
+        AssetStatus::Issued
+    );
+
+    // Send the NFT back to the faucet in a BURN note, and consume the note with the faucet.
+    let burn_request = TransactionRequestBuilder::new()
+        .build_burn_non_fungible_asset(asset, wallet.id(), client.rng())
+        .unwrap();
+
+    client
+        .execute_tx_and_consume_output_notes(burn_request, wallet.id(), faucet.id())
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let wallet_account = client.get_account(wallet.id()).await.unwrap().unwrap();
+    assert!(wallet_account.vault().assets().all(|vault_asset| vault_asset != asset.into()));
+
+    let faucet_account = client.get_account(faucet.id()).await.unwrap().unwrap();
+    assert_eq!(
+        NonFungibleFaucet::get_asset_status(faucet_account.storage(), commitment).unwrap(),
+        AssetStatus::Burned
+    );
 }
 
 #[tokio::test]

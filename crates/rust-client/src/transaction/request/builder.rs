@@ -29,7 +29,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
@@ -463,6 +463,35 @@ impl TransactionRequestBuilder {
             .target(target_id)
             .asset(asset)
             .note_type(note_type)
+            .generate_serial_number(rng)
+            .build()?
+            .into();
+
+        self.own_output_notes(vec![created_note]).build()
+    }
+
+    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that sends a
+    /// non-fungible asset to its faucet to be burned. This request must be executed against the
+    /// account that holds the asset.
+    ///
+    /// The transaction creates a public BURN note that carries the asset. The asset is burned only
+    /// when the faucet that issued it consumes the note.
+    ///
+    /// - `asset` is the non-fungible asset to be burned.
+    /// - `sender` is the account ID of the account that holds the asset.
+    /// - `rng` is the random number generator used to generate the serial number for the created
+    ///   note.
+    ///
+    /// This function cannot be used with a previously set custom script.
+    pub fn build_burn_non_fungible_asset(
+        self,
+        asset: NonFungibleAsset,
+        sender: AccountId,
+        rng: &mut ClientRng,
+    ) -> Result<TransactionRequest, TransactionRequestError> {
+        let created_note = BurnNote::builder()
+            .sender(sender)
+            .asset(asset)
             .generate_serial_number(rng)
             .build()?
             .into();

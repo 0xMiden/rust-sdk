@@ -83,7 +83,14 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{
+    Asset,
+    AssetAmount,
+    AssetId,
+    FungibleAsset,
+    NonFungibleAsset,
+    TokenSymbol,
+};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::rand::FeltRng;
@@ -114,7 +121,12 @@ use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
-use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::faucets::{
+    FungibleFaucet,
+    NonFungibleFaucet,
+    TokenName,
+    create_user_non_fungible_faucet,
+};
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::note::{
@@ -915,6 +927,38 @@ async fn mint_transaction() {
     let executed_tx = transaction_result.executed_transaction().clone();
 
     assert_eq!(executed_tx.account_patch().final_nonce(), Some(ONE));
+}
+
+#[tokio::test]
+async fn mint_non_fungible_transaction() {
+    // generate test client with a random store name
+    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+
+    let faucet = insert_new_non_fungible_faucet(&mut client, AccountType::Private).await;
+
+    client.sync_state().await.unwrap();
+
+    let user_data = b"token #1";
+    let salt = Word::from([1, 2, 3, 4u32]);
+    let commitment = NonFungibleFaucet::compute_asset_commitment(user_data, salt);
+    let asset = NonFungibleAsset::from_parts(faucet.id(), commitment);
+    let target_id = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+
+    let transaction_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, target_id, NoteType::Private, client.rng())
+        .unwrap();
+
+    let transaction_result = Box::pin(client.execute_transaction(faucet.id(), transaction_request))
+        .await
+        .unwrap();
+    let executed_tx = transaction_result.executed_transaction();
+
+    assert_eq!(executed_tx.account_patch().final_nonce(), Some(ONE));
+
+    let output_notes = executed_tx.output_notes();
+    assert_eq!(output_notes.num_notes(), 1);
+    let note_assets: Vec<Asset> = output_notes.get_note(0).assets().iter().copied().collect();
+    assert_eq!(note_assets, vec![Asset::from(asset)]);
 }
 
 #[tokio::test]
@@ -5039,6 +5083,44 @@ async fn create_prebuilt_mock_chain() -> MockChain {
     mock_chain.prove_next_block().unwrap();
 
     mock_chain
+}
+
+async fn insert_new_non_fungible_faucet(
+    client: &mut TestClient,
+    visibility: AccountType,
+) -> Account {
+    let mut rng = StdRng::from_seed([0u8; 32]);
+    let key_pair = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
+    let pub_key = key_pair.public_key();
+
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+
+    let symbol = TokenSymbol::new("NFT").unwrap();
+    let faucet = NonFungibleFaucet::builder()
+        .name(TokenName::new(&symbol.to_string()).unwrap())
+        .symbol(symbol)
+        .build();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+    let auth_component =
+        AuthSingleSig::new(Approver::new(pub_key.to_commitment(), AuthSchemeId::EcdsaK256Keccak));
+
+    let account = create_user_non_fungible_faucet(
+        init_seed,
+        faucet,
+        auth_component,
+        policy_manager,
+        visibility,
+    )
+    .unwrap();
+
+    client.keystore().add_key(&key_pair, account.id()).await.unwrap();
+
+    client.add_account(&account, false).await.unwrap();
+    account
 }
 
 #[allow(clippy::too_many_lines)]

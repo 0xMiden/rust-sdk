@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.3 (2026-10-07)
+
+### Fixes
+
+* [FIX][rust] Sync no longer stores public notes whose tag matches a tracked account's tag without checking that a tracked account can consume them. Only tags added by the user skip the check ([#2684](https://github.com/0xMiden/rust-sdk/pull/2684)).
+
 ## 0.17.2 (2026-10-06)
 
 ### Breaking Changes

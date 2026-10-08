@@ -37,8 +37,8 @@ use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::note::NoteAssets;
 use miden_client::transaction::TransactionRequestBuilder;
 
+use super::AgglayerScenario;
 use super::agglayer_test_utils::generate_claim_data_for_account;
-use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
 use crate::ClientConfig;
 
 /// Amount of tokens to bridge out in the bridge-out phase of the test.
@@ -56,16 +56,21 @@ const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 /// Tests the full bridge-in then bridge-out flow using network transactions, in the order the
 /// module documentation lists.
 ///
-/// Everything but the destination account is pre-deployed and imported (see [`AgglayerConfig`]).
-/// The destination is created fresh on every run, so a claim always targets an account that has
-/// never claimed before.
+/// Everything but the destination account is pre-deployed and imported (see
+/// [`AgglayerConfig`](super::AgglayerConfig)). The destination is created fresh on every run, so a
+/// claim always targets an account that has never claimed before.
 pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<()> {
-    let agglayer_config = AgglayerConfig::from_env()?;
-    let (mut bridge_admin, mut ger_manager, mut user) =
-        create_agglayer_clients(&client_config).await?;
-    let (bridge_admin_id, ger_manager_id, bridge_id) =
-        setup_core_accounts(&agglayer_config, &mut bridge_admin, &mut ger_manager, &mut user)
-            .await?;
+    let AgglayerScenario {
+        config: agglayer_config,
+        mut bridge_admin,
+        mut ger_manager,
+        mut user,
+    } = AgglayerScenario::start(&client_config).await?;
+    let (bridge_admin_id, ger_manager_id, bridge_id) = (
+        agglayer_config.bridge_admin_id(),
+        agglayer_config.ger_manager_id(),
+        agglayer_config.bridge_id(),
+    );
 
     // ============================================================================================
     // SETUP: Destination account (always fresh) + faucet
@@ -82,7 +87,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
     let agglayer_faucet_id = agglayer_config.faucet_id();
     println!("[bridge_in_out] Importing faucet: {agglayer_faucet_id}");
     for client in [&mut bridge_admin, &mut ger_manager, &mut user] {
-        agglayer_config.import_account(agglayer_faucet_id, client).await?;
+        client.import_account_file(&agglayer_config.faucet).await?;
     }
 
     // Register the faucet on the (genesis-deployed, unconfigured) bridge via a CONFIG_AGG_BRIDGE
@@ -184,11 +189,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
             consumable_notes.len()
         );
 
-        let notes_to_consume: Vec<_> = consumable_notes
-            .into_iter()
-            .map(|(note, _)| note.try_into().map_err(|e| anyhow::anyhow!("{e}")))
-            .collect::<Result<Vec<_>, _>>()?;
-        let consume_tx = TransactionRequestBuilder::new().build_consume_notes(notes_to_consume)?;
+        let consume_tx = TransactionRequestBuilder::new().build_consume_notes(consumable_notes)?;
         let tx_id = user.submit_new_transaction(destination_account.id(), consume_tx).await?;
         user.wait_for_tx(tx_id).await?;
         println!("[bridge_in_out] Round {round}: destination consumed P2ID note");

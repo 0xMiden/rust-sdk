@@ -6,18 +6,12 @@ use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType, Addr
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
-use miden_client::builder::ClientBuilder;
-use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::keystore::Keystore;
 use miden_client::note::{NoteType, NoteUpdateTracker};
 use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};
 use miden_client::store::{StoreError, TransactionFilter};
 use miden_client::sync::NoteTagRecord;
-use miden_client::testing::common::{
-    MINT_AMOUNT,
-    TRANSFER_AMOUNT,
-    TestClient,
-    create_test_store_path,
-};
+use miden_client::testing::common::{MINT_AMOUNT, TRANSFER_AMOUNT, TestClient};
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     BatchBuilderError,
@@ -26,7 +20,6 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionStoreUpdate,
 };
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
     AccountBuilder,
     AccountComponent,
@@ -43,7 +36,7 @@ use miden_standards::account::wallets::BasicWallet;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::Rng;
 
-use crate::tests::{create_test_client, seed_mock_transaction_encryption_key};
+use crate::tests::{create_test_client, mock_client_builder};
 
 /// Exercises the mock `submit_proven_batch` path end-to-end: build a real `ProvenBatch` from a
 /// proven transaction produced against a `MockChain`, submit it via `MockRpcApi`, and verify the
@@ -139,18 +132,8 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
     let mock_chain = chain_builder.build().unwrap();
 
     // Build a client backed by the mock chain.
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let rpc_api = MockRpcApi::new(mock_chain);
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(rpc_api.clone()))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(rpc_api.clone())).await.build().await.unwrap();
 
     // Register ONLY account A. Account B stays unknown to the client store, so applying its patch
     // fails with `AccountDataNotFound` and poisons the batch.
@@ -239,18 +222,8 @@ async fn apply_transaction_rejects_account_note_tag() {
     let account_id = account.id();
     let mock_chain = chain_builder.build().unwrap();
 
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let rpc_api = MockRpcApi::new(mock_chain);
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(rpc_api.clone()))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(rpc_api.clone())).await.build().await.unwrap();
     client.add_account(&account, false).await.unwrap();
 
     let tx_context = rpc_api
@@ -651,18 +624,8 @@ async fn batch_builder_submits_txs_across_multiple_accounts() {
     let account_id_b = account_b.id();
     let mock_chain = chain_builder.build().unwrap();
 
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let rpc_api = MockRpcApi::new(mock_chain);
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(rpc_api.clone()))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(rpc_api.clone())).await.build().await.unwrap();
 
     // Register both accounts with the client.
     client.add_account(&account_a, false).await.unwrap();

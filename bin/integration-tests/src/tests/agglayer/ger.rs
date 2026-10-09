@@ -3,6 +3,7 @@ use miden_agglayer::{AggLayerBridge, ExitRoot, UpdateGerNote};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_protocol::account::StorageMapKey;
 use miden_protocol::{Hasher, ONE, Word, ZERO};
+use tracing::info;
 
 use super::AgglayerScenario;
 use crate::ClientConfig;
@@ -23,7 +24,7 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
     // --------------------------------------------------------------------------------------------
     let ger_bytes: [u8; 32] = rand::random();
     let ger = ExitRoot::from(ger_bytes);
-    println!("Submitting UpdateGerNote with random GER: {ger_bytes:02x?}");
+    info!("Submitting UpdateGerNote with random GER: {ger_bytes:02x?}");
     let update_ger_note = UpdateGerNote::create(ger, ger_manager_id, bridge_id, ger_manager.rng())?;
 
     let tx_request = TransactionRequestBuilder::new()
@@ -63,7 +64,7 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
 
     // VERIFY GER HASH WAS STORED IN MAP
     // --------------------------------------------------------------------------------------------
-    println!("GER registered: {is_registered}");
+    info!(is_registered, "Checked GER registration");
 
     assert!(is_registered, "GER was not registered in the bridge account");
 

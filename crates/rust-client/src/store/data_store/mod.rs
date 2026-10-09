@@ -323,6 +323,7 @@ impl ClientDataStore {
 }
 
 impl DataStore for ClientDataStore {
+    #[allow(clippy::too_many_lines)]
     async fn get_transaction_inputs(
         &self,
         account_id: AccountId,

@@ -2803,7 +2803,6 @@ version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",

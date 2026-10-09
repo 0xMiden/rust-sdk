@@ -93,7 +93,6 @@ miden-tx-batch        = { workspace = true }
 # External dependencies
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
-chrono       = { workspace = true }
 futures      = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }

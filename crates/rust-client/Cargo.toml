@@ -56,6 +56,7 @@ std = [
   "dep:tokio",
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
+  "miden-client-core/std",
   "miden-objects/std",
   "miden-processor/std",
   "miden-protocol/std",
@@ -68,6 +69,7 @@ testing = [
   "dep:miden-testing",
   "dep:uuid",
   "miden-agglayer/testing",
+  "miden-client-core/testing",
   "miden-protocol/testing",
   "miden-standards/testing",
   "miden-tx/testing",
@@ -78,6 +80,7 @@ tonic = []
 # Miden dependencies
 miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
+miden-client-core     = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }

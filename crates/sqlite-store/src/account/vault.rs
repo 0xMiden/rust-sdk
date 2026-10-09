@@ -2,11 +2,10 @@
 
 use std::vec::Vec;
 
-use miden_client::Serializable;
-use miden_client::account::{AccountHeader, AccountId, AccountVaultPatch};
-use miden_client::asset::Asset;
-use miden_client::store::StoreError;
-use miden_protocol::asset::AssetId;
+use miden_client_core::store::StoreError;
+use miden_protocol::account::{AccountHeader, AccountId, AccountVaultPatch};
+use miden_protocol::asset::{Asset, AssetId};
+use miden_protocol::utils::serde::Serializable;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::sql_error::SqlResultExt;

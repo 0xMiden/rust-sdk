@@ -2,13 +2,13 @@
 
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::account::AccountId;
-use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::protocol_config::protocol_config_setting_key;
-use miden_client::store::{SettingScope, StoreError};
-use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client_core::store::{SettingScope, StoreError, protocol_config_setting_key};
+use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteTag;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
@@ -231,6 +231,6 @@ mod tests {
         conn.execute("DELETE FROM blockchain_checkpoint", []).unwrap();
 
         let err = SqliteStore::get_sync_height(&mut conn).unwrap_err();
-        assert!(matches!(err, miden_client::store::StoreError::QueryError(_)));
+        assert!(matches!(err, miden_client_core::store::StoreError::QueryError(_)));
     }
 }

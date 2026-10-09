@@ -16,7 +16,6 @@ use miden_protocol::errors::{
 };
 use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::{Word, WordError};
-use miden_tx::DataStoreError;
 use thiserror::Error;
 
 // STORE ERROR
@@ -78,15 +77,4 @@ pub enum StoreError {
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]
     WordError(#[from] WordError),
-}
-
-impl From<StoreError> for DataStoreError {
-    fn from(value: StoreError) -> Self {
-        match value {
-            StoreError::AccountDataNotFound(account_id) => {
-                DataStoreError::AccountNotFound(account_id)
-            },
-            err => DataStoreError::other_with_source("store error", err),
-        }
-    }
 }

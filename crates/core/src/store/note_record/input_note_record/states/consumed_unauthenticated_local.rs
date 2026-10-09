@@ -5,29 +5,25 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
 
-use super::{InputNoteState, NoteStateHandler};
+use super::{InputNoteState, NoteStateHandler, NoteSubmissionData};
 use crate::store::NoteRecordError;
 
-/// Information related to notes in the [`InputNoteState::ConsumedExternal`] state.
-///
-/// A note enters this state when its nullifier appears on-chain but the consuming transaction was
-/// not submitted by this client.
+/// Information related to notes in the [`InputNoteState::ConsumedUnauthenticatedLocal`] state.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ConsumedExternalNoteState {
+pub struct ConsumedUnauthenticatedLocalNoteState {
+    /// Metadata associated with the note, including sender, note type, tag and other additional
+    /// information.
+    pub metadata: NoteMetadata,
     /// Block height at which the note was nullified.
     pub nullifier_block_height: BlockNumber,
-    /// The account that consumed the note, if it is tracked by this client.
-    pub consumer_account: Option<AccountId>,
+    /// Information about the submission of the note.
+    pub submission_data: NoteSubmissionData,
     /// Per-account position of the consuming transaction within the account's execution chain for
     /// the block. `None` if the order has not been determined yet.
     pub consumed_tx_order: Option<u32>,
-    /// Metadata associated with the note (sender, note type, tag and other additional information),
-    /// retained through consumption so the note ID stays recoverable. `None` when the prior state
-    /// had no metadata (e.g. a note imported from bare `NoteFile::NoteDetails`).
-    pub metadata: Option<NoteMetadata>,
 }
 
-impl NoteStateHandler for ConsumedExternalNoteState {
+impl NoteStateHandler for ConsumedUnauthenticatedLocalNoteState {
     fn inclusion_proof_received(
         &self,
         _inclusion_proof: NoteInclusionProof,
@@ -72,7 +68,7 @@ impl NoteStateHandler for ConsumedExternalNoteState {
     }
 
     fn metadata(&self) -> Option<&NoteMetadata> {
-        self.metadata.as_ref()
+        Some(&self.metadata)
     }
 
     fn inclusion_proof(&self) -> Option<&NoteInclusionProof> {
@@ -80,38 +76,38 @@ impl NoteStateHandler for ConsumedExternalNoteState {
     }
 
     fn consumer_transaction_id(&self) -> Option<&TransactionId> {
-        None
+        Some(&self.submission_data.consumer_transaction)
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ConsumedExternalNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.nullifier_block_height.write_into(target);
-        self.consumer_account.write_into(target);
-        self.consumed_tx_order.write_into(target);
+impl miden_protocol::utils::serde::Serializable for ConsumedUnauthenticatedLocalNoteState {
+    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
+        self.nullifier_block_height.write_into(target);
+        self.submission_data.write_into(target);
+        self.consumed_tx_order.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ConsumedExternalNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+impl miden_protocol::utils::serde::Deserializable for ConsumedUnauthenticatedLocalNoteState {
+    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
         source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
+        let metadata = NoteMetadata::read_from(source)?;
         let nullifier_block_height = BlockNumber::read_from(source)?;
-        let consumer_account = Option::<AccountId>::read_from(source)?;
+        let submission_data = NoteSubmissionData::read_from(source)?;
         let consumed_tx_order = Option::<u32>::read_from(source)?;
-        let metadata = Option::<NoteMetadata>::read_from(source)?;
-        Ok(ConsumedExternalNoteState {
-            nullifier_block_height,
-            consumer_account,
-            consumed_tx_order,
+        Ok(ConsumedUnauthenticatedLocalNoteState {
             metadata,
+            nullifier_block_height,
+            submission_data,
+            consumed_tx_order,
         })
     }
 }
 
-impl From<ConsumedExternalNoteState> for InputNoteState {
-    fn from(state: ConsumedExternalNoteState) -> Self {
-        InputNoteState::ConsumedExternal(state)
+impl From<ConsumedUnauthenticatedLocalNoteState> for InputNoteState {
+    fn from(state: ConsumedUnauthenticatedLocalNoteState) -> Self {
+        InputNoteState::ConsumedUnauthenticatedLocal(state)
     }
 }

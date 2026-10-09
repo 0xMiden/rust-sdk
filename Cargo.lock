@@ -2809,6 +2809,7 @@ dependencies = [
  "gloo-timers",
  "miden-agglayer",
  "miden-assembly-syntax",
+ "miden-client-core",
  "miden-debug",
  "miden-node-proto-build",
  "miden-objects",
@@ -2885,6 +2886,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-client-core"
+version = "0.17.2"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "miden-testing",
+ "rand 0.10.3",
+ "rand_chacha 0.10.0",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "miden-client-integration-tests"
 version = "0.17.2"
 dependencies = [
@@ -2932,6 +2949,7 @@ dependencies = [
  "deadpool",
  "deadpool-sync",
  "miden-client",
+ "miden-client-core",
  "miden-client-proto",
  "miden-protocol",
  "miden-standards",

@@ -19,7 +19,7 @@ use miden_protocol::note::{
     PartialNote,
 };
 use miden_protocol::transaction::RawOutputNote;
-use miden_tx::utils::serde::{
+use miden_protocol::utils::serde::{
     ByteReader,
     ByteWriter,
     Deserializable,
@@ -158,7 +158,9 @@ impl OutputNoteRecord {
     // TRANSITIONS
     // --------------------------------------------------------------------------------------------
 
-    pub(crate) fn inclusion_proof_received(
+    /// Modifies the state of the note record to reflect that it has received an inclusion proof.
+    /// Returns `true` if the state was changed.
+    pub fn inclusion_proof_received(
         &mut self,
         inclusion_proof: NoteInclusionProof,
     ) -> Result<bool, NoteRecordError> {
@@ -171,7 +173,9 @@ impl OutputNoteRecord {
         }
     }
 
-    pub(crate) fn nullifier_received(
+    /// Modifies the state of the note record to reflect that its nullifier was seen on chain.
+    /// Returns `true` if the state was changed.
+    pub fn nullifier_received(
         &mut self,
         nullifier: Nullifier,
         block_height: BlockNumber,

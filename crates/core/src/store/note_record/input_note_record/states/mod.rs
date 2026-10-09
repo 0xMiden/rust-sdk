@@ -6,7 +6,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
-pub use miden_tx::utils::serde::{
+pub use miden_protocol::utils::serde::{
     ByteReader,
     ByteWriter,
     Deserializable,

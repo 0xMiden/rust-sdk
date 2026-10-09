@@ -1,7 +1,5 @@
 //! Stores protocol configurations by their block header commitments.
 
-use alloc::format;
-
 use miden_protocol::Word;
 pub use miden_protocol::errors::ProtocolConfigError;
 pub use miden_protocol::protocol_config::{NextProtocolConfig, ProtocolConfig};
@@ -39,12 +37,7 @@ impl<AUTH> Client<AUTH> {
     }
 }
 
-/// Returns the settings key that holds the protocol configuration for `commitment`.
-///
-/// A [`Store`] implementation needs this key to persist a configuration a sync returned.
-pub fn protocol_config_setting_key(commitment: Word) -> alloc::string::String {
-    format!("protocol_config:{commitment}")
-}
+pub use miden_client_core::store::protocol_config_setting_key;
 
 pub(crate) async fn load_protocol_config(
     store: &dyn Store,

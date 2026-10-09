@@ -351,7 +351,8 @@ impl DataStore for ClientDataStore {
                 let partial_account_record = self
                     .store
                     .get_minimal_partial_account(account_id)
-                    .await?
+                    .await
+                    .map_err(store_to_data_store_error)?
                     .ok_or(DataStoreError::AccountNotFound(account_id))?;
 
                 // New accounts (nonce == 0) need full storage maps as advice inputs for the kernel
@@ -362,7 +363,8 @@ impl DataStore for ClientDataStore {
                     let full_record = self
                         .store
                         .get_account(account_id)
-                        .await?
+                        .await
+                        .map_err(store_to_data_store_error)?
                         .ok_or(DataStoreError::AccountNotFound(account_id))?;
                     let account: Account = full_record
                         .try_into()
@@ -412,12 +414,17 @@ impl DataStore for ClientDataStore {
             let cache_key = block_refs.clone();
             block_refs.remove(&ref_block);
 
-            let current_peaks = self.store.get_current_blockchain_peaks().await?;
+            let current_peaks = self
+                .store
+                .get_current_blockchain_peaks()
+                .await
+                .map_err(store_to_data_store_error)?;
 
             let (block_header, _had_notes) = self
                 .store
                 .get_block_header_by_num(ref_block)
-                .await?
+                .await
+                .map_err(store_to_data_store_error)?
                 .ok_or(DataStoreError::BlockNotFound(ref_block))?;
 
             // TODO: the client stores only the peaks of the MMR at the current sync height, so we
@@ -447,7 +454,8 @@ impl DataStore for ClientDataStore {
             self.store.as_ref(),
             block_header.protocol_config_commitment(),
         )
-        .await?;
+        .await
+        .map_err(store_to_data_store_error)?;
         Ok((partial_account, block_header, protocol_config, partial_blockchain))
     }
 
@@ -616,6 +624,14 @@ impl MastForestStore for ClientDataStore {
 // HELPER FUNCTIONS
 // ================================================================================================
 
+/// Converts a [`StoreError`] into the [`DataStoreError`] that the transaction executor expects.
+pub(crate) fn store_to_data_store_error(err: StoreError) -> DataStoreError {
+    match err {
+        StoreError::AccountDataNotFound(account_id) => DataStoreError::AccountNotFound(account_id),
+        err => DataStoreError::other_with_source("store error", err),
+    }
+}
+
 /// Outcome of resolving a storage map witness against an account's inputs: either the witness
 /// itself, or the parameters needed to fetch it via RPC.
 enum WitnessResolution {
@@ -673,7 +689,8 @@ pub(crate) async fn build_partial_mmr_with_paths(
 
     let authentication_paths =
         get_authentication_path_for_blocks(store, &block_nums, partial_mmr.forest().num_leaves())
-            .await?;
+            .await
+            .map_err(store_to_data_store_error)?;
 
     for (header, local_path) in authenticated_blocks.iter().zip(authentication_paths.iter()) {
         if partial_mmr
@@ -702,7 +719,8 @@ pub(crate) async fn build_partial_mmr_and_headers_with_fallback(
 ) -> Result<(PartialMmr, Vec<BlockHeader>), DataStoreError> {
     let mut headers: BTreeMap<BlockNumber, BlockHeader> = store
         .get_block_headers(block_numbers)
-        .await?
+        .await
+        .map_err(store_to_data_store_error)?
         .into_iter()
         .map(|(header, _has_notes)| (header.block_num(), header))
         .collect();

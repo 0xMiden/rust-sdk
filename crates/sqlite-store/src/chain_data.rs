@@ -4,12 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::block::BlockHeader;
-use miden_client::crypto::{Forest, InOrderIndex, MmrPeaks};
-use miden_client::note::BlockNumber;
-use miden_client::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client_core::store::{BlockRelevance, PartialBlockchainFilter, StoreError};
+use miden_protocol::Word;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params, params_from_iter};
 
 use super::SqliteStore;

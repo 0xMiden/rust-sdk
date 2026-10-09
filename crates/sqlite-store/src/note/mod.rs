@@ -3,25 +3,20 @@
 use std::collections::BTreeMap;
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::account::AccountId;
-use miden_client::note::{
-    BlockNumber,
-    NoteDetails,
-    NoteRecipient,
-    NoteScript,
-    NoteUpdateTracker,
-    NoteUpdateType,
-    Nullifier,
-};
-use miden_client::store::{
+use miden_client_core::store::{
     InputNoteCursor,
     InputNoteRecord,
     NoteFilter,
+    NoteUpdateTracker,
+    NoteUpdateType,
     OutputNoteRecord,
     StoreError,
 };
-use miden_client::utils::{Deserializable, Serializable};
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::{NoteDetails, NoteRecipient, NoteScript, Nullifier};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 

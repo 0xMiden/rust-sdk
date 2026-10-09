@@ -4,18 +4,17 @@ use std::boxed::Box;
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::note::ToInputNoteCommitments;
-use miden_client::store::{StoreError, TransactionFilter, TransactionFilterQuery};
-use miden_client::transaction::{
+use miden_client_core::store::{StoreError, TransactionFilter, TransactionFilterQuery};
+use miden_client_core::transaction::{
     TransactionDetails,
-    TransactionId,
     TransactionRecord,
     TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
 };
-use miden_client::utils::{Deserializable as _, Serializable as _};
+use miden_protocol::Word;
+use miden_protocol::transaction::{ToInputNoteCommitments, TransactionId};
+use miden_protocol::utils::serde::{Deserializable as _, Serializable as _};
 use rusqlite::{Connection, ToSql, Transaction, params};
 
 use super::SqliteStore;

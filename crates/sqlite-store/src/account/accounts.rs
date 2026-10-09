@@ -4,23 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client::account::{
-    Account,
-    AccountCode,
-    AccountHeader,
-    AccountId,
-    AccountPatch,
-    AccountStorage,
-    Address,
-    PartialAccount,
-    PartialStorage,
-    PartialStorageMap,
-    StorageMapKey,
-    StorageSlotName,
-    StorageSlotType,
-};
-use miden_client::asset::{Asset, AssetVault, AssetWitness};
-use miden_client::store::{
+use miden_client_core::store::{
     AccountRecord,
     AccountRecordData,
     AccountStatus,
@@ -29,11 +13,29 @@ use miden_client::store::{
     ClientAccountType,
     StoreError,
 };
-use miden_client::utils::{Deserializable, Serializable};
-use miden_client::{AccountError, Felt, Word};
-use miden_protocol::account::{AccountStorageHeader, StorageMapWitness, StorageSlotHeader};
-use miden_protocol::asset::{AssetId, PartialVault};
+use miden_protocol::account::{
+    Account,
+    AccountCode,
+    AccountHeader,
+    AccountId,
+    AccountPatch,
+    AccountStorage,
+    AccountStorageHeader,
+    PartialAccount,
+    PartialStorage,
+    PartialStorageMap,
+    StorageMapKey,
+    StorageMapWitness,
+    StorageSlotHeader,
+    StorageSlotName,
+    StorageSlotType,
+};
+use miden_protocol::address::Address;
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness, PartialVault};
 use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::errors::AccountError;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::{EMPTY_WORD, Felt, Word};
 use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
 
 use crate::account::rows::{
@@ -279,7 +281,7 @@ impl SqliteStore {
 
         let witness =
             smt_forest.get_storage_map_item_witness(account_id, &slot_name, map_root, key)?;
-        let item = witness.get(key).unwrap_or(miden_client::EMPTY_WORD);
+        let item = witness.get(key).unwrap_or(EMPTY_WORD);
 
         Ok((item, witness))
     }

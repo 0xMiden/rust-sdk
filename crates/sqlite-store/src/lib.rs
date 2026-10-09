@@ -15,22 +15,7 @@ use std::vec::Vec;
 use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Pool, SqlitePoolManager};
 use deadpool::Runtime;
-use miden_client::Word;
-use miden_client::account::{
-    Account,
-    AccountCode,
-    AccountHeader,
-    AccountId,
-    AccountStorage,
-    Address,
-    StorageMapKey,
-    StorageSlotName,
-};
-use miden_client::asset::{Asset, AssetVault, AssetWitness};
-use miden_client::block::{AccountWitness, BlockHeader};
-use miden_client::crypto::{InOrderIndex, MmrPeaks};
-use miden_client::note::{BlockNumber, NoteScript, Nullifier};
-use miden_client::store::{
+use miden_client_core::store::{
     AccountRecord,
     AccountStatus,
     AccountStorageFilter,
@@ -47,13 +32,27 @@ use miden_client::store::{
     StoreError,
     TransactionFilter,
 };
-use miden_client::sync::{NoteTagRecord, StateSyncUpdate};
-use miden_client::transaction::{TransactionRecord, TransactionStoreUpdate};
-use miden_client::utils::Serializable;
+use miden_client_core::sync::{NoteTagRecord, StateSyncUpdate};
+use miden_client_core::transaction::{TransactionRecord, TransactionStoreUpdate};
 use miden_client_proto as proto;
-use miden_protocol::Felt;
-use miden_protocol::account::StorageMapWitness;
-use miden_protocol::asset::AssetId;
+use miden_protocol::account::{
+    Account,
+    AccountCode,
+    AccountHeader,
+    AccountId,
+    AccountStorage,
+    StorageMapKey,
+    StorageMapWitness,
+    StorageSlotName,
+};
+use miden_protocol::address::Address;
+use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
+use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
+use miden_protocol::note::{NoteScript, Nullifier};
+use miden_protocol::utils::serde::Serializable;
+use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -61,7 +60,6 @@ use sql_error::SqlResultExt;
 use crate::account::rows::query_vault_assets;
 
 mod account;
-mod builder;
 mod chain_data;
 mod db_management;
 mod forest;
@@ -70,8 +68,6 @@ mod settings;
 mod sql_error;
 mod sync;
 mod transaction;
-
-pub use builder::ClientBuilderSqliteExt;
 
 // SQLITE STORE
 // ================================================================================================

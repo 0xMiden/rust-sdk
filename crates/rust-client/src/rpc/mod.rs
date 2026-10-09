@@ -91,10 +91,9 @@ mod errors;
 pub use errors::*;
 
 mod endpoint;
-pub(crate) use domain::limits::RPC_LIMITS_STORE_SETTING;
-pub use domain::limits::RpcLimits;
 pub use domain::status::{NetworkNoteStatus, NetworkNoteStatusInfo, RpcStatusInfo};
 pub use endpoint::Endpoint;
+pub use miden_client_core::rpc::RpcLimits;
 
 #[cfg(not(feature = "testing"))]
 mod generated;

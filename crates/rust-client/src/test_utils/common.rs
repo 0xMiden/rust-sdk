@@ -24,10 +24,14 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::account::component::{
+    Authority,
     BasicWallet,
     BurnPolicy,
     FungibleFaucet,
     MintPolicy,
+    NonFungibleFaucet,
+    Pausable,
+    PausableManager,
     TokenPolicyManager,
 };
 use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountFile, AccountType};
@@ -417,6 +421,43 @@ impl TestClient {
     /// Inserts a new funded fungible faucet account, signing with the default auth scheme.
     pub async fn insert_faucet(&mut self, account_type: AccountType) -> Result<Account> {
         let (account, _) = self.insert_account(AccountSetup::faucet(account_type)).await?;
+        Ok(account)
+    }
+
+    /// Inserts a new funded non-fungible faucet account, signing with the default auth scheme. The
+    /// account has the components of `create_user_non_fungible_faucet`, plus a [`BasicWallet`] that
+    /// lets the faucet receive the note that funds its fees.
+    pub async fn insert_non_fungible_faucet(
+        &mut self,
+        account_type: AccountType,
+    ) -> Result<Account> {
+        let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+
+        let symbol = TokenSymbol::new("NFT")?;
+        let faucet = NonFungibleFaucet::builder()
+            .name(TokenName::new(&symbol.to_string())?)
+            .symbol(symbol)
+            .build();
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
+
+        let mut init_seed = [0u8; 32];
+        self.rng().fill_bytes(&mut init_seed);
+
+        let account = AccountBuilder::new(init_seed)
+            .account_type(account_type)
+            .with_component(auth)
+            .with_component(faucet)
+            .with_component(BasicWallet)
+            .with_component(Authority::AuthControlled)
+            .with_components(policy_manager)
+            .with_component(Pausable::unpaused())
+            .with_component(PausableManager)
+            .build_with_schema_commitment()?;
+
+        let (account, _) = self.insert_account(AccountSetup::prebuilt(account, key)).await?;
         Ok(account)
     }
 

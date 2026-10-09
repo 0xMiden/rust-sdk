@@ -126,7 +126,6 @@ use miden_standards::account::faucets::{
     FungibleFaucet,
     NonFungibleFaucet,
     TokenName,
-    create_user_non_fungible_faucet,
 };
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
@@ -935,7 +934,7 @@ async fn mint_and_burn_non_fungible_transaction() {
     // generate test client with a random store name
     let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
 
-    let faucet = insert_new_non_fungible_faucet(&mut client, AccountType::Private).await;
+    let faucet = client.insert_non_fungible_faucet(AccountType::Private).await.unwrap();
     let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -5115,44 +5114,6 @@ async fn create_prebuilt_mock_chain() -> MockChain {
     mock_chain.prove_next_block().unwrap();
 
     mock_chain
-}
-
-async fn insert_new_non_fungible_faucet(
-    client: &mut TestClient,
-    visibility: AccountType,
-) -> Account {
-    let mut rng = StdRng::from_seed([0u8; 32]);
-    let key_pair = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
-    let pub_key = key_pair.public_key();
-
-    let mut init_seed = [0u8; 32];
-    client.rng().fill_bytes(&mut init_seed);
-
-    let symbol = TokenSymbol::new("NFT").unwrap();
-    let faucet = NonFungibleFaucet::builder()
-        .name(TokenName::new(&symbol.to_string()).unwrap())
-        .symbol(symbol)
-        .build();
-    let policy_manager = TokenPolicyManager::builder()
-        .active_mint_policy(MintPolicy::allow_all())
-        .active_burn_policy(BurnPolicy::allow_all())
-        .build();
-    let auth_component =
-        AuthSingleSig::new(Approver::new(pub_key.to_commitment(), AuthSchemeId::EcdsaK256Keccak));
-
-    let account = create_user_non_fungible_faucet(
-        init_seed,
-        faucet,
-        auth_component,
-        policy_manager,
-        visibility,
-    )
-    .unwrap();
-
-    client.keystore().add_key(&key_pair, account.id()).await.unwrap();
-
-    client.add_account(&account, false).await.unwrap();
-    account
 }
 
 #[allow(clippy::too_many_lines)]

@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::account::component::{FungibleFaucet, MIDEN_PACKAGE_EXTENSION};
+use miden_client::account::component::{
+    FungibleFaucet,
+    MIDEN_PACKAGE_EXTENSION,
+    NonFungibleFaucet,
+};
 use miden_client::account::{
     Account,
     AccountCode,
@@ -193,14 +197,17 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
     for (acc, _acc_seed) in &accounts {
         let reader = client.account_reader(acc.id());
         let status = reader.status().await?.to_string();
-        let token_symbol = get_faucet_token_info(&client, acc.id())
-            .await
-            .ok()
-            .map(|(symbol, _)| symbol.to_string());
+        let kind = if let Ok((symbol, _)) = get_faucet_token_info(&client, acc.id()).await {
+            AccountKind::FungibleFaucet(symbol)
+        } else if let Ok(symbol) = get_non_fungible_faucet_symbol(&client, acc.id()).await {
+            AccountKind::NonFungibleFaucet(symbol)
+        } else {
+            AccountKind::Regular
+        };
 
         table.add_row(vec![
             acc.id().to_hex(),
-            account_kind_display_name(token_symbol.as_deref()),
+            kind.to_string(),
             acc.id().account_type().to_string(),
             acc.nonce().as_canonical_u64().to_string(),
             status,
@@ -222,10 +229,14 @@ async fn show_account<AUTH>(
     let account = load_account(client, account_id, &cli_config.rpc).await?;
 
     let network_id = cli_config.network_id()?;
-    let token_symbol = faucet_component_from_account(&account)
-        .ok()
-        .map(|faucet| faucet.symbol().to_string());
-    print_summary_table(&account, network_id, token_symbol.as_deref());
+    let kind = if let Ok(faucet) = FungibleFaucet::try_from(&account) {
+        AccountKind::FungibleFaucet(faucet.symbol().clone())
+    } else if let Ok(faucet) = NonFungibleFaucet::try_from(&account) {
+        AccountKind::NonFungibleFaucet(faucet.symbol().clone())
+    } else {
+        AccountKind::Regular
+    };
+    print_summary_table(&account, network_id, &kind);
 
     // Vault Tables
     {
@@ -567,7 +578,7 @@ async fn load_account<AUTH>(
 }
 
 /// Prints a summary table with account information.
-fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: Option<&str>) {
+fn print_summary_table(account: &Account, network_id: NetworkId, kind: &AccountKind) {
     let mut table = create_dynamic_table(&["Account Information"]);
     table
         .load_preset(presets::UTF8_HORIZONTAL_ONLY)
@@ -579,7 +590,7 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
         Cell::new("Account Commitment"),
         Cell::new(account.to_commitment().to_string()),
     ]);
-    table.add_row(vec![Cell::new("Kind"), Cell::new(account_kind_display_name(token_symbol))]);
+    table.add_row(vec![Cell::new("Kind"), Cell::new(kind.to_string())]);
     table.add_row(vec![Cell::new("Type"), Cell::new(account.id().account_type().to_string())]);
     table.add_row(vec![
         Cell::new("Code Commitment"),
@@ -625,27 +636,45 @@ async fn get_faucet_token_info<AUTH>(
     Ok((symbol, decimals))
 }
 
-/// Reconstructs the [`FungibleFaucet`] component from a materialized [`Account`].
+/// Reads the token symbol of a non-fungible faucet from its symbol storage slot.
 ///
 /// # Errors
-/// Returns an error if the account's faucet metadata can't be read.
-fn faucet_component_from_account(account: &Account) -> Result<FungibleFaucet, CliError> {
-    let account_id = account.id();
-    FungibleFaucet::try_from(account).map_err(|err| {
-        CliError::Faucet(err.into(), format!("Failed to read faucet metadata for {account_id}"))
+/// Returns an error if the account is not tracked by the client, has no symbol slot (i.e. is not a
+/// non-fungible faucet), or the symbol can't be decoded.
+async fn get_non_fungible_faucet_symbol<AUTH>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+) -> Result<TokenSymbol, CliError> {
+    let symbol_word = client
+        .account_reader(account_id)
+        .get_storage_item(NonFungibleFaucet::symbol_slot().clone())
+        .await?;
+
+    // Symbol slot word layout: `[symbol, 0, 0, 0]` (see `NonFungibleFaucet::symbol_slot_value`).
+    TokenSymbol::try_from(symbol_word[0]).map_err(|err| {
+        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
     })
 }
 
-/// Returns the account's kind for display. If `token_symbol` is provided the account is rendered as
-/// a fungible faucet (the symbol is appended); otherwise it's labelled "Regular".
+/// The kind of an account for display.
 ///
-/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so
-/// faucet-vs-wallet has to be inferred by the caller from the attached components.
-fn account_kind_display_name(token_symbol: Option<&str>) -> String {
-    if let Some(symbol) = token_symbol {
-        format!("Fungible faucet (token symbol: {symbol})")
-    } else {
-        "Regular".to_string()
+/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so the kind
+/// is inferred from the components of the account.
+enum AccountKind {
+    FungibleFaucet(TokenSymbol),
+    NonFungibleFaucet(TokenSymbol),
+    Regular,
+}
+
+impl core::fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FungibleFaucet(symbol) => write!(f, "Fungible faucet (token symbol: {symbol})"),
+            Self::NonFungibleFaucet(symbol) => {
+                write!(f, "Non-fungible faucet (token symbol: {symbol})")
+            },
+            Self::Regular => f.write_str("Regular"),
+        }
     }
 }
 

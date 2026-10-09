@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use miden_client::account::component::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
-use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::note::standards::{PswapNoteStorage, SwapNoteStorage};
 use miden_client::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote};
@@ -219,15 +219,19 @@ pub async fn print_executed_transaction<AUTH>(
         let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 
         for asset in patch.vault().updated_assets() {
-            if asset.is_fungible() {
-                let formatted = resolver.format_asset(client, &asset).await?;
-                fungible_table.add_row(vec![formatted.faucet, formatted.amount]);
-            } else {
-                non_fungible_table.add_row(vec![
-                    asset.faucet_id().to_hex(),
-                    asset.id().to_string(),
-                    "added".to_string(),
-                ]);
+            match asset.as_fungible() {
+                Some(fungible) => {
+                    let (faucet, amount) =
+                        resolver.format_fungible_asset(client, &fungible).await?;
+                    fungible_table.add_row(vec![faucet, amount]);
+                },
+                None => {
+                    non_fungible_table.add_row(vec![
+                        asset.faucet_id().to_hex(),
+                        asset.id().to_string(),
+                        "added".to_string(),
+                    ]);
+                },
             }
         }
 
@@ -432,24 +436,31 @@ pub struct FaucetMetadataResolver {
 }
 
 /// An asset formatted for display in a CLI table.
-pub struct FormattedAsset {
-    /// True for a fungible asset. False for a non-fungible asset.
-    pub is_fungible: bool,
-    /// The token symbol when it is known. Otherwise, the faucet address for a fungible asset or the
-    /// faucet prefix for a non-fungible asset.
-    pub faucet: String,
-    /// The token amount for a fungible asset, or "1" for a non-fungible asset.
-    pub amount: String,
+pub enum FormattedAsset {
+    Fungible {
+        /// The token symbol when it is known. Otherwise, the faucet address.
+        faucet: String,
+        /// The token amount.
+        amount: String,
+    },
+    NonFungible {
+        /// The faucet prefix.
+        faucet: String,
+        /// The asset ID.
+        asset_id: AssetId,
+    },
 }
 
-/// Renders the asset as its amount and faucet on one line.
+/// Renders a fungible asset as its amount and faucet, and a non-fungible asset as its faucet and
+/// asset ID, on one line.
 impl core::fmt::Display for FormattedAsset {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} {}", self.amount, self.faucet)?;
-        if !self.is_fungible {
-            f.write_str(" (non-fungible)")?;
+        match self {
+            Self::Fungible { faucet, amount } => write!(f, "{amount} {faucet}"),
+            Self::NonFungible { faucet, asset_id } => {
+                write!(f, "{faucet} (non-fungible, asset ID {asset_id})")
+            },
         }
-        Ok(())
     }
 }
 
@@ -582,7 +593,7 @@ impl FaucetMetadataResolver {
     }
 
     /// Formats an asset for display. A fungible asset is resolved through [`Self::resolve`]. A
-    /// non-fungible asset shows its faucet prefix and an amount of one.
+    /// non-fungible asset shows its faucet prefix and its asset ID.
     pub async fn format_asset<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -591,12 +602,11 @@ impl FaucetMetadataResolver {
         Ok(match asset.as_fungible() {
             Some(fungible) => {
                 let (faucet, amount) = self.format_fungible_asset(client, &fungible).await?;
-                FormattedAsset { is_fungible: true, faucet, amount }
+                FormattedAsset::Fungible { faucet, amount }
             },
-            None => FormattedAsset {
-                is_fungible: false,
+            None => FormattedAsset::NonFungible {
                 faucet: asset.faucet_id().prefix().to_hex(),
-                amount: "1".to_string(),
+                asset_id: asset.id(),
             },
         })
     }

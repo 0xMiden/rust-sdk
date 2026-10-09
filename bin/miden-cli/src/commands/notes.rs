@@ -278,11 +278,15 @@ async fn show_note<AUTH: Keystore + Sync>(
 
     let resolver = load_faucet_metadata_resolver()?;
     for asset in assets.iter() {
-        if asset.is_fungible() {
-            let formatted = resolver.format_asset(client, asset).await?;
-            fungible_table.add_row(vec![formatted.faucet, formatted.amount]);
-        } else {
-            non_fungible_table.add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
+        match asset.as_fungible() {
+            Some(fungible) => {
+                let (faucet, amount) = resolver.format_fungible_asset(client, &fungible).await?;
+                fungible_table.add_row(vec![faucet, amount]);
+            },
+            None => {
+                non_fungible_table
+                    .add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
+            },
         }
     }
     println!("{fungible_table}");

@@ -5,7 +5,6 @@
 //! against a `MockChain` with a non-zero `verification_base_fee`, which is the only switch that
 //! turns fee collection on.
 
-use std::env::temp_dir;
 use std::sync::Arc;
 
 use miden_client::ClientError;
@@ -13,17 +12,15 @@ use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
-use miden_client::builder::ClientBuilder;
-use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::keystore::Keystore;
 use miden_client::store::NoteFilter;
-use miden_client::testing::common::{TestClient, create_test_store_path};
+use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     TransactionExecutorError,
     TransactionRequestBuilder,
     TransactionRequestError,
 };
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
@@ -44,7 +41,7 @@ use miden_testing::{Auth, MockChain, MockChainBuilder};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
-use super::seed_mock_transaction_encryption_key;
+use super::mock_client_builder;
 
 /// Base fee used by the protocol's own fee-payment tests. Large enough that the computed fee is
 /// non-zero, which is what forces the conversion info to be present.
@@ -268,22 +265,10 @@ async fn fee_charging_client_with_auth_and_rpc(
     builder.add_account(account.clone()).unwrap();
     let chain = builder.build().unwrap();
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    keystore.add_key(&key, account.id()).await.unwrap();
-
     let rpc_api = Arc::new(MockRpcApi::new(chain));
-    let mut client = TestClient::from(
-        ClientBuilder::new()
-            .rpc(rpc_api.clone())
-            .sqlite_store(create_test_store_path())
-            .authenticator(Arc::new(keystore))
-            .tx_discard_delta(None)
-            .build()
-            .await
-            .unwrap(),
-    );
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client =
+        TestClient::from(mock_client_builder(rpc_api.clone()).await.build().await.unwrap());
+    client.keystore().add_key(&key, account.id()).await.unwrap();
     client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
 

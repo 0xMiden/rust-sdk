@@ -48,7 +48,6 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     let mut client_2 = client_config.clone().into_client().await?;
     // Client 3 will be transferred part of the assets by client 2's account
     let mut client_3 = client_config.clone().into_client().await?;
-    client_3.wait_for_node().await;
 
     // Create faucet account
     let (faucet_account, _) = client_1
@@ -177,7 +176,6 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_2.wait_for_node().await;
 
     let (faucet_account_header, secret_key) =
         client_1.insert_account(AccountSetup::faucet(AccountType::Public)).await?;
@@ -340,7 +338,6 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     let mut user_seed = [0u8; 32];
     client_1.rng().fill_bytes(&mut user_seed);
@@ -416,7 +413,6 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     let faucet_account = client_1.insert_faucet(AccountType::Public).await?;
     let wallet = client_1.insert_wallet(AccountType::Public).await?;
@@ -536,7 +532,6 @@ pub async fn test_incorrect_genesis(client_config: ClientConfig) -> Result<()> {
 /// submission order.
 pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     let faucet_account = client.insert_faucet(AccountType::Private).await?;
 
@@ -682,7 +677,6 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 ) -> Result<()> {
     let mut client_a = client_config.clone().into_client().await?;
     let mut client_b = client_config.clone().into_client().await?;
-    client_a.wait_for_node().await;
 
     let faucet = client_a.insert_faucet(AccountType::Public).await?;
     let consumer = client_a.insert_wallet(AccountType::Public).await?;
@@ -745,7 +739,6 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     // Create faucet in client 1
     let faucet_account = client_1.insert_faucet(AccountType::Private).await?;

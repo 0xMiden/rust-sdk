@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
-use std::env::temp_dir;
 use std::sync::Arc;
 
 use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
-use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{
     NetworkAccountTarget,
@@ -28,7 +26,7 @@ use miden_client::note_transport::{
 use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
 use miden_client::store::{InputNoteRecord, NoteFilter, SettingScope};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
-use miden_client::testing::common::{TestClient, create_test_store_path};
+use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::note_transport::{
     FaultyNoteTransportApi,
@@ -37,7 +35,6 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
@@ -58,7 +55,7 @@ use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
-use crate::tests::{create_test_client_builder, seed_mock_transaction_encryption_key};
+use crate::tests::{mock_client_builder, prebuilt_rpc_api};
 
 #[tokio::test]
 async fn transport_basic() {
@@ -147,18 +144,12 @@ async fn transport_recovers_attachments() {
     let rpc_api = Arc::new(MockRpcApi::new(mock_chain));
 
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    let mut client = ClientBuilder::new()
-        .rpc(rpc_api.clone())
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+    let mut client = mock_client_builder(rpc_api.clone())
+        .await
         .note_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
-        .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
     client.sync_state().await.unwrap();
 
     client.add_note_tag(private_note.metadata().tag()).await.unwrap();
@@ -346,7 +337,9 @@ async fn transport_fetch_chunks_tracked_tags() {
 #[tokio::test]
 async fn transport_adding_tag_preserves_existing_cursors() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let mut recipient = create_test_client_transport(mock_node.clone()).await;
+    let mut recipient =
+        create_test_client_with_transport(Arc::new(MockNoteTransportApi::new(mock_node.clone())))
+            .await;
     let existing_tag = NoteTag::new(20_001);
     let added_tag = NoteTag::new(20_002);
     recipient.add_note_tag(existing_tag).await.unwrap();
@@ -589,19 +582,14 @@ async fn fetch_private_notes_finds_note_committed_at_sync_height() {
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
-
-    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(arc_rpc_api)
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .note_transport(Arc::new(transport_client));
-
-    let mut client = TestClient::from(builder.build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = TestClient::from(
+        mock_client_builder(arc_rpc_api)
+            .await
+            .note_transport(Arc::new(transport_client))
+            .build()
+            .await
+            .unwrap(),
+    );
 
     // 3. Register tag 0 so chain sync sees the note's block.
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
@@ -691,19 +679,13 @@ async fn ntl_note_committed_within_the_sync_window_is_committed_by_that_sync() {
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
     let rng = ChaCha20Rng::seed_from_u64(1234);
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-
-    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(rpc_api)
+    let mut client = mock_client_builder(rpc_api)
+        .await
         .rng(Box::new(rng))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .note_transport(Arc::new(transport_client));
-
-    let mut client = builder.build().await.unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+        .note_transport(Arc::new(transport_client))
+        .build()
+        .await
+        .unwrap();
 
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
@@ -777,19 +759,14 @@ async fn ntl_note_already_spent_below_the_checkpoint_is_not_left_committed() {
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
     let rng = ChaCha20Rng::seed_from_u64(1234);
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
 
-    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(rpc_api)
+    let mut client = mock_client_builder(rpc_api)
+        .await
         .rng(Box::new(rng))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .note_transport(Arc::new(transport_client));
-
-    let mut client = builder.build().await.unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+        .note_transport(Arc::new(transport_client))
+        .build()
+        .await
+        .unwrap();
     client.add_note_tag(note.metadata().tag()).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -852,19 +829,14 @@ async fn ntl_refresh_of_expected_note_detects_consumption_in_same_sync() {
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
     let rng = ChaCha20Rng::seed_from_u64(1234);
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
 
-    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(rpc_api.clone())
+    let mut client = mock_client_builder(rpc_api.clone())
+        .await
         .rng(Box::new(rng))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .note_transport(Arc::new(transport_client));
-
-    let mut client = builder.build().await.unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+        .note_transport(Arc::new(transport_client))
+        .build()
+        .await
+        .unwrap();
     client.add_note_tag(note.metadata().tag()).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -1183,7 +1155,10 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
 #[tokio::test]
 async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let mut client = Box::pin(create_test_client_transport(mock_node.clone())).await;
+    let mut client = Box::pin(create_test_client_with_transport(Arc::new(
+        MockNoteTransportApi::new(mock_node.clone()),
+    )))
+    .await;
     client.sync_state().await.unwrap();
 
     let account = client.insert_wallet(AccountType::Private).await.unwrap();
@@ -1503,28 +1478,27 @@ async fn stored_note_transport_cursors(
     client.test_store().get_note_transport_cursors().await.unwrap()
 }
 
-pub async fn create_test_client_transport(
-    mock_node: Arc<RwLock<MockNoteTransportNode>>,
-) -> TestClient {
-    create_test_client_with_transport(Arc::new(MockNoteTransportApi::new(mock_node))).await
-}
-
+/// Returns a client over the prebuilt chain that relays private notes through `mock_node`, plus a
+/// private wallet it tracks.
 pub async fn create_test_user_transport(
     mock_node: Arc<RwLock<MockNoteTransportNode>>,
 ) -> (TestClient, Account) {
-    let mut client = Box::pin(create_test_client_transport(mock_node.clone())).await;
-    let account = client.insert_wallet(AccountType::Private).await.unwrap();
-    (client, account)
+    create_test_user_with_transport(Arc::new(MockNoteTransportApi::new(mock_node))).await
 }
 
+/// Returns a client over the prebuilt chain that relays private notes through `transport`.
 pub async fn create_test_client_with_transport(
     transport: Arc<dyn NoteTransportClient>,
 ) -> TestClient {
-    let (builder, _) = create_test_client_builder().await;
-    let mut client = TestClient::from(builder.note_transport(transport).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
-    client
+    let rpc_api = Arc::new(prebuilt_rpc_api().await);
+    TestClient::from(
+        mock_client_builder(rpc_api)
+            .await
+            .note_transport(transport)
+            .build()
+            .await
+            .unwrap(),
+    )
 }
 
 pub async fn create_test_user_with_transport(
@@ -1609,19 +1583,14 @@ async fn committed_private_note_recipient(
     let arc_rpc_api = Arc::new(rpc_api);
     let transport_client = MockNoteTransportApi::new(mock_transport_node.clone());
 
-    let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path.clone()).unwrap();
-
-    let builder: ClientBuilder<FilesystemKeyStore> = ClientBuilder::new()
-        .rpc(arc_rpc_api)
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .note_transport(Arc::new(transport_client));
-
-    let mut client = TestClient::from(builder.build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = TestClient::from(
+        mock_client_builder(arc_rpc_api)
+            .await
+            .note_transport(Arc::new(transport_client))
+            .build()
+            .await
+            .unwrap(),
+    );
 
     // Register tag 0 so chain sync sees the note's block, then sync to the tip. The NTL is empty,
     // so no transport notes are imported yet.

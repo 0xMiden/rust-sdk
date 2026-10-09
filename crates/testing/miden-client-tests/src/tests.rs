@@ -24,6 +24,7 @@ use miden_client::note::{
     NoteFile,
     NoteSyncHint,
 };
+use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
@@ -35,6 +36,8 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
+    SettingScope,
+    Store,
     StoreError,
     TransactionFilter,
 };
@@ -62,7 +65,7 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_sqlite_store::{ClientBuilderSqliteExt, SqliteStore};
 use miden_protocol::account::{
     Account,
     AccountBuilder,
@@ -255,7 +258,12 @@ async fn insert_basic_account() {
 async fn insert_ecdsa_account() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    let account = insert_new_ecdsa_wallet(&mut client, AccountType::Private).await.unwrap();
+    let (account, _) = client
+        .insert_account(
+            AccountSetup::wallet(AccountType::Private).auth_scheme(ECDSA_K256_KECCAK_SCHEME_ID),
+        )
+        .await
+        .unwrap();
 
     assert_account_inserted(&client, &account).await;
 }
@@ -273,7 +281,10 @@ async fn insert_faucet_account() {
 async fn insert_ecdsa_faucet_account() {
     let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
 
-    let account = insert_new_ecdsa_fungible_faucet(&mut client, AccountType::Private)
+    let (account, _) = client
+        .insert_account(
+            AccountSetup::faucet(AccountType::Private).auth_scheme(ECDSA_K256_KECCAK_SCHEME_ID),
+        )
         .await
         .unwrap();
 
@@ -397,10 +408,15 @@ async fn sync_state() {
 
 #[tokio::test]
 async fn sync_state_mmr() {
-    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client =
-        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
+    let rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(rpc_api.clone()))
+            .await
+            .irrelevant_block_prune_interval(None)
+            .build()
+            .await
+            .unwrap(),
+    );
     // Import note and create wallet so that synced notes do not get discarded (due to being
     // irrelevant)
     client.insert_wallet(AccountType::Private).await.unwrap();
@@ -487,10 +503,15 @@ async fn sync_state_mmr() {
 /// still have its header and MMR path authenticated before it is omitted from storage.
 #[tokio::test]
 async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
-    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client =
-        TestClient::from(builder.irrelevant_block_prune_interval(None).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
+    let rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(rpc_api.clone()))
+            .await
+            .irrelevant_block_prune_interval(None)
+            .build()
+            .await
+            .unwrap(),
+    );
     client.insert_wallet(AccountType::Private).await.unwrap();
 
     let notes = rpc_api
@@ -522,11 +543,15 @@ async fn sync_state_rejects_tampered_path_for_same_sync_consumed_note() {
 
 #[tokio::test]
 async fn sync_state_mmr_with_in_memory_cache() {
-    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client =
-        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(rpc_api.clone()))
+            .await
+            .cache_partial_mmr_in_memory(true)
+            .build()
+            .await
+            .unwrap(),
+    );
 
     client.insert_wallet(AccountType::Private).await.unwrap();
 
@@ -551,11 +576,15 @@ async fn sync_state_mmr_with_in_memory_cache() {
 /// store-backed MMR rather than the stale cache.
 #[tokio::test]
 async fn stale_cached_partial_mmr_is_rebuilt_from_store() {
-    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client =
-        TestClient::from(builder.cache_partial_mmr_in_memory(true).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(rpc_api.clone()))
+            .await
+            .cache_partial_mmr_in_memory(true)
+            .build()
+            .await
+            .unwrap(),
+    );
     client.insert_wallet(AccountType::Private).await.unwrap();
 
     // Import the mock chain's public notes so a block becomes tracked after sync.
@@ -1498,20 +1527,9 @@ async fn input_note_reader_finds_externally_consumed_notes() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain.
-    let keystore_path = std::env::temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(mock_rpc))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(mock_rpc)).await.build().await.unwrap();
 
     // Register the consumer account so sync_transactions returns its transactions.
     client.add_account(&consumer, false).await.unwrap();
@@ -1602,19 +1620,9 @@ async fn import_by_id_already_consumed_note_is_findable_by_id() {
     chain.prove_next_block().unwrap();
 
     // Build a client backed by this chain. This client never saw the note before.
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(mock_rpc))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(Arc::new(mock_rpc)).await.build().await.unwrap();
 
     // Import the already-consumed public note by id.
     let returned = client.import_notes(&[NoteFile::NoteId(note_id)]).await.unwrap();
@@ -1694,20 +1702,14 @@ async fn setup_prunable_block_scenario(
     chain.add_pending_executed_transaction(&tx).unwrap();
     chain.prove_next_block().unwrap();
 
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
     let mock_rpc = MockRpcApi::new(chain);
 
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(mock_rpc.clone()))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
+    let mut client = mock_client_builder(Arc::new(mock_rpc.clone()))
+        .await
         .irrelevant_block_prune_interval(prune_interval)
         .build()
         .await
         .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
     client.add_note_tag(NoteTag::new(0)).await.unwrap();
 
     client.sync_state().await.unwrap();
@@ -2461,13 +2463,17 @@ async fn get_output_notes() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn account_rollback() {
-    let (builder, mock_rpc_api) = Box::pin(create_test_client_builder()).await;
-
-    let mut client =
-        TestClient::from(builder.tx_discard_delta(Some(TX_DISCARD_DELTA)).build().await.unwrap());
+    let mock_rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(mock_rpc_api.clone()))
+            .await
+            .tx_discard_delta(Some(TX_DISCARD_DELTA))
+            .build()
+            .await
+            .unwrap(),
+    );
 
     client.sync_state().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
 
     let (regular_account, faucet_account_header) =
         client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
@@ -3303,18 +3309,7 @@ async fn pswap_cancel_test() {
 // model Alice and Bob as two genuinely separate clients (as they are in production), rather than
 // two accounts colocated on one store.
 async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> TestClient {
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-
-    let mut client = ClientBuilder::new()
-        .rpc(Arc::new(mock_rpc_api.clone()))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore.clone()))
-        .tx_discard_delta(None)
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let client = mock_client_builder(Arc::new(mock_rpc_api.clone())).await.build().await.unwrap();
 
     TestClient::from(client)
 }
@@ -3330,7 +3325,7 @@ async fn create_pswap_test_client(mock_rpc_api: &MockRpcApi) -> TestClient {
 #[tokio::test]
 async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
     // One shared chain, two independent clients.
-    let mock_rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
+    let mock_rpc_api = prebuilt_rpc_api().await;
     let mut alice_client = create_pswap_test_client(&mock_rpc_api).await;
     let mut bob_client = create_pswap_test_client(&mock_rpc_api).await;
 
@@ -3500,7 +3495,7 @@ async fn pswap_chain_tracking_test(#[case] note_type: NoteType) {
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
-    let mock_rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
+    let mock_rpc_api = prebuilt_rpc_api().await;
     let mut alice_client = create_pswap_test_client(&mock_rpc_api).await;
     let mut bob_client = create_pswap_test_client(&mock_rpc_api).await;
 
@@ -3620,7 +3615,7 @@ async fn pswap_full_fill_chain_tracking_test(#[case] note_type: NoteType) {
 #[tokio::test]
 async fn pswap_multi_round_chain_tracking_test() {
     let note_type = NoteType::Public;
-    let mock_rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
+    let mock_rpc_api = prebuilt_rpc_api().await;
     let mut alice_client = create_pswap_test_client(&mock_rpc_api).await;
     let mut bob_client = create_pswap_test_client(&mock_rpc_api).await;
 
@@ -3786,7 +3781,7 @@ async fn pswap_multi_round_chain_tracking_test() {
 /// the pair terminates does the tag drop out of the client's tracked-tag set.
 #[tokio::test]
 async fn pswap_asset_pair_tag_isolated_per_order() {
-    let mock_rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
+    let mock_rpc_api = prebuilt_rpc_api().await;
     let mut alice_client = create_pswap_test_client(&mock_rpc_api).await;
 
     let (alice_wallet, btc_faucet) =
@@ -4273,9 +4268,8 @@ async fn import_watched_account_by_id_ignores_tag_limit() {
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
         .unwrap();
     let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
-    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
+    let mut client =
+        TestClient::from(mock_client_builder(Arc::new(rpc_api)).await.build().await.unwrap());
 
     fill_account_tags(&mut client).await;
 
@@ -4291,16 +4285,7 @@ async fn import_watched_account_by_id_rejects_already_tracked_native_account() {
     let account_id = account.id();
     let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
     let arc_rpc_api = Arc::new(rpc_api);
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    let mut client = ClientBuilder::new()
-        .rpc(arc_rpc_api)
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(arc_rpc_api).await.build().await.unwrap();
 
     client.add_account(&account, false).await.unwrap();
 
@@ -4341,9 +4326,8 @@ async fn add_address_to_watched_account_does_not_track_its_tag() {
         .unwrap();
     let account_id = account.id();
     let rpc_api = MockRpcApi::new(mock_chain_builder.build().unwrap());
-    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client = TestClient::from(builder.rpc(Arc::new(rpc_api)).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
+    let mut client =
+        TestClient::from(mock_client_builder(Arc::new(rpc_api)).await.build().await.unwrap());
 
     client.import_watched_account_by_id(account_id).await.unwrap();
 
@@ -4648,18 +4632,12 @@ async fn sync_committed_private_note_with_attachments(
         rpc_api.register_private_note_attachments(private_note.id(), attachments.clone());
     }
     let rng = ChaCha20Rng::seed_from_u64(1234);
-    let keystore = FilesystemKeyStore::new(std::env::temp_dir()).unwrap();
-    let mut client = ClientBuilder::new()
-        .rpc(rpc_api.clone())
+    let mut client = mock_client_builder(rpc_api.clone())
+        .await
         .rng(Box::new(rng))
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None)
         .build()
         .await
         .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
 
     // 5. Track the note as an expected input note (no metadata, empty attachments) and register its
     //    tag so the chain sync sees the note's block. The client has not synced past block 1, so
@@ -4845,18 +4823,8 @@ async fn sync_large_public_account() {
 
     // 4. Build a client and add the ORIGINAL (pre-tx) account.
     // The pre-tx commitment differs from on-chain, which triggers sync.
-    let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
 
-    let mut client = ClientBuilder::new()
-        .rpc(arc_rpc_api)
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .build()
-        .await
-        .unwrap();
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client = mock_client_builder(arc_rpc_api).await.build().await.unwrap();
     client.add_account(&original_account, false).await.unwrap();
 
     // 5. Sync — the client detects a commitment mismatch, fetches full account state.
@@ -4910,13 +4878,10 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
         .await
         .unwrap();
 
-    let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
-
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(MockRpcApi::default()))
         .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
+        .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
         .build()
         .await
         .unwrap();
@@ -4946,55 +4911,58 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 // ================================================================================================
 
 pub async fn create_test_client() -> (TestClient, MockRpcApi) {
-    let (builder, rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client = TestClient::from(builder.build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
-
-    (client, rpc_api)
+    let rpc_api = prebuilt_rpc_api().await;
+    let client = mock_client_builder(Arc::new(rpc_api.clone())).await.build().await.unwrap();
+    (TestClient::from(client), rpc_api)
 }
 
-/// Gives a mock-backed client the transaction encryption key that submission seals against.
-pub async fn seed_mock_transaction_encryption_key(client: &mut MockClient<FilesystemKeyStore>) {
-    client
-        .seed_protocol_config(MockChain::new().protocol_config().clone())
+/// Returns a mock node over the prebuilt chain (see [`create_prebuilt_mock_chain`]).
+pub async fn prebuilt_rpc_api() -> MockRpcApi {
+    MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await)
+}
+
+/// Returns a builder for a client backed by `rpc_api`, with a fresh keystore and no transaction
+/// discard delta.
+///
+/// The store is a fresh SQLite database that already holds what the client needs before its first
+/// sync or submission: the genesis header, the chain's protocol configuration and a transaction
+/// encryption key. The key is a fixed unattested one because the mock node does not serve any.
+pub async fn mock_client_builder(rpc_api: Arc<MockRpcApi>) -> ClientBuilder<FilesystemKeyStore> {
+    let store = SqliteStore::new(create_test_store_path()).await.unwrap();
+
+    let (genesis, _) = rpc_api
+        .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
         .await
         .unwrap();
-    let genesis_commitment = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await
-        .unwrap()
-        .expect("genesis must be in place before the encryption key is seeded")
-        .0
-        .commitment();
+    store.insert_block_header(&genesis, &[], false).await.unwrap();
 
-    client
-        .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+    let protocol_config = rpc_api.protocol_config();
+    store
+        .set_setting(
+            SettingScope::Client,
+            protocol_config_setting_key(protocol_config.to_commitment()),
+            protocol_config.to_bytes(),
+        )
+        .await
+        .unwrap();
+
+    store
+        .set_transaction_encryption_key(&TransactionEncryptionKey::new_unattested(
             b"mock-key-id".to_vec(),
             KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0xface)).public_key(),
-            genesis_commitment,
+            genesis.commitment(),
         ))
         .await
-        .expect("seeding the encryption key in the store should succeed");
+        .unwrap();
+
+    ClientBuilder::new()
+        .rpc(rpc_api)
+        .store(Arc::new(store))
+        .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
+        .tx_discard_delta(None)
 }
 
-pub async fn create_test_client_builder() -> (ClientBuilder<FilesystemKeyStore>, MockRpcApi) {
-    let keystore_path = temp_dir();
-    let keystore = FilesystemKeyStore::new(keystore_path).unwrap();
-
-    let rpc_api = MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await);
-    let arc_rpc_api = Arc::new(rpc_api.clone());
-
-    let builder = ClientBuilder::new()
-        .rpc(arc_rpc_api)
-        .sqlite_store(create_test_store_path())
-        .authenticator(Arc::new(keystore))
-        .tx_discard_delta(None);
-
-    (builder, rpc_api)
-}
-
-pub async fn create_prebuilt_mock_chain() -> MockChain {
+async fn create_prebuilt_mock_chain() -> MockChain {
     let mut mock_chain_builder = MockChainBuilder::new();
     let mock_account = mock_chain_builder
         .add_existing_mock_account(miden_testing::Auth::IncrNonce)
@@ -5073,81 +5041,6 @@ pub async fn create_prebuilt_mock_chain() -> MockChain {
     mock_chain
 }
 
-async fn insert_new_ecdsa_wallet(
-    client: &mut TestClient,
-    visibility: AccountType,
-) -> anyhow::Result<Account> {
-    let init_seed = [0u8; 32];
-    let mut rng = StdRng::from_seed(init_seed);
-
-    let key_pair = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
-    let pub_key = key_pair.public_key();
-
-    let account = AccountBuilder::new(init_seed)
-        .account_type(visibility)
-        .with_component(AuthSingleSig::new(Approver::new(
-            pub_key.to_commitment(),
-            AuthSchemeId::EcdsaK256Keccak,
-        )))
-        .with_component(BasicWallet)
-        .build_with_schema_commitment()
-        .unwrap();
-
-    client.keystore().add_key(&key_pair, account.id()).await.unwrap();
-
-    client.add_account(&account, false).await?;
-
-    Ok(account)
-}
-
-async fn insert_new_ecdsa_fungible_faucet(
-    client: &mut TestClient,
-    visibility: AccountType,
-) -> anyhow::Result<Account> {
-    let init_seed = [0u8; 32];
-    let mut rng = StdRng::from_seed(init_seed);
-
-    let key_pair = AuthSecretKey::new_ecdsa_k256_keccak_with_rng(&mut rng);
-    let pub_key = key_pair.public_key();
-
-    // we need to use an initial seed to create the wallet account
-    let mut init_seed = [0u8; 32];
-    client.rng().fill_bytes(&mut init_seed);
-
-    let symbol = TokenSymbol::new("TEST").unwrap();
-    let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
-    let max_supply = 9_999_999_u64;
-    let faucet = FungibleFaucet::builder()
-        .name(name)
-        .symbol(symbol)
-        .decimals(10)
-        .max_supply(AssetAmount::new(max_supply).unwrap())
-        .build()
-        .unwrap();
-    // Only mint/burn policies, transfer policies are intentionally omitted for the reason described
-    // in test_utils/common.rs where the faucet setup is built.
-    let policy_manager = TokenPolicyManager::builder()
-        .active_mint_policy(MintPolicy::allow_all())
-        .active_burn_policy(BurnPolicy::allow_all())
-        .build();
-
-    let account = AccountBuilder::new(init_seed)
-        .account_type(visibility)
-        .with_component(AuthSingleSig::new(Approver::new(
-            pub_key.to_commitment(),
-            AuthSchemeId::EcdsaK256Keccak,
-        )))
-        .with_component(faucet)
-        .with_components(policy_manager)
-        .build_with_schema_commitment()
-        .unwrap();
-
-    client.keystore().add_key(&key_pair, account.id()).await.unwrap();
-
-    client.add_account(&account, false).await?;
-    Ok(account)
-}
-
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn storage_and_vault_proofs_ecdsa() {
@@ -5222,9 +5115,7 @@ async fn storage_and_vault_proofs_ecdsa() {
 
     // Add assets and modify storage map multiple times
     for _ in 0..5 {
-        let faucet_account = insert_new_ecdsa_fungible_faucet(&mut client, AccountType::Public)
-            .await
-            .unwrap();
+        let faucet_account = client.insert_faucet(AccountType::Public).await.unwrap();
 
         let faucet_account_id = faucet_account.id();
 

@@ -14,19 +14,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use miden_client::Deserializable;
 use miden_client::account::AccountId;
-use miden_client::auth::TransactionAuthenticator;
-use miden_client::block::BlockNumber;
 use miden_client::note::Note;
 use miden_client::testing::fee::FeeFunder;
-use miden_client::{Client, Deserializable};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 // CONSTANTS
 // ================================================================================================
 
-/// Env var naming the funding service's base URL, mirroring the `--funding-service` argument.
+/// Env var naming the funding service's base URL.
 pub const FUNDING_SERVICE_ENV: &str = "MIDEN_FUNDING_SERVICE_URL";
 
 /// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
@@ -250,23 +248,6 @@ impl FeeFunder for FundingServiceFunder {
                 )
             })?
     }
-}
-
-/// Returns the faucet the chain charges fees in, as the genesis header's protocol configuration
-/// names it.
-pub async fn fee_faucet_id<AUTH: TransactionAuthenticator + Sync + 'static>(
-    client: &Client<AUTH>,
-) -> Result<AccountId> {
-    let (genesis, _) = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await?
-        .context("genesis block header is not in the client's store")?;
-
-    Ok(client
-        .get_protocol_config(genesis.protocol_config_commitment())
-        .await?
-        .fee_asset_id()
-        .faucet_id())
 }
 
 /// Builds the [`FeeFunder`] a run draws the native fee asset from, talking to the funding service

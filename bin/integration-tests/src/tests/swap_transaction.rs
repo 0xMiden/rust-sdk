@@ -15,11 +15,7 @@ pub async fn test_swap_fully_onchain(client_config: ClientConfig) -> Result<()> 
     const OFFERED_ASSET_AMOUNT: u64 = 1;
     const REQUESTED_ASSET_AMOUNT: u64 = 25;
     let mut client1 = client_config.clone().into_client().await?;
-    client1.wait_for_node().await;
     let mut client2 = client_config.clone().into_client().await?;
-
-    client1.sync_state().await?;
-    client2.sync_state().await?;
 
     // Create Client 1's basic wallet (We'll call it accountA)
     let account_a = client1.insert_wallet(AccountType::Private).await?;
@@ -139,11 +135,7 @@ pub async fn test_swap_private(client_config: ClientConfig) -> Result<()> {
     const OFFERED_ASSET_AMOUNT: u64 = 1;
     const REQUESTED_ASSET_AMOUNT: u64 = 25;
     let mut client1 = client_config.clone().into_client().await?;
-    client1.wait_for_node().await;
     let mut client2 = client_config.clone().into_client().await?;
-
-    client1.sync_state().await?;
-    client2.sync_state().await?;
 
     // Create Client 1's basic wallet (We'll call it accountA)
     let account_a = client1.insert_wallet(AccountType::Private).await?;

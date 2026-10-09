@@ -1,6 +1,5 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_lossless)]
 
-use std::path::Path;
 use std::time::Instant;
 
 use miden_client::account::component::{AccountComponent, AccountComponentMetadata, BasicWallet};
@@ -120,11 +119,7 @@ fn create_account_with_empty_maps(
 /// Creates and deploys a public wallet with empty storage maps to the network. Returns the account
 /// ID. The signing key and account data are persisted in the store directory for use by subsequent
 /// `expand` and `transaction` commands.
-pub async fn deploy_account(
-    client: &mut TestClient,
-    store_path: &Path,
-    maps: usize,
-) -> anyhow::Result<AccountId> {
+pub async fn deploy_account(client: &mut TestClient, maps: usize) -> anyhow::Result<AccountId> {
     println!("Storage maps: {maps} (empty)");
     println!();
 
@@ -143,11 +138,8 @@ pub async fn deploy_account(
 
     let account_id = account.id();
 
-    // Add key to the filesystem keystore and account to the client
-    let keystore_path = store_path.join("keystore");
-    let keystore =
-        FilesystemKeyStore::new(keystore_path).expect("Failed to create keystore handle");
-    keystore.add_key(&secret_key, account_id).await?;
+    // Add the key to the client's keystore and the account to the client
+    client.keystore().add_key(&secret_key, account_id).await?;
     client.add_account(&account, false).await?;
 
     // Deploy the account

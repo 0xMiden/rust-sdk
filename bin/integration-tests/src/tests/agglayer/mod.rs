@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use miden_client::account::{AccountFile, AccountId};
-use miden_client::keystore::Keystore;
 use miden_client::testing::common::TestClient;
 
 use crate::ClientConfig;
@@ -70,31 +69,6 @@ impl AgglayerConfig {
         self.faucet.account().id()
     }
 
-    /// Imports a single account (by ID) into the given client and its keystore. Fetches the latest
-    /// state from the network. Adds any matching secret keys.
-    pub async fn import_account(
-        &self,
-        account_id: AccountId,
-        client: &mut TestClient,
-    ) -> Result<()> {
-        let account_file = [&self.bridge_admin, &self.ger_manager, &self.bridge, &self.faucet]
-            .into_iter()
-            .find(|f| f.account().id() == account_id)
-            .with_context(|| format!("account {account_id} not found in agglayer config"))?;
-
-        client
-            .import_account_by_id(account_id)
-            .await
-            .with_context(|| format!("failed to import account {account_id} from network"))?;
-
-        for secret_key in account_file.auth_secret_keys() {
-            client.keystore().add_key(secret_key, account_id).await.with_context(|| {
-                format!("failed to add key for account {account_id} to keystore")
-            })?;
-        }
-        Ok(())
-    }
-
     fn load_account_file(dir: &Path, filename: &str) -> Result<AccountFile> {
         let path = dir.join(filename);
         let bytes =
@@ -107,48 +81,38 @@ impl AgglayerConfig {
 // SHARED TEST SETUP
 // ================================================================================================
 
-/// Account IDs produced by the core setup: `(bridge_admin_id, ger_manager_id, bridge_id)`.
-pub type CoreAccountIds = (AccountId, AccountId, AccountId);
-
-/// Creates three clients sharing the same RPC endpoint, for bridge admin, GER manager, and user.
-pub async fn create_agglayer_clients(
-    client_config: &ClientConfig,
-) -> Result<(TestClient, TestClient, TestClient)> {
-    let mut bridge_admin = client_config.clone().into_client().await?;
-    bridge_admin.wait_for_node().await;
-    bridge_admin.sync_state().await?;
-    println!("[setup] Bridge admin client initialized");
-
-    let ger_manager = client_config.clone().into_client().await?;
-    println!("[setup] GER manager client initialized");
-
-    let user = client_config.clone().into_client().await?;
-    println!("[setup] User client initialized");
-
-    Ok((bridge_admin, ger_manager, user))
+/// The pre-deployed agglayer accounts and the three clients that transact with them.
+pub struct AgglayerScenario {
+    pub config: AgglayerConfig,
+    /// Signs for the bridge admin.
+    pub bridge_admin: TestClient,
+    /// Signs for the GER manager.
+    pub ger_manager: TestClient,
+    /// Holds the end-user accounts.
+    pub user: TestClient,
 }
 
-/// Imports the core agglayer accounts (bridge admin, GER manager, bridge) into the three clients.
-///
-/// The bridge goes into all three so each can build transactions that reference it. The bridge
-/// admin and the GER manager go only into the client that signs for them.
-pub async fn setup_core_accounts(
-    config: &AgglayerConfig,
-    bridge_admin: &mut TestClient,
-    ger_manager: &mut TestClient,
-    user: &mut TestClient,
-) -> Result<CoreAccountIds> {
-    println!("[setup] Loading core accounts");
-    println!("[setup]   bridge admin:  {}", config.bridge_admin_id());
-    println!("[setup]   GER manager:   {}", config.ger_manager_id());
-    println!("[setup]   bridge:        {}", config.bridge_id());
+impl AgglayerScenario {
+    /// Loads the accounts named by [`ACCOUNTS_DIR_ENV`], creates the three clients and imports the
+    /// core accounts. The bridge admin and the GER manager go into the client that signs for them.
+    /// The bridge goes into all three so each can build transactions that reference it.
+    pub async fn start(client_config: &ClientConfig) -> Result<Self> {
+        let config = AgglayerConfig::from_env()?;
+        let mut bridge_admin = client_config.clone().into_client().await?;
+        let mut ger_manager = client_config.clone().into_client().await?;
+        let mut user = client_config.clone().into_client().await?;
 
-    config.import_account(config.bridge_admin_id(), bridge_admin).await?;
-    config.import_account(config.ger_manager_id(), ger_manager).await?;
+        println!("[setup] Loading core accounts");
+        println!("[setup]   bridge admin:  {}", config.bridge_admin_id());
+        println!("[setup]   GER manager:   {}", config.ger_manager_id());
+        println!("[setup]   bridge:        {}", config.bridge_id());
 
-    for client in [&mut *bridge_admin, &mut *ger_manager, &mut *user] {
-        config.import_account(config.bridge_id(), client).await?;
+        bridge_admin.import_account_file(&config.bridge_admin).await?;
+        ger_manager.import_account_file(&config.ger_manager).await?;
+        for client in [&mut bridge_admin, &mut ger_manager, &mut user] {
+            client.import_account_file(&config.bridge).await?;
+        }
+
+        Ok(Self { config, bridge_admin, ger_manager, user })
     }
-
-    Ok((config.bridge_admin_id(), config.ger_manager_id(), config.bridge_id()))
 }

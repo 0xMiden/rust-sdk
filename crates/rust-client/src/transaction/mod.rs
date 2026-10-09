@@ -128,19 +128,15 @@ pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 #[cfg(feature = "dap")]
 mod dap_executor;
 mod prover;
-pub use prover::TransactionProver;
-
-mod record;
-pub use record::{
+pub use miden_client_core::transaction::{
     DiscardCause,
     TransactionDetails,
     TransactionRecord,
     TransactionStatus,
     TransactionStatusVariant,
+    TransactionStoreUpdate,
 };
-
-mod store_update;
-pub use store_update::TransactionStoreUpdate;
+pub use prover::TransactionProver;
 
 mod request;
 pub use request::{

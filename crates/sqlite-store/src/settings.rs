@@ -3,7 +3,7 @@
 use std::string::String;
 use std::vec::Vec;
 
-use miden_client::store::{SettingScope, StoreError};
+use miden_client_core::store::{SettingScope, StoreError};
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 

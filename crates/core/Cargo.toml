@@ -1,0 +1,40 @@
+[package]
+authors.workspace      = true
+description            = "Core traits and types shared by the miden-client crates"
+edition.workspace      = true
+license.workspace      = true
+name                   = "miden-client-core"
+publish                = true
+repository.workspace   = true
+rust-version.workspace = true
+version.workspace      = true
+
+[lib]
+crate-type = ["lib"]
+doctest    = false
+
+[features]
+default = ["std"]
+std     = ["miden-objects/std", "miden-protocol/std"]
+testing = []
+
+[dependencies]
+# Miden dependencies
+miden-objects  = { workspace = true }
+miden-protocol = { workspace = true }
+
+# External dependencies
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+rand        = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
+miden-standards = { workspace = true }
+miden-testing   = { default-features = false, workspace = true }
+rand_chacha     = { workspace = true }
+tokio           = { workspace = true }
+
+[lints]
+workspace = true

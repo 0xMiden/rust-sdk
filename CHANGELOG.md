@@ -18,6 +18,8 @@
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [BREAKING][removal][rust] Removed `miden_client::store::AccountUpdates`, an unused duplicate of `miden_client::sync::AccountUpdates` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 * [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
+* [BREAKING][arch][rust,store] Moved the `Store` trait and the types in its signatures (note and account records, filters, settings, sync and transaction updates, and their errors) to the new `miden-client-core` crate. `miden-client` re-exports them, so existing paths keep working. `miden-client-sqlite-store` depends on `miden-client-core` instead of `miden-client` (#TBD).
+* [BREAKING][removal][rust,store] Removed `ClientBuilderSqliteExt` and `ClientBuilder::sqlite_store`. Build a `SqliteStore` and pass it with `ClientBuilder::store` (#TBD).
 
 ### Features
 

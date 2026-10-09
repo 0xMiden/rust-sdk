@@ -80,28 +80,27 @@ use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
+pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 mod tag;
-pub use tag::{NoteTagRecord, NoteTagSource};
 
 mod note_observer;
 pub use note_observer::NoteObserver;
 
 mod state_sync;
-pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
-pub(crate) use state_sync::{
-    MAX_CONCURRENT_ACCOUNT_FETCHES,
-    block_num_from_forest,
-    validate_account_witness,
-};
-
-mod state_sync_update;
-pub use state_sync_update::{
+pub use miden_client_core::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
+pub(crate) use state_sync::{
+    MAX_CONCURRENT_ACCOUNT_FETCHES,
+    block_num_from_forest,
+    validate_account_witness,
+};
+mod state_sync_update;
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
 /// that are no longer needed by any remaining tracked leaf.

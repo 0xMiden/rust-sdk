@@ -76,6 +76,12 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
+pub use miden_client_core::store::{
+    InputNoteUpdate,
+    NoteUpdateTracker,
+    NoteUpdateType,
+    OutputNoteUpdate,
+};
 pub use miden_objects::note_file::{NoteFile, NoteFileError, NoteSyncHint};
 pub use miden_protocol::block::BlockNumber;
 pub use miden_protocol::errors::NoteError;
@@ -131,12 +137,14 @@ pub use miden_standards::note::{
 pub use miden_tx::{FailedNote, NoteConsumptionInfo};
 pub use note_reader::InputNoteReader;
 pub use note_screener::{NoteConsumability, NoteScreener, NoteScreenerError};
-pub use note_update_tracker::{
-    InputNoteUpdate,
-    NoteConsumption,
-    NoteUpdateTracker,
-    NoteUpdateType,
-    OutputNoteUpdate,
+pub use note_update_tracker::NoteConsumption;
+pub(crate) use note_update_tracker::{
+    apply_committed_note_state_transitions,
+    apply_new_public_note,
+    apply_note_consumption,
+    apply_output_note_inclusion_proofs,
+    insert_consumed_public_note,
+    mark_erased_note_as_consumed,
 };
 
 /// Note retrieval methods.

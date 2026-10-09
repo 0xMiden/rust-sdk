@@ -16,16 +16,26 @@ use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
-use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
+use super::state_sync_update::build_account_patch;
 use super::{
     AccountUpdates,
     NoteObserver,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
+    TransactionUpdateTracker,
 };
 use crate::ClientError;
-use crate::note::{NoteConsumption, NoteUpdateTracker};
+use crate::note::{
+    NoteConsumption,
+    NoteUpdateTracker,
+    apply_committed_note_state_transitions,
+    apply_new_public_note,
+    apply_note_consumption,
+    apply_output_note_inclusion_proofs,
+    insert_consumed_public_note,
+    mark_erased_note_as_consumed,
+};
 use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
@@ -587,7 +597,8 @@ impl StateSync {
                         ))
                         .into());
                     }
-                    note_updates.insert_consumed_public_note(
+                    insert_consumed_public_note(
+                        note_updates,
                         note,
                         reference.consumer,
                         reference.block_num,
@@ -938,8 +949,11 @@ impl StateSync {
         note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
 
         for record in transactions {
-            transaction_updates
-                .apply_transaction_inclusion(record, u64::from(chain_tip_header.timestamp())); //TODO: Change timestamps from u64 to u32
+            transaction_updates.apply_transaction_inclusion(
+                record.block_num,
+                &record.transaction_header,
+                u64::from(chain_tip_header.timestamp()),
+            ); //TODO: Change timestamps from u64 to u32
         }
         transaction_updates
             .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
@@ -948,7 +962,7 @@ impl StateSync {
             // Transition tracked output notes to Committed using inclusion proofs from the
             // transaction sync response. This covers output notes regardless of whether their tags
             // were tracked in the note sync.
-            note_updates.apply_output_note_inclusion_proofs(&transaction.output_notes)?;
+            apply_output_note_inclusion_proofs(note_updates, &transaction.output_notes)?;
 
             // Detect output notes erased by same-batch note erasure.
             Self::mark_erased_notes_as_consumed(note_updates, transaction);
@@ -968,7 +982,7 @@ impl StateSync {
     ) {
         for note_header in &transaction.erased_output_notes {
             // Best-effort: ignore errors for notes not tracked by this client.
-            let _ = note_updates.mark_erased_note_as_consumed(note_header, transaction.block_num);
+            let _ = mark_erased_note_as_consumed(note_updates, note_header, transaction.block_num);
         }
     }
 
@@ -1395,13 +1409,16 @@ impl StateSync {
                     // Only mark the downloaded block header as relevant if we are talking about an
                     // input note (output notes get marked as committed but we don't need the block
                     // for anything there)
-                    relevance.has_client_note |= note_updates
-                        .apply_committed_note_state_transitions(&committed_note, block_header)?;
+                    relevance.has_client_note |= apply_committed_note_state_transitions(
+                        note_updates,
+                        &committed_note,
+                        block_header,
+                    )?;
                 },
                 NoteUpdateAction::Insert(public_note) => {
                     relevance.has_client_note = true;
 
-                    note_updates.apply_new_public_note(public_note, block_header)?;
+                    apply_new_public_note(note_updates, public_note, block_header)?;
                 },
                 NoteUpdateAction::Discard => {},
             }
@@ -1451,7 +1468,8 @@ impl StateSync {
             .collect();
 
         for consumption in consumptions {
-            note_updates.apply_note_consumption(
+            apply_note_consumption(
+                note_updates,
                 &consumption,
                 transaction_updates.committed_transactions(),
             )?;
@@ -2803,8 +2821,7 @@ mod tests {
 
         // Mark the note as erased (created and consumed in the same batch).
         let block_num = BlockNumber::from(3u32);
-        note_updates
-            .mark_erased_note_as_consumed(&note_header, block_num)
+        mark_erased_note_as_consumed(&mut note_updates, &note_header, block_num)
             .expect("marking erased note should succeed");
 
         let updated = note_updates

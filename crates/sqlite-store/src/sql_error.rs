@@ -1,4 +1,4 @@
-use miden_client::store::StoreError;
+use miden_client_core::store::StoreError;
 
 pub(crate) trait SqlResultExt<T> {
     fn into_store_error(self) -> Result<T, StoreError>;

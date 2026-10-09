@@ -30,8 +30,9 @@ use thiserror::Error;
 
 use crate::note::NoteScreenerError;
 use crate::note_transport::NoteTransportError;
+use crate::rpc::encryption::TransactionEncryptionError;
 use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
-use crate::store::{NoteRecordError, StoreError};
+use crate::store::{AccountRecordError, NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
     ChainAnchorError,
@@ -261,6 +262,25 @@ pub(crate) fn log_observer_failure(
 impl From<ClientError> for String {
     fn from(err: ClientError) -> String {
         err.to_string()
+    }
+}
+
+impl From<TransactionEncryptionError> for ClientError {
+    fn from(err: TransactionEncryptionError) -> Self {
+        ClientError::RpcError(err.into())
+    }
+}
+
+impl From<AccountRecordError> for ClientError {
+    fn from(err: AccountRecordError) -> Self {
+        match err {
+            AccountRecordError::NotFull(account_id) => {
+                ClientError::AccountRecordNotFull(account_id)
+            },
+            AccountRecordError::NotPartial(account_id) => {
+                ClientError::AccountRecordNotPartial(account_id)
+            },
+        }
     }
 }
 

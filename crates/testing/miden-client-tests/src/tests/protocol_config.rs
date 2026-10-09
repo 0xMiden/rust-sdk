@@ -10,7 +10,7 @@ use miden_client::store::{SettingScope, StoreError};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Serializable, Word};
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
 use super::{TestClient, create_test_client, prebuilt_rpc_api};
@@ -27,7 +27,7 @@ async fn the_first_sync_stores_the_protocol_config() {
     let mut client = TestClient::from(
         ClientBuilder::new()
             .rpc(Arc::new(rpc.clone()))
-            .sqlite_store(create_test_store_path())
+            .store(Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap()))
             .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
             .build()
             .await
@@ -53,7 +53,7 @@ async fn storing_a_configuration_does_not_replace_another() {
     let mut client = TestClient::from(
         ClientBuilder::new()
             .rpc(Arc::new(rpc.clone()))
-            .sqlite_store(create_test_store_path())
+            .store(Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap()))
             .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
             .build()
             .await

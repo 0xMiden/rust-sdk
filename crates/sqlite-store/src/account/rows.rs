@@ -2,20 +2,26 @@
 
 use std::collections::BTreeMap;
 
-use miden_client::account::{
+use miden_client_core::store::{
+    AccountStatus,
+    AccountStorageFilter,
+    ClientAccountType,
+    StoreError,
+};
+use miden_protocol::account::{
     AccountCode,
     AccountHeader,
     AccountId,
-    Address,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotName,
     StorageSlotType,
 };
-use miden_client::asset::{Asset, AssetId};
-use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
-use miden_client::{Deserializable, Serializable, Word};
+use miden_protocol::address::Address;
+use miden_protocol::asset::{Asset, AssetId};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::{Felt, Word};
 use rusqlite::types::{ToSqlOutput, Value};
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
@@ -44,7 +50,7 @@ pub(crate) fn parse_accounts(
         _ => AccountStatus::Tracked,
     };
 
-    let nonce = miden_client::Felt::new(row.nonce).map_err(|err| {
+    let nonce = Felt::new(row.nonce).map_err(|err| {
         StoreError::ParsingError(format!("stored nonce is not a valid Felt: {err}"))
     })?;
     Ok((

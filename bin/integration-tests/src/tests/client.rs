@@ -56,7 +56,7 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::{ClientError, Felt, Word};
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_sqlite_store::SqliteStore;
 use rand::Rng;
 use tracing::info;
 
@@ -65,10 +65,11 @@ use crate::{ClientConfig, create_test_auth_path};
 pub async fn test_client_builder_initializes_client_with_endpoint(
     client_config: ClientConfig,
 ) -> Result<()> {
+    let store = SqliteStore::new(create_test_store_path()).await?;
     let mut client = ClientBuilder::<FilesystemKeyStore>::new()
         .grpc_client(&client_config.rpc_endpoint, Some(10_000))
         .filesystem_keystore(create_test_auth_path())?
-        .sqlite_store(create_test_store_path())
+        .store(Arc::new(store))
         .build()
         .await?;
 

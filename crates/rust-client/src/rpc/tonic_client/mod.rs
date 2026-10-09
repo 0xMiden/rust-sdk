@@ -50,7 +50,6 @@ use super::generated::rpc::GetAccountRequest as ProtoGetAccountRequest;
 use super::generated::rpc::get_account_request::AccountDetailRequest;
 use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 use crate::rpc::domain::account_vault::AccountVaultInfo;
-use crate::rpc::domain::limits::RpcLimits;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
@@ -58,7 +57,7 @@ use crate::rpc::domain::transaction::TransactionRecord;
 use crate::rpc::errors::node::{parse_node_error, parse_status_error};
 use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
 use crate::rpc::generated::rpc::BlockRange;
-use crate::rpc::{AccountStateAt, generated as proto};
+use crate::rpc::{AccountStateAt, RpcLimits, generated as proto};
 
 mod api_client;
 mod retry;

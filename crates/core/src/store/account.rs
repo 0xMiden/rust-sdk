@@ -2,10 +2,9 @@
 // ================================================================================================
 use core::fmt::Display;
 
-use miden_protocol::account::{Account, PartialAccount};
+use miden_protocol::account::{Account, AccountId, PartialAccount};
 use miden_protocol::{Felt, Word};
-
-use crate::ClientError;
+use thiserror::Error;
 
 // ACCOUNT RECORD DATA
 // ================================================================================================
@@ -105,25 +104,37 @@ impl AccountRecord {
 }
 
 impl TryFrom<AccountRecord> for Account {
-    type Error = ClientError;
+    type Error = AccountRecordError;
 
     fn try_from(value: AccountRecord) -> Result<Self, Self::Error> {
         match value.account_data {
             AccountRecordData::Full(acc) => Ok(acc),
-            AccountRecordData::Partial(acc) => Err(ClientError::AccountRecordNotFull(acc.id())),
+            AccountRecordData::Partial(acc) => Err(AccountRecordError::NotFull(acc.id())),
         }
     }
 }
 
 impl TryFrom<AccountRecord> for PartialAccount {
-    type Error = ClientError;
+    type Error = AccountRecordError;
 
     fn try_from(value: AccountRecord) -> Result<Self, Self::Error> {
         match value.account_data {
             AccountRecordData::Partial(acc) => Ok(acc),
-            AccountRecordData::Full(acc) => Err(ClientError::AccountRecordNotPartial(acc.id())),
+            AccountRecordData::Full(acc) => Err(AccountRecordError::NotPartial(acc.id())),
         }
     }
+}
+
+// ACCOUNT RECORD ERROR
+// ================================================================================================
+
+/// Errors generated when an [`AccountRecord`] does not hold the requested kind of account data.
+#[derive(Debug, Error)]
+pub enum AccountRecordError {
+    #[error("expected full account data for account {0}, but only partial data is available")]
+    NotFull(AccountId),
+    #[error("expected partial account data for account {0}, but full data was found")]
+    NotPartial(AccountId),
 }
 
 // ACCOUNT STATUS

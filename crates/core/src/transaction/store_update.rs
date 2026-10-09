@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
 use miden_protocol::transaction::ExecutedTransaction;
-use miden_tx::utils::serde::{
+use miden_protocol::utils::serde::{
     ByteReader,
     ByteWriter,
     Deserializable,
@@ -11,7 +11,7 @@ use miden_tx::utils::serde::{
     Serializable,
 };
 
-use crate::note::NoteUpdateTracker;
+use crate::store::NoteUpdateTracker;
 use crate::sync::NoteTagRecord;
 
 // TRANSACTION STORE UPDATE
@@ -132,8 +132,7 @@ mod tests {
     use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
-    use crate::note::NoteUpdateTracker;
-    use crate::store::InputNoteRecord;
+    use crate::store::{InputNoteRecord, NoteUpdateTracker};
     use crate::sync::NoteTagRecord;
 
     #[tokio::test]

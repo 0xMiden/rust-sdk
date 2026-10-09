@@ -24,7 +24,6 @@ use miden_client::note::{
     NoteFile,
     NoteSyncHint,
 };
-use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
@@ -36,7 +35,6 @@ use miden_client::store::{
     InputNoteState,
     NoteFilter,
     OutputNoteState,
-    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
@@ -4936,15 +4934,7 @@ pub async fn mock_client_builder(rpc_api: Arc<MockRpcApi>) -> ClientBuilder<File
         .unwrap();
     store.insert_block_header(&genesis, &[], false).await.unwrap();
 
-    let protocol_config = rpc_api.protocol_config();
-    store
-        .set_setting(
-            SettingScope::Client,
-            protocol_config_setting_key(protocol_config.to_commitment()),
-            protocol_config.to_bytes(),
-        )
-        .await
-        .unwrap();
+    store.insert_protocol_config(&rpc_api.protocol_config()).await.unwrap();
 
     store
         .set_transaction_encryption_key(&TransactionEncryptionKey::new_unattested(

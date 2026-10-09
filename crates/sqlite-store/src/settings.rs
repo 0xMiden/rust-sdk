@@ -3,7 +3,6 @@
 use std::string::String;
 use std::vec::Vec;
 
-use miden_client::Word;
 use miden_client::store::{SettingScope, StoreError};
 use miden_client_proto::{self as proto, ProtobufValue};
 use rusqlite::types::FromSql;
@@ -16,13 +15,8 @@ use crate::{insert_sql, subst};
 // CLIENT SETTING KEYS
 // ================================================================================================
 
-pub(crate) const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
 pub(crate) const RPC_LIMITS_KEY: &str = "rpc_limits";
 pub(crate) const TRANSACTION_ENCRYPTION_KEY_KEY: &str = "transaction_encryption_key";
-
-pub(crate) fn protocol_config_key(commitment: Word) -> String {
-    format!("protocol_config:{commitment}")
-}
 
 impl SqliteStore {
     pub(crate) fn get_setting<T: FromSql>(

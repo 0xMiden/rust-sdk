@@ -30,8 +30,8 @@ use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
 use miden_client::note::{BlockNumber, NoteId, NoteScript, NoteTag, Nullifier};
-use miden_client::note_transport::NoteTransportCursor;
-use miden_client::protocol_config::ProtocolConfig;
+use miden_client::note_transport::{NOTE_TRANSPORT_CURSORS_KEY, NoteTransportCursor};
+use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
 use miden_client::pswap::{PswapLineageFilter, PswapLineageRecord};
 use miden_client::rpc::RpcLimits;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
@@ -64,12 +64,7 @@ use rusqlite::types::Value;
 use sql_error::SqlResultExt;
 
 use crate::account::rows::query_vault_assets;
-use crate::settings::{
-    NOTE_TRANSPORT_CURSORS_KEY,
-    RPC_LIMITS_KEY,
-    TRANSACTION_ENCRYPTION_KEY_KEY,
-    protocol_config_key,
-};
+use crate::settings::{RPC_LIMITS_KEY, TRANSACTION_ENCRYPTION_KEY_KEY};
 
 mod account;
 mod builder;
@@ -611,7 +606,7 @@ impl Store for SqliteStore {
         commitment: Word,
     ) -> Result<Option<ProtocolConfig>, StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_client_setting(conn, &protocol_config_key(commitment))
+            SqliteStore::get_client_setting(conn, &protocol_config_setting_key(commitment))
         })
         .await
     }
@@ -621,7 +616,7 @@ impl Store for SqliteStore {
         self.interact_with_connection(move |conn| {
             SqliteStore::set_client_setting(
                 conn,
-                &protocol_config_key(config.to_commitment()),
+                &protocol_config_setting_key(config.to_commitment()),
                 &config,
             )
         })

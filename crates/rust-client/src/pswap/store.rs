@@ -221,9 +221,9 @@ mod tests {
         assert!(tip_key(note_id(1)).starts_with(TIP_PREFIX));
     }
 
-    /// `list_lineages` skips `pswap/tip/` rows by prefix — but only while neither family is a
-    /// prefix of the other. Pin it so a future prefix tweak that would leak tip rows into the order
-    /// scan fails here, not silently.
+    /// The default `Store::get_pswap_lineages` skips `pswap/tip/` rows by prefix. This works only
+    /// while neither key family is a prefix of the other. This test fails if a prefix change makes
+    /// tip rows appear in the order scan.
     #[test]
     fn key_families_are_prefix_isolated() {
         assert!(!TIP_PREFIX.starts_with(ORDER_PREFIX));

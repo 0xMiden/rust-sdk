@@ -21,6 +21,20 @@ impl ProtobufValue for RpcLimits {
     }
 
     fn from_proto(limits: Self::Message) -> Result<Self, ProtoDecodeError> {
+        // Proto3 decodes an absent field as zero, and a zero limit makes request chunking panic.
+        for (name, limit) in [
+            ("note IDs", limits.note_ids_limit),
+            ("nullifiers", limits.nullifiers_limit),
+            ("account IDs", limits.account_ids_limit),
+            ("note tags", limits.note_tags_limit),
+        ] {
+            if limit == 0 {
+                return Err(ProtoDecodeError::InvalidValue(format!(
+                    "RPC {name} limit must be greater than zero"
+                )));
+            }
+        }
+
         Ok(Self {
             note_ids_limit: limits.note_ids_limit,
             nullifiers_limit: limits.nullifiers_limit,
@@ -51,5 +65,26 @@ impl ProtobufValue for TransactionEncryptionKey {
             required(key.genesis_commitment, MESSAGE, "genesis commitment")?.try_into()?;
         TransactionEncryptionKey::from_parts(key.scheme, key.key_id, public_key, genesis_commitment)
             .map_err(ProtoDecodeError::InvalidValue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{decode, encode};
+
+    #[test]
+    fn rpc_limits_with_a_zero_limit_are_rejected() {
+        let limits = RpcLimits {
+            note_ids_limit: 100,
+            nullifiers_limit: 100,
+            account_ids_limit: 100,
+            note_tags_limit: 0,
+        };
+
+        let error = decode::<RpcLimits>(&encode(&limits)).unwrap_err();
+
+        assert!(matches!(error, ProtoDecodeError::InvalidValue(_)), "{error}");
+        assert!(error.to_string().contains("note tags"), "{error}");
     }
 }

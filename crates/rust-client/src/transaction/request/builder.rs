@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 
 use miden_protocol::account::{AccountCode, AccountCodeUpgrade, AccountId};
-use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -29,7 +29,7 @@ use miden_protocol::note::{
 use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
-use miden_standards::note::{P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
@@ -434,6 +434,64 @@ impl TransactionRequestBuilder {
             .target(target_id)
             .asset(asset)
             .note_type(note_type)
+            .generate_serial_number(rng)
+            .build()?
+            .into();
+
+        self.own_output_notes(vec![created_note]).build()
+    }
+
+    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction to mint a
+    /// non-fungible asset. This request must be executed against a non-fungible faucet account.
+    ///
+    /// - `asset` is the non-fungible asset to be minted. Its faucet must be the executing account.
+    /// - `target_id` is the account ID of the account to receive the minted asset.
+    /// - `note_type` determines the visibility of the note to be created.
+    /// - `rng` is the random number generator used to generate the serial number for the created
+    ///   note.
+    ///
+    /// This function cannot be used with a previously set custom script.
+    pub fn build_mint_non_fungible_asset(
+        self,
+        asset: NonFungibleAsset,
+        target_id: AccountId,
+        note_type: NoteType,
+        rng: &mut ClientRng,
+    ) -> Result<TransactionRequest, TransactionRequestError> {
+        let created_note = P2idNote::builder()
+            .sender(asset.faucet_id())
+            .target(target_id)
+            .asset(asset)
+            .note_type(note_type)
+            .generate_serial_number(rng)
+            .build()?
+            .into();
+
+        self.own_output_notes(vec![created_note]).build()
+    }
+
+    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that sends a
+    /// non-fungible asset to its faucet to be burned. This request must be executed against the
+    /// account that holds the asset.
+    ///
+    /// The transaction creates a public BURN note that carries the asset. The asset is burned only
+    /// when the faucet that issued it consumes the note.
+    ///
+    /// - `asset` is the non-fungible asset to be burned.
+    /// - `sender` is the account ID of the account that holds the asset.
+    /// - `rng` is the random number generator used to generate the serial number for the created
+    ///   note.
+    ///
+    /// This function cannot be used with a previously set custom script.
+    pub fn build_burn_non_fungible_asset(
+        self,
+        asset: NonFungibleAsset,
+        sender: AccountId,
+        rng: &mut ClientRng,
+    ) -> Result<TransactionRequest, TransactionRequestError> {
+        let created_note = BurnNote::builder()
+            .sender(sender)
+            .asset(asset)
             .generate_serial_number(rng)
             .build()?
             .into();

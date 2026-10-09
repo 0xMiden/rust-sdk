@@ -166,14 +166,21 @@ impl NoteScreener {
                 .await?;
 
             for note in notes {
-                let consumption_status = consumption_checker
+                let consumption_status = match consumption_checker
                     .can_consume(
                         account_id,
                         block_ref,
                         InputNote::unauthenticated(note.clone()),
                         account_tx_args.clone(),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(status) => status,
+                    // If the note consumption tx fails with prologue error, treat the note as not
+                    // consumable
+                    Err(NoteCheckerError::PrologueExecution(_)) => continue,
+                    Err(err) => return Err(err.into()),
+                };
 
                 if is_relevant(&consumption_status) {
                     relevant_notes

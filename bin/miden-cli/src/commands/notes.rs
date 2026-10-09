@@ -258,24 +258,39 @@ async fn show_note<AUTH: Keystore + Sync>(
         .expect("One of the two records should be Some");
 
     // print note vault
-    let mut table = create_dynamic_table(&["Note Assets"]);
-    table
+    let mut fungible_table = create_dynamic_table(&["Note Fungible Assets"]);
+    fungible_table
         .load_preset(presets::UTF8_HORIZONTAL_ONLY)
         .set_content_arrangement(ContentArrangement::DynamicFullWidth);
-
-    table.add_row(vec![
-        Cell::new("Type").add_attribute(Attribute::Bold),
+    fungible_table.add_row(vec![
         Cell::new("Faucet ID").add_attribute(Attribute::Bold),
         Cell::new("Amount").add_attribute(Attribute::Bold),
     ]);
-    let resolver = load_faucet_metadata_resolver()?;
-    let assets = assets.iter();
 
-    for asset in assets {
-        let formatted = resolver.format_asset(client, asset).await?;
-        table.add_row(vec![formatted.type_label(), &formatted.faucet, &formatted.amount]);
+    let mut non_fungible_table = create_dynamic_table(&["Note Non Fungible Assets"]);
+    non_fungible_table
+        .load_preset(presets::UTF8_HORIZONTAL_ONLY)
+        .set_content_arrangement(ContentArrangement::DynamicFullWidth);
+    non_fungible_table.add_row(vec![
+        Cell::new("Faucet ID").add_attribute(Attribute::Bold),
+        Cell::new("Asset ID").add_attribute(Attribute::Bold),
+    ]);
+
+    let resolver = load_faucet_metadata_resolver()?;
+    for asset in assets.iter() {
+        match asset.as_fungible() {
+            Some(fungible) => {
+                let (faucet, amount) = resolver.format_fungible_asset(client, &fungible).await?;
+                fungible_table.add_row(vec![faucet, amount]);
+            },
+            None => {
+                non_fungible_table
+                    .add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
+            },
+        }
     }
-    println!("{table}");
+    println!("{fungible_table}");
+    println!("{non_fungible_table}");
 
     if let Some(inputs) = inputs {
         let inputs = NoteStorage::new(inputs.clone()).map_err(ClientError::NoteError)?;

@@ -87,7 +87,7 @@ use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::FeeConversionInfo;
-use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::account::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_standards::account::interface::AccountComponentInterfaceExt;
 use miden_standards::note::TxFeeNote;
 use miden_tx::{DataStore, NoteConsumptionChecker, TransactionExecutor};
@@ -1057,7 +1057,10 @@ where
     ) -> Result<(), ClientError> {
         validate_fee_conversion_info_support(transaction_request, account_code_interface)?;
 
-        if account_code_interface.contains([FungibleFaucet::mint_and_send_root()]) {
+        let is_faucet = account_code_interface.contains([FungibleFaucet::mint_and_send_root()])
+            || account_code_interface.contains([NonFungibleFaucet::mint_and_send_root()]);
+
+        if is_faucet {
             // TODO(#1266): Add faucet validations.
             Ok(())
         } else {

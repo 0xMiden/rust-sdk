@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use comfy_table::{Cell, ContentArrangement, presets};
 use miden_client::account::component::MIDEN_PACKAGE_EXTENSION;
-use miden_client::account::standards::faucets::FungibleFaucet;
+use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_client::account::{
     AccountCode,
     AccountId,
@@ -195,14 +195,17 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
     for (acc, _acc_seed) in &accounts {
         let reader = client.account_reader(acc.id());
         let status = reader.status().await?.to_string();
-        let token_symbol = get_faucet_token_info(&client, acc.id())
-            .await
-            .ok()
-            .map(|(symbol, _)| symbol.to_string());
+        let kind = if let Ok((symbol, _)) = get_faucet_token_info(&client, acc.id()).await {
+            AccountKind::FungibleFaucet(symbol)
+        } else if let Ok(symbol) = get_non_fungible_faucet_symbol(&client, acc.id()).await {
+            AccountKind::NonFungibleFaucet(symbol)
+        } else {
+            AccountKind::Regular
+        };
 
         table.add_row(vec![
             acc.id().to_hex(),
-            account_kind_display_name(token_symbol.as_deref()),
+            kind.to_string(),
             acc.id().account_type().to_string(),
             acc.nonce().as_canonical_u64().to_string(),
             status,
@@ -224,22 +227,15 @@ async fn show_account<AUTH>(
     let account = load_partial_account(client, account_id, &cli_config.rpc).await?;
 
     let network_id = cli_config.network_id()?;
-    let token_symbol = account
-        .storage()
-        .header()
-        .find_slot_header_by_name(FungibleFaucet::token_config_slot())
-        .and_then(|slot| decode_token_config(account_id, slot.value()).ok())
-        .map(|(symbol, _)| symbol.to_string());
-    print_summary_table(&account, network_id, token_symbol.as_deref());
+    let kind = get_account_kind_from_partial_account(&account);
+    print_summary_table(&account, network_id, &kind);
 
-    // Vault Table
+    // Vault Tables
     {
-        let assets = account.vault().assets();
-        println!("Assets: ");
-
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
-        for asset in assets {
-            let (asset_type, faucet, amount) = match asset.as_fungible() {
+        let mut fungible_table = create_dynamic_table(&["Faucet", "Amount"]);
+        let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID"]);
+        for asset in account.vault().assets() {
+            match asset.as_fungible() {
                 Some(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
@@ -249,17 +245,19 @@ async fn show_account<AUTH>(
                         },
                         Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
                     };
-                    ("Fungible Asset", faucet, amount)
+                    fungible_table.add_row(vec![faucet, amount]);
                 },
                 None => {
-                    // TODO: Display non-fungible assets more clearly.
-                    ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string())
+                    non_fungible_table
+                        .add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
                 },
-            };
-            table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+            }
         }
 
-        println!("{table}\n");
+        println!("Fungible assets: ");
+        println!("{fungible_table}\n");
+        println!("Non fungible assets: ");
+        println!("{non_fungible_table}\n");
     }
 
     // Storage Table
@@ -609,11 +607,7 @@ async fn load_partial_account<AUTH>(
 }
 
 /// Prints a summary table with account information.
-fn print_summary_table(
-    account: &PartialAccount,
-    network_id: NetworkId,
-    token_symbol: Option<&str>,
-) {
+fn print_summary_table(account: &PartialAccount, network_id: NetworkId, kind: &AccountKind) {
     let mut table = create_dynamic_table(&["Account Information"]);
     table
         .load_preset(presets::UTF8_HORIZONTAL_ONLY)
@@ -628,7 +622,7 @@ fn print_summary_table(
         Cell::new("Account Commitment"),
         Cell::new(account.to_commitment().to_string()),
     ]);
-    table.add_row(vec![Cell::new("Kind"), Cell::new(account_kind_display_name(token_symbol))]);
+    table.add_row(vec![Cell::new("Kind"), Cell::new(kind.to_string())]);
     table.add_row(vec![Cell::new("Type"), Cell::new(account.id().account_type().to_string())]);
     table.add_row(vec![
         Cell::new("Code Commitment"),
@@ -685,16 +679,76 @@ fn decode_token_config(
     Ok((symbol, decimals))
 }
 
-/// Returns the account's kind for display. If `token_symbol` is provided the account is rendered as
-/// a fungible faucet (the symbol is appended); otherwise it's labelled "Regular".
+/// Reads the token symbol of a non-fungible faucet from its symbol storage slot.
 ///
-/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so
-/// faucet-vs-wallet has to be inferred by the caller from the attached components.
-fn account_kind_display_name(token_symbol: Option<&str>) -> String {
-    if let Some(symbol) = token_symbol {
-        format!("Fungible faucet (token symbol: {symbol})")
-    } else {
-        "Regular".to_string()
+/// # Errors
+/// Returns an error if the account is not tracked by the client, has no symbol slot (i.e. is not a
+/// non-fungible faucet), or the symbol can't be decoded.
+async fn get_non_fungible_faucet_symbol<AUTH>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+) -> Result<TokenSymbol, CliError> {
+    let symbol_word = client
+        .account_reader(account_id)
+        .get_storage_item(NonFungibleFaucet::symbol_slot().clone())
+        .await?;
+
+    decode_non_fungible_symbol(account_id, symbol_word)
+}
+
+/// Decodes the token symbol from the symbol slot word of a non-fungible faucet.
+///
+/// # Errors
+/// Returns an error if the symbol can't be decoded.
+fn decode_non_fungible_symbol(
+    account_id: AccountId,
+    symbol_word: Word,
+) -> Result<TokenSymbol, CliError> {
+    // Symbol slot word layout: `[symbol, 0, 0, 0]` (see `NonFungibleFaucet::symbol_slot_value`).
+    TokenSymbol::try_from(symbol_word[0]).map_err(|err| {
+        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
+    })
+}
+
+/// Returns the kind of `account`, read from the storage header. A faucet's symbol is in a value
+/// slot, so the storage maps are not needed.
+fn get_account_kind_from_partial_account(account: &PartialAccount) -> AccountKind {
+    let header = account.storage().header();
+
+    if let Some(slot) = header.find_slot_header_by_name(FungibleFaucet::token_config_slot())
+        && let Ok((symbol, _)) = decode_token_config(account.id(), slot.value())
+    {
+        return AccountKind::FungibleFaucet(symbol);
+    }
+
+    if let Some(slot) = header.find_slot_header_by_name(NonFungibleFaucet::symbol_slot())
+        && let Ok(symbol) = decode_non_fungible_symbol(account.id(), slot.value())
+    {
+        return AccountKind::NonFungibleFaucet(symbol);
+    }
+
+    AccountKind::Regular
+}
+
+/// The kind of an account for display.
+///
+/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so the kind
+/// is inferred from the components of the account.
+enum AccountKind {
+    FungibleFaucet(TokenSymbol),
+    NonFungibleFaucet(TokenSymbol),
+    Regular,
+}
+
+impl core::fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FungibleFaucet(symbol) => write!(f, "Fungible faucet (token symbol: {symbol})"),
+            Self::NonFungibleFaucet(symbol) => {
+                write!(f, "Non-fungible faucet (token symbol: {symbol})")
+            },
+            Self::Regular => f.write_str("Regular"),
+        }
     }
 }
 

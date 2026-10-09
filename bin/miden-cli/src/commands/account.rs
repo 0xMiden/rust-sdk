@@ -230,19 +230,7 @@ async fn show_account<AUTH>(
     let account = load_partial_account(client, account_id, &cli_config.rpc).await?;
 
     let network_id = cli_config.network_id()?;
-    let header_slot_value =
-        |slot_name| Some(account.storage().header().find_slot_header_by_name(slot_name)?.value());
-    let kind = if let Some((symbol, _)) = header_slot_value(FungibleFaucet::token_config_slot())
-        .and_then(|value| decode_token_config(account_id, value).ok())
-    {
-        AccountKind::FungibleFaucet(symbol)
-    } else if let Some(symbol) = header_slot_value(NonFungibleFaucet::symbol_slot())
-        .and_then(|value| decode_non_fungible_symbol(account_id, value).ok())
-    {
-        AccountKind::NonFungibleFaucet(symbol)
-    } else {
-        AccountKind::Regular
-    };
+    let kind = get_account_kind_from_partial_account(&account);
     print_summary_table(&account, network_id, &kind);
 
     // Vault Tables
@@ -723,6 +711,26 @@ fn decode_non_fungible_symbol(
     TokenSymbol::try_from(symbol_word[0]).map_err(|err| {
         CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
     })
+}
+
+/// Returns the kind of `account`, read from the storage header. A faucet's symbol is in a value
+/// slot, so the storage maps are not needed.
+fn get_account_kind_from_partial_account(account: &PartialAccount) -> AccountKind {
+    let header = account.storage().header();
+
+    if let Some(slot) = header.find_slot_header_by_name(FungibleFaucet::token_config_slot())
+        && let Ok((symbol, _)) = decode_token_config(account.id(), slot.value())
+    {
+        return AccountKind::FungibleFaucet(symbol);
+    }
+
+    if let Some(slot) = header.find_slot_header_by_name(NonFungibleFaucet::symbol_slot())
+        && let Ok(symbol) = decode_non_fungible_symbol(account.id(), slot.value())
+    {
+        return AccountKind::NonFungibleFaucet(symbol);
+    }
+
+    AccountKind::Regular
 }
 
 /// The kind of an account for display.

@@ -1,15 +1,26 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use miden_client::account::component::BasicWallet;
+use miden_client::account::component::{
+    Authority,
+    BasicWallet,
+    BurnPolicy,
+    MintPolicy,
+    NonFungibleFaucet,
+    Pausable,
+    PausableManager,
+    TokenName,
+    TokenPolicyManager,
+};
 use miden_client::account::{
+    Account,
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountType,
     build_wallet_id,
 };
-use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset, TokenSymbol};
+use miden_client::auth::{AuthSecretKey, ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
@@ -401,6 +412,54 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
     client_2
         .assert_account_has_single_asset(target_account_id, faucet_account_id, MINT_AMOUNT * 2)
         .await;
+    Ok(())
+}
+
+/// Checks that two clients that import a public account get the non-fungible asset that is later
+/// minted to it. The first client executes the mint, and the second client gets it through a sync.
+pub async fn test_sync_imported_account_with_non_fungible_asset(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let mut client_1 = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
+
+    let (faucet, faucet_key) = non_fungible_faucet(&mut client_1)?;
+    let (faucet, _) = client_1.insert_account(AccountSetup::prebuilt(faucet, faucet_key)).await?;
+    let wallet = client_1.insert_wallet(AccountType::Public).await?;
+
+    // Deploy the wallet so that the clients can import it from the node. The first client already
+    // tracks the wallet, so the import replaces its local state.
+    client_1.deploy_account(wallet.id()).await?;
+    client_1.import_account_by_id(wallet.id()).await?;
+    client_2.import_account_by_id(wallet.id()).await?;
+
+    let salt = Word::from([1, 2, 3, 4u32]);
+    let commitment = NonFungibleFaucet::compute_asset_commitment(b"token #1", salt);
+    let nft = NonFungibleAsset::from_parts(faucet.id(), commitment);
+
+    // Mint the NFT to the wallet, and consume the mint note with the wallet.
+    let mint_request = TransactionRequestBuilder::new().build_mint_non_fungible_asset(
+        nft,
+        wallet.id(),
+        NoteType::Public,
+        client_1.rng(),
+    )?;
+    let tx_id = client_1
+        .execute_tx_and_consume_output_notes(mint_request, faucet.id(), wallet.id())
+        .await?;
+    client_1.wait_for_tx(tx_id).await?;
+
+    // The second client gets the new wallet state through a sync.
+    client_2.sync_state().await?;
+
+    for client in [&client_1, &client_2] {
+        let wallet = client
+            .get_account(wallet.id())
+            .await?
+            .context("wallet not found in the client")?;
+        assert!(wallet.vault().assets().any(|asset| asset == nft.into()));
+    }
+
     Ok(())
 }
 
@@ -830,4 +889,39 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
         .await;
 
     Ok(())
+}
+
+// HELPERS
+// ================================================================================================
+
+/// Builds a public NFT faucet with the components of `create_user_non_fungible_faucet`, plus a
+/// [`BasicWallet`]. The wallet component lets the faucet receive the note that funds its fees.
+fn non_fungible_faucet(client: &mut TestClient) -> Result<(Account, AuthSecretKey)> {
+    let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+
+    let symbol = TokenSymbol::new("NFT")?;
+    let faucet = NonFungibleFaucet::builder()
+        .name(TokenName::new(&symbol.to_string())?)
+        .symbol(symbol)
+        .build();
+    let policy_manager = TokenPolicyManager::builder()
+        .active_mint_policy(MintPolicy::allow_all())
+        .active_burn_policy(BurnPolicy::allow_all())
+        .build();
+
+    let mut init_seed = [0u8; 32];
+    client.rng().fill_bytes(&mut init_seed);
+
+    let account = AccountBuilder::new(init_seed)
+        .account_type(AccountType::Public)
+        .with_component(auth)
+        .with_component(faucet)
+        .with_component(BasicWallet)
+        .with_component(Authority::AuthControlled)
+        .with_components(policy_manager)
+        .with_component(Pausable::unpaused())
+        .with_component(PausableManager)
+        .build_with_schema_commitment()?;
+
+    Ok((account, key))
 }

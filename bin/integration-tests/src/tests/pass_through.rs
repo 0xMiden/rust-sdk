@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use miden_client::account::component::BasicWallet;
 use miden_client::account::{
     Account,
@@ -10,7 +10,6 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{NoAuth, TransactionAuthenticator};
-use miden_client::block::BlockNumber;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
     Note,
@@ -26,6 +25,7 @@ use miden_client::note::{
     PartialNoteMetadata,
 };
 use miden_client::store::{InputNoteState, TransactionFilter};
+use miden_client::testing::common::TestClient;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
 use miden_protocol::MAX_TX_EXECUTION_CYCLES;
@@ -34,7 +34,6 @@ use rand::Rng;
 use tracing::info;
 
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
 
 // PASS-THROUGH TRANSACTIONS (change sender from Alice -> Pass-through account)
 // ================================================================================================
@@ -45,10 +44,6 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
 
     // Workaround to show that importing the note into another client works
     let mut client_2 = client_config.clone().into_client().await?;
-
-    client.wait_for_node().await;
-    client.sync_state().await?;
-    client_2.sync_state().await?;
 
     // Create Client basic wallet (We'll call it accountA)
     let sender = client.insert_wallet(AccountType::Private).await?;
@@ -233,23 +228,20 @@ async fn create_pass_through_account<AUTH: TransactionAuthenticator>(
 
 /// Returns the native fee asset each pass-through note must carry for its consumption to settle its
 /// own fee, or `None` on a fee-free chain.
-async fn pass_through_fee_asset<AUTH: TransactionAuthenticator + Sync + 'static>(
-    client: &mut Client<AUTH>,
+async fn pass_through_fee_asset(
+    client: &mut TestClient,
     sender: AccountId,
     target: AccountId,
     asset: Asset,
     pass_through_account_id: AccountId,
 ) -> Result<Option<FungibleAsset>> {
-    let (genesis, _) = client
-        .get_block_header_by_num(BlockNumber::GENESIS)
-        .await?
-        .context("the genesis block header is not in the client's store")?;
+    let genesis = client.genesis_header().await?;
     let fee_parameters = genesis.fee_parameters();
     if fee_parameters.verification_base_fee() == 0 {
         return Ok(None);
     }
 
-    let fee_faucet_id = fee_faucet_id(client).await?;
+    let fee_faucet_id = client.fee_faucet_id().await?;
 
     let worst_case_fee =
         TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?.compute_fee(fee_parameters)?;

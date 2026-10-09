@@ -63,7 +63,6 @@ use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================
@@ -72,7 +71,7 @@ pub(crate) static COUNTER_SLOT_NAME: LazyLock<StorageSlotName> = LazyLock::new(|
     StorageSlotName::new("miden::testing::counter_contract::counter").expect("slot name is valid")
 });
 
-const COUNTER_CONTRACT: &str = r#"
+pub(crate) const COUNTER_CONTRACT: &str = r#"
         use miden::protocol::active_account
         use miden::protocol::native_account
         use miden::core::word
@@ -215,7 +214,7 @@ pub(crate) async fn add_network_counter_contract(
         .chain([P2idNote::script_root()])
         .collect::<BTreeSet<NoteScriptRoot>>();
     let fee_policy_manager =
-        zero_fee_policy_manager(fee_faucet_id(client).await?, roots.iter().copied());
+        zero_fee_policy_manager(client.fee_faucet_id().await?, roots.iter().copied());
     let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to build network account auth component")?;
@@ -230,7 +229,7 @@ pub(crate) async fn add_network_counter_contract(
 ///
 /// `fee_faucet_id` must be the faucet the chain charges fees in, as named by the genesis header's
 /// fee parameters.
-fn zero_fee_policy_manager(
+pub(crate) fn zero_fee_policy_manager(
     fee_faucet_id: AccountId,
     allowed_note_script_roots: impl IntoIterator<Item = NoteScriptRoot>,
 ) -> FeePolicyManager {
@@ -343,7 +342,7 @@ async fn deploy_network_fungible_faucet(
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
     let fee_policy_manager =
-        zero_fee_policy_manager(fee_faucet_id(client).await?, allowed_roots.iter().copied());
+        zero_fee_policy_manager(client.fee_faucet_id().await?, allowed_roots.iter().copied());
     let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
         .with_component(BasicWallet)
@@ -461,7 +460,6 @@ fn build_non_standard_mint(
 pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()> {
     const BUMP_NOTE_NUMBER: u64 = 5;
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -520,7 +518,6 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
 
 pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -553,9 +550,10 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     let bump_proven = client.prove_transaction(&bump_result).await?;
     let consume_proven = client.prove_transaction(&consume_result).await?;
 
-    // Submit both transactions
+    // Submit both transactions. The bump is the first transaction of the wallet, so it can consume
+    // a funding note the node does not know yet.
     let _bump_submission_height =
-        client.submit_proven_transaction(bump_proven, &bump_result).await?;
+        client.submit_proven_transaction_retrying(bump_proven, &bump_result).await?;
 
     let consume_submission_height =
         client.submit_proven_transaction(consume_proven, &consume_result).await?;
@@ -588,7 +586,6 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -657,7 +654,6 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
 /// reaches a consumed state, not the consumer identity.
 pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -858,8 +854,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         .pop()
         .context("expected the committed public note to be present on Bob's client")?
         .try_into()?;
-    let consume_tx_id = client_2.consume_notes(bob.id(), &[note]).await?;
-    client_2.wait_for_tx(consume_tx_id).await?;
+    client_2.consume_notes_and_wait(bob.id(), &[note]).await?;
 
     client_2
         .assert_account_has_single_asset(bob.id(), faucet.id(), amount.as_canonical_u64())
@@ -961,7 +956,6 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
 
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client_1, &[incr_note_root]).await?;
@@ -985,7 +979,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
         .context("watched network account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched network account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()

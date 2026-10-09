@@ -50,8 +50,6 @@ pub struct LeafValueVector {
     #[serde(deserialize_with = "deserialize_uint_to_string")]
     pub amount: String,
     pub metadata_hash: String,
-    #[allow(dead_code)]
-    pub leaf_value: String,
 }
 
 impl LeafValueVector {
@@ -82,7 +80,6 @@ pub struct ProofValueVector {
     pub mainnet_exit_root: String,
     pub rollup_exit_root: String,
     /// Expected global exit root: keccak256(mainnetExitRoot || rollupExitRoot)
-    #[allow(dead_code)]
     pub global_exit_root: String,
 }
 

@@ -184,11 +184,11 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
 /// Scans `out_dir/subdir/` for generated `.rs` files and produces a single wrapper file at
 /// `out_dir/wrapper_name` that re-exports each file as a module via `include!`.
 ///
-/// The wrapper converts each file into a module declaration:
+/// The wrapper converts each file name into a nested module declaration:
 ///
 /// ```ignore
 /// #[allow(clippy::doc_markdown, ...)]
-/// pub mod foo { include!(concat!(env!("OUT_DIR"), "/subdir/foo.rs")); }
+/// pub mod foo { pub mod bar { include!(concat!(env!("OUT_DIR"), "/subdir/foo.bar.rs")); } }
 /// ```
 fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette::Result<()> {
     let dir = out_dir.join(subdir);
@@ -209,10 +209,12 @@ fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette:
 
     let mut wrapper = String::new();
     for mod_name in &mod_names {
-        let mod_declaration = format!(
-            "{allow_attr}\n\
-             pub mod {mod_name} {{ include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{mod_name}.rs\")); }}\n"
-        );
+        let include = format!("include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{mod_name}.rs\"));");
+        let nested_modules = mod_name
+            .split('.')
+            .rev()
+            .fold(include, |body, name| format!("pub mod {name} {{ {body} }}"));
+        let mod_declaration = format!("{allow_attr}\n{nested_modules}\n");
         wrapper.push_str(&mod_declaration);
     }
 

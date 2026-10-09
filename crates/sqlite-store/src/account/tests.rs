@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::vec::Vec;
 
 use anyhow::Context;
@@ -8,6 +8,7 @@ use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
     AccountCode,
+    AccountCodePatch,
     AccountHeader,
     AccountId,
     AccountPatch,
@@ -15,17 +16,21 @@ use miden_client::account::{
     AccountType,
     AccountVaultPatch,
     Address,
+    AddressInterface,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotContent,
     StorageSlotName,
 };
+use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
 use miden_client::block::AccountWitness;
+use miden_client::note::NoteTag;
 use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};
+use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_protocol::account::{
@@ -167,8 +172,13 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         .into(),
     ]);
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -261,7 +271,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
         account.id(),
         AccountStoragePatch::new(),
         vault_patch,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -363,8 +373,13 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
         vault_patch.remove_asset(asset.id());
     }
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -763,6 +778,199 @@ async fn account_reader_addresses_access() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ACCOUNT NOTE TAG TESTS
+// ================================================================================================
+
+/// Builds an existing private wallet from `seed`, so that each seed gives a different account.
+fn build_wallet(seed: [u8; 32]) -> anyhow::Result<Account> {
+    Ok(AccountBuilder::new(seed)
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(AccountComponent::new(
+            BasicWallet::code().as_package().clone(),
+            vec![],
+            AccountComponentMetadata::new("miden::testing::account_note_tags"),
+        )?)
+        .build_existing()?)
+}
+
+/// Returns an address of `account_id` whose tag is longer than the tag of the default address.
+fn long_tag_address(account_id: AccountId) -> anyhow::Result<Address> {
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)?;
+    Ok(Address::new(account_id).with_routing_parameters(routing_params))
+}
+
+async fn account_note_tag_set(
+    store: &SqliteStore,
+) -> anyhow::Result<BTreeSet<(NoteTag, AccountId)>> {
+    Ok(store
+        .get_account_note_tags()
+        .await?
+        .into_iter()
+        .map(|record| match record.source {
+            NoteTagSource::Account(account_id) => (record.tag, account_id),
+            source => panic!("account note tags must have an account source, got {source:?}"),
+        })
+        .collect())
+}
+
+#[tokio::test]
+async fn account_note_tags_come_from_native_account_addresses() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let native = build_wallet([1; 32])?;
+    let native_id = native.id();
+    let default_address = Address::new(native_id);
+    store
+        .insert_account(&native, default_address.clone(), ClientAccountType::Native)
+        .await?;
+
+    // This address has the same tag as the default address.
+    let wallet_address = Address::new(native_id)
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    assert_eq!(wallet_address.to_note_tag(), default_address.to_note_tag());
+    store.insert_address(wallet_address, native_id).await?;
+
+    let long_address = long_tag_address(native_id)?;
+    assert_ne!(long_address.to_note_tag(), default_address.to_note_tag());
+    store.insert_address(long_address.clone(), native_id).await?;
+
+    let watched = build_wallet([2; 32])?;
+    let watched_id = watched.id();
+    store
+        .insert_account(&watched, Address::new(watched_id), ClientAccountType::Watched)
+        .await?;
+    store.insert_address(long_tag_address(watched_id)?, watched_id).await?;
+
+    let expected = BTreeSet::from([
+        (default_address.to_note_tag(), native_id),
+        (long_address.to_note_tag(), native_id),
+    ]);
+    assert_eq!(account_note_tag_set(&store).await?, expected);
+    assert_eq!(store.get_account_note_tags().await?.len(), expected.len());
+
+    // The store does not keep the account note tags.
+    assert!(store.get_note_tags().await?.is_empty());
+    assert_eq!(
+        store.get_unique_note_tags().await?,
+        expected.iter().map(|(tag, _)| *tag).collect::<BTreeSet<_>>()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_note_tags_follow_address_removal() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([3; 32])?;
+    let account_id = account.id();
+    let default_address = Address::new(account_id);
+    store
+        .insert_account(&account, default_address.clone(), ClientAccountType::Native)
+        .await?;
+    let wallet_address = Address::new(account_id)
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    store.insert_address(wallet_address.clone(), account_id).await?;
+    let long_address = long_tag_address(account_id)?;
+    store.insert_address(long_address.clone(), account_id).await?;
+
+    assert!(store.remove_address(long_address).await?);
+    assert_eq!(
+        account_note_tag_set(&store).await?,
+        BTreeSet::from([(default_address.to_note_tag(), account_id)])
+    );
+
+    // The wallet address keeps the tag of the default address.
+    assert!(store.remove_address(default_address.clone()).await?);
+    assert_eq!(
+        account_note_tag_set(&store).await?,
+        BTreeSet::from([(default_address.to_note_tag(), account_id)])
+    );
+
+    assert!(store.remove_address(wallet_address.clone()).await?);
+    assert!(store.get_account_note_tags().await?.is_empty());
+    assert!(store.get_unique_note_tags().await?.is_empty());
+
+    // A second removal of the same address finds nothing.
+    assert!(!store.remove_address(wallet_address).await?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unique_note_tags_merge_stored_and_account_tags() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([4; 32])?;
+    let account_id = account.id();
+    let account_tag = Address::new(account_id).to_note_tag();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    // A user tag with the same value as the account tag.
+    let user_record = NoteTagRecord {
+        tag: account_tag,
+        source: NoteTagSource::User,
+    };
+    assert!(store.add_note_tag(user_record).await?);
+    let other_tag = NoteTag::new(7);
+    let subscription_record = NoteTagRecord {
+        tag: other_tag,
+        source: NoteTagSource::Subscription(Word::from([ONE, ZERO, ZERO, ZERO])),
+    };
+    assert!(store.add_note_tag(subscription_record).await?);
+
+    let stored = store.get_note_tags().await?;
+    assert_eq!(stored.len(), 2);
+    assert!(stored.contains(&user_record));
+    assert!(stored.contains(&subscription_record));
+    assert_eq!(store.get_unique_note_tags().await?, BTreeSet::from([account_tag, other_tag]));
+
+    // The account tag stays after the user tag with the same value is removed.
+    assert_eq!(store.remove_note_tag(user_record).await?, 1);
+    assert_eq!(store.get_unique_note_tags().await?, BTreeSet::from([account_tag, other_tag]));
+    assert_eq!(account_note_tag_set(&store).await?, BTreeSet::from([(account_tag, account_id)]));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_note_tag_rejects_account_source() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([5; 32])?;
+    let account_id = account.id();
+    let account_tag = Address::new(account_id).to_note_tag();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    let err = store
+        .add_note_tag(NoteTagRecord::with_account_source(account_tag, account_id))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AccountNoteTagNotStorable(id) if id == account_id));
+
+    // The store also rejects the record of an account that it does not track.
+    let untracked_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let err = store
+        .add_note_tag(NoteTagRecord::with_account_source(NoteTag::new(7), untracked_id))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AccountNoteTagNotStorable(id) if id == untracked_id));
+
+    assert!(store.get_note_tags().await?.is_empty());
+    assert_eq!(account_note_tag_set(&store).await?, BTreeSet::from([(account_tag, account_id)]));
+
+    Ok(())
+}
+
 // ACCOUNT HISTORY PRUNE TESTS
 // ================================================================================================
 
@@ -1001,6 +1209,38 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pruning must compare nonces as unsigned values, also above `i64::MAX`.
+#[tokio::test]
+async fn prune_account_history_with_large_nonces() -> anyhow::Result<()> {
+    const HIGH_BIT: u64 = 1 << 63;
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::prune_large::map").expect("valid slot name");
+
+    let mut account = setup_account_with_map(&store, 1, &map_slot_name).await?;
+    let account_id = account.id();
+    apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT - 1).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT).await?;
+
+    // A boundary below `i64::MAX` keeps the states replaced at larger nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::from(2u32))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 2);
+
+    // A boundary above `i64::MAX` also removes the states replaced at smaller nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::new_unchecked(HIGH_BIT))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 0);
+
+    Ok(())
+}
+
 // TEST HELPERS
 // ================================================================================================
 
@@ -1103,7 +1343,7 @@ async fn apply_single_entry_update(
     let mut map_entries = StorageMapPatchEntries::new();
     map_entries.insert(
         StorageMapKey::new([Felt::from(1u32), ZERO, ZERO, ZERO].into()),
-        [Felt::new_unchecked(target_nonce * 1000), ZERO, ZERO, ZERO].into(),
+        [Felt::new_unchecked(target_nonce) * Felt::from(1000u32), ZERO, ZERO, ZERO].into(),
     );
     let storage_patch = AccountStoragePatch::from_entries([(
         map_slot_name.clone(),
@@ -1114,7 +1354,7 @@ async fn apply_single_entry_update(
         account.id(),
         storage_patch,
         AccountVaultPatch::default(),
-        None,
+        AccountCodePatch::default(),
         Some(Felt::new_unchecked(target_nonce)),
     )?;
 
@@ -1172,8 +1412,13 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let prev_header: AccountHeader = (&account).into();
     account.apply_patch(&patch)?;
@@ -1369,8 +1614,13 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     vault_patch.insert_asset(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
     let prev_header: AccountHeader = (&account).into();
     account.apply_patch(&patch)?;
     let final_header: AccountHeader = (&account).into();
@@ -1505,7 +1755,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         AccountStoragePatch::new(),
         vault_patch_1,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -1550,7 +1800,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         storage_patch_remove,
         vault_patch_remove,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(3u32)),
     )?;
 
@@ -1594,7 +1844,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         account_id,
         storage_patch_next,
         vault_patch_next,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(4u32)),
     )?;
 
@@ -1802,7 +2052,7 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
         account_id,
         storage_patch_1,
         vault_patch_1,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -1850,7 +2100,7 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
         account_id,
         storage_patch_2,
         vault_patch_2,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(3u32)),
     )?;
 
@@ -1984,7 +2234,7 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
         account_id,
         storage_patch_add,
         vault_patch_add,
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
 
@@ -2095,8 +2345,13 @@ fn build_patch_for_forest_rollback_test(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?, 100)?.into(),
     );
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(2u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
 
     let mut account_after_patch = account.clone();
     account_after_patch.apply_patch(&patch)?;
@@ -2382,8 +2637,13 @@ fn build_bulk_patch_for_reopen_test(
         FungibleAsset::new(AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?, 0)?.into(),
     );
 
-    let patch =
-        AccountPatch::new(account.id(), storage_patch, vault_patch, None, Some(Felt::from(3u32)))?;
+    let patch = AccountPatch::new(
+        account.id(),
+        storage_patch,
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(3u32)),
+    )?;
 
     let mut account_after = account.clone();
     account_after.apply_patch(&patch)?;
@@ -2572,7 +2832,7 @@ async fn watched_status_survives_state_replacement() -> anyhow::Result<()> {
         account_id,
         AccountStoragePatch::new(),
         AccountVaultPatch::default(),
-        None,
+        AccountCodePatch::default(),
         Some(Felt::from(2u32)),
     )?;
     updated.apply_patch(&patch)?;
@@ -2925,6 +3185,272 @@ async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> 
     // `add_account` that could repair the record) fails.
     let partial = store.get_minimal_partial_account(account.id()).await?;
     assert!(partial.is_some());
+
+    Ok(())
+}
+
+// ACCOUNT CODE UPGRADE TESTS
+// ================================================================================================
+
+/// Returns an existing account with a wallet and the code that the account upgrades to. The new
+/// code adds a procedure, so its commitment is different.
+fn account_with_upgraded_code() -> anyhow::Result<(Account, AccountCode)> {
+    let auth = || {
+        AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        ))
+    };
+
+    let account = AccountBuilder::new([7; 32])
+        .account_type(AccountType::Public)
+        .with_component(auth())
+        .with_component(BasicWallet)
+        .build_existing()?;
+
+    let extra_component = AccountComponent::new(
+        CodeBuilder::default().compile_component_code(
+            "miden::testing::upgrade_component",
+            "@account_procedure\npub proc upgraded nop end",
+        )?,
+        vec![],
+        AccountComponentMetadata::new("miden::testing::upgrade_component"),
+    )?;
+    let upgraded_code =
+        AccountCode::from_components(&[auth().into(), BasicWallet.into(), extra_component])?;
+    assert_ne!(account.code().commitment(), upgraded_code.commitment());
+
+    Ok((account, upgraded_code))
+}
+
+/// Returns a patch that only upgrades the code of `account` to `code`.
+fn code_upgrade_patch(account: &Account, code: AccountCode) -> anyhow::Result<AccountPatch> {
+    Ok(AccountPatch::new(
+        account.id(),
+        AccountStoragePatch::default(),
+        AccountVaultPatch::default(),
+        AccountCodePatch::new(Some(code)),
+        Some(account.nonce() + ONE),
+    )?)
+}
+
+/// Applies `patch` to the stored state `init_header`, with `final_header` as the new state.
+async fn apply_patch_in_store(
+    store: &SqliteStore,
+    init_header: AccountHeader,
+    final_header: AccountHeader,
+    patch: AccountPatch,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_account_patch(
+                &tx,
+                &mut smt_forest,
+                &init_header,
+                &final_header,
+                &patch,
+            )?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await
+}
+
+/// Undoes the state of `account_id` with `commitment`.
+async fn undo_in_store(
+    store: &SqliteStore,
+    account_id: AccountId,
+    commitment: Word,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::undo_account_state(&tx, &mut smt_forest, &[(account_id, commitment)])?;
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await
+}
+
+async fn count_account_codes(store: &SqliteStore) -> usize {
+    store
+        .interact_with_connection(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM account_code", [], |row| row.get(0))
+                .into_store_error()
+        })
+        .await
+        .expect("account code count query should succeed")
+}
+
+/// A patch that upgrades the code stores the new code, and the account reads back with it.
+#[tokio::test]
+async fn apply_account_patch_stores_upgraded_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+    assert_eq!(count_account_codes(&store).await, 1);
+
+    let patch = code_upgrade_patch(&account, upgraded_code.clone())?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+    assert_eq!(upgraded_account.code(), &upgraded_code);
+
+    apply_patch_in_store(&store, (&account).into(), (&upgraded_account).into(), patch).await?;
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, upgraded_account);
+    assert_eq!(stored.code(), &upgraded_code);
+
+    // The old code stays stored because the historical header still refers to it.
+    assert_eq!(count_account_codes(&store).await, 2);
+
+    Ok(())
+}
+
+/// A patch whose code does not match the code commitment of the final header is rejected, and the
+/// stored state does not change.
+#[tokio::test]
+async fn apply_account_patch_rejects_code_not_matching_final_header() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+
+    // The final header keeps the old code commitment.
+    let final_header = AccountHeader::new(
+        upgraded_account.id(),
+        upgraded_account.nonce(),
+        upgraded_account.vault().root(),
+        upgraded_account.storage().to_commitment(),
+        account.code().commitment(),
+    );
+
+    let result = apply_patch_in_store(&store, (&account).into(), final_header, patch).await;
+    assert!(
+        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("patch code commitment")),
+        "unexpected result: {result:?}"
+    );
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+    assert_eq!(count_account_codes(&store).await, 1);
+
+    Ok(())
+}
+
+/// A patch without code cannot move the account to a header with a different code commitment,
+/// because the store would not have the code of the new header.
+#[tokio::test]
+async fn apply_account_patch_rejects_code_change_without_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+
+    let patch_without_code = AccountPatch::new(
+        account.id(),
+        AccountStoragePatch::default(),
+        AccountVaultPatch::default(),
+        AccountCodePatch::default(),
+        Some(upgraded_account.nonce()),
+    )?;
+
+    let result = apply_patch_in_store(
+        &store,
+        (&account).into(),
+        (&upgraded_account).into(),
+        patch_without_code,
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("does not contain the new code")),
+        "unexpected result: {result:?}"
+    );
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+
+    Ok(())
+}
+
+/// A full-state replacement with upgraded code stores the new code.
+#[tokio::test]
+async fn update_account_state_stores_upgraded_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&code_upgrade_patch(&account, upgraded_code.clone())?)?;
+
+    store.update_account(&upgraded_account).await?;
+
+    let stored: Account = store
+        .get_account(account.id())
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, upgraded_account);
+    assert_eq!(stored.code(), &upgraded_code);
+
+    Ok(())
+}
+
+/// Undoing the state that upgraded the code restores the previous code.
+#[tokio::test]
+async fn undo_code_upgrade_restores_previous_code() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let (account, upgraded_code) = account_with_upgraded_code()?;
+    store
+        .insert_account(&account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+
+    let patch = code_upgrade_patch(&account, upgraded_code)?;
+    let mut upgraded_account = account.clone();
+    upgraded_account.apply_patch(&patch)?;
+    apply_patch_in_store(&store, (&account).into(), (&upgraded_account).into(), patch).await?;
+
+    let account_id = account.id();
+    undo_in_store(&store, account_id, upgraded_account.to_commitment()).await?;
+
+    let stored: Account = store
+        .get_account(account_id)
+        .await?
+        .context("account should be tracked")?
+        .try_into()?;
+    assert_eq!(stored, account);
+    assert_eq!(stored.code(), account.code());
 
     Ok(())
 }

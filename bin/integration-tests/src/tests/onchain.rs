@@ -48,7 +48,6 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     let mut client_2 = client_config.clone().into_client().await?;
     // Client 3 will be transferred part of the assets by client 2's account
     let mut client_3 = client_config.clone().into_client().await?;
-    client_3.wait_for_node().await;
 
     // Create faucet account
     let (faucet_account, _) = client_1
@@ -96,16 +95,10 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         .try_into()?;
     assert_eq!(received_note.note().id(), note.id());
 
-    // TODO: revisit this. The received note has the uri of the note stored in the node, so it may
-    // not match with the original note.
-    //
-    // assert_eq!(received_note.note(), &note);
-
     // consume the note
-    let tx_id = client_2
-        .consume_notes(basic_wallet_1.id(), &[received_note.note().clone()])
+    client_2
+        .consume_notes_and_wait(basic_wallet_1.id(), &[received_note.note().clone()])
         .await?;
-    client_2.wait_for_tx(tx_id).await?;
     client_2
         .assert_account_has_single_asset(basic_wallet_1.id(), faucet_account.id(), MINT_AMOUNT)
         .await;
@@ -120,6 +113,11 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         NoteType::Public,
         client_2.rng(),
     )?;
+    let transferred_note = tx_request
+        .expected_output_own_notes()
+        .pop()
+        .with_context(|| "no expected output notes found in the transfer to basic wallet 2")?
+        .clone();
     client_2.execute_tx_and_sync(basic_wallet_1.id(), tx_request).await?;
 
     // Create a note for client 3 that is already consumed before syncing
@@ -148,9 +146,14 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     client_3.sync_state().await?;
 
     // client 3 should have two notes, the one directed to them and the one consumed by client 2
-    // (which should come from the tag added). The reclaimed one is looked up by ID rather than by
-    // counting, since on a fee-charging chain the account also consumed a note to fund itself.
-    assert_eq!(client_3.get_input_notes(NoteFilter::Committed).await?.len(), 1);
+    // (which should come from the tag added). Both are looked up by ID rather than by counting,
+    // since the account also holds a note that funded it, which is tracked too when the funding
+    // source hands out public notes.
+    let committed = client_3.get_input_notes(NoteFilter::Committed).await?;
+    assert!(
+        committed.iter().any(|note| note.id() == Some(transferred_note.id())),
+        "client 3 should track the transferred note as committed"
+    );
     let consumed = client_3.get_input_notes(NoteFilter::Consumed).await?;
     assert!(
         consumed.iter().any(|note| note.id() == Some(reclaimed_note.id())),
@@ -158,15 +161,12 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     );
 
     let note = client_3
-        .get_input_notes(NoteFilter::Committed)
+        .get_input_note(transferred_note.id())
         .await?
-        .first()
-        .with_context(|| "no committed input notes found")?
-        .clone()
+        .with_context(|| format!("note {} not found in client 3", transferred_note.id()))?
         .try_into()?;
 
-    let tx_id = client_3.consume_notes(basic_wallet_2.id(), &[note]).await?;
-    client_3.wait_for_tx(tx_id).await?;
+    client_3.consume_notes_and_wait(basic_wallet_2.id(), &[note]).await?;
     client_3
         .assert_account_has_single_asset(basic_wallet_2.id(), faucet_account.id(), TRANSFER_AMOUNT)
         .await;
@@ -176,7 +176,6 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
 pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_2.wait_for_node().await;
 
     let (faucet_account_header, secret_key) =
         client_1.insert_account(AccountSetup::faucet(AccountType::Public)).await?;
@@ -229,15 +228,13 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
     client_1.sync_state().await?;
 
     info!(account_id = %target_account_id, "Consuming note on first client");
-    let tx_id = client_1.consume_notes(target_account_id, &[note]).await?;
-    client_1.wait_for_tx(tx_id).await?;
+    client_1.consume_notes_and_wait(target_account_id, &[note]).await?;
     client_1
         .assert_account_has_single_asset(target_account_id, faucet_account_id, MINT_AMOUNT)
         .await;
-    let tx_id = client_2
-        .consume_notes(second_client_target_account_id, &[second_client_note])
+    client_2
+        .consume_notes_and_wait(second_client_target_account_id, &[second_client_note])
         .await?;
-    client_2.wait_for_tx(tx_id).await?;
     client_2
         .assert_account_has_single_asset(
             second_client_target_account_id,
@@ -341,7 +338,6 @@ pub async fn test_onchain_accounts(client_config: ClientConfig) -> Result<()> {
 pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     let mut user_seed = [0u8; 32];
     client_1.rng().fill_bytes(&mut user_seed);
@@ -401,8 +397,7 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
     // Now use the wallet in the second client to consume the generated note
     info!(account_id = %target_account_id, "Second client consuming note");
     client_2.sync_state().await?;
-    let tx_id = client_2.consume_notes(target_account_id, &[note]).await?;
-    client_2.wait_for_tx(tx_id).await?;
+    client_2.consume_notes_and_wait(target_account_id, &[note]).await?;
     client_2
         .assert_account_has_single_asset(target_account_id, faucet_account_id, MINT_AMOUNT * 2)
         .await;
@@ -418,7 +413,6 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
 pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     let faucet_account = client_1.insert_faucet(AccountType::Public).await?;
     let wallet = client_1.insert_wallet(AccountType::Public).await?;
@@ -446,7 +440,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .context("watched account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()
@@ -459,8 +453,9 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
     // only through its on-chain state.
     let (tx_id, mint_note) = client_1.mint_note(wallet_id, faucet_id, NoteType::Public).await?;
     client_1.wait_for_tx(tx_id).await?;
-    let consume_tx_id = client_1.consume_notes(wallet_id, std::slice::from_ref(&mint_note)).await?;
-    client_1.wait_for_tx(consume_tx_id).await?;
+    client_1
+        .consume_notes_and_wait(wallet_id, std::slice::from_ref(&mint_note))
+        .await?;
 
     client_2.sync_state().await?;
 
@@ -501,7 +496,7 @@ pub async fn test_import_watched_account_by_id(client_config: ClientConfig) -> R
         .await?
         .context("account should still be tracked after re-import")?;
     assert!(record.is_watched(), "account must remain watched");
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()
@@ -537,7 +532,6 @@ pub async fn test_incorrect_genesis(client_config: ClientConfig) -> Result<()> {
 /// submission order.
 pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     let faucet_account = client.insert_faucet(AccountType::Private).await?;
 
@@ -565,20 +559,11 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     }
     client.sync_state().await?;
 
-    // Requests are built before the batch borrows the client, so a funding note can still be folded
-    // in.
-    let requests: Vec<_> = minted_notes
-        .iter()
-        .map(|note| {
-            let tx_request = TransactionRequestBuilder::new()
-                .build_consume_notes(vec![note.clone()])
-                .unwrap();
-            client.fund_request(wallet_account.id(), tx_request)
-        })
-        .collect();
-
     let mut batch = client.new_transaction_batch();
-    for (i, tx_request) in requests.into_iter().enumerate() {
+    for (i, note) in minted_notes.iter().enumerate() {
+        let tx_request = TransactionRequestBuilder::new()
+            .build_consume_notes(vec![note.clone()])
+            .unwrap();
         info!(index = i, "Pushing consume tx into batch");
         batch.push(wallet_account.id(), tx_request).await?;
     }
@@ -692,7 +677,6 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 ) -> Result<()> {
     let mut client_a = client_config.clone().into_client().await?;
     let mut client_b = client_config.clone().into_client().await?;
-    client_a.wait_for_node().await;
 
     let faucet = client_a.insert_faucet(AccountType::Public).await?;
     let consumer = client_a.insert_wallet(AccountType::Public).await?;
@@ -711,8 +695,9 @@ pub async fn test_watched_account_recovers_consumed_public_note(
     // never tracked this note's tag, so the only trace it can get is the consuming transaction.
     let (mint_tx, note) = client_a.mint_note(consumer_id, faucet_id, NoteType::Public).await?;
     client_a.wait_for_tx(mint_tx).await?;
-    let consume_tx = client_a.consume_notes(consumer_id, std::slice::from_ref(&note)).await?;
-    client_a.wait_for_tx(consume_tx).await?;
+    client_a
+        .consume_notes_and_wait(consumer_id, std::slice::from_ref(&note))
+        .await?;
 
     // B syncs until its reader surfaces the consumed note.
     let mut found = None;
@@ -754,7 +739,6 @@ pub async fn test_watched_account_recovers_consumed_public_note(
 pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.wait_for_node().await;
 
     // Create faucet in client 1
     let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
@@ -839,8 +823,7 @@ pub async fn test_sync_note_with_attachment(client_config: ClientConfig) -> Resu
 
     // Consume both notes — this fails if either note's attachments weren't resolved.
     info!("Consuming both notes with attachments in client 2");
-    let tx_id = client_2.consume_notes(wallet.id(), &received_notes).await?;
-    client_2.wait_for_tx(tx_id).await?;
+    client_2.consume_notes_and_wait(wallet.id(), &received_notes).await?;
 
     client_2
         .assert_account_has_single_asset(wallet.id(), faucet_account.id(), MINT_AMOUNT * 2)

@@ -420,17 +420,14 @@ impl DataStore for ClientDataStore {
                 .await?
                 .ok_or(DataStoreError::BlockNotFound(ref_block))?;
 
-            let block_headers =
-                get_block_headers_with_fallback(&self.store, &self.rpc_api, &block_refs).await?;
-
             // TODO: the client stores only the peaks of the MMR at the current sync height, so we
             // are not actually following the block_ref here. If the block_ref !=
             // current_sync_height, this would return an invalid partial blockchain.
-            let partial_mmr = build_partial_mmr_with_paths(
+            let (partial_mmr, block_headers) = build_partial_mmr_and_headers_with_fallback(
                 &self.store,
                 &self.rpc_api,
                 current_peaks,
-                &block_headers,
+                &block_refs,
             )
             .await?;
 
@@ -686,42 +683,23 @@ pub(crate) async fn build_partial_mmr_with_paths(
             continue;
         }
 
-        let (rpc_header, proof) =
-            rpc_api.get_block_header_with_proof(header.block_num()).await.map_err(|err| {
-                DataStoreError::other_with_source(
-                    format!("failed to fetch MMR proof for block {}", header.block_num()),
-                    err,
-                )
-            })?;
-        if rpc_header != *header || proof.leaf() != header.commitment() {
-            return Err(DataStoreError::other(format!(
-                "node returned an invalid MMR proof for block {}",
-                header.block_num()
-            )));
-        }
-
-        let proof = proof.with_forest(partial_mmr.forest()).map_err(|err| {
-            DataStoreError::other(format!(
-                "failed to adjust MMR proof for block {}: {err}",
-                header.block_num()
-            ))
-        })?;
-        partial_mmr
-            .track(header.block_num().as_usize(), header.commitment(), proof.merkle_path())
-            .map_err(|err| DataStoreError::other(format!("error constructing MMR: {err}")))?;
+        fetch_and_track_block_header(rpc_api, &mut partial_mmr, header.block_num(), Some(header))
+            .await?;
     }
 
     Ok(partial_mmr)
 }
 
-/// Returns the requested block headers from the local store or the node.
+/// Builds a [`PartialMmr`] and returns the authenticated block headers.
 ///
-/// The partial MMR authenticates every returned header before the headers enter transaction inputs.
-pub(crate) async fn get_block_headers_with_fallback(
+/// Headers in the store use local MMR nodes when possible. If a local path is incomplete, the node
+/// returns the header and its proof in one call. A missing header always uses this combined call.
+pub(crate) async fn build_partial_mmr_and_headers_with_fallback(
     store: &alloc::sync::Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
+    peaks: MmrPeaks,
     block_numbers: &BTreeSet<BlockNumber>,
-) -> Result<Vec<BlockHeader>, DataStoreError> {
+) -> Result<(PartialMmr, Vec<BlockHeader>), DataStoreError> {
     let mut headers: BTreeMap<BlockNumber, BlockHeader> = store
         .get_block_headers(block_numbers)
         .await?
@@ -729,30 +707,64 @@ pub(crate) async fn get_block_headers_with_fallback(
         .map(|(header, _has_notes)| (header.block_num(), header))
         .collect();
 
+    let local_headers: Vec<BlockHeader> = headers.values().cloned().collect();
+    let mut partial_mmr =
+        build_partial_mmr_with_paths(store, rpc_api, peaks, &local_headers).await?;
+
     for &block_num in block_numbers {
         if headers.contains_key(&block_num) {
             continue;
         }
 
-        let (header, _) = rpc_api
-            .get_block_header_by_number(Some(block_num), false)
-            .await
-            .map_err(|err| {
-                DataStoreError::other_with_source(
-                    format!("failed to fetch block header {block_num}"),
-                    err,
-                )
-            })?;
-        if header.block_num() != block_num {
-            return Err(DataStoreError::other(format!(
-                "node returned block header {} for requested block {block_num}",
-                header.block_num()
-            )));
-        }
+        let header =
+            fetch_and_track_block_header(rpc_api, &mut partial_mmr, block_num, None).await?;
         headers.insert(block_num, header);
     }
 
-    Ok(headers.into_values().collect())
+    Ok((partial_mmr, headers.into_values().collect()))
+}
+
+/// Fetches a block header with its MMR proof and tracks the authenticated header.
+///
+/// If `expected_header` is set, the fetched header must match it.
+async fn fetch_and_track_block_header(
+    rpc_api: &Arc<dyn NodeRpcClient>,
+    partial_mmr: &mut PartialMmr,
+    block_num: BlockNumber,
+    expected_header: Option<&BlockHeader>,
+) -> Result<BlockHeader, DataStoreError> {
+    let (header, proof) = rpc_api.get_block_header_with_proof(block_num).await.map_err(|err| {
+        DataStoreError::other_with_source(
+            format!("failed to fetch block header and MMR proof for block {block_num}"),
+            err,
+        )
+    })?;
+
+    if header.block_num() != block_num {
+        return Err(DataStoreError::other(format!(
+            "node returned block header {} for requested block {block_num}",
+            header.block_num()
+        )));
+    }
+    if expected_header.is_some_and(|expected| header != *expected) {
+        return Err(DataStoreError::other(format!(
+            "node returned a different header for block {block_num}"
+        )));
+    }
+    if proof.leaf() != header.commitment() {
+        return Err(DataStoreError::other(format!(
+            "node returned an invalid MMR proof for block {block_num}"
+        )));
+    }
+
+    let proof = proof.with_forest(partial_mmr.forest()).map_err(|err| {
+        DataStoreError::other(format!("failed to adjust MMR proof for block {block_num}: {err}"))
+    })?;
+    partial_mmr
+        .track(block_num.as_usize(), header.commitment(), proof.merkle_path())
+        .map_err(|err| DataStoreError::other(format!("error constructing MMR: {err}")))?;
+
+    Ok(header)
 }
 
 /// Retrieves all Partial Blockchain nodes required for authenticating the set of blocks, and then

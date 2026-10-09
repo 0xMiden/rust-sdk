@@ -166,7 +166,7 @@ async fn remove_address<AUTH>(
     let address = decode_account_address(&address, account_id, &network_id)?;
     let note_tag = address.to_note_tag();
 
-    if client.remove_address(address, account_id).await? {
+    if client.remove_address(address).await? {
         println!("Address removed - Account Id {account_id} - Note tag: {note_tag}");
     } else {
         println!("No address was tracked for Account Id {account_id}");

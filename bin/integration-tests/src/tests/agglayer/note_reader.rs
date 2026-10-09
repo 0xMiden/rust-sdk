@@ -2,7 +2,7 @@ use anyhow::Result;
 use miden_agglayer::{ExitRoot, UpdateGerNote};
 use miden_client::transaction::TransactionRequestBuilder;
 
-use super::{AgglayerConfig, create_agglayer_clients, setup_core_accounts};
+use super::AgglayerScenario;
 use crate::ClientConfig;
 
 // TESTS
@@ -20,13 +20,11 @@ use crate::ClientConfig;
 pub async fn test_agglayer_note_reader_reads_consumed_notes(
     client_config: ClientConfig,
 ) -> Result<()> {
-    let agglayer_config = AgglayerConfig::from_env()?;
-    let _agglayer_accounts = agglayer_config.claim()?;
-    let (mut bridge_admin, mut ger_manager, mut user) =
-        create_agglayer_clients(&client_config).await?;
-    let (_bridge_admin_id, ger_manager_id, bridge_id) =
-        setup_core_accounts(&agglayer_config, &mut bridge_admin, &mut ger_manager, &mut user)
-            .await?;
+    let AgglayerScenario {
+        config: agglayer_config, mut ger_manager, ..
+    } = AgglayerScenario::start(&client_config).await?;
+    let (ger_manager_id, bridge_id) =
+        (agglayer_config.ger_manager_id(), agglayer_config.bridge_id());
 
     const NOTE_COUNT: usize = 3;
     // The node builds each network transaction on its own schedule, which stretches with load.

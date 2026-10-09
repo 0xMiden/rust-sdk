@@ -17,13 +17,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{AssetId, FungibleAsset, PartialVault};
-use miden_client::auth::{
-    Approver,
-    AuthSchemeId,
-    AuthSecretKey,
-    AuthSingleSig,
-    RPO_FALCON_SCHEME_ID,
-};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteType;
 use miden_client::rpc::domain::account::AccountStorageRequirements;
@@ -61,7 +55,6 @@ pub async fn test_standard_fpi_private(client_config: ClientConfig) -> Result<()
 
 pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.sync_state().await?;
 
     // Deploy a foreign account
     let (foreign_account, proc_root) = deploy_foreign_account(
@@ -153,7 +146,6 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
 
 pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     let (inner_foreign_account, inner_proc_root) = deploy_foreign_account(
         &mut client,
@@ -287,7 +279,6 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
 /// `TransactionRequestBuilder`.
 pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     // Create a simple foreign account with a constant-returning procedure.
     let constant_value: Word =
@@ -333,8 +324,6 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     // Create a new client to ensure no cached data.
     let mut client2 = client_config.clone().into_client().await?;
 
-    client2.sync_state().await?;
-
     let native_account = client2.insert_wallet(AccountType::Public).await?;
 
     client2.wait_for_blocks_no_sync(2).await?;
@@ -363,7 +352,6 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
 /// makes a second RPC call to fetch the storage map entries.
 pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     // Deploy a foreign account with a storage map (same as standard FPI tests).
     let (foreign_account, proc_root) = deploy_foreign_account(
@@ -410,7 +398,6 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
 
     // Create a new client to ensure no cached data.
     let mut client2 = client_config.clone().into_client().await?;
-    client2.sync_state().await?;
 
     let native_account = client2.insert_wallet(AccountType::Public).await?;
 
@@ -440,7 +427,6 @@ async fn standard_fpi(
     auth_scheme: AuthSchemeId,
 ) -> Result<()> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
 
     let (foreign_account, proc_root) = deploy_foreign_account(
         &mut client,
@@ -555,10 +541,16 @@ async fn standard_fpi(
     client2.wait_for_blocks_no_sync(2).await?;
 
     // Second client should be able to submit a transaction Without being synced to latest state.
-    // `TestClient::submit_new_transaction` syncs first, so this folds in the funding note and then
-    // calls the wrapped client directly.
+    // `TestClient::submit_new_transaction` and `TestClient::execute_transaction` sync first, so
+    // this executes with the wrapped client. The node can reject the transaction until it knows the
+    // funding note, so the submission repeats until the node accepts it.
     let tx_request = client2.fund_request(native_account.id(), tx_request);
-    let _ = (*client2).submit_new_transaction(native_account.id(), tx_request).await?;
+    let tx_result = (*client2).execute_transaction(native_account.id(), tx_request).await?;
+    let proven_transaction = client2.prove_transaction(&tx_result).await?;
+    let submission_height = client2
+        .submit_proven_transaction_retrying(proven_transaction, &tx_result)
+        .await?;
+    client2.apply_transaction(&tx_result, submission_height).await?;
 
     // After the transaction the foreign account should be cached (for public accounts only)
     if account_type == AccountType::Public {
@@ -588,8 +580,6 @@ async fn setup_fpi_vault_asset_read(
     client_config: &ClientConfig,
 ) -> Result<(AccountId, String, [Felt; 16])> {
     let mut client = client_config.clone().into_client().await?;
-    client.wait_for_node().await;
-    client.sync_state().await?;
 
     // Deploy a foreign account exposing a procedure that reads an asset from its own vault.
     let (foreign_account, proc_root) = deploy_foreign_account(
@@ -614,8 +604,7 @@ async fn setup_fpi_vault_asset_read(
         .mint_note(foreign_account_id, faucet_account.id(), NoteType::Private)
         .await?;
     client.wait_for_tx(tx_id).await?;
-    let tx_id = client.consume_notes(foreign_account_id, &[note]).await?;
-    client.wait_for_tx(tx_id).await?;
+    client.consume_notes_and_wait(foreign_account_id, &[note]).await?;
 
     let fungible_asset = FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)
         .context("failed to build the expected fungible asset")?;
@@ -667,7 +656,6 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
 
     // A fresh client, so no foreign account data is cached or tracked.
     let mut client = client_config.clone().into_client().await?;
-    client.sync_state().await?;
     let wallet = client.insert_wallet(AccountType::Private).await?;
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
@@ -695,7 +683,6 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
         setup_fpi_vault_asset_read(&client_config).await?;
 
     let mut client = client_config.clone().into_client().await?;
-    client.sync_state().await?;
     let wallet = client.insert_wallet(AccountType::Private).await?;
 
     // Track the foreign account so the client's stored vault root matches the node's.
@@ -750,29 +737,8 @@ fn foreign_account_with_code(
     .map_err(|err| anyhow::anyhow!(err))
     .context("failed to create foreign account component")?;
 
-    let (key_pair, auth_component) = match auth_scheme {
-        AuthSchemeId::Falcon512Poseidon2 => {
-            let key_pair = AuthSecretKey::new_falcon512_poseidon2();
-            let auth_component: AccountComponent = AuthSingleSig::new(Approver::new(
-                key_pair.public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
-            ))
-            .into();
-            (key_pair, auth_component)
-        },
-        AuthSchemeId::EcdsaK256Keccak => {
-            let key_pair = AuthSecretKey::new_ecdsa_k256_keccak();
-            let auth_component: AccountComponent = AuthSingleSig::new(Approver::new(
-                key_pair.public_key().to_commitment(),
-                AuthSchemeId::EcdsaK256Keccak,
-            ))
-            .into();
-            (key_pair, auth_component)
-        },
-        scheme => {
-            return Err(anyhow::anyhow!(format!("Unsupported auth scheme ID {}", scheme.as_u8())));
-        },
-    };
+    let (auth_component, key_pair) = auth_component(auth_scheme)?;
+    let auth_component: AccountComponent = auth_component.into();
 
     // The wallet component lets the account receive assets, so tests can fund its vault.
     let account = AccountBuilder::new(Default::default())

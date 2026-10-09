@@ -6,13 +6,12 @@
 
 use anyhow::{Context, Result, bail};
 
-use super::funding::request_funds;
 use super::invitations::create_invitation_code;
 use super::{
     assert_rejected_before_submission,
-    funded_deploy_request,
     insert_unfunded_wallet,
-    is_deployed,
+    registered_deploy_request,
+    service_funded_deploy_request,
 };
 use crate::ClientConfig;
 use crate::tests::network_transaction::add_network_counter_contract;
@@ -25,14 +24,13 @@ pub async fn test_allowlist_registered_account_can_deploy(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
     let account = insert_unfunded_wallet(&mut client, Some(&invitation_code))
         .await
         .context("failed to register the account on the network allowlist")?;
 
-    let deploy = funded_deploy_request(&mut client, &account).await?;
+    let deploy = registered_deploy_request(&mut client, &account).await?;
     let transaction_id = client
         .submit_new_transaction(account.id(), deploy)
         .await
@@ -40,7 +38,7 @@ pub async fn test_allowlist_registered_account_can_deploy(
     client.wait_for_tx(transaction_id).await?;
 
     assert!(
-        is_deployed(&client, &account).await?,
+        client.is_deployed(account.id()).await?,
         "a registered account should have been created on chain"
     );
 
@@ -55,13 +53,10 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let account = insert_unfunded_wallet(&mut client, None).await?;
     // The account can pay the fee, so the only thing that stops the deploy is the allowlist.
-    request_funds(&account).await?;
-
-    let deploy = funded_deploy_request(&mut client, &account).await?;
+    let deploy = service_funded_deploy_request(&client, &account).await?;
     let error = client
         .submit_new_transaction(account.id(), deploy)
         .await
@@ -69,7 +64,7 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     assert_rejected_before_submission(&error, &account);
 
     assert!(
-        !is_deployed(&client, &account).await?,
+        !client.is_deployed(account.id()).await?,
         "a rejected account should not have been created on chain"
     );
 
@@ -81,18 +76,16 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
 /// The node classifies the account before it exists on chain and exempts network accounts, so this
 /// covers the branch that keeps the allowlist from blocking the node's own accounts.
 ///
-/// A network account cannot register, so the node does not pay it. The test pays it through the
-/// funding service, and the deploy consumes that note.
+/// A network account cannot register, so the node does not pay it. The fee funder of the test
+/// client pays it, and the deploy consumes that note.
 pub async fn test_allowlist_network_account_needs_no_registration(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let account = add_network_counter_contract(&mut client, &[]).await?;
-    request_funds(&account).await?;
 
-    let deploy = funded_deploy_request(&mut client, &account).await?;
+    let deploy = service_funded_deploy_request(&client, &account).await?;
     let transaction_id = client
         .submit_new_transaction(account.id(), deploy)
         .await
@@ -100,7 +93,7 @@ pub async fn test_allowlist_network_account_needs_no_registration(
     client.wait_for_tx(transaction_id).await?;
 
     assert!(
-        is_deployed(&client, &account).await?,
+        client.is_deployed(account.id()).await?,
         "a network account should have been created on chain without registration"
     );
 
@@ -114,18 +107,17 @@ pub async fn test_allowlist_network_account_needs_no_registration(
 /// opening transaction of a batch.
 pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
     let registered = insert_unfunded_wallet(&mut client, Some(&invitation_code))
         .await
         .context("failed to register the account")?;
     let unregistered = insert_unfunded_wallet(&mut client, None).await?;
-    request_funds(&unregistered).await?;
 
-    // The requests are built before the batch borrows the client, because building one syncs.
-    let registered_request = funded_deploy_request(&mut client, &registered).await?;
-    let unregistered_request = funded_deploy_request(&mut client, &unregistered).await?;
+    // The requests are built before the batch borrows the client, because building the request of
+    // the registered account syncs.
+    let registered_request = registered_deploy_request(&mut client, &registered).await?;
+    let unregistered_request = service_funded_deploy_request(&client, &unregistered).await?;
 
     let mut batch = client.new_transaction_batch();
     batch.push(registered.id(), registered_request).await?;
@@ -137,12 +129,12 @@ pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -
     assert_rejected_before_submission(&error, &unregistered);
 
     assert!(
-        !is_deployed(&client, &unregistered).await?,
+        !client.is_deployed(unregistered.id()).await?,
         "the unregistered account should not have been created on chain"
     );
     // The batch is refused as a whole, so the registered account is not created either.
     assert!(
-        !is_deployed(&client, &registered).await?,
+        !client.is_deployed(registered.id()).await?,
         "the rejected batch should not have created the registered account"
     );
 

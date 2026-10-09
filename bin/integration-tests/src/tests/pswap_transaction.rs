@@ -23,11 +23,7 @@ pub async fn test_pswap_full_fill_onchain(client_config: ClientConfig) -> Result
     const REQUESTED_AMOUNT: u64 = 50;
 
     let mut alice_client = client_config.clone().into_client().await?;
-    alice_client.wait_for_node().await;
     let mut bob_client = client_config.clone().into_client().await?;
-
-    alice_client.sync_state().await?;
-    bob_client.sync_state().await?;
 
     let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
     let bob_account = bob_client.insert_wallet(AccountType::Private).await?;
@@ -134,11 +130,7 @@ pub async fn test_pswap_partial_fill_onchain(client_config: ClientConfig) -> Res
     const REMAINING_REQUESTED: u64 = REQUESTED_AMOUNT - ACCOUNT_FILL;
 
     let mut alice_client = client_config.clone().into_client().await?;
-    alice_client.wait_for_node().await;
     let mut bob_client = client_config.clone().into_client().await?;
-
-    alice_client.sync_state().await?;
-    bob_client.sync_state().await?;
 
     let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
     let bob_account = bob_client.insert_wallet(AccountType::Private).await?;
@@ -230,8 +222,6 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     const REQUESTED_AMOUNT: u64 = 50;
 
     let mut alice_client = client_config.into_client().await?;
-    alice_client.wait_for_node().await;
-    alice_client.sync_state().await?;
 
     let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
 

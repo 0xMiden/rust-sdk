@@ -128,6 +128,7 @@ The command accepts these options:
 - `-t, --account-type <ACCOUNT_TYPE>`: Used to select the account visibility (private if not specified). It may receive "private" or "public". This is the only thing the protocol's `AccountType` encodes.
 - `--extra-packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
 - `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
 
@@ -150,6 +151,7 @@ The command accepts these options:
 There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If any package contributes the `FungibleFaucet` component, the resulting account is treated as a fungible faucet and an implicit `TokenPolicyManager` is installed when one is not already provided. `--account-type` only selects visibility.
 - `--packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
+- `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
 - `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
 
@@ -184,6 +186,9 @@ miden-client new-account --packages packages/basic-fungible-faucet.masp
 
 # Create a fungible faucet with preset fields
 miden-client new-account --packages packages/basic-fungible-faucet.masp --init-storage-data-path init_data.toml
+
+# Create an account with init storage values set on the command line
+miden-client new-account --packages packages/my-component.masp --init-slot 'my_project::my_component::slot="0x1234"'
 ```
 
 where `init_data.toml` is a TOML file with the following example content:
@@ -303,9 +308,30 @@ View transactions.
 
 #### Action Flags
 
-| Command  | Description               | Aliases |
-| -------- | ------------------------- | ------- |
-| `--list` | List tracked transactions | -l      |
+| Command       | Description                              | Aliases |
+| ------------- | ---------------------------------------- | ------- |
+| `--list`      | List tracked transactions                | `-l`    |
+| `--show <ID>` | Show the details of a single transaction | `-s`    |
+
+The `--list` flag accepts filters that narrow the listing, which is ordered by creation time, newest first:
+
+| Flag                | Description                                            | Aliases |
+| ------------------- | ------------------------------------------------------ | ------- |
+| `--account-id <ID>` | Only list transactions executed by this account        | `-a`    |
+| `--status <status>` | Only list `pending`, `committed` or `discarded` ones    |         |
+| `--limit <count>`   | Only list at most this many of the newest transactions  |         |
+
+The `--show` flag prints the transaction record, a table of its input notes and a table of its
+output notes. Each note row has the standard note name, the store state and the decoded storage of a P2ID, P2IDE,
+SWAP or PSWAP note. The reference block is the block the transaction executed against, not the
+block that included it. It accepts a partial ID:
+
+```sh
+miden-client tx --show 0x0c97ec
+```
+
+The transaction records an input note only by its nullifier. The note ID comes from the tracked
+notes with that nullifier. An untracked private note shows as `<private>`.
 
 After a transaction gets executed, two entities start being tracked:
 

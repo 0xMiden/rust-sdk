@@ -19,21 +19,21 @@
 //! - A registered account receives a public note with the native asset, and its deploy consumes that
 //!   note to pay its own fee.
 //!
-//! No account in these tests is paid by the test funder. [`funding`] pays the accounts that do not
-//! register, the network account included, through the node's funding service. An unregistered
+//! A registered account receives its note from the node, so a test syncs until the note arrives. An
+//! account that does not register, the network account included, is paid by the fee funder of the
+//! test client, which draws from the same funding service and returns the note. An unregistered
 //! wallet needs the funds to pay the fee of the execution that comes before the allowlist check.
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
+use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::note::Note;
 use miden_client::rpc::{EndpointError, RegisterAccountError, RpcEndpoint, RpcError};
 use miden_client::testing::common::*;
-use miden_client::transaction::{InputNote, TransactionRequest, TransactionRequestBuilder};
-use miden_client::{ClientError, Felt};
+use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 
 pub mod enforcement;
-pub mod funding;
 pub mod invitations;
 pub mod registration;
 
@@ -48,10 +48,9 @@ const FUNDING_NOTE_MAX_BLOCKS: u32 = 20;
 
 /// Builds the request for the first transaction of an account, which creates it on chain.
 ///
-/// This is the submission the allowlist gates. The transaction consumes the notes paid to the
-/// account, either at registration or through [`funding::request_funds`], so it pays its own fee
-/// out of those funds.
-async fn funded_deploy_request(
+/// This is the submission the allowlist gates. The transaction consumes the notes the node paid to
+/// the account at registration, so it pays its own fee out of those funds.
+async fn registered_deploy_request(
     client: &mut TestClient,
     account: &Account,
 ) -> Result<TransactionRequest> {
@@ -75,21 +74,40 @@ async fn funding_notes(client: &mut TestClient, account: &Account) -> Result<Vec
     client
         .wait_for_consumable_notes(account.id(), FUNDING_NOTE_MAX_BLOCKS)
         .await
-        .with_context(|| format!("failed to wait for a funding note for account {}", account.id()))?
+        .with_context(|| format!("failed to wait for a funding note for account {}", account.id()))
+}
+
+/// Builds the request for the first transaction of an account that does not register.
+///
+/// The fee funder of `client` pays the account and returns the note. The transaction consumes the
+/// note as an unauthenticated input, so no sync waits for the note to commit. Fails when the client
+/// has no fee funder.
+async fn service_funded_deploy_request(
+    client: &TestClient,
+    account: &Account,
+) -> Result<TransactionRequest> {
+    let funder = client.fee_funder().context(
+        "the allowlist tests need a funding service to pay the accounts that do not register. Set \
+         MIDEN_FUNDING_SERVICE_URL",
+    )?;
+    let notes = funder
+        .fund(&[account.id()])
+        .await
+        .with_context(|| format!("failed to fund account {}", account.id()))?
         .into_iter()
-        .map(|(record, _)| {
-            let note: InputNote =
-                record.try_into().context("a committed note should convert to an input note")?;
-            Ok(note.into_note())
-        })
-        .collect()
+        .map(|(_, note)| note)
+        .collect();
+
+    TransactionRequestBuilder::new()
+        .build_consume_notes(notes)
+        .context("failed to build the deploy transaction request")
 }
 
 /// Inserts a private wallet that has not been created on chain yet, registering it with
 /// `invitation_code` when one is given.
 ///
 /// The test client does not fund the wallet. A registration makes the node pay the wallet. An
-/// unregistered wallet is paid only when a test calls [`funding::request_funds`].
+/// unregistered wallet is paid only when a test calls [`service_funded_deploy_request`].
 async fn insert_unfunded_wallet(
     client: &mut TestClient,
     invitation_code: Option<&str>,
@@ -126,16 +144,4 @@ fn assert_registration_rejected(error: &ClientError, expected: &RegisterAccountE
         }) if actual == expected,
         "expected the registration to be rejected with {expected}, got: {error}"
     );
-}
-
-/// Returns whether the account has been created on chain. A zero nonce marks an account that has
-/// never transacted.
-async fn is_deployed(client: &TestClient, account: &Account) -> Result<bool> {
-    let nonce = client
-        .account_reader(account.id())
-        .nonce()
-        .await
-        .with_context(|| format!("account {} is not tracked by the client", account.id()))?;
-
-    Ok(nonce != Felt::ZERO)
 }

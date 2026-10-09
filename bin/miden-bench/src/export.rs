@@ -2,12 +2,12 @@
 
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
-use miden_client::Client;
 use miden_client::account::{AccountFile, AccountId};
-use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::keystore::Keystore;
+use miden_client::testing::common::TestClient;
 
 use crate::report::format_size;
 
@@ -16,8 +16,7 @@ use crate::report::format_size;
 /// When `filename` is `None`, the file is written to the current working directory as
 /// `<account_id>.mac`.
 pub async fn export_account(
-    client: &Client<FilesystemKeyStore>,
-    store_path: &Path,
+    client: &TestClient,
     account_id_str: &str,
     filename: Option<PathBuf>,
 ) -> anyhow::Result<()> {
@@ -37,10 +36,7 @@ pub async fn export_account(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Account {account_id} not found in store"))?;
 
-    let keystore_path = store_path.join("keystore");
-    let keystore = FilesystemKeyStore::new(keystore_path)
-        .map_err(|e| anyhow::anyhow!("Failed to create keystore: {e}"))?;
-    let key_pairs = keystore.get_keys_for_account(&account_id).await?;
+    let key_pairs = client.keystore().get_keys_for_account(&account_id).await?;
 
     let account_data = AccountFile::new(account, key_pairs);
     let mut file = File::create(&file_path)?;

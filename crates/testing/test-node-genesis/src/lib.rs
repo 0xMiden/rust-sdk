@@ -49,16 +49,6 @@ use serde::Serialize;
 /// Genesis faucet file name. Carries the secret key so the operator/tests can mint TST.
 pub const GENESIS_FAUCET_FILE: &str = "tst_faucet.mac";
 
-/// Number of funder wallets a fee-charging genesis declares when no count is given.
-///
-/// A test process claims a wallet for as long as it runs, so this has to cover the processes
-/// running at once, which the test runner's thread cap bounds to a handful.
-pub const DEFAULT_NUM_FUNDER_WALLETS: u32 = 16;
-
-/// Balance, in base units of the native fee asset, each funder wallet holds at genesis. Covers the
-/// funder's own fees plus a handout to every account a single test creates.
-const FUNDER_WALLET_BALANCE: u64 = 1_000_000_000;
-
 /// Native fee faucet file name. Carries no secret key: the faucet is signed for by its operator,
 /// whose key is in [`FAUCET_OPERATOR_FILE`].
 pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
@@ -72,9 +62,11 @@ pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 /// starts the service with this file.
 pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
 
-/// Balance, in base units of the native fee asset, the funding account holds at genesis. The
-/// service pays out of this one account for every account registered during a run.
-const FUNDING_ACCOUNT_BALANCE: u64 = 100_000_000_000;
+/// Balance, in base units of the native fee asset, the funding account holds at genesis.
+///
+/// One account serves every test process, and the service does not refill itself, so this is sized
+/// to outlast a whole run by a wide margin rather than to match one test's spending.
+const FUNDING_ACCOUNT_BALANCE: u64 = 100_000_000_000_000;
 
 /// Token symbol, decimals and max supply of the native fee faucet, matching what the node would
 /// generate for it if genesis left it unset.
@@ -101,8 +93,8 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// serialized. A vault entry can only reference a faucet whose ID already exists, which is what
 /// lets those accounts be seeded.
 ///
-/// `num_funder_wallets` declares that many `[[wallet]]` entries holding [`FUNDER_WALLET_BALANCE`].
-/// The node writes each to its accounts directory as `wallet_<index>.mac`, secret key included.
+/// The funding account holds [`FUNDING_ACCOUNT_BALANCE`] of the native asset. Genesis requires it
+/// on a fee-free chain too, where the funding service does not run.
 ///
 /// The fee parameters and the genesis timestamp are not fixtures: `miden-validator genesis` takes
 /// them on the command line.
@@ -111,7 +103,7 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// and integration tests load their `.mac` files via the `AGGLAYER_ACCOUNTS_DIR` env var. They are
 /// always present because the bridge and faucet are network accounts, which no client transaction
 /// can deploy, so a test cannot create them at runtime.
-pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Result<()> {
+pub fn write_genesis_config(output_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(output_dir).with_context(|| {
         format!("failed to create genesis output directory {}", output_dir.display())
     })?;
@@ -189,16 +181,6 @@ pub fn write_genesis_config(output_dir: &Path, num_funder_wallets: u32) -> Resul
                 path,
             })
             .collect(),
-        wallets: (0..num_funder_wallets)
-            .map(|index| WalletEntry {
-                name: format!("wallet_{index}"),
-                account_type: "public".to_string(),
-                assets: vec![AssetEntry {
-                    amount: FUNDER_WALLET_BALANCE,
-                    symbol: NATIVE_FAUCET_SYMBOL.to_string(),
-                }],
-            })
-            .collect(),
     };
 
     let toml = toml::to_string(&config).context("failed to serialize accounts.toml")?;
@@ -221,9 +203,6 @@ struct AccountsConfig {
     /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.
     #[serde(rename = "account")]
     accounts: Vec<AccountEntry>,
-    /// Rendered as `[[wallet]]` entries the node creates and writes out as `<name>.mac`.
-    #[serde(rename = "wallet")]
-    wallets: Vec<WalletEntry>,
 }
 
 #[derive(Serialize)]
@@ -231,20 +210,6 @@ struct AccountEntry {
     /// Label the node prints next to the account's ID once genesis is built.
     name: String,
     path: String,
-}
-
-#[derive(Serialize)]
-struct WalletEntry {
-    name: String,
-    account_type: String,
-    assets: Vec<AssetEntry>,
-}
-
-/// A balance the node gives a generated wallet, naming the faucet by token symbol.
-#[derive(Serialize)]
-struct AssetEntry {
-    amount: u64,
-    symbol: String,
 }
 
 // GENESIS ACCOUNTS

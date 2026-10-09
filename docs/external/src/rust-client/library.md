@@ -206,6 +206,34 @@ client.submit_transaction(transaction_execution_result).await?
 You can decide whether you want the note details to be public or private through the `note_type` parameter.
 You may also customize the transaction request with the other `TransactionRequestBuilder` methods. This allows you to run custom code, with custom note arguments and additional output/input notes as well.
 
+### Upgrade account code
+
+An account with the `UpgradeManager` component can replace its code. An upgrade does not change the account storage, so the new code must use the same storage layout as the current code. Otherwise, the account can become unusable.
+
+An account whose authority is `Authority::AuthControlled` upgrades itself with a local transaction:
+
+```rust
+let request = TransactionRequestBuilder::new().build_account_code_upgrade(new_code)?;
+client.submit_new_transaction(account_id, request).await?;
+```
+
+A network account gets its code upgraded through an upgrade note that its owner sends to it. The network account must allowlist `UpgradeNote::script_root()`, and its `Authority` must accept the sender, for example `AccessControl::Ownable2Step` with the sender as owner. The node consumes the note with a network transaction:
+
+```rust
+let upgrade_note = UpgradeNote::builder()
+    .sender(owner_id)
+    .target(network_account_id)
+    .code(new_code)
+    .generate_serial_number(client.rng())
+    .build()?;
+let request = TransactionRequestBuilder::new()
+    .own_output_notes([upgrade_note.into()])
+    .build()?;
+client.submit_new_transaction(owner_id, request).await?;
+```
+
+To upgrade the code and make other changes in the same transaction, write a custom script that calls `upgrade` and give the new code to the transaction with `TransactionRequestBuilder::account_code_upgrade`.
+
 ## Note screening
 
 ### When to use note screening
@@ -393,3 +421,26 @@ while let Some(note) = reader.next().await? {
 // Start another pass over the same notes.
 reader.reset();
 ```
+
+## Supply foreign account inputs yourself
+
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. Under `Client::execute_transaction_at` the reference block is the anchor's block. Otherwise it is the sync height at execution time, so do not sync between fetching and executing.
+
+`Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
+
+```rust
+use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
+
+let declarations = [ForeignAccount::public(foreign_account_id, storage_requirements)?];
+let block_num = client.get_sync_height().await?;
+let inputs = client.get_foreign_account_inputs(declarations, block_num).await?;
+
+let request = TransactionRequestBuilder::new()
+    .custom_script(tx_script)
+    .foreign_accounts(inputs)
+    .build()?;
+```
+
+Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+
+Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

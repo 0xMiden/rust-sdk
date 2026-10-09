@@ -66,6 +66,7 @@ use miden_protocol::Word;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
+use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{
@@ -250,10 +251,30 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `account_id` is the ID of the wanted account.
     ///
     /// Returns `Ok(None)` for accounts without public state.
+    ///
+    /// The returned account is not tied to the chain; use [`NodeRpcClient::get_account_details_at`]
+    /// to get the witness that does.
     async fn get_account_details(
         &self,
         account_id: AccountId,
     ) -> Result<Option<Account>, RpcError> {
+        Ok(self
+            .get_account_details_at(account_id, AccountStateAt::ChainTip)
+            .await?
+            .map(|(_, _, account)| account))
+    }
+
+    /// Like [`NodeRpcClient::get_account_details`], but at `at`, and also returning the block the
+    /// state was read at and the [`AccountWitness`] that commits to it.
+    ///
+    /// The account commits to the witness's state commitment, but nothing here checks that the
+    /// witness opens under a block header the caller trusts. The caller must do that, for example
+    /// with the header of its sync height.
+    async fn get_account_details_at(
+        &self,
+        account_id: AccountId,
+        at: AccountStateAt,
+    ) -> Result<Option<(BlockNumber, AccountWitness, Account)>, RpcError> {
         // Accounts without public state have no full state to fetch; only a commitment is on-chain.
         if !account_id.is_public() {
             return Ok(None);
@@ -266,7 +287,8 @@ pub trait NodeRpcClient: Send + Sync {
                 account_id,
                 GetAccountRequest::new()
                     .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_vault(VaultFetch::Always)
+                    .at(at),
             )
             .await?;
 
@@ -275,11 +297,12 @@ pub trait NodeRpcClient: Send + Sync {
             self.resolve_oversize_storage_maps(account_id, block_number, details).await?;
         }
 
-        let details = proof.into_details().ok_or(RpcError::ExpectedDataMissing(
+        let (witness, details) = proof.into_parts();
+        let details = details.ok_or(RpcError::ExpectedDataMissing(
             "public account returned without details".into(),
         ))?;
 
-        Ok(Some(Account::try_from(&details)?))
+        Ok(Some((block_number, witness, Account::try_from(&details)?)))
     }
 
     /// Fetches notes related to the specified tags using the `/SyncNotes` RPC endpoint, paginating

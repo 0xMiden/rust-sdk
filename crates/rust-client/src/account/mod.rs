@@ -36,7 +36,6 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 pub use miden_objects::account_file::{AccountFile, AccountFileError};
-use miden_protocol::Felt;
 use miden_protocol::account::auth::PublicKey;
 pub use miden_protocol::account::{
     Account,
@@ -80,7 +79,9 @@ pub use miden_protocol::account::{
 };
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;
+use miden_protocol::block::BlockHeader;
 pub use miden_protocol::errors::{AccountIdError, AddressError, NetworkIdError};
+use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -155,9 +156,11 @@ use miden_standards::account::wallets::BasicWallet;
 use super::Client;
 use crate::asset::TokenSymbol;
 use crate::errors::ClientError;
+use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
+use crate::sync::validate_account_witness;
 
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
@@ -460,12 +463,8 @@ impl<AUTH> Client<AUTH> {
                 if tracked_account.is_locked() {
                     // If the tracked account is locked, check that the account commitment matches
                     // the one in the network
-                    let network_account_commitment = self
-                        .rpc_api
-                        .get_account(account.id(), GetAccountRequest::new())
-                        .await?
-                        .1
-                        .account_commitment();
+                    let network_account_commitment =
+                        self.fetch_verified_account_commitment(account.id()).await?;
                     if network_account_commitment != account.to_commitment() {
                         return Err(ClientError::AccountCommitmentMismatch(
                             network_account_commitment,
@@ -564,20 +563,62 @@ impl<AUTH> Client<AUTH> {
         self.store.tracked_account_witnesses().await.map_err(Into::into)
     }
 
-    /// Fetches a public [`Account`] from the network, returning a typed error when the account
-    /// doesn't exist on chain or is private.
-    async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
-        let fetched_account =
-            self.rpc_api.get_account_details(account_id).await.map_err(|err| {
-                match err.endpoint_error() {
-                    Some(EndpointError::GetAccount(GetAccountError::AccountNotFound)) => {
-                        ClientError::AccountNotFoundOnChain(account_id)
-                    },
-                    _ => ClientError::RpcError(err),
-                }
-            })?;
+    /// Returns the header of the client's sync height, which sync has already authenticated, and
+    /// the [`AccountStateAt`] that reads the network at that block.
+    ///
+    /// Account data fetched from the node is only trusted when its witness opens under this
+    /// header's account root.
+    async fn sync_height_anchor(&self) -> Result<(BlockHeader, AccountStateAt), ClientError> {
+        let sync_height = self.store.get_sync_height().await?;
+        let (header, _) = self.store.get_block_header_by_num(sync_height).await?.ok_or_else(|| {
+            ClientError::ChainValidationError(format!(
+                "block header {sync_height} is not tracked locally; sync the client before it can \
+                 verify account data against the chain"
+            ))
+        })?;
 
-        fetched_account.ok_or(ClientError::AccountIsPrivate(account_id))
+        Ok((header, AccountStateAt::Block(sync_height)))
+    }
+
+    /// Fetches the commitment of `account_id` at the sync height, after checking that its witness
+    /// opens under the sync height header's account root.
+    async fn fetch_verified_account_commitment(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Word, ClientError> {
+        let (header, at) = self.sync_height_anchor().await?;
+        let (_, proof) =
+            self.rpc_api.get_account(account_id, GetAccountRequest::new().at(at)).await?;
+        validate_account_witness(proof.account_witness(), account_id, &header)?;
+
+        Ok(proof.account_commitment())
+    }
+
+    /// Fetches a public [`Account`] from the network at the sync height, returning a typed error
+    /// when the account doesn't exist on chain or is private. The account's witness must open
+    /// under the sync height header's account root, and the account must commit to the witness.
+    async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
+        let (header, at) = self.sync_height_anchor().await?;
+        let (_, witness, account) = self
+            .rpc_api
+            .get_account_details_at(account_id, at)
+            .await
+            .map_err(|err| match err.endpoint_error() {
+                Some(EndpointError::GetAccount(GetAccountError::AccountNotFound)) => {
+                    ClientError::AccountNotFoundOnChain(account_id)
+                },
+                _ => ClientError::RpcError(err),
+            })?
+            .ok_or(ClientError::AccountIsPrivate(account_id))?;
+
+        validate_account_witness(&witness, account_id, &header)?;
+        if account.to_commitment() != witness.state_commitment() {
+            return Err(ClientError::ChainValidationError(format!(
+                "account {account_id} returned by the node does not commit to its witness"
+            )));
+        }
+
+        Ok(account)
     }
 
     /// Fetches a public faucet's display metadata from the network.
@@ -590,12 +631,15 @@ impl<AUTH> Client<AUTH> {
     /// - `Ok(Some(_))` — the account is public and its token config storage slot decoded.
     /// - `Ok(None)`    — the account is private, not on chain, or the storage slot does not parse
     ///   as a token config. Caller should fall back to a raw display.
-    /// - `Err(_)`      — transport-level RPC error.
+    /// - `Err(_)`      — transport-level RPC error, or the node's response does not open under the
+    ///   sync height header's account root.
     pub async fn fetch_remote_token_metadata(
         &self,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, ClientError> {
-        let proof = match self.rpc_api.get_account(faucet_id, GetAccountRequest::new()).await {
+        let (header, at) = self.sync_height_anchor().await?;
+        let proof = match self.rpc_api.get_account(faucet_id, GetAccountRequest::new().at(at)).await
+        {
             Ok((_, proof)) => proof,
             Err(err) => match err.endpoint_error() {
                 Some(EndpointError::GetAccount(
@@ -604,6 +648,8 @@ impl<AUTH> Client<AUTH> {
                 _ => return Err(ClientError::RpcError(err)),
             },
         };
+
+        validate_account_witness(proof.account_witness(), faucet_id, &header)?;
 
         let Some(storage_header) = proof.storage_header() else {
             return Ok(None);

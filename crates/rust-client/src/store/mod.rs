@@ -58,7 +58,14 @@ use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
 #[allow(deprecated)]
-use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::note_transport::{
+    NOTE_TRANSPORT_CURSOR_STORE_SETTING,
+    NOTE_TRANSPORT_CURSORS_KEY,
+    NoteTransportCursor,
+};
+use crate::protocol_config::{ProtocolConfig, protocol_config_setting_key};
+use crate::pswap::store::{ORDER_PREFIX, order_key, tip_key};
+use crate::pswap::{PswapLineageFilter, PswapLineageRecord, PswapLineageState};
 use crate::rpc::encryption::{TRANSACTION_ENCRYPTION_KEY_STORE_SETTING, TransactionEncryptionKey};
 use crate::rpc::{RPC_LIMITS_STORE_SETTING, RpcLimits};
 use crate::sync::{NoteTagRecord, StateSyncUpdate};
@@ -570,6 +577,79 @@ pub trait Store: Send + Sync {
         mutations: Vec<SettingMutation>,
     ) -> Result<(), StoreError>;
 
+    // PSWAP
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the PSWAP lineage of the order with `order_id`, or `None` if the store does not
+    /// track that order.
+    async fn get_pswap_lineage(
+        &self,
+        order_id: Felt,
+    ) -> Result<Option<PswapLineageRecord>, StoreError> {
+        let Some(bytes) = self.get_setting(SettingScope::Client, order_key(order_id)).await? else {
+            return Ok(None);
+        };
+        PswapLineageRecord::read_from_bytes(&bytes)
+            .map(Some)
+            .map_err(StoreError::DataDeserializationError)
+    }
+
+    /// Returns the `order_id` of the active PSWAP lineage whose current tip is `tip`, or `None` if
+    /// `tip` is not the tip of an active lineage.
+    async fn get_pswap_order_id_by_tip(&self, tip: NoteId) -> Result<Option<Felt>, StoreError> {
+        let Some(bytes) = self.get_setting(SettingScope::Client, tip_key(tip)).await? else {
+            return Ok(None);
+        };
+        Felt::read_from_bytes(&bytes)
+            .map(Some)
+            .map_err(StoreError::DataDeserializationError)
+    }
+
+    /// Returns the PSWAP lineages that match `filter`.
+    async fn get_pswap_lineages(
+        &self,
+        filter: PswapLineageFilter,
+    ) -> Result<Vec<PswapLineageRecord>, StoreError> {
+        let mut lineages = Vec::new();
+        for key in self.list_setting_keys(SettingScope::Client).await? {
+            if !key.starts_with(ORDER_PREFIX) {
+                continue;
+            }
+            let Some(bytes) = self.get_setting(SettingScope::Client, key).await? else {
+                continue;
+            };
+            let record = PswapLineageRecord::read_from_bytes(&bytes)
+                .map_err(StoreError::DataDeserializationError)?;
+            if filter.matches(&record) {
+                lineages.push(record);
+            }
+        }
+        Ok(lineages)
+    }
+
+    /// Inserts or replaces the PSWAP lineage of `record.order_id()` and updates the tip index in
+    /// the same atomic operation. The index keeps the tip of an active lineage only.
+    async fn upsert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
+        let mut mutations = Vec::new();
+        // The removal comes first, so a set on the same tip key wins.
+        if let Some(previous) = self.get_pswap_lineage(record.order_id()).await? {
+            mutations.push(SettingMutation::Remove {
+                key: tip_key(previous.current_tip_note_id),
+            });
+        }
+        mutations.push(SettingMutation::Set {
+            key: order_key(record.order_id()),
+            value: record.to_bytes(),
+        });
+        if record.state == PswapLineageState::Active {
+            mutations.push(SettingMutation::Set {
+                key: tip_key(record.current_tip_note_id),
+                value: record.order_id().to_bytes(),
+            });
+        }
+        self.apply_settings_mutations(SettingScope::Client, mutations).await
+    }
+
     // SYNC
     // --------------------------------------------------------------------------------------------
 
@@ -689,6 +769,64 @@ pub trait Store: Send + Sync {
         )
         .await?;
         Ok(())
+    }
+
+    /// Returns the note transport cursor of each tag. Returns an empty map if no cursors are
+    /// stored.
+    async fn get_note_transport_cursors(
+        &self,
+    ) -> Result<BTreeMap<NoteTag, NoteTransportCursor>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into())
+            .await?
+        else {
+            return Ok(BTreeMap::new());
+        };
+        BTreeMap::read_from_bytes(&bytes).map_err(Into::into)
+    }
+
+    /// Replaces the note transport cursor of each tag. An empty map removes the stored cursors.
+    async fn set_note_transport_cursors(
+        &self,
+        cursors: &BTreeMap<NoteTag, NoteTransportCursor>,
+    ) -> Result<(), StoreError> {
+        let key = String::from(NOTE_TRANSPORT_CURSORS_KEY);
+        if cursors.is_empty() {
+            self.remove_setting(SettingScope::Client, key).await?;
+            return Ok(());
+        }
+        self.set_setting(SettingScope::Client, key, cursors.to_bytes()).await
+    }
+
+    // PROTOCOL CONFIG
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns the protocol configuration stored for `commitment`, or `None` if the store does not
+    /// hold it. The store does not check that the configuration matches `commitment`.
+    async fn get_protocol_config(
+        &self,
+        commitment: Word,
+    ) -> Result<Option<ProtocolConfig>, StoreError> {
+        let Some(bytes) = self
+            .get_setting(SettingScope::Client, protocol_config_setting_key(commitment))
+            .await?
+        else {
+            return Ok(None);
+        };
+        ProtocolConfig::read_from_bytes(&bytes).map(Some).map_err(Into::into)
+    }
+
+    /// Stores `config` under its commitment.
+    ///
+    /// [`Store::apply_state_sync`] also stores the configuration that a sync update carries. An
+    /// implementation that changes the encoding here must use the same encoding there.
+    async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError> {
+        self.set_setting(
+            SettingScope::Client,
+            protocol_config_setting_key(config.to_commitment()),
+            config.to_bytes(),
+        )
+        .await
     }
 
     // RPC LIMITS

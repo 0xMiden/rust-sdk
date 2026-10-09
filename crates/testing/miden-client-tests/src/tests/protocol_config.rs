@@ -9,7 +9,7 @@ use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key}
 use miden_client::store::{SettingScope, StoreError};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client::{ClientError, Serializable, Word};
+use miden_client::{ClientError, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
@@ -94,13 +94,16 @@ async fn protocol_config_rejects_a_substituted_preimage() {
     let commitment = rpc.protocol_config().to_commitment();
     let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     assert_ne!(other.to_commitment(), commitment);
-    client
-        .test_store()
-        .set_setting(
-            SettingScope::Client,
-            protocol_config_setting_key(commitment),
-            other.to_bytes(),
-        )
+    // Copy the stored bytes of `other` under `commitment`, so the store encoding does not matter.
+    client.seed_protocol_config(other.clone()).await.unwrap();
+    let store = client.test_store();
+    let other_bytes = store
+        .get_setting(SettingScope::Client, protocol_config_setting_key(other.to_commitment()))
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .set_setting(SettingScope::Client, protocol_config_setting_key(commitment), other_bytes)
         .await
         .unwrap();
     assert!(matches!(

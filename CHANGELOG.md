@@ -18,6 +18,8 @@
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [BREAKING][removal][rust] Removed `miden_client::store::AccountUpdates`, an unused duplicate of `miden_client::sync::AccountUpdates` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 * [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
+* [BREAKING][param][rust] The `Store` trait has typed methods for the client settings: `get_pswap_lineage`, `get_pswap_order_id_by_tip`, `get_pswap_lineages`, `upsert_pswap_lineage`, `get_note_transport_cursors`, `set_note_transport_cursors`, `get_protocol_config` and `insert_protocol_config`. They have default bodies that use the `settings` table. `PswapLineageFilter` is public. Added `PswapLineageRecord::from_parts`, `TransactionEncryptionKey::from_parts`, `TransactionEncryptionKey::scheme` and `TransactionEncryptionKey::genesis_commitment` ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
+* [BREAKING][arch][store] The SQLite store writes the client settings as protobuf messages: the note transport cursors, the RPC limits, the transaction encryption key, the protocol configurations and the PSWAP lineages. Requires a new client database ([#2668](https://github.com/0xMiden/rust-sdk/pull/2668)).
 
 ### Features
 

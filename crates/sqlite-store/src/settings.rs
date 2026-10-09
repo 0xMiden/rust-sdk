@@ -4,12 +4,19 @@ use std::string::String;
 use std::vec::Vec;
 
 use miden_client::store::{SettingScope, StoreError};
+use miden_client_proto::{self as proto, ProtobufValue};
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 
 use super::SqliteStore;
 use crate::sql_error::SqlResultExt;
 use crate::{insert_sql, subst};
+
+// CLIENT SETTING KEYS
+// ================================================================================================
+
+pub(crate) const RPC_LIMITS_KEY: &str = "rpc_limits";
+pub(crate) const TRANSACTION_ENCRYPTION_KEY_KEY: &str = "transaction_encryption_key";
 
 impl SqliteStore {
     pub(crate) fn get_setting<T: FromSql>(
@@ -82,6 +89,26 @@ impl SqliteStore {
             .into_store_error()?
             .collect::<Result<Vec<String>, _>>()
             .into_store_error()
+    }
+
+    /// Reads a client setting that this store wrote as a protobuf message.
+    pub(crate) fn get_client_setting<T: ProtobufValue>(
+        conn: &Connection,
+        name: &str,
+    ) -> Result<Option<T>, StoreError> {
+        let Some(bytes) = Self::get_setting::<Vec<u8>>(conn, SettingScope::Client, name)? else {
+            return Ok(None);
+        };
+        Ok(Some(proto::decode_unchecked(&bytes)?))
+    }
+
+    /// Writes a client setting as a protobuf message.
+    pub(crate) fn set_client_setting<T: ProtobufValue>(
+        conn: &Connection,
+        name: &str,
+        value: &T,
+    ) -> Result<(), StoreError> {
+        Self::set_setting(conn, SettingScope::Client, name, &proto::encode(value))
     }
 }
 

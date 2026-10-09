@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::keystore::FilesystemKeyStore;
@@ -34,7 +35,6 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
-use miden_client::{ClientError, Deserializable};
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
@@ -456,11 +456,7 @@ async fn transport_groups_tags_by_database_nonce() {
     let restarted = NoteTransportCursor::from_parts(1, 1);
     let latest = NoteTransportCursor::from_parts(1, 2);
     let cursors = BTreeMap::from([(first, stale), (second, current)]);
-    recipient
-        .test_store()
-        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), cursors.to_bytes())
-        .await
-        .unwrap();
+    recipient.test_store().set_note_transport_cursors(&cursors).await.unwrap();
     recipient.fetch_private_notes().await.unwrap();
 
     let cursors = stored_note_transport_cursors(&mut recipient).await;
@@ -1479,15 +1475,7 @@ async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
 async fn stored_note_transport_cursors(
     client: &mut TestClient,
 ) -> BTreeMap<NoteTag, NoteTransportCursor> {
-    let bytes = client
-        .test_store()
-        .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_CURSORS_KEY))
-        .await
-        .unwrap();
-
-    bytes
-        .map(|bytes| BTreeMap::<NoteTag, NoteTransportCursor>::read_from_bytes(&bytes).unwrap())
-        .unwrap_or_default()
+    client.test_store().get_note_transport_cursors().await.unwrap()
 }
 
 /// Returns a client over the prebuilt chain that relays private notes through `mock_node`, plus a

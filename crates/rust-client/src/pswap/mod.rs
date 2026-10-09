@@ -38,8 +38,7 @@ use alloc::vec::Vec;
 
 use async_trait::async_trait;
 pub use errors::PswapLineageError;
-use lineage::PswapLineageFilter;
-pub use lineage::{PswapLineageRecord, PswapLineageState};
+pub use lineage::{PswapLineageFilter, PswapLineageRecord, PswapLineageState};
 use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::Note;
@@ -97,7 +96,7 @@ impl TransactionObserver for PswapTransactionObserver {
             // immutable order facts (see `PswapLineageRecord`).
             let record = PswapLineageRecord::new_depth_zero(note.id(), &pswap);
 
-            store::put_lineage(&self.store, &record).await?;
+            self.store.upsert_pswap_lineage(&record).await?;
             self.store
                 .add_note_tag(NoteTagRecord {
                     // The asset-pair tag is derived straight from the note we just parsed; the
@@ -123,9 +122,7 @@ impl TransactionObserver for PswapTransactionObserver {
 impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
     /// Returns every PSWAP lineage tracked by this client.
     pub async fn pswap_lineages(&self) -> Result<Vec<PswapLineageRecord>, ClientError> {
-        store::list_lineages(&self.store, PswapLineageFilter::All)
-            .await
-            .map_err(Into::into)
+        self.store.get_pswap_lineages(PswapLineageFilter::All).await.map_err(Into::into)
     }
 
     /// Returns lineages created by a specific local account.
@@ -133,7 +130,8 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         &self,
         creator: AccountId,
     ) -> Result<Vec<PswapLineageRecord>, ClientError> {
-        store::list_lineages(&self.store, PswapLineageFilter::ByCreator(creator))
+        self.store
+            .get_pswap_lineages(PswapLineageFilter::ByCreator(creator))
             .await
             .map_err(Into::into)
     }
@@ -141,7 +139,8 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
     /// Returns the still-open PSWAP lineages — orders that are neither fully filled nor reclaimed
     /// (i.e. the creator's live, reclaimable orders).
     pub async fn pswap_active_lineages(&self) -> Result<Vec<PswapLineageRecord>, ClientError> {
-        store::list_lineages(&self.store, PswapLineageFilter::Active)
+        self.store
+            .get_pswap_lineages(PswapLineageFilter::Active)
             .await
             .map_err(Into::into)
     }
@@ -151,7 +150,7 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         &self,
         order_id: Felt,
     ) -> Result<Option<PswapLineageRecord>, ClientError> {
-        store::get_lineage(&self.store, order_id).await.map_err(Into::into)
+        self.store.get_pswap_lineage(order_id).await.map_err(Into::into)
     }
 
     /// Builds a tx reclaiming the unfilled offered asset on the current tip of an Active lineage.
@@ -160,7 +159,9 @@ impl<AUTH: TransactionAuthenticator + Sync + 'static> Client<AUTH> {
         &self,
         order_id: Felt,
     ) -> Result<TransactionRequest, ClientError> {
-        let lineage = store::get_lineage(&self.store, order_id)
+        let lineage = self
+            .store
+            .get_pswap_lineage(order_id)
             .await?
             .ok_or(PswapLineageError::NotFound(order_id))?;
 

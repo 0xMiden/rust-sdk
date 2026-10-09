@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::vec::Vec;
 
 use anyhow::Context;
-use miden_client::account::component::{AccountComponent, BasicWallet};
+use miden_client::account::component::AccountComponent;
+use miden_client::account::standards::auth::AuthSingleSig;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -26,7 +28,7 @@ use miden_client::account::{
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
-use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::AccountWitness;
 use miden_client::note::NoteTag;
 use miden_client::store::{AccountUpdate, ClientAccountType, Store, StoreError};

@@ -1,5 +1,6 @@
 use anyhow::Result;
-use miden_client::account::component::BasicWallet;
+use miden_client::account::standards::auth::NoAuth;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -9,7 +10,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{NoAuth, TransactionAuthenticator};
+use miden_client::auth::TransactionAuthenticator;
 use miden_client::crypto::FeltRng;
 use miden_client::note::{
     Note,

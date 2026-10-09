@@ -3,23 +3,13 @@ use std::sync::{Arc, LazyLock};
 use std::vec;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use miden_client::account::component::{
-    AccessControl,
-    AccountComponent,
-    AccountComponentMetadata,
-    AuthNetworkAccount,
-    BasicConstantFeePolicy,
-    BasicWallet,
-    BurnPolicy,
-    FeePolicy,
-    FeePolicyManager,
-    FungibleFaucet,
-    MintPolicy,
-    NetworkAccount,
-    PausableManager,
-    TokenName,
-    TokenPolicyManager,
-};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::standards::access::{AccessControl, PausableManager};
+use miden_client::account::standards::auth::{AuthNetworkAccount, NetworkAccount};
+use miden_client::account::standards::faucets::{FungibleFaucet, TokenName};
+use miden_client::account::standards::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
+use miden_client::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,

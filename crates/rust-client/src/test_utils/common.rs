@@ -23,13 +23,9 @@ use rand::Rng;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::account::component::{
-    BasicWallet,
-    BurnPolicy,
-    FungibleFaucet,
-    MintPolicy,
-    TokenPolicyManager,
-};
+use crate::account::standards::faucets::FungibleFaucet;
+use crate::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use crate::account::standards::wallets::BasicWallet;
 use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountFile, AccountType};
 use crate::auth::{AuthSchemeId, ECDSA_K256_KECCAK_SCHEME_ID};
 pub use crate::keystore::{FilesystemKeyStore, Keystore};

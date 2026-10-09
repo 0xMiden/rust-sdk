@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Enhancements
+
+* [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).
+
 ### Features
 
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).

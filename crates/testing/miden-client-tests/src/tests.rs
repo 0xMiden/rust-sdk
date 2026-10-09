@@ -5,13 +5,13 @@ use std::println;
 use std::sync::Arc;
 
 use miden_client::ClientError;
+use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::account::{Address, AddressInterface};
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{
     AuthSchemeId,
     AuthSecretKey,
-    AuthSingleSig,
     ECDSA_K256_KECCAK_SCHEME_ID,
     PublicKeyCommitment,
 };

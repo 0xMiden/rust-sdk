@@ -2,13 +2,10 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use miden_client::ClientError;
-use miden_client::account::component::{
-    AccessControl,
-    AccountComponentMetadata,
-    Authority,
-    BasicWallet,
-    UpgradeManager,
-};
+use miden_client::account::component::AccountComponentMetadata;
+use miden_client::account::standards::access::{AccessControl, Authority};
+use miden_client::account::standards::upgrade::UpgradeManager;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,

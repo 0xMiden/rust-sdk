@@ -95,11 +95,9 @@ pub fn slot_rng(seed: u32) -> ChaCha20Rng {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::account::component::{
-        AccountComponent,
-        AccountComponentMetadata,
-        BasicWallet,
-    };
+    use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+    use miden_client::account::standards::auth::{Approver, AuthSingleSig};
+    use miden_client::account::standards::wallets::BasicWallet;
     use miden_client::account::{
         Account,
         AccountBuilder,
@@ -111,7 +109,7 @@ mod tests {
         StorageSlotName,
     };
     use miden_client::assembly::CodeBuilder;
-    use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
+    use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 
     use super::*;
 

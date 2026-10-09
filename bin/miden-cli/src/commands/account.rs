@@ -4,11 +4,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::account::component::{
-    FungibleFaucet,
-    MIDEN_PACKAGE_EXTENSION,
-    NonFungibleFaucet,
-};
+use miden_client::account::component::MIDEN_PACKAGE_EXTENSION;
+use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_client::account::{
     AccountCode,
     AccountId,

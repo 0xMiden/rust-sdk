@@ -4,12 +4,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
-use miden_client::account::component::{
-    AccountComponent,
-    AccountComponentMetadata,
-    Approver,
-    BasicWallet,
-};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::standards::auth::{Approver, AuthSingleSig};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -23,7 +20,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig, ECDSA_K256_KECCAK_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, ECDSA_K256_KECCAK_SCHEME_ID};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType};

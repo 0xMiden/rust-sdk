@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use miden_client::account::component::FungibleFaucet;
+use miden_client::account::standards::faucets::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};

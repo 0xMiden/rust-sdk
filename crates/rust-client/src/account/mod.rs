@@ -11,9 +11,9 @@
 //! follows:
 //!
 //! ```rust
-//! # use miden_client::{
-//! #   account::{Account, AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType, component::BasicWallet},
-//! #   crypto::FeltRng
+//! # use miden_client::account::{
+//! #     AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType,
+//! #     standards::wallets::BasicWallet,
 //! # };
 //! # async fn add_new_account_example<AUTH>(
 //! #     client: &mut miden_client::Client<AUTH>
@@ -134,7 +134,9 @@ fn faucet_metadata_from_token_config(token_config: [Felt; 4]) -> Option<FaucetMe
 
 mod account_reader;
 pub use account_reader::AccountReader;
-/// Raw access to `miden-standards` account modules for items not curated by `miden-client`.
+/// Provides built-in account components and their configuration types.
+///
+/// Use the [`component`] module to define custom account components.
 pub use miden_standards::account as standards;
 use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
 use miden_standards::account::faucets::FungibleFaucet;
@@ -159,10 +161,12 @@ use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
 use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
 
+/// Provides types to define account components and their storage schemas.
+///
+/// Use the [`standards`] module for built-in account components.
 pub mod component {
     pub const MIDEN_PACKAGE_EXTENSION: &str = "masp";
 
-    pub use miden_protocol::account::auth::*;
     pub use miden_protocol::account::component::{
         FeltSchema,
         InitStorageData,
@@ -181,74 +185,17 @@ pub mod component {
     };
     pub use miden_protocol::account::{
         AccountComponent,
+        AccountComponentCode,
         AccountComponentMetadata,
         AccountComponentName,
         AccountProcedureRoot,
         RoleSymbol,
     };
-    pub use miden_standards::account::access::{
-        AccessControl,
-        Authority,
-        AuthorityError,
-        Ownable2Step,
-        Ownable2StepError,
-        Pausable,
-        PausableManager,
-        PausableStorage,
-        RoleBasedAccessControl,
+    pub use miden_protocol::errors::{
+        AccountComponentNameError,
+        ComponentMetadataError,
+        RoleSymbolError,
     };
-    pub use miden_standards::account::auth::*;
-    pub use miden_standards::account::components::StandardAccountComponent;
-    pub use miden_standards::account::faucets::{
-        AssetStatus,
-        Description,
-        ExternalLink,
-        FungibleFaucet,
-        FungibleFaucetBuilder,
-        FungibleFaucetError,
-        LogoURI,
-        NonFungibleFaucet,
-        NonFungibleFaucetBuilder,
-        NonFungibleFaucetError,
-        TokenMetadata,
-        TokenMetadataError,
-        TokenName,
-        create_network_fungible_faucet,
-        create_network_non_fungible_faucet,
-        create_singlesig_user_fungible_faucet,
-        create_user_non_fungible_faucet,
-    };
-    pub use miden_standards::account::fees::{
-        BasicConstantFeePolicy,
-        FeePolicy,
-        FeePolicyError,
-        FeePolicyManager,
-        FeePolicyManagerBuilder,
-    };
-    pub use miden_standards::account::policies::{
-        AllowlistManager,
-        AllowlistStorage,
-        BasicAllowlist,
-        BasicBlocklist,
-        BlocklistManager,
-        BlocklistStorage,
-        BurnAllowAll,
-        BurnOwnerOnly,
-        BurnPolicy,
-        BurnPolicyError,
-        MinBurnAmount,
-        MintAllowAll,
-        MintOwnerOnly,
-        MintPolicy,
-        MintPolicyError,
-        TokenPolicyManager,
-        TokenPolicyManagerBuilder,
-        TransferAllowAll,
-        TransferPolicy,
-        TransferPolicyError,
-    };
-    pub use miden_standards::account::upgrade::UpgradeManager;
-    pub use miden_standards::account::wallets::BasicWallet;
 }
 
 // CLIENT METHODS

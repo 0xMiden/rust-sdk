@@ -1,18 +1,16 @@
 use std::path::PathBuf;
 use std::{env, fs};
 
-use miden_client::account::component::{
-    AccountComponentMetadata,
+use miden_client::account::component::{AccountComponentMetadata, MIDEN_PACKAGE_EXTENSION};
+use miden_client::account::standards::auth::{
     AuthGuardedMultisig,
     AuthMultisig,
     AuthNetworkAccount,
     AuthSingleSig,
-    BasicWallet,
-    FungibleFaucet,
-    MIDEN_PACKAGE_EXTENSION,
     NoAuth,
-    NonFungibleFaucet,
 };
+use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::utils::Serializable;
 use miden_client::vm::{Package, Section, SectionId, TargetType};
 

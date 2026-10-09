@@ -1,15 +1,11 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use miden_client::account::component::{
-    AccessControl,
-    AccountComponent,
-    AccountComponentMetadata,
-    AuthNetworkAccount,
-    Authority,
-    BasicWallet,
-    UpgradeManager,
-};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::standards::access::{AccessControl, Authority};
+use miden_client::account::standards::auth::{Approver, AuthNetworkAccount, AuthSingleSig};
+use miden_client::account::standards::upgrade::UpgradeManager;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,
@@ -19,7 +15,7 @@ use miden_client::account::{
     StorageSlot,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{Approver, AuthSingleSig, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::RPO_FALCON_SCHEME_ID;
 use miden_client::note::{AccountCodeUpgradeAttachment, NoteScriptRoot, P2idNote, UpgradeNote};
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
 use miden_client::testing::standards::account_component::MockProceduresComponent;

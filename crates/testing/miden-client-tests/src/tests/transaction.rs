@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::time::Duration;
 
+use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
 use miden_client::rpc::domain::account::AccountStorageRequirements;

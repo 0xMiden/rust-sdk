@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use miden_client::ClientError;
+use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountType, Address};
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
 use miden_client::note::{NoteType, NoteUpdateTracker};
 use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};

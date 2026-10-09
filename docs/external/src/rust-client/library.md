@@ -68,6 +68,24 @@ let client = ClientBuilder::new()
     .await?;
 ```
 
+## Account component imports
+
+Use `account::component` for custom component code, metadata, and storage schemas. Use `account::standards` for built-in components and their configuration types. This module includes authentication, wallets, faucets, access control, fees, token policies, upgrades, note creation, and oracles. Use `auth` for authentication keys, signature schemes, and transaction signing interfaces.
+
+```rust
+use miden_client::account::component::{
+    AccountComponent, AccountComponentCode, AccountComponentMetadata, InitStorageData,
+};
+use miden_client::account::standards::{
+    auth::{Approver, AuthSingleSig},
+    faucets::FungibleFaucet,
+    wallets::BasicWallet,
+};
+use miden_client::auth::{AuthScheme, AuthSecretKey, TransactionAuthenticator};
+```
+
+The `account::component` module also exports component name, metadata, role, and storage schema errors. The `auth` module exports `AuthSchemeError` for key creation and signature scheme parsing.
+
 ## Create local account
 
 With the Miden client, you can create and track any number of public and local accounts. For local accounts, the state is tracked locally, and the rollup only keeps commitments to the data, which in turn guarantees privacy.

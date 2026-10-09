@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use miden_client::ClientError;
-use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_info};
+use miden_client::account::standards::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use miden_client::account::component::BasicWallet;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     AccountBuilder,
     AccountBuilderSchemaCommitmentExt,

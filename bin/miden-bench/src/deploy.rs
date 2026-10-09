@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use miden_client::account::component::{AccountComponent, AccountComponentMetadata, BasicWallet};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::standards::auth::{Approver, AuthSingleSig};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -14,7 +16,7 @@ use miden_client::account::{
     StorageSlotName,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{Approver, AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::testing::common::TestClient;
 use miden_client::transaction::TransactionRequestBuilder;

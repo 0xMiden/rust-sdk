@@ -174,6 +174,25 @@ impl TransactionRequest {
         collect_assets(self.input_notes.iter().flat_map(|note| note.assets().iter()))
     }
 
+    /// Returns the arguments of the input notes, in the order of the input notes. A note without
+    /// arguments has `None`.
+    pub fn input_notes_args(&self) -> &[(NoteId, Option<NoteArgs>)] {
+        &self.input_notes_args
+    }
+
+    /// Returns the input notes with a pinned consumption mode, keyed by note ID.
+    ///
+    /// Each of these notes is also in [`Self::input_notes`].
+    pub fn explicit_input_notes(&self) -> &BTreeMap<NoteId, InputNote> {
+        &self.explicit_input_notes
+    }
+
+    /// Returns the number of blocks after the reference block at which the transaction expires, or
+    /// `None` if the transaction does not expire.
+    pub fn expiration_delta(&self) -> Option<u16> {
+        self.expiration_delta
+    }
+
     /// Returns a map of note IDs to their respective [`NoteArgs`]. The result will include
     /// exclusively note IDs for notes for which [`NoteArgs`] have been defined.
     pub fn get_note_args(&self) -> BTreeMap<NoteId, NoteArgs> {

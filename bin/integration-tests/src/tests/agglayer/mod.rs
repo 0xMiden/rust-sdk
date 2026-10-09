@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::testing::common::TestClient;
+use tracing::info;
 
 use crate::ClientConfig;
 
@@ -102,10 +103,12 @@ impl AgglayerScenario {
         let mut ger_manager = client_config.clone().into_client().await?;
         let mut user = client_config.clone().into_client().await?;
 
-        println!("[setup] Loading core accounts");
-        println!("[setup]   bridge admin:  {}", config.bridge_admin_id());
-        println!("[setup]   GER manager:   {}", config.ger_manager_id());
-        println!("[setup]   bridge:        {}", config.bridge_id());
+        info!(
+            bridge_admin_id = %config.bridge_admin_id(),
+            ger_manager_id = %config.ger_manager_id(),
+            bridge_id = %config.bridge_id(),
+            "Loading core accounts"
+        );
 
         bridge_admin.import_account_file(&config.bridge_admin).await?;
         ger_manager.import_account_file(&config.ger_manager).await?;

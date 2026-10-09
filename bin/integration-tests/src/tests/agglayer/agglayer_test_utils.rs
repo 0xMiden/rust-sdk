@@ -17,6 +17,7 @@ use miden_client::agglayer::{EthAddress, EthAmount, EthEmbeddedAccountId};
 use miden_client::utils::hex_to_bytes;
 use miden_protocol::account::AccountId;
 use serde::Deserialize;
+use tracing::{debug, info};
 
 // SERDE HELPERS
 // ================================================================================================
@@ -155,10 +156,7 @@ pub fn generate_claim_data_for_account(
 ) -> Result<(ProofData, LeafData, ExitRoot)> {
     let destination_address: EthAddress = EthEmbeddedAccountId::from_account_id(account_id).into();
     let destination_hex = destination_address.to_hex();
-    println!(
-        "[foundry] Generating claim data for account {:?} (eth address: {})",
-        account_id, destination_hex
-    );
+    info!(%account_id, eth_address = %destination_hex, "Generating claim data with foundry");
 
     // Determine the foundry project directory using CARGO_MANIFEST_DIR. This ensures the path is
     // correct regardless of the test binary's working directory.
@@ -181,7 +179,7 @@ pub fn generate_claim_data_for_account(
     // bridge from rejecting the CLAIM as already spent when running the test multiple times against
     // the same node instance.
     let deposit_offset: u32 = rand::random::<u32>() % MAX_DEPOSIT_OFFSET;
-    println!("[foundry] Using deposit offset: {}", deposit_offset);
+    info!(deposit_offset, "Using deposit offset");
 
     // Run forge test with the destination address as an environment variable
     let mut cmd = std::process::Command::new("forge");
@@ -195,7 +193,7 @@ pub fn generate_claim_data_for_account(
 
     if let Some(addr) = origin_token_address {
         let addr_hex = addr.to_hex();
-        println!("[foundry] Using origin token address: {}", addr_hex);
+        info!(origin_token_address = %addr_hex, "Using origin token address");
         cmd.env("ORIGIN_TOKEN_ADDRESS", &addr_hex);
     }
 
@@ -208,10 +206,7 @@ pub fn generate_claim_data_for_account(
         String::from_utf8_lossy(&output.stderr)
     );
 
-    println!(
-        "[foundry] forge test completed successfully:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    debug!(stdout = %String::from_utf8_lossy(&output.stdout), "forge test completed");
 
     // Read and parse the generated JSON
     let json_path = foundry_dir.join(FOUNDRY_OUTPUT_JSON);
@@ -226,10 +221,7 @@ pub fn generate_claim_data_for_account(
         hex_to_bytes(&vector.proof.global_exit_root).context("invalid global exit root hex")?,
     );
 
-    println!(
-        "[foundry] Claim data generated successfully for destination: {}",
-        destination_hex
-    );
+    info!(eth_address = %destination_hex, "Claim data generated");
 
     Ok((vector.proof.to_proof_data(), vector.leaf.to_leaf_data(), ger))
 }

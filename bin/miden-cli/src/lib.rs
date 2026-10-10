@@ -26,14 +26,7 @@ use commands::init::InitCmd;
 use commands::keys::KeysCmd;
 use commands::network_note_status::NetworkNoteStatusCmd;
 use commands::new_account::{NewAccountCmd, NewWalletCmd};
-use commands::new_transactions::{
-    ConsumeNotesCmd,
-    MintCmd,
-    PswapCmd,
-    SendCmd,
-    SwapCmd,
-    TransferCmd,
-};
+use commands::new_transactions::{ConsumeNotesCmd, MintCmd, PswapCmd, SwapCmd, TransferCmd};
 use commands::notes::NotesCmd;
 use commands::sync::SyncCmd;
 use commands::tags::TagsCmd;
@@ -276,7 +269,6 @@ impl DerefMut for CliClient {
 }
 
 mod advice_inputs;
-mod call_resolution;
 mod codecs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
@@ -397,7 +389,6 @@ pub enum Command {
     Exec(ExecCmd),
     NetworkNoteStatus(NetworkNoteStatusCmd),
     Call(CallCmd),
-    Send(SendCmd),
 }
 
 /// CLI entry point.
@@ -457,7 +448,6 @@ impl Cli {
             Command::Transaction(transaction) => transaction.execute(client).await,
             Command::Exec(execute_program) => Box::pin(execute_program.execute(client)).await,
             Command::Call(call) => Box::pin(call.execute(client)).await,
-            Command::Send(send) => Box::pin(send.execute(client)).await,
             Command::Export(cmd) => cmd.execute(client, keystore).await,
             Command::Mint(mint) => Box::pin(mint.execute(client)).await,
             Command::Transfer(transfer) => Box::pin(transfer.execute(client)).await,

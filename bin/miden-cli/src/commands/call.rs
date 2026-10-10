@@ -31,9 +31,9 @@ use miden_client::{Client, ClientError, Felt, TransactionExecutorError, Word};
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::codecs::with_cli_codecs;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
-use crate::commands::new_account::load_packages;
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::packages::load_packages;
 use crate::utils::{
     parse_account_id,
     print_executed_program_stack,
@@ -497,12 +497,10 @@ fn resolve_procedure_export<'a>(
     })
 }
 
-/// Reports a transaction that did not execute, in place of the state delta it would have shown.
-///
-/// The read-only execution has already printed the result by this point, so this never fails the
-/// command: the call itself succeeded, only its effects could not be reported.
-fn report_failed_delta(error: &ClientError) {
-    let is_empty_transaction = matches!(
+/// Returns true when `error` is the transaction kernel's rejection of a transaction that neither
+/// changed the account state nor consumed a note.
+pub(crate) fn is_empty_transaction_error(error: &ClientError) -> bool {
+    matches!(
         error,
         ClientError::TransactionExecutorError(
             TransactionExecutorError::TransactionProgramExecutionFailed(
@@ -512,22 +510,34 @@ fn report_failed_delta(error: &ClientError) {
                 },
             ),
         ) if *err_code == error_code_from_msg(EMPTY_TRANSACTION_ASSERTION)
-    );
+    )
+}
 
-    if is_empty_transaction {
+/// Prints the report for a transaction that the kernel rejected because it had no effects.
+///
+/// The kernel rejects only when the account was left unchanged and nothing was consumed, so that is
+/// all this can report; it says nothing about created notes.
+pub(crate) fn print_empty_transaction_report() {
+    println!();
+    println!("The transaction was rejected because it had no effects:\n");
+    println!("No notes were consumed.");
+    println!();
+    println!("Account Storage was not changed.");
+    println!("Account Vault was not changed.");
+    println!("Account nonce was not changed.");
+}
+
+/// Reports a transaction that did not execute, in place of the state delta it would have shown.
+///
+/// The read-only execution has already printed the result by this point, so this never fails the
+/// command: the call itself succeeded, only its effects could not be reported.
+fn report_failed_delta(error: &ClientError) {
+    if is_empty_transaction_error(error) {
         // A procedure that only reads, on an account whose components write nothing, leaves the
         // transaction with no effects at all, and the kernel refuses those. For a read-only call
         // that is the expected outcome rather than a fault, so it is reported instead of dumping
-        // the assertion chain. The kernel rejects only when the account was left unchanged and
-        // nothing was consumed, so that is all this can report; it says nothing about created
-        // notes.
-        println!();
-        println!("The transaction was rejected because it had no effects:\n");
-        println!("No notes were consumed.");
-        println!();
-        println!("Account Storage was not changed.");
-        println!("Account Vault was not changed.");
-        println!("Account nonce was not changed.");
+        // the assertion chain.
+        print_empty_transaction_report();
         return;
     }
 

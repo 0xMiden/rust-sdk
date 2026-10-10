@@ -2459,6 +2459,70 @@ fn exec_parse() {
     failure_cmd.current_dir(&temp_dir).assert().failure();
 }
 
+/// Tests that `exec --submit` submits the transaction script and that the local store holds the new
+/// storage value after it.
+#[test]
+fn exec_submit_stores_value() {
+    use miden_client::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind};
+    use miden_client::store::Store;
+
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+    let digest = procedure_digest_hex(&masp_path, "set_value");
+
+    // `set_value` stores the word on top of the stack. The script pushes the word with 42 on top.
+    let source = format!(
+        "@transaction_script\npub proc main\n    push.0.0.0.42\n    call.{digest}\n    dropw\nend\n"
+    );
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(Some(ModuleKind::Library))
+        .parse_str(
+            Some(miden_client::assembly::Path::new("exec::submit")),
+            source,
+            source_manager.clone(),
+        )
+        .unwrap();
+    let package = Assembler::new(source_manager)
+        .assemble_library("exec-submit", module, None::<&str>)
+        .unwrap();
+    let script_path = temp_dir.join("exec_submit.masp");
+    fs::write(&script_path, package.to_bytes()).unwrap();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "exec",
+        "--package",
+        script_path.to_str().unwrap(),
+        "-a",
+        &account_id,
+        "--submit",
+        "--force",
+    ]);
+
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "exec --submit failed.\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        stdout.contains("Successfully created transaction."),
+        "Expected the submission message in output:\n{stdout}"
+    );
+
+    // The word the script pushes as `0.0.0.42` lands in the slot as [42, 0, 0, 0].
+    let store_path = miden_client_cli::CliConfig::from_dir(&temp_dir.join(MIDEN_DIR))
+        .unwrap()
+        .store_filepath;
+    let stored = block_on(async {
+        let store = SqliteStore::new(store_path).await?;
+        let slot = StorageSlotName::new("miden::testing::call_test::stored_value")?;
+        anyhow::Ok(store.get_account_storage_item(AccountId::from_hex(&account_id)?, slot).await?)
+    })
+    .unwrap();
+    assert_eq!(stored, Word::from([42u32, 0, 0, 0]));
+}
+
 // CALL COMMAND TESTS
 // ================================================================================================
 

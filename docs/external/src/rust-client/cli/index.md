@@ -598,7 +598,7 @@ miden-client import --overwrite account.mac
 
 #### `exec`
 
-Execute the specified program against the specified account.
+Execute a transaction script against an account. With `--submit`, prove the transaction and submit it to the network.
 
 | Flag                          | Description                                  | Aliases |
 | ----------------------------- | -------------------------------------------- | ------- |
@@ -606,8 +606,13 @@ Execute the specified program against the specified account.
 | `--package <PACKAGE>`         | Required compiled transaction script package (`.masp`), as a path or a name resolved in the packages directory. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to the inputs file.                     | `-i`    |
 | `--hex-words`                 | Print the output stack grouped into words.   |         |
+| `--submit`                    | Prove the transaction and submit it.         |         |
+| `--force`                     | With `--submit`, submit without asking for confirmation. |         |
+| `--delegate-proving`          | With `--submit`, prove with the remote prover set in the configuration file. |         |
 
 `--package` is required. It accepts a library package with exactly one transaction script export, such as a Rust `#[tx_script]` built with `miden build`. Executable packages and MASM source files are not accepted. Replace `--script-path script.masm` with `--package script.masp` after compiling the script.
+
+Without `--submit`, the command only executes the script and prints the output stack. With `--submit`, the account must be tracked by the client. The command executes the transaction, prints its effects and asks for confirmation. After confirmation it proves the transaction, submits it and applies it to the local store. `--hex-words` and `--start-debug-adapter` cannot be used with `--submit`.
 
 With the `dap` feature, add `--start-debug-adapter <ADDR>` to debug the package. Compile with debug information for source stepping. A restart reloads the package without compiling sources; rebuild it first to apply source changes. See the [debugging guide](../debugging.md).
 
@@ -623,7 +628,7 @@ inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000
 
 Call a procedure on an account and show what it returns, along with the state changes the call would produce.
 
-Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>]`
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>] [--inputs-path <INPUTS_PATH>]`
 
 | Flag                          | Description                                                   | Aliases |
 | ----------------------------- | ------------------------------------------------------------- | ------- |

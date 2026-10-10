@@ -610,7 +610,7 @@ async fn resolve_input_note<AUTH: Keystore + Sync>(
 // EXECUTE TRANSACTION
 // ================================================================================================
 
-async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
+pub(crate) async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
     transaction_request: TransactionRequest,

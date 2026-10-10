@@ -413,25 +413,25 @@ impl From<InputNote> for InputNoteRecord {
     }
 }
 
-impl TryInto<InputNote> for InputNoteRecord {
+impl TryFrom<InputNoteRecord> for InputNote {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<InputNote, Self::Error> {
-        match (self.metadata(), self.inclusion_proof()) {
+    fn try_from(record: InputNoteRecord) -> Result<Self, Self::Error> {
+        match (record.metadata(), record.inclusion_proof()) {
             (Some(metadata), Some(inclusion_proof)) => Ok(InputNote::authenticated(
                 Note::with_attachments(
-                    self.details.assets().clone(),
+                    record.details.assets().clone(),
                     *metadata.partial_metadata(),
-                    self.details.recipient().clone(),
-                    self.attachments.clone(),
+                    record.details.recipient().clone(),
+                    record.attachments.clone(),
                 ),
                 inclusion_proof.clone(),
             )),
             (Some(metadata), None) => Ok(InputNote::unauthenticated(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             ))),
             _ => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -440,16 +440,16 @@ impl TryInto<InputNote> for InputNoteRecord {
     }
 }
 
-impl TryInto<Note> for InputNoteRecord {
+impl TryFrom<InputNoteRecord> for Note {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<Note, Self::Error> {
-        match self.metadata() {
+    fn try_from(record: InputNoteRecord) -> Result<Self, Self::Error> {
+        match record.metadata() {
             Some(metadata) => Ok(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             )),
             None => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -458,16 +458,16 @@ impl TryInto<Note> for InputNoteRecord {
     }
 }
 
-impl TryInto<Note> for &InputNoteRecord {
+impl TryFrom<&InputNoteRecord> for Note {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<Note, Self::Error> {
-        match self.metadata() {
+    fn try_from(record: &InputNoteRecord) -> Result<Self, Self::Error> {
+        match record.metadata() {
             Some(metadata) => Ok(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             )),
             None => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -479,5 +479,50 @@ impl TryInto<Note> for &InputNoteRecord {
 impl From<InputNoteRecord> for NoteDetails {
     fn from(value: InputNoteRecord) -> Self {
         value.details
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::Word;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::note::{Note, NoteAttachments, NoteDetails};
+    use miden_protocol::transaction::InputNote;
+
+    use super::{ExpectedNoteState, InputNoteRecord};
+
+    #[test]
+    fn record_converts_into_a_note_through_try_from() {
+        let note = Note::mock_noop(Word::from([1u32, 2, 3, 4]));
+        let record = InputNoteRecord::from(note.clone());
+
+        assert_eq!(Note::try_from(&record).unwrap(), note);
+        assert_eq!(
+            InputNote::try_from(record.clone()).unwrap(),
+            InputNote::unauthenticated(note.clone())
+        );
+        assert_eq!(Note::try_from(record).unwrap(), note);
+    }
+
+    #[test]
+    fn record_without_metadata_does_not_convert_into_a_note() {
+        let note = Note::mock_noop(Word::from([1u32, 2, 3, 4]));
+        let state = ExpectedNoteState {
+            metadata: None,
+            after_block_num: BlockNumber::from(0),
+            tag: None,
+        };
+        let record = InputNoteRecord::new(
+            NoteDetails::from(note),
+            NoteAttachments::empty(),
+            None,
+            state.into(),
+        );
+
+        assert!(Note::try_from(&record).is_err());
+        assert!(InputNote::try_from(record).is_err());
     }
 }

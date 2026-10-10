@@ -1,6 +1,7 @@
 use std::io;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
+#[cfg(feature = "dap")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,13 +28,6 @@ use miden_client::transaction::{
 use miden_client::{Client, RemoteTransactionProver};
 use tracing::info;
 
-use crate::call_resolution::{
-    LocalAccount,
-    ResolvedCall,
-    classify_local_account,
-    generate_tx_script,
-    resolve_call,
-};
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::utils::{
@@ -388,99 +382,6 @@ impl ConsumeNotesCmd {
             self.delegate_proving,
         )
         .await
-    }
-}
-
-// SEND COMMAND
-// ================================================================================================
-
-#[derive(Debug, Clone, Parser)]
-#[command(
-    about = "Call a procedure on a local account, then prove the transaction and submit it to the \
-             network. Use `call` to preview the result without submitting."
-)]
-pub struct SendCmd {
-    /// Account and procedure in the form `<ACCOUNT_ID>:<PROCEDURE>`. The account must be tracked
-    /// locally.
-    #[arg(value_name = "ACCOUNT_ID:PROCEDURE")]
-    target: String,
-
-    /// Positional arguments to push onto the stack before calling the procedure.
-    #[arg(value_name = "args")]
-    args: Vec<String>,
-
-    /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
-    /// a hex digest.
-    #[arg(long, short)]
-    package: Option<PathBuf>,
-
-    /// Path to a TOML file with advice map entries, in the same format as the `exec` command.
-    #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
-    inputs_path: Option<PathBuf>,
-
-    /// A note script package (.masp) for a note the procedure creates. Repeatable.
-    ///
-    /// The procedure gives only the script root. The package lets the client build the full note.
-    #[arg(long = "note-script", value_name = "PACKAGE")]
-    note_scripts: Vec<PathBuf>,
-
-    /// Flag to submit the executed transaction without asking for confirmation.
-    #[arg(long, default_value_t = false)]
-    force: bool,
-
-    /// Flag to delegate proving to the remote prover specified in the config file.
-    #[arg(long, default_value_t = false)]
-    delegate_proving: bool,
-}
-
-impl SendCmd {
-    pub async fn execute<AUTH: Keystore + Sync + 'static>(
-        &self,
-        mut client: Client<AUTH>,
-    ) -> Result<(), CliError> {
-        let ResolvedCall { target_id, call_code, advice_entries } = resolve_call(
-            &client,
-            &self.target,
-            self.package.as_ref(),
-            &self.args,
-            self.inputs_path.as_ref(),
-            &self.note_scripts,
-            false,
-        )
-        .await?;
-
-        // A transaction changes only the account that executes it, and only a local account has the
-        // keys to authenticate it.
-        match classify_local_account(&client, target_id).await? {
-            LocalAccount::Usable => {},
-            LocalAccount::Locked => {
-                return Err(CliError::InvalidArgument(format!(
-                    "Account {target_id} is locked: its local state doesn't match the network's. \
-                     Run `sync` and try again."
-                )));
-            },
-            LocalAccount::Untracked => {
-                return Err(CliError::InvalidArgument(format!(
-                    "Account {target_id} isn't tracked locally. `send` submits a transaction \
-                     against one of your own accounts; use `call` to read an account from the \
-                     network."
-                )));
-            },
-        }
-
-        let tx_script = generate_tx_script(call_code.builder, &call_code.digest, &call_code.args)?;
-        let tx_request = TransactionRequestBuilder::new()
-            .custom_script(tx_script)
-            .extend_advice_map(advice_entries)
-            .build()
-            .map_err(|err| {
-                CliError::Transaction(err.into(), "Failed to build transaction".to_string())
-            })?;
-
-        // A procedure that only reads still produces a transaction, because the fee payment changes
-        // the account. The transaction is submitted like any other.
-        execute_transaction(&mut client, target_id, tx_request, self.force, self.delegate_proving)
-            .await
     }
 }
 

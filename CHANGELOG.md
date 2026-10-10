@@ -10,6 +10,7 @@
 
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
+* [FEATURE][rust] Added `NodeRpcClient::get_account_details_at`, which fetches a public account at a given block and also returns the witness that commits to it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 
 ### Breaking Changes
 
@@ -20,6 +21,8 @@
 * [BREAKING][type][rust] Added `TransactionFilter::Query`, which takes a `TransactionFilterQuery` to select transactions by account and status, newest first, up to a limit. `TransactionFilter` is now `#[non_exhaustive]` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [BREAKING][removal][rust] Removed `miden_client::store::AccountUpdates`, an unused duplicate of `miden_client::sync::AccountUpdates` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 * [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
+* [BREAKING][type][rust] Added the `AccountProofError::InconsistentStorageCommitment` variant, so exhaustive matches on `AccountProofError` must handle it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
+* [BREAKING][behavior][rust] `Client::import_account_by_id`, `Client::import_watched_account_by_id`, `Client::fetch_remote_token_metadata` and the locked-account check of `Client::add_account` read the account at the sync height and require its witness to open under the sync height header's account root, failing with `ClientError::ChainValidationError` otherwise. An account created after the last sync is not found until the client syncs ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 
 ### Features
 
@@ -30,6 +33,7 @@
 
 ### Fixes
 
+* [FIX][rust] `GetAccount` responses are now checked against the authenticated account header: the account rebuilt from the returned details must match the header's commitment, and the storage header must match its storage commitment ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 

@@ -11,6 +11,7 @@ use miden_protocol::note::{
     NoteMetadata,
     Nullifier,
 };
+use miden_protocol::transaction::TransactionId;
 use miden_standards::note::NetworkAccountTarget;
 use miden_tx::utils::serde::{
     ByteReader,
@@ -434,8 +435,11 @@ impl NoteUpdateTracker {
 
         let is_tracked_as_input_note =
             if let Some(input_note_record) = self.get_input_note_by_id(note_id) {
-                input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                input_note_record.block_header_received(block_header)?;
+                input_note_record.inclusion_received(
+                    inclusion_proof.clone(),
+                    metadata,
+                    block_header,
+                )?;
                 if let Some(attachments) = attachments {
                     input_note_record.attachments_received(attachments.clone());
                 }
@@ -450,8 +454,7 @@ impl NoteUpdateTracker {
                         .get_mut(&commitment)
                         .expect("commitment was just matched against the tracked notes");
                     let record = &mut update.note;
-                    record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                    record.block_header_received(block_header)?;
+                    record.inclusion_received(inclusion_proof.clone(), metadata, block_header)?;
                     if let Some(attachments) = attachments {
                         record.attachments_received(attachments.clone());
                     }
@@ -679,6 +682,22 @@ impl NoteUpdateTracker {
         Ok(())
     }
 
+    /// Releases notes that the discarded transaction was processing. Leaves all other notes
+    /// unchanged.
+    pub(crate) fn apply_transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<(), ClientError> {
+        for update in self.input_notes.values_mut() {
+            if update.note.transaction_discarded(transaction_id)? {
+                // Mark the changed note for storage.
+                update.inner_mut();
+            }
+        }
+
+        Ok(())
+    }
+
     // PRIVATE HELPERS
     // --------------------------------------------------------------------------------------------
 
@@ -871,12 +890,14 @@ mod tests {
     use alloc::vec;
 
     use miden_protocol::account::AccountId;
-    use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::{BlockHeader, BlockNumber};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{
         NoteAssets,
         NoteAttachments,
         NoteDetails,
         NoteId,
+        NoteInclusionProof,
         NoteMetadata,
         NoteRecipient,
         NoteStorage,
@@ -889,8 +910,7 @@ mod tests {
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
 
-    use super::{NoteConsumption, NoteUpdateTracker};
-    use crate::store::InputNoteRecord;
+    use super::{NoteConsumption, NoteUpdateTracker, NoteUpdateType};
     use crate::store::input_note_states::{
         ConsumedExternalNoteState,
         ConsumedUnauthenticatedLocalNoteState,
@@ -898,6 +918,7 @@ mod tests {
         NoteSubmissionData,
         ProcessingUnauthenticatedNoteState,
     };
+    use crate::store::{InputNoteRecord, InputNoteState};
     use crate::transaction::TransactionRecord;
 
     // HELPERS
@@ -939,6 +960,24 @@ mod tests {
                 submitted_at: Some(0),
                 consumer_account: sender,
                 consumer_transaction: TransactionId::from_raw(Word::default()),
+            },
+        };
+        InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
+    }
+
+    /// A metadata-bearing note being processed by the local transaction `consumer_transaction`.
+    fn processing_note_for(
+        seed: u64,
+        sender: AccountId,
+        consumer_transaction: TransactionId,
+    ) -> InputNoteRecord {
+        let state = ProcessingUnauthenticatedNoteState {
+            metadata: note_metadata(sender),
+            after_block_num: BlockNumber::from(3u32),
+            submission_data: NoteSubmissionData {
+                submitted_at: Some(0),
+                consumer_account: sender,
+                consumer_transaction,
             },
         };
         InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
@@ -1063,6 +1102,113 @@ mod tests {
             vec![id],
             "the retained id of an externally consumed note must survive serialization"
         );
+    }
+
+    #[test]
+    fn discarded_transaction_releases_only_the_notes_it_was_processing() {
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let discarded_tx =
+            TransactionId::from_raw([Felt::new_unchecked(1), ZERO, ZERO, ZERO].into());
+        let other_tx = TransactionId::from_raw([Felt::new_unchecked(2), ZERO, ZERO, ZERO].into());
+
+        let released = processing_note_for(20, sender, discarded_tx);
+        let released_id = released.id().unwrap();
+        let released_nullifier = released.nullifier().unwrap();
+        let expected_metadata = released.metadata().copied();
+        let still_processing = processing_note_for(21, sender, other_tx);
+        let still_processing_id = still_processing.id().unwrap();
+        let consumed = processing_note_for(22, sender, discarded_tx);
+        let consumed_id = consumed.id().unwrap();
+        let consumed_nullifier = consumed.nullifier().unwrap();
+
+        let mut tracker =
+            NoteUpdateTracker::new(vec![released, still_processing, consumed], vec![]);
+
+        // One of the discarded transaction's notes was consumed on chain by someone else.
+        tracker
+            .apply_note_consumption(
+                &NoteConsumption {
+                    nullifier: consumed_nullifier,
+                    block_num: BlockNumber::from(5u32),
+                    external_consumer: None,
+                },
+                core::iter::empty::<&TransactionRecord>(),
+            )
+            .unwrap();
+
+        tracker.apply_transaction_discarded(discarded_tx).unwrap();
+
+        let state_of = |tracker: &NoteUpdateTracker, id: NoteId| {
+            tracker
+                .input_notes
+                .values()
+                .find(|update| update.id() == Some(id))
+                .map(|update| update.inner().state().clone())
+                .unwrap()
+        };
+
+        // The released note is expected again, keeps its metadata and its nullifier index, and is
+        // flagged as a pending store write.
+        let InputNoteState::Expected(state) = state_of(&tracker, released_id) else {
+            panic!("the released note should be expected again");
+        };
+        assert_eq!(state.metadata, expected_metadata);
+        assert_eq!(state.after_block_num, BlockNumber::from(3u32));
+        assert_eq!(state.tag, expected_metadata.map(|metadata| metadata.tag()));
+        assert!(tracker.unspent_nullifiers().any(|nullifier| nullifier == released_nullifier));
+        assert_eq!(
+            tracker
+                .updated_input_notes()
+                .find(|update| update.id() == Some(released_id))
+                .map(|update| *update.update_type()),
+            Some(NoteUpdateType::Update)
+        );
+
+        // A note held by another transaction and a note consumed on chain are left alone.
+        assert!(matches!(
+            state_of(&tracker, still_processing_id),
+            InputNoteState::ProcessingUnauthenticated(_)
+        ));
+        assert!(matches!(state_of(&tracker, consumed_id), InputNoteState::ConsumedExternal(_)));
+        assert_eq!(tracker.updated_input_notes().count(), 2);
+    }
+
+    #[test]
+    fn inclusion_received_preserves_processing_transaction() {
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let mut note = processing_note(23, sender);
+        let original = note.clone();
+        let metadata = *note.metadata().unwrap();
+        let root = note.id().unwrap().as_word();
+        let proof =
+            NoteInclusionProof::new(4.into(), 0, SparseMerklePath::from_parts(0, vec![]).unwrap())
+                .unwrap();
+        let header = BlockHeader::mock(4, None, Some(root), &[]);
+        let wrong_metadata = NoteMetadata::new(
+            PartialNoteMetadata::new(sender, NoteType::Private),
+            &NoteAttachments::empty(),
+        );
+
+        for (header, metadata) in [
+            (BlockHeader::mock(5, None, Some(root), &[]), metadata),
+            (BlockHeader::mock(4, None, Some(Word::default()), &[]), metadata),
+            (header.clone(), wrong_metadata),
+        ] {
+            assert!(note.inclusion_received(proof.clone(), metadata, &header).is_err());
+            assert_eq!(note, original);
+        }
+
+        assert!(note.inclusion_received(proof.clone(), metadata, &header).unwrap());
+        let InputNoteState::ProcessingAuthenticated(state) = note.state() else {
+            panic!("the note must remain processing");
+        };
+        let InputNoteState::ProcessingUnauthenticated(original_state) = original.state() else {
+            unreachable!();
+        };
+        assert_eq!(state.submission_data, original_state.submission_data);
+        assert_eq!(state.inclusion_proof, proof);
+        assert_eq!(InputNoteRecord::read_from_bytes(&note.to_bytes()).unwrap(), note);
+        assert!(!note.inclusion_received(proof, metadata, &header).unwrap());
     }
 
     #[test]

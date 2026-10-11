@@ -707,16 +707,13 @@ mod tests {
         }
     }
 
-    /// The Goldilocks field modulus, `2^64 - 2^32 + 1`. The first value with no felt of its own.
-    const FIELD_MODULUS: u64 = 18_446_744_069_414_584_321;
-
     #[test]
     fn raw_arguments_are_read_as_decimal_felts() {
-        let args = ["0", "10", (FIELD_MODULUS - 1).to_string().as_str()].map(String::from);
+        let args = ["0", "10", (Felt::ORDER - 1).to_string().as_str()].map(String::from);
 
         let encoded = encode_raw_args(&args).unwrap();
 
-        let expected = [0, 10, FIELD_MODULUS - 1].map(|v| Felt::new(v).unwrap());
+        let expected = [0, 10, Felt::ORDER - 1].map(|v| Felt::new(v).unwrap());
         assert_eq!(encoded, expected);
     }
 
@@ -725,8 +722,8 @@ mod tests {
         let cases = [
             // What an unchecked `u64` argument would silently wrap around to.
             (
-                FIELD_MODULUS.to_string(),
-                format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt."),
+                Felt::ORDER.to_string(),
+                format!("invalid argument: Argument '{}' is too large for a felt.", Felt::ORDER),
             ),
             // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
             // untyped path cannot take hex either: it would work only until the procedure is given

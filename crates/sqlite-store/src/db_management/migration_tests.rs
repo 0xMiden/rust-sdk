@@ -15,6 +15,7 @@ use crate::db_management::migration::{MigrationHook, SqliteMigration, SqliteMigr
 use crate::db_management::schema::SchemaHash;
 
 mod m0002_drop_note_transport_outbox;
+mod m0004_pswap_lineages;
 
 // FIXTURE MIGRATIONS
 // ================================================================================================

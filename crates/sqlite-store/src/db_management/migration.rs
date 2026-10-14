@@ -13,7 +13,7 @@ use super::schema::SchemaHash;
 
 /// The migrations that build the store schema, in the order they are applied, each pinned to the
 /// fingerprint the schema has once it has been applied.
-pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 3] = [
+pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 4] = [
     SqliteMigration::new(
         include_str!("../migrations/0001_init.sql"),
         "0x88bad180705eb49f45d21735a2ab1562d9e5526a3eedb01fe2bdc6440fd37af7",
@@ -26,6 +26,10 @@ pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 3] = [
     SqliteMigration::new(
         include_str!("../migrations/0003_derive_account_note_tags.sql"),
         "0x88bad180705eb49f45d21735a2ab1562d9e5526a3eedb01fe2bdc6440fd37af7",
+    ),
+    SqliteMigration::new(
+        include_str!("../migrations/0004_pswap_lineages.sql"),
+        "0x682f512c83400617c486ccd6761076fcbcbb52865e9cc0b5e36f25b0a096e234",
     ),
 ];
 

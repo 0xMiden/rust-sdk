@@ -566,10 +566,8 @@ impl Store for SqliteStore {
 
     async fn upsert_pswap_lineage(&self, record: &PswapLineageRecord) -> Result<(), StoreError> {
         let record = record.clone();
-        self.interact_with_connection(move |conn| {
-            with_write_tx(conn, |tx| SqliteStore::upsert_pswap_lineage(tx, &record))
-        })
-        .await
+        self.interact_with_connection(move |conn| SqliteStore::upsert_pswap_lineage(conn, &record))
+            .await
     }
 
     async fn get_note_transport_cursors(

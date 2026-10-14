@@ -76,7 +76,7 @@ use tracing::{info, warn};
 use crate::pswap::PswapChainObserver;
 use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
-use crate::store::{NoteFilter, TransactionFilter};
+use crate::store::{AccountUpdates, NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
@@ -95,13 +95,7 @@ pub(crate) use state_sync::{
 };
 
 mod state_sync_update;
-pub use state_sync_update::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
-};
+pub use state_sync_update::{PartialBlockchainUpdates, StateSyncUpdate, TransactionUpdateTracker};
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
 /// that are no longer needed by any remaining tracked leaf.

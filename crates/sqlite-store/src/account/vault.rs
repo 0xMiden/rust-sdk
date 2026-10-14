@@ -9,6 +9,7 @@ use miden_client::store::StoreError;
 use miden_protocol::asset::AssetId;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::account::rows::query_vault_assets;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, blob_array, insert_sql, subst, u64_to_value};
 
@@ -45,12 +46,31 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Builds the vault patch that takes the stored vault of an account to `assets`.
+    ///
+    /// Stored assets that `assets` does not have are marked as removed.
+    pub(crate) fn full_vault_patch(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        assets: &[Asset],
+    ) -> Result<AccountVaultPatch, StoreError> {
+        let mut vault_patch = AccountVaultPatch::default();
+        for stored_asset in query_vault_assets(tx, account_id)? {
+            vault_patch.remove_asset(stored_asset.id());
+        }
+        for asset in assets {
+            vault_patch.insert_asset(*asset);
+        }
+
+        Ok(vault_patch)
+    }
+
     /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.
     /// It archives the old value of every changed entry to the historical table, writes the updated
     /// assets to the latest table, and deletes the removed assets from it.
     ///
     /// The corresponding forest update (and the verification that the resulting vault root matches
-    /// the final header) happens in `apply_account_patch`, which applies all of an account's tree
+    /// the final header) happens in `apply_account_update`, which applies all of an account's tree
     /// changes in one batch.
     pub(crate) fn apply_account_vault_patch(
         tx: &Transaction<'_>,

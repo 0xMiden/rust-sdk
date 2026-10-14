@@ -79,9 +79,16 @@ mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};
 
 mod account;
-pub use account::{AccountRecord, AccountRecordData, AccountStatus, ClientAccountType};
-
-pub use crate::sync::PublicAccountUpdate;
+pub use account::{
+    AccountRecord,
+    AccountRecordData,
+    AccountStateUpdate,
+    AccountStatus,
+    AccountUpdates,
+    ClientAccountType,
+    StorageUpdate,
+    VaultUpdate,
+};
 mod note_record;
 pub use note_record::{
     InputNoteRecord,

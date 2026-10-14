@@ -3,12 +3,13 @@
 //!
 //! ## Flow
 //!
-//! 1. Open a builder with [`Client::new_transaction_batch`](crate::Client::new_transaction_batch).
-//! 2. Add transactions via [`BatchBuilder::push`]. The first push targeting an account lazily loads
-//!    its current state from the store; later pushes for that same account see the post-state of
-//!    the previous push.
-//! 3. Finalize with [`BatchBuilder::submit`]. This assembles a `ProposedBatch`, proves it, submits
-//!    it to the node, and atomically applies the per-transaction updates to the local store.
+//! 1. Open a batch with [`Client::new_transaction_batch`].
+//! 2. Add transactions via [`Client::push_to_batch`]. The first push targeting an account lazily
+//!    loads its current state from the store; later pushes for that same account see the
+//!    post-state of the previous push.
+//! 3. Finalize with [`Client::submit_transaction_batch`]. This assembles a `ProposedBatch`, proves
+//!    it, submits it to the node, and atomically applies one [`BatchStoreUpdate`] to the local
+//!    store.
 //!
 //! ## Multi-account semantics
 //!
@@ -24,21 +25,33 @@
 //! [`TransactionRequest::expected_output_own_notes`] and feeds it as an input to the consuming
 //! request. Push order must respect producer-before-consumer.
 //!
+//! ## Transactions proven by other parties
+//!
+//! [`BatchBuilder::push_proven_transaction`] adds a transaction that another party executed and
+//! proved. The client does not have to track its account and does not record it locally. Do not
+//! also push a transaction of this client for the same account, because the node then rejects the
+//! batch.
+//!
 //! ## Constraints
 //!
-//! - All accounts pushed into the batch must be tracked by the client's store (otherwise the first
-//!   push for that account fails with [`crate::ClientError::AccountDataNotFound`]).
+//! - All accounts pushed via [`Client::push_to_batch`] must be tracked by the client's store
+//!   (otherwise the first push for that account fails with
+//!   [`crate::ClientError::AccountDataNotFound`]).
 //! - Locked accounts are rejected with [`crate::ClientError::AccountLocked`].
 //! - No two transactions in a batch may consume the same input note (rejected with
 //!   [`BatchBuilderError::DuplicateInputNote`]).
-//! - A failed [`push`](BatchBuilder::push) leaves the batch exactly as it was, so the caller may
-//!   retry with a different request or submit the transactions accumulated so far.
+//! - A failed [`Client::push_to_batch`] leaves the batch exactly as it was, so the caller may retry
+//!   with a different request or submit the transactions accumulated so far.
+//! - The batch builds on the state each account had at its first push. If another transaction for
+//!   one of these accounts reaches the node first, the node rejects the batch.
+//! - The batch references the client's sync height, so no transaction may reference a later block.
 //!
 //! ## Account allowlist
 //!
-//! [`BatchBuilder::submit`] asks the network allowlist about each account that the batch creates
-//! before the batch is proven. It fails with [`crate::ClientError::AccountNotAllowlisted`] if the
-//! network does not accept one of them. [`Client::retry_proven_batch`] does not ask again.
+//! [`Client::submit_transaction_batch`] asks the network allowlist about each account that the
+//! batch creates before the batch is proven. It fails with
+//! [`crate::ClientError::AccountNotAllowlisted`] if the network does not accept one of them.
+//! [`Client::retry_proven_batch`] does not ask again.
 //!
 //! ## Error semantics around submission
 //!
@@ -50,15 +63,16 @@
 //! Once the node accepts the batch, the local store still needs to be updated. If that step fails,
 //! the caller receives one of two errors that both carry the accepted `block_num`:
 //!
-//! - [`BatchBuilderError::BatchSubmittedButUpdateBuildFailed`] — building one of the per-tx
-//!   [`TransactionStoreUpdate`]s failed.
-//! - [`BatchBuilderError::BatchSubmittedButApplyFailed`] — applying the updates atomically to the
-//!   local store failed.
+//! - [`BatchBuilderError::BatchSubmittedButUpdateBuildFailed`] — building the [`BatchStoreUpdate`]
+//!   failed.
+//! - [`BatchBuilderError::BatchSubmittedButApplyFailed`] — applying the update atomically to the
+//!   local store failed. The error carries the update, so the caller can apply it again with
+//!   [`Client::apply_batch_update`].
 //!
 //! In all three cases `sync_state` reconciles the accounts with what the network holds. It does not
 //! create transaction records, though: syncing updates records the client already holds and never
-//! inserts missing ones. For the unknown outcome an accepted retry writes them; for the two
-//! post-accept errors nothing will, since neither carries the updates that failed.
+//! inserts missing ones. For the unknown outcome an accepted retry writes them. For an apply
+//! failure the carried update writes them. For an update build failure nothing will.
 
 mod data_store;
 mod error;
@@ -74,19 +88,27 @@ pub use error::BatchBuilderError;
 use miden_protocol::MIN_PROOF_SECURITY_LEVEL;
 use miden_protocol::account::AccountId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::note::NoteId;
-use miden_protocol::transaction::{PartialBlockchain, ProvenTransaction, TransactionId};
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::{NoteId, Nullifier};
+use miden_protocol::transaction::{
+    InputNoteCommitment,
+    ProvenTransaction,
+    TransactionId,
+    TransactionInputs,
+    TransactionVerifier,
+};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
+use crate::note::NoteUpdateTracker;
 use crate::rpc::RpcError;
 use crate::rpc::encryption::seal_transaction_inputs;
-use crate::store::data_store::{ClientDataStore, build_partial_mmr_with_paths};
+use crate::store::data_store::ClientDataStore;
 use crate::transaction::{
+    BatchStoreUpdate,
     TransactionRequest,
     TransactionResult,
-    TransactionStoreUpdate,
+    TransactionStoreUpdateError,
     ensure_account_allowed,
     validate_executed_transaction,
 };
@@ -101,43 +123,46 @@ use crate::{Client, ClientError};
 pub struct ProvenBatchSubmission {
     proven_batch: ProvenBatch,
     proposed_batch: Box<ProposedBatch>,
-    /// The validator set's key can rotate between attempts, so a retry has to seal these again, and
-    /// `BatchBuilder::submit` needs the whole results after the RPC for the store updates.
+    /// One entry per transaction, in batch order. The validator set's key can rotate between
+    /// attempts, so a retry has to seal these again.
+    tx_inputs: Vec<TransactionInputs>,
+    /// The results of the transactions that this client executed.
+    /// `Client::submit_transaction_batch` needs them after the RPC for the store update.
     tx_results: Vec<TransactionResult>,
 }
 
 impl ProvenBatchSubmission {
     /// Number of transactions in the batch.
     pub fn transaction_count(&self) -> usize {
-        self.tx_results.len()
+        self.tx_inputs.len()
     }
 
     /// Ids the batch was submitted with. Nothing is recorded for them yet, so they reach
     /// `get_transactions` only once a retry is accepted.
     pub fn transaction_ids(&self) -> impl Iterator<Item = TransactionId> + '_ {
-        self.tx_results.iter().map(|tx_result| tx_result.executed_transaction().id())
+        self.proposed_batch.transactions().iter().map(|proven_tx| proven_tx.id())
     }
 }
 
-/// A transaction successfully pushed into a [`BatchBuilder`]: the locally-proven transaction
-/// alongside the [`TransactionResult`] used to build the per-tx [`TransactionStoreUpdate`]. The
-/// transaction inputs the RPC submission seals are read back from the result.
+/// A transaction successfully pushed into a [`BatchBuilder`]: the proven transaction alongside the
+/// transaction inputs that the RPC submission seals.
 pub(crate) struct PushedTx {
     pub(crate) proven_tx: Arc<ProvenTransaction>,
-    pub(crate) tx_result: TransactionResult,
+    pub(crate) tx_inputs: TransactionInputs,
 }
 
-/// Accumulates transactions from one or more local accounts and submits them as one proven batch
-/// via the node's `SubmitProvenBatch` endpoint. See the module-level docs for the full usage and
-/// error semantics.
-pub struct BatchBuilder<'c, AUTH> {
-    pub(crate) client: &'c mut Client<AUTH>,
+/// Accumulates transactions from one or more local accounts. [`Client::push_to_batch`] adds
+/// transactions and [`Client::submit_transaction_batch`] submits them as one proven batch via the
+/// node's `SubmitProvenBatch` endpoint. See the module-level docs for the full usage and error
+/// semantics.
+pub struct BatchBuilder {
     pub(crate) data_store: InMemoryBatchDataStore,
     pub(crate) pushed_txs: Vec<PushedTx>,
+    pub(crate) tx_results: Vec<TransactionResult>,
     pub(crate) consumed_input_notes: BTreeSet<NoteId>,
 }
 
-impl<AUTH> BatchBuilder<'_, AUTH> {
+impl BatchBuilder {
     /// Number of successfully-pushed transactions in this batch.
     pub fn len(&self) -> usize {
         self.pushed_txs.len()
@@ -146,6 +171,48 @@ impl<AUTH> BatchBuilder<'_, AUTH> {
     /// True if no transaction has been pushed yet.
     pub fn is_empty(&self) -> bool {
         self.pushed_txs.is_empty()
+    }
+
+    /// Appends a transaction that another party executed and proved. The node needs `tx_inputs`,
+    /// the inputs that the transaction executed with, and the proven transaction does not carry
+    /// them. A failed push leaves the batch exactly as it was.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`BatchBuilderError::DuplicateNullifier`] if an earlier transaction in the batch
+    ///   consumes one of the input notes.
+    /// - Returns [`BatchBuilderError::InvalidTransactionProof`] if the proof does not verify.
+    pub fn push_proven_transaction(
+        &mut self,
+        proven_tx: ProvenTransaction,
+        tx_inputs: impl Into<TransactionInputs>,
+    ) -> Result<(), BatchBuilderError> {
+        let consumed: BTreeSet<Nullifier> = self
+            .pushed_txs
+            .iter()
+            .flat_map(|pushed| {
+                pushed.proven_tx.input_notes().iter().map(InputNoteCommitment::nullifier)
+            })
+            .collect();
+        if let Some(note) =
+            proven_tx.input_notes().iter().find(|note| consumed.contains(&note.nullifier()))
+        {
+            return Err(BatchBuilderError::DuplicateNullifier(note.nullifier()));
+        }
+
+        // The batch prover settles any precompile obligation that the outcome carries.
+        let _outcome = TransactionVerifier::new(MIN_PROOF_SECURITY_LEVEL)
+            .verify(&proven_tx)
+            .map_err(|source| BatchBuilderError::InvalidTransactionProof {
+                tx_id: proven_tx.id(),
+                source,
+            })?;
+
+        self.pushed_txs.push(PushedTx {
+            proven_tx: Arc::new(proven_tx),
+            tx_inputs: tx_inputs.into(),
+        });
+        Ok(())
     }
 }
 
@@ -156,12 +223,12 @@ where
     /// Open a new [`BatchBuilder`] for accumulating transactions across one or more local accounts.
     ///
     /// See the module-level docs for usage and constraints.
-    pub fn new_transaction_batch(&mut self) -> BatchBuilder<'_, AUTH> {
+    pub fn new_transaction_batch(&self) -> BatchBuilder {
         let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         BatchBuilder {
-            client: self,
             data_store: InMemoryBatchDataStore::new(inner_data_store),
             pushed_txs: Vec::new(),
+            tx_results: Vec::new(),
             consumed_input_notes: BTreeSet::new(),
         }
     }
@@ -194,10 +261,10 @@ where
     }
 
     /// Seals the submission's inputs against the current key, sends the batch, and on acceptance
-    /// applies the per-transaction store updates atomically.
+    /// applies the batch update atomically.
     ///
-    /// Shared by the first send from [`BatchBuilder::submit`] and by every retry through
-    /// [`Client::retry_proven_batch`], so both record what the node took and both map an
+    /// Shared by the first send from [`Client::submit_transaction_batch`] and by every retry
+    /// through [`Client::retry_proven_batch`], so both record what the node took and both map an
     /// unconfirmed outcome to the error that carries the submission back.
     async fn send_and_apply_proven_batch(
         &mut self,
@@ -206,11 +273,12 @@ where
         // Each entry is sealed against its own transaction id, with fresh randomness per attempt.
         let key = self.transaction_encryption_key().await?;
         let sealed_inputs = submission
-            .tx_results
+            .proposed_batch
+            .transactions()
             .iter()
-            .map(|tx_result| {
-                let executed = tx_result.executed_transaction();
-                seal_transaction_inputs(&mut self.rng, &key, executed.id(), executed.tx_inputs())
+            .zip(&submission.tx_inputs)
+            .map(|(proven_tx, tx_inputs)| {
+                seal_transaction_inputs(&mut self.rng, &key, proven_tx.id(), tx_inputs)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -228,118 +296,115 @@ where
 
         let block_num = result.map_err(|err| promote_indeterminate_submission(err, submission))?;
 
-        // The node took the batch. Record it, one update per transaction, applied atomically.
-        let mut updates: Vec<TransactionStoreUpdate> =
-            Vec::with_capacity(submission.transaction_count());
-        for tx_result in &submission.tx_results {
-            let update = self.get_transaction_store_update(tx_result, block_num).await.map_err(
-                |source| BatchBuilderError::BatchSubmittedButUpdateBuildFailed {
-                    block_num,
-                    source,
-                },
-            )?;
-            updates.push(update);
-        }
+        // The node took the batch. Record it as one update, applied atomically.
+        let batch_update = self
+            .get_batch_store_update(&submission.tx_results, block_num)
+            .await
+            .map_err(|source| BatchBuilderError::BatchSubmittedButUpdateBuildFailed {
+                block_num,
+                source,
+            })?;
 
-        if let Err(source) = self.store.apply_transaction_batch(updates).await {
+        if let Err(source) = self.store.apply_transaction_batch(batch_update.clone()).await {
             return Err(ClientError::from(BatchBuilderError::BatchSubmittedButApplyFailed {
                 block_num,
+                pending_update: Box::new(batch_update),
                 source,
             }));
         }
 
+        // Observer failures are logged and never propagate, as in `submit_new_transaction`.
+        for tx_result in &submission.tx_results {
+            for observer in &self.transaction_observers {
+                crate::errors::log_observer_failure(
+                    observer.name(),
+                    "TransactionObserver::apply",
+                    observer.apply(tx_result).await,
+                );
+            }
+        }
+
         Ok(block_num)
+    }
+
+    /// Builds a [`BatchStoreUpdate`] for the transactions of a submitted batch at the specified
+    /// submission height.
+    ///
+    /// The note updates of the transactions are merged in batch order, so a note that one
+    /// transaction creates and a later transaction consumes is stored once, in its consumed state.
+    pub async fn get_batch_store_update(
+        &self,
+        tx_results: &[TransactionResult],
+        submission_height: BlockNumber,
+    ) -> Result<BatchStoreUpdate, TransactionStoreUpdateError> {
+        let mut note_updates = NoteUpdateTracker::default();
+        let mut new_tags = Vec::new();
+        for tx_result in tx_results {
+            let tx_update = self.get_transaction_store_update(tx_result, submission_height).await?;
+            note_updates.merge(tx_update.note_updates().clone());
+            new_tags.extend_from_slice(tx_update.new_tags());
+        }
+
+        Ok(BatchStoreUpdate::new(
+            tx_results
+                .iter()
+                .map(|tx_result| tx_result.executed_transaction().clone())
+                .collect(),
+            submission_height,
+            note_updates,
+            new_tags,
+        ))
+    }
+
+    /// Persists the result of a submitted transaction batch into the local store. This is the batch
+    /// counterpart of [`Client::apply_transaction_update`].
+    pub async fn apply_batch_update(
+        &self,
+        batch_update: BatchStoreUpdate,
+    ) -> Result<(), ClientError> {
+        Ok(self.store.apply_transaction_batch(batch_update).await?)
     }
 }
 
-impl<AUTH> BatchBuilder<'_, AUTH>
+impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Assemble the `ProposedBatch`, prove it, submit it via the client's RPC, and atomically apply
-    /// the per-transaction updates to the local store.
+    /// Assemble the `ProposedBatch` from `batch`, prove it, submit it via the client's RPC, and
+    /// atomically apply the batch update to the local store.
     ///
     /// Returns the node's chain tip at submission (not the block the batch is committed). The
     /// submitted transactions are recorded locally as pending; call `sync_state` to get the block
     /// they commit in.
-    pub async fn submit(self) -> Result<BlockNumber, ClientError> {
-        // 1. Treat the largest ref as the reference block and the rest as authenticated. An empty
-        //    batch surfaces here as a missing max.
-        let ref_block_num = self
-            .pushed_txs
-            .iter()
-            .map(|p| p.proven_tx.ref_block_num())
-            .max()
-            .ok_or(BatchBuilderError::Empty)?;
-
-        let lower_refs: BTreeSet<BlockNumber> = self
-            .pushed_txs
-            .iter()
-            .map(|p| p.proven_tx.ref_block_num())
-            .filter(|&r| r < ref_block_num)
-            .collect();
+    pub async fn submit_transaction_batch(
+        &mut self,
+        batch: BatchBuilder,
+    ) -> Result<BlockNumber, ClientError> {
+        if batch.is_empty() {
+            return Err(BatchBuilderError::Empty.into());
+        }
 
         // Accounts that the batch creates are gated by the network allowlist. Ask before the batch
         // is proven.
         let account_ids: BTreeSet<AccountId> =
-            self.pushed_txs.iter().map(|p| p.proven_tx.account_id()).collect();
+            batch.pushed_txs.iter().map(|p| p.proven_tx.account_id()).collect();
         for account_id in account_ids {
-            if self.client.is_allowlist_gated(account_id).await? {
-                ensure_account_allowed(
-                    account_id,
-                    self.client.is_account_allowed(account_id).await,
-                )?;
+            if self.is_allowlist_gated(account_id).await? {
+                ensure_account_allowed(account_id, self.is_account_allowed(account_id).await)?;
             }
         }
 
-        let store = self.client.store.clone();
+        // 1. Anchor the batch at the sync height, because the partial blockchain comes from the
+        //    current peaks. The lower reference blocks are authenticated against them.
+        let ref_blocks: BTreeSet<BlockNumber> =
+            batch.pushed_txs.iter().map(|p| p.proven_tx.ref_block_num()).collect();
+        let (ref_block_header, partial_blockchain) =
+            self.chain_anchor_at_tip(ref_blocks).await?.into_parts();
 
-        // 2. Fetch the reference block header (from the store).
-        let (ref_block_header, _) = store
-            .get_block_header_by_num(ref_block_num)
-            .await
-            .map_err(ClientError::StoreError)?
-            .ok_or_else(|| {
-                ClientError::StoreError(crate::store::StoreError::BlockHeaderNotFound(
-                    ref_block_num,
-                ))
-            })?;
-
-        // 3. Fetch block headers for each lower ref (the ones needing authentication).
-        let fetched =
-            store.get_block_headers(&lower_refs).await.map_err(ClientError::StoreError)?;
-        let authenticated_blocks: Vec<BlockHeader> =
-            fetched.into_iter().map(|(header, _)| header).collect();
-        let fetched_nums: BTreeSet<BlockNumber> =
-            authenticated_blocks.iter().map(BlockHeader::block_num).collect();
-        if let Some(&missing) = lower_refs.difference(&fetched_nums).next() {
-            return Err(ClientError::StoreError(crate::store::StoreError::BlockHeaderNotFound(
-                missing,
-            )));
-        }
-
-        // 4. Build PartialMmr + PartialBlockchain using the current blockchain peaks — this matches
-        //    the MMR convention used by `ClientDataStore::get_transaction_inputs`.
-        let current_peaks =
-            store.get_current_blockchain_peaks().await.map_err(ClientError::StoreError)?;
-        let partial_mmr = build_partial_mmr_with_paths(
-            &store,
-            &self.client.rpc_api,
-            current_peaks,
-            &authenticated_blocks,
-        )
-        .await?;
-        let partial_blockchain = PartialBlockchain::new(partial_mmr, authenticated_blocks)?;
-
-        // 5. Split pushed_txs into the two views required by the remaining steps and build the
+        // 2. Split pushed_txs into the two views required by the remaining steps and build the
         //    ProposedBatch.
-        let len = self.pushed_txs.len();
-        let mut proven_txs: Vec<Arc<ProvenTransaction>> = Vec::with_capacity(len);
-        let mut tx_results: Vec<TransactionResult> = Vec::with_capacity(len);
-        for pushed in self.pushed_txs {
-            proven_txs.push(pushed.proven_tx);
-            tx_results.push(pushed.tx_result);
-        }
+        let (proven_txs, tx_inputs): (Vec<_>, Vec<_>) =
+            batch.pushed_txs.into_iter().map(|p| (p.proven_tx, p.tx_inputs)).unzip();
 
         // TODO: field is left unused as of now because all txs in batch are already proven. This
         // will be populated once a feature like remote proving in batches is implemented.
@@ -352,64 +417,68 @@ where
             MIN_PROOF_SECURITY_LEVEL,
         )?;
 
-        // 6. Execute the batch kernel, then prove synchronously.
+        // 3. Execute the batch kernel, then prove synchronously.
         let executed_batch = BatchExecutor::new().execute(proposed_batch.clone())?;
         let proven_batch =
             LocalBatchProver::new(miden_tx::Prover::default()).prove(executed_batch)?;
 
-        // 7. Submit via RPC and record what the node took. The proven batch is kept so an
+        // 4. Submit via RPC and record what the node took. The proven batch is kept so an
         //    unconfirmed submission can be retried without executing or proving again.
         let submission = ProvenBatchSubmission {
             proven_batch,
             proposed_batch: Box::new(proposed_batch),
-            tx_results,
+            tx_inputs,
+            tx_results: batch.tx_results,
         };
-        let block_num = self.client.send_and_apply_proven_batch(&submission).await?;
+        let block_num = self.send_and_apply_proven_batch(&submission).await?;
 
         Ok(block_num)
     }
 
-    /// Execute `req` against the batch's in-memory state for `account_id`, prove it using the
-    /// client's configured prover, and append the resulting proven transaction to the batch. The
+    /// Execute `req` against the in-memory state of `batch` for `account_id`, prove it using the
+    /// client's configured prover, and append the resulting proven transaction to `batch`. The
     /// first push for a given account lazily loads its state from the store.
     ///
     /// The batch is only advanced once the transaction has both executed and been proven, so on
-    /// failure the builder still holds exactly the transactions it held before the call and remains
-    /// usable. Returns `&mut Self` so pushes can be chained.
-    pub async fn push(
-        &mut self,
+    /// failure `batch` still holds exactly the transactions it held before the call and remains
+    /// usable. Push only to a batch that this client opened with [`Client::new_transaction_batch`].
+    pub async fn push_to_batch(
+        &self,
+        batch: &mut BatchBuilder,
         account_id: AccountId,
         req: TransactionRequest,
-    ) -> Result<&mut Self, ClientError> {
+    ) -> Result<(), ClientError> {
         // 1. Dedup input notes globally for the batch.
         for note_id in req.input_note_ids() {
-            if self.consumed_input_notes.contains(&note_id) {
+            if batch.consumed_input_notes.contains(&note_id) {
                 return Err(ClientError::from(BatchBuilderError::DuplicateInputNote(note_id)));
             }
         }
 
         // 2. Execute against in-batch state, then prove. Both run before any batch state is
-        //    advanced, so a failure in either leaves the builder untouched. Execution holds a large
+        //    advanced, so a failure in either leaves the batch untouched. Execution holds a large
         //    future, boxed here so callers don't have to.
         let tx_result =
-            Box::pin(execute_transaction_for_batch(self.client, &self.data_store, account_id, req))
+            Box::pin(execute_transaction_for_batch(self, &batch.data_store, account_id, req))
                 .await?;
 
-        let proven_tx = self.client.prove_transaction(&tx_result).await?;
+        let proven_tx = self.prove_transaction(&tx_result).await?;
 
         // 3. The transaction is final: fold it into the in-batch account state, record its consumed
         //    notes, and append it to the batch.
-        self.data_store
+        batch
+            .data_store
             .apply_executed_transaction(tx_result.executed_transaction())
             .await?;
         for note in tx_result.consumed_notes().iter() {
-            self.consumed_input_notes.insert(note.id());
+            batch.consumed_input_notes.insert(note.id());
         }
-        self.pushed_txs.push(PushedTx {
+        batch.pushed_txs.push(PushedTx {
             proven_tx: Arc::new(proven_tx),
-            tx_result,
+            tx_inputs: tx_result.executed_transaction().tx_inputs().clone(),
         });
-        Ok(self)
+        batch.tx_results.push(tx_result);
+        Ok(())
     }
 }
 

@@ -139,23 +139,6 @@ impl NoteStateHandler for UnverifiedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for UnverifiedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.inclusion_proof.write_into(target);
-    }
-}
-
-impl miden_tx::utils::serde::Deserializable for UnverifiedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let inclusion_proof = NoteInclusionProof::read_from(source)?;
-        Ok(UnverifiedNoteState { metadata, inclusion_proof })
-    }
-}
-
 impl From<UnverifiedNoteState> for InputNoteState {
     fn from(state: UnverifiedNoteState) -> Self {
         InputNoteState::Unverified(state)

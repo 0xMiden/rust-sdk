@@ -116,25 +116,6 @@ impl NoteStateHandler for ExpectedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ExpectedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.after_block_num.write_into(target);
-        self.tag.write_into(target);
-    }
-}
-
-impl miden_tx::utils::serde::Deserializable for ExpectedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let metadata = Option::<NoteMetadata>::read_from(source)?;
-        let after_block_num = BlockNumber::read_from(source)?;
-        let tag = Option::<NoteTag>::read_from(source)?;
-        Ok(ExpectedNoteState { metadata, after_block_num, tag })
-    }
-}
-
 impl From<ExpectedNoteState> for InputNoteState {
     fn from(state: ExpectedNoteState) -> Self {
         InputNoteState::Expected(state)

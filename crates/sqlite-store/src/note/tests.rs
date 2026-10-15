@@ -34,7 +34,7 @@ use miden_client::sync::{
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
-use miden_client::utils::{Deserializable, DeserializationError, Serializable};
+use miden_client::utils::Serializable;
 use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -988,18 +988,20 @@ fn unspent_states_classify_every_note_state() {
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    for discriminant in 0..=u8::MAX {
-        // The deserializer decides which bytes are real discriminants: an unused one hits the
-        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
-        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
-        // payload also reports `InvalidValue` would be skipped here instead of checked.
-        if matches!(
-            InputNoteState::read_from_bytes(&[discriminant]),
-            Err(DeserializationError::InvalidValue(_))
-        ) {
-            continue;
-        }
+    // A new state must be added to this list and to one of the two lists above.
+    const ALL_STATES: [u8; 9] = [
+        InputNoteState::STATE_EXPECTED,
+        InputNoteState::STATE_UNVERIFIED,
+        InputNoteState::STATE_COMMITTED,
+        InputNoteState::STATE_INVALID,
+        InputNoteState::STATE_PROCESSING_AUTHENTICATED,
+        InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
+        InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_EXTERNAL,
+    ];
 
+    for discriminant in ALL_STATES {
         assert!(
             InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),

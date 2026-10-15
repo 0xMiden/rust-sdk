@@ -4,7 +4,7 @@ use miden_client::account::AccountId;
 use miden_client::note::{NoteDetailsCommitment, NoteTag};
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::ACCOUNT_ID_REGULAR;
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client::utils::Serializable;
 use miden_client::{ONE, Word, ZERO};
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
@@ -12,6 +12,7 @@ use rusqlite_migration::{HookError, HookResult};
 use crate::db_management::errors::SqliteStoreError;
 use crate::db_management::migration::{MigrationHook, SqliteMigration, SqliteMigrator};
 use crate::db_management::schema::SchemaHash;
+use crate::sync::{decode_tag_source, encode_tag_source};
 
 mod m0002_drop_note_transport_outbox;
 mod m0004_pswap_lineages;
@@ -317,7 +318,7 @@ fn client_store_at_version_one_drops_stored_account_tags() {
     for source in kept_sources.iter().chain([&NoteTagSource::Account(account_id)]) {
         conn.execute(
             "INSERT INTO tags (tag, source) VALUES (?1, ?2)",
-            params![tag.to_bytes(), source.to_bytes()],
+            params![tag.to_bytes(), encode_tag_source(source)],
         )
         .expect("a version 1 note tag should insert");
     }
@@ -333,8 +334,8 @@ fn client_store_at_version_one_drops_stored_account_tags() {
         .query_map([], |row| row.get::<_, Vec<u8>>(0))
         .expect("the tags query should run")
         .map(|source| {
-            NoteTagSource::read_from_bytes(&source.expect("the source should read"))
-                .expect("the source should deserialize")
+            decode_tag_source(&source.expect("the source should read"))
+                .expect("the source should decode")
         })
         .collect::<Vec<_>>();
     assert_eq!(remaining.len(), kept_sources.len());

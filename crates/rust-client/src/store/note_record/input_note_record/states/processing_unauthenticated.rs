@@ -103,29 +103,6 @@ impl NoteStateHandler for ProcessingUnauthenticatedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ProcessingUnauthenticatedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.after_block_num.write_into(target);
-        self.submission_data.write_into(target);
-    }
-}
-
-impl miden_tx::utils::serde::Deserializable for ProcessingUnauthenticatedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let after_block_num = BlockNumber::read_from(source)?;
-        let submission_data = NoteSubmissionData::read_from(source)?;
-        Ok(ProcessingUnauthenticatedNoteState {
-            metadata,
-            after_block_num,
-            submission_data,
-        })
-    }
-}
-
 impl From<ProcessingUnauthenticatedNoteState> for InputNoteState {
     fn from(state: ProcessingUnauthenticatedNoteState) -> Self {
         InputNoteState::ProcessingUnauthenticated(state)

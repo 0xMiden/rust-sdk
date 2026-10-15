@@ -7,13 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 
 use crate::note_transport::{
@@ -357,32 +351,5 @@ impl NoteTransportClient for FaultyNoteTransportApi {
             ));
         }
         Ok(self.inner.fetch_notes(tags, cursor))
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for MockNoteTransportNode {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.notes.write_into(target);
-        self.nonce.write_into(target);
-        self.next_sequence.write_into(target);
-    }
-}
-
-impl Deserializable for MockNoteTransportNode {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let notes = BTreeMap::<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>::read_from(source)?;
-        let nonce = u64::read_from(source)?;
-        let next_sequence = u64::read_from(source)?;
-
-        Ok(Self {
-            notes,
-            nonce,
-            next_sequence,
-            max_batch: None,
-            proven_notes: BTreeMap::default(),
-        })
     }
 }

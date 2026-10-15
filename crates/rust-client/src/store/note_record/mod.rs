@@ -6,11 +6,6 @@
 //! they are involved in very different flows. As such, known states are modeled differently for the
 //! two structures, with [`InputNoteRecord`] having states described by the [`InputNoteState`] enum.
 //!
-//! ## Serialization / Deserialization
-//!
-//! We provide serialization and deserialization support via [`Serializable`] and [`Deserializable`]
-//! traits implementations.
-//!
 //! ## Type conversion
 //!
 //! We also facilitate converting from/into [`InputNote`](miden_protocol::transaction::InputNote) /

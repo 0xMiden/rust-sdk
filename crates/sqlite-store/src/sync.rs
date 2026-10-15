@@ -4,10 +4,10 @@ use std::vec::Vec;
 
 use miden_client::Word;
 use miden_client::account::AccountId;
-use miden_client::note::{BlockNumber, NoteTag};
+use miden_client::note::{BlockNumber, NoteDetailsCommitment, NoteTag};
 use miden_client::store::StoreError;
 use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
@@ -31,7 +31,7 @@ impl SqliteStore {
                 Ok(NoteTagRecord {
                     tag: NoteTag::read_from_bytes(&tag)
                         .map_err(StoreError::DataDeserializationError)?,
-                    source: NoteTagSource::read_from_bytes(&source)
+                    source: decode_tag_source(&source)
                         .map_err(StoreError::DataDeserializationError)?,
                 })
             })
@@ -184,7 +184,7 @@ pub(super) fn add_note_tag_tx(
 
     const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
     let inserted = tx
-        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+        .execute(QUERY, params![tag.tag.to_bytes(), encode_tag_source(&tag.source)])
         .into_store_error()?;
 
     Ok(inserted > 0)
@@ -196,10 +196,51 @@ pub(super) fn remove_note_tag_tx(
 ) -> Result<usize, StoreError> {
     const QUERY: &str = "DELETE FROM tags WHERE tag = ? AND source = ?";
     let removed_tags = tx
-        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+        .execute(QUERY, params![tag.tag.to_bytes(), encode_tag_source(&tag.source)])
         .into_store_error()?;
 
     Ok(removed_tags)
+}
+
+// NOTE TAG SOURCE ENCODING
+// ================================================================================================
+
+// The kind byte that starts a `tags.source` value. Stored rows and migration 0003 use these values,
+// so they must not change.
+const ACCOUNT_SOURCE: u8 = 0;
+const NOTE_SOURCE: u8 = 1;
+const USER_SOURCE: u8 = 2;
+const SUBSCRIPTION_SOURCE: u8 = 3;
+
+/// Encodes `source` for the `tags.source` column: the kind byte, then the bytes of the account ID,
+/// the note details commitment or the subscription key.
+pub(crate) fn encode_tag_source(source: &NoteTagSource) -> Vec<u8> {
+    let (kind, value) = match source {
+        NoteTagSource::Account(account_id) => (ACCOUNT_SOURCE, account_id.to_bytes()),
+        NoteTagSource::Note(details_commitment) => (NOTE_SOURCE, details_commitment.to_bytes()),
+        NoteTagSource::User => (USER_SOURCE, Vec::new()),
+        NoteTagSource::Subscription(key) => (SUBSCRIPTION_SOURCE, key.to_bytes()),
+    };
+    let mut bytes = Vec::with_capacity(1 + value.len());
+    bytes.push(kind);
+    bytes.extend(value);
+    bytes
+}
+
+/// Decodes a `tags.source` value that [`encode_tag_source`] wrote.
+pub(crate) fn decode_tag_source(bytes: &[u8]) -> Result<NoteTagSource, DeserializationError> {
+    let Some((&kind, value)) = bytes.split_first() else {
+        return Err(DeserializationError::UnexpectedEOF);
+    };
+    match kind {
+        ACCOUNT_SOURCE => Ok(NoteTagSource::Account(AccountId::read_from_bytes(value)?)),
+        NOTE_SOURCE => Ok(NoteTagSource::Note(NoteDetailsCommitment::read_from_bytes(value)?)),
+        USER_SOURCE => Ok(NoteTagSource::User),
+        SUBSCRIPTION_SOURCE => Ok(NoteTagSource::Subscription(Word::read_from_bytes(value)?)),
+        _ => Err(DeserializationError::InvalidValue(format!(
+            "invalid note tag source kind {kind}"
+        ))),
+    }
 }
 
 /// Reads the sync height from the `blockchain_checkpoint` row.
@@ -216,10 +257,29 @@ pub(crate) fn query_sync_height(conn: &Connection) -> Result<BlockNumber, StoreE
 
 #[cfg(test)]
 mod tests {
+    use miden_client::Word;
+    use miden_client::sync::NoteTagSource;
+    use miden_client::utils::Serializable;
     use rusqlite::Connection;
 
+    use super::{decode_tag_source, encode_tag_source};
     use crate::SqliteStore;
     use crate::db_management::migration::SqliteMigrator;
+
+    /// Stored `tags` rows use this layout, so it must not change: the kind byte, then the bytes of
+    /// the inner value.
+    #[test]
+    fn tag_source_encoding_keeps_its_layout() {
+        let key = Word::from([1u32, 2, 3, 4]);
+        for (source, expected) in [
+            (NoteTagSource::User, vec![2]),
+            (NoteTagSource::Subscription(key), [vec![3], key.to_bytes()].concat()),
+        ] {
+            let bytes = encode_tag_source(&source);
+            assert_eq!(bytes, expected);
+            assert_eq!(decode_tag_source(&bytes).unwrap(), source);
+        }
+    }
 
     /// A missing checkpoint row is only reachable through corruption (the initial migration seeds
     /// it); it must surface as an error, not a panic.

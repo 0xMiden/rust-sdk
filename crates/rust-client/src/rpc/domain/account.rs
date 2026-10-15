@@ -12,7 +12,6 @@ use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
 use crate::alloc::string::ToString;
@@ -730,20 +729,6 @@ impl From<AccountStorageRequirements> for Vec<StorageMapDetailRequest> {
             });
         }
         requests
-    }
-}
-
-impl Serializable for AccountStorageRequirements {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        target.write(&self.0);
-    }
-}
-
-impl Deserializable for AccountStorageRequirements {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        Ok(AccountStorageRequirements(source.read()?))
     }
 }
 

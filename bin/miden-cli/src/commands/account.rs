@@ -18,8 +18,9 @@ use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
 use miden_client::rpc::domain::account::{GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
+use miden_client::utils::{Deserializable, Serializable};
 use miden_client::vm::{Package, PackageExport};
-use miden_client::{Client, PrettyPrint, Word, ZERO};
+use miden_client::{Client, ClientError, PrettyPrint, Word, ZERO};
 
 use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
@@ -28,6 +29,30 @@ use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_targe
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
+
+/// Returns the default account ID in the settings of `client`, or `None` if no default account is
+/// set.
+pub(crate) async fn get_default_account_id<AUTH>(
+    client: &Client<AUTH>,
+) -> Result<Option<AccountId>, CliError> {
+    let Some(bytes) = client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await? else {
+        return Ok(None);
+    };
+    let account_id =
+        AccountId::read_from_bytes(&bytes).map_err(ClientError::DataDeserializationError)?;
+    Ok(Some(account_id))
+}
+
+/// Stores `account_id` as the default account ID in the settings of `client`.
+pub(crate) async fn set_default_account_id<AUTH>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+) -> Result<(), CliError> {
+    client
+        .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account_id.to_bytes())
+        .await?;
+    Ok(())
+}
 
 // ACCOUNT COMMAND
 // ================================================================================================
@@ -143,10 +168,8 @@ impl AccountCmd {
             } => {
                 match id {
                     None => {
-                        let default_account: AccountId = client
-                            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
-                            .await?
-                            .ok_or(CliError::Config(
+                        let default_account =
+                            get_default_account_id(&client).await?.ok_or(CliError::Config(
                                 "Default account".to_string().into(),
                                 "No default account found in the client's store".to_string(),
                             ))?;
@@ -168,9 +191,7 @@ impl AccountCmd {
                         // Check whether we're tracking that account
                         let (account, _) = client.account_reader(account_id).header().await?;
 
-                        client
-                            .set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account.id())
-                            .await?;
+                        set_default_account_id(&client, account.id()).await?;
 
                         println!("Default account set to {}", account.id());
                     },
@@ -713,15 +734,11 @@ pub(crate) async fn set_default_account_if_unset<AUTH>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
 ) -> Result<(), CliError> {
-    if client
-        .get_setting::<AccountId>(DEFAULT_ACCOUNT_ID_KEY.to_string())
-        .await?
-        .is_some()
-    {
+    if get_default_account_id(client).await?.is_some() {
         return Ok(());
     }
 
-    client.set_setting(DEFAULT_ACCOUNT_ID_KEY.to_string(), account_id).await?;
+    set_default_account_id(client, account_id).await?;
 
     println!("Setting account {account_id} as the default account ID.");
     println!(

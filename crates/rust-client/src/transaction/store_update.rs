@@ -3,13 +3,6 @@ use alloc::vec::Vec;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
 use miden_protocol::transaction::ExecutedTransaction;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::note::NoteUpdateTracker;
 use crate::sync::NoteTagRecord;
@@ -85,105 +78,5 @@ impl TransactionStoreUpdate {
     /// Returns the new tags that were created as part of the transaction.
     pub fn new_tags(&self) -> &[NoteTagRecord] {
         &self.new_tags
-    }
-}
-
-impl Serializable for TransactionStoreUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.executed_transaction.write_into(target);
-        self.submission_height.write_into(target);
-        self.future_notes.write_into(target);
-        self.note_updates.write_into(target);
-        self.new_tags.write_into(target);
-    }
-}
-
-impl Deserializable for TransactionStoreUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let executed_transaction = ExecutedTransaction::read_from(source)?;
-        let submission_height = BlockNumber::read_from(source)?;
-        let future_notes = Vec::<(NoteDetails, NoteTag)>::read_from(source)?;
-        let note_updates = NoteUpdateTracker::read_from(source)?;
-        let new_tags = Vec::<NoteTagRecord>::read_from(source)?;
-
-        Ok(Self {
-            executed_transaction,
-            submission_height,
-            future_notes,
-            note_updates,
-            new_tags,
-        })
-    }
-}
-
-// TESTS
-// ================================================================================================
-
-#[cfg(test)]
-mod tests {
-    use alloc::boxed::Box;
-
-    use miden_protocol::asset::{Asset, FungibleAsset};
-    use miden_protocol::note::NoteType;
-    use miden_protocol::testing::account_id::{
-        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
-        ACCOUNT_ID_SENDER,
-    };
-    use miden_testing::{MockChainBuilder, MockTransactionInput};
-
-    use super::*;
-    use crate::note::NoteUpdateTracker;
-    use crate::store::InputNoteRecord;
-    use crate::sync::NoteTagRecord;
-
-    #[tokio::test]
-    async fn transaction_store_update_serialization_roundtrip() {
-        // Build a minimal MockChain with an account consuming a P2ID note so that we can produce a
-        // real `ExecutedTransaction`.
-        let sender_id = ACCOUNT_ID_SENDER.try_into().unwrap();
-        let faucet_id = ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET.try_into().unwrap();
-        let asset = Asset::from(FungibleAsset::new(faucet_id, 100u64).unwrap());
-
-        let mut builder = MockChainBuilder::new();
-        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
-        let note = builder
-            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
-            .unwrap();
-        let mut chain = builder.build().unwrap();
-        chain.prove_next_block().unwrap();
-
-        let executed_tx = Box::pin(
-            chain
-                .build_transaction(MockTransactionInput::Account(account.clone()))
-                .unauthenticated_input_note(note.clone())
-                .build()
-                .unwrap()
-                .execute(),
-        )
-        .await
-        .unwrap();
-
-        // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers every
-        // field.
-        let input_note = InputNoteRecord::from(note.clone());
-        let note_updates = NoteUpdateTracker::for_transaction_updates([input_note], [], []);
-
-        let tag = NoteTag::with_account_target(account.id());
-        let new_tags = vec![NoteTagRecord::with_note_source(tag, note.details_commitment())];
-
-        let future_notes = vec![(Into::<NoteDetails>::into(note.clone()), tag)];
-
-        let update = TransactionStoreUpdate::new(
-            executed_tx,
-            BlockNumber::from(42u32),
-            note_updates,
-            future_notes,
-            new_tags,
-        );
-
-        let bytes = update.to_bytes();
-        let deserialized = TransactionStoreUpdate::read_from_bytes(&bytes).unwrap();
-
-        assert_eq!(update, deserialized);
     }
 }

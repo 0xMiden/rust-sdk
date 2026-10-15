@@ -12,13 +12,6 @@ use miden_protocol::note::{
     Nullifier,
 };
 use miden_standards::note::NetworkAccountTarget;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::ClientError;
 use crate::rpc::domain::note::CommittedNote;
@@ -776,93 +769,6 @@ impl NoteUpdateTracker {
     }
 }
 
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for NoteUpdateType {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        target.write_u8(*self as u8);
-    }
-}
-
-impl Deserializable for NoteUpdateType {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        NoteUpdateType::try_from(source.read_u8()?).map_err(|val| {
-            DeserializationError::InvalidValue(format!("invalid note update type: {val}"))
-        })
-    }
-}
-
-impl Serializable for InputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for InputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = InputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for OutputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for OutputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = OutputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for NoteUpdateTracker {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        // The lookup indices are serialized alongside the records so the tracker round-trips to an
-        // identical state.
-        self.input_notes.write_into(target);
-        self.output_notes.write_into(target);
-        self.nullifier_order.write_into(target);
-        self.input_notes_by_id.write_into(target);
-        self.input_notes_by_nullifier.write_into(target);
-    }
-}
-
-impl Deserializable for NoteUpdateTracker {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let input_notes = BTreeMap::<NoteDetailsCommitment, InputNoteUpdate>::read_from(source)?;
-        let output_notes = BTreeMap::<NoteId, OutputNoteUpdate>::read_from(source)?;
-        let nullifier_order = BTreeMap::<Nullifier, u32>::read_from(source)?;
-        let input_notes_by_id = BTreeMap::<NoteId, NoteDetailsCommitment>::read_from(source)?;
-        let input_notes_by_nullifier =
-            BTreeMap::<Nullifier, NoteDetailsCommitment>::read_from(source)?;
-
-        // Output notes always carry metadata, so this index can be safely derived from the records.
-        let output_notes_by_nullifier = output_notes
-            .iter()
-            .filter_map(|(note_id, update)| {
-                update.inner().nullifier().map(|nullifier| (nullifier, *note_id))
-            })
-            .collect();
-
-        Ok(Self {
-            input_notes,
-            output_notes,
-            input_notes_by_nullifier,
-            input_notes_by_id,
-            output_notes_by_nullifier,
-            nullifier_order,
-        })
-    }
-}
-
 // TESTS
 // ================================================================================================
 
@@ -885,7 +791,6 @@ mod tests {
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
     use miden_protocol::transaction::TransactionId;
-    use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
 
@@ -894,7 +799,6 @@ mod tests {
     use crate::store::input_note_states::{
         ConsumedExternalNoteState,
         ConsumedUnauthenticatedLocalNoteState,
-        ExpectedNoteState,
         NoteSubmissionData,
         ProcessingUnauthenticatedNoteState,
     };
@@ -918,16 +822,6 @@ mod tests {
             PartialNoteMetadata::new(sender, NoteType::Public),
             &NoteAttachments::empty(),
         )
-    }
-
-    /// A metadata-less expected note. It has no `NoteId` and is tracked by its details commitment.
-    fn expected_note(seed: u64) -> InputNoteRecord {
-        let state = ExpectedNoteState {
-            metadata: None,
-            after_block_num: BlockNumber::from(0u32),
-            tag: None,
-        };
-        InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
     }
 
     /// A metadata-bearing, not-yet-consumed note that can be externally consumed.
@@ -1038,7 +932,7 @@ mod tests {
         let mut tracker = NoteUpdateTracker::for_transaction_updates(vec![], vec![note], vec![]);
 
         // After external consumption the note must still be reported as consumed by its id via
-        // `input_notes_by_id`, both in memory and after a serialization round trip.
+        // `input_notes_by_id`.
         tracker
             .apply_note_consumption(
                 &NoteConsumption {
@@ -1050,47 +944,7 @@ mod tests {
             )
             .expect("external consumption should apply");
 
-        // In memory the id is reported correctly.
-        let before: alloc::vec::Vec<NoteId> = tracker.consumed_input_note_ids().collect();
-        assert_eq!(before, vec![id]);
-
-        // The retained id must survive a serialize/deserialize round trip.
-        let bytes = tracker.to_bytes();
-        let restored = NoteUpdateTracker::read_from_bytes(&bytes).expect("round-trip should work");
-        let after: alloc::vec::Vec<NoteId> = restored.consumed_input_note_ids().collect();
-        assert_eq!(
-            after,
-            vec![id],
-            "the retained id of an externally consumed note must survive serialization"
-        );
-    }
-
-    #[test]
-    fn serialize_round_trip_preserves_lookup_indices() {
-        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
-        let expected = expected_note(10);
-        let processing = processing_note(11, sender);
-        let processing_id = processing.id().expect("processing note has metadata");
-        let processing_commitment = processing.details_commitment();
-        let processing_nullifier = processing.nullifier().expect("processing note has metadata");
-
-        let tracker =
-            NoteUpdateTracker::for_transaction_updates(vec![expected], vec![processing], vec![]);
-
-        let bytes = tracker.to_bytes();
-        let restored = NoteUpdateTracker::read_from_bytes(&bytes).expect("round-trip should work");
-
-        // The records and lookup indices round-trip unchanged, including the metadata-less note
-        // that is keyed only by its details commitment.
-        assert_eq!(tracker, restored);
-        assert_eq!(restored.updated_input_notes().count(), 2);
-        assert_eq!(
-            restored.input_notes_by_id.get(&processing_id).copied(),
-            Some(processing_commitment)
-        );
-        assert_eq!(
-            restored.input_notes_by_nullifier.get(&processing_nullifier).copied(),
-            Some(processing_commitment)
-        );
+        let consumed: alloc::vec::Vec<NoteId> = tracker.consumed_input_note_ids().collect();
+        assert_eq!(consumed, vec![id]);
     }
 }

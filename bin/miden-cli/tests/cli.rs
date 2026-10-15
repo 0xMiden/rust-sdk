@@ -16,7 +16,7 @@ use miden_client::account::component::{
     ValueSlotSchema,
     WordSchema,
 };
-use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
+use miden_client::account::{AccountFile, AccountId, AccountType, StorageSlotName};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{
@@ -657,14 +657,14 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
     let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
     let setting_key = format!("faucet_metadata:{}", faucet_id.to_hex());
-    let stored: Option<FaucetMetadata> = client.get_setting(setting_key).await?;
+    let stored = client.get_setting(setting_key).await?;
     assert!(
         stored.is_some(),
         "expected settings store to contain metadata for {fungible_faucet_account_id} after notes -s",
     );
-    let stored = stored.unwrap();
-    assert_eq!(stored.symbol, "BTC");
-    assert_eq!(stored.decimals, 10);
+    let (symbol, decimals) = <(String, u8)>::read_from_bytes(&stored.unwrap())?;
+    assert_eq!(symbol, "BTC");
+    assert_eq!(decimals, 10);
     Ok(())
 }
 

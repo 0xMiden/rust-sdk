@@ -116,29 +116,6 @@ impl NoteStateHandler for CommittedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for CommittedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.inclusion_proof.write_into(target);
-        self.block_note_root.write_into(target);
-    }
-}
-
-impl miden_tx::utils::serde::Deserializable for CommittedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let inclusion_proof = NoteInclusionProof::read_from(source)?;
-        let block_note_root = Word::read_from(source)?;
-        Ok(CommittedNoteState {
-            metadata,
-            inclusion_proof,
-            block_note_root,
-        })
-    }
-}
-
 impl From<CommittedNoteState> for InputNoteState {
     fn from(state: CommittedNoteState) -> Self {
         InputNoteState::Committed(state)

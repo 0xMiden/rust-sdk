@@ -1,5 +1,5 @@
 //! Contains structures and functions related to FPI (Foreign Procedure Invocation) transactions.
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::fmt::Write as _;
@@ -20,7 +20,6 @@ use miden_protocol::transaction::{AccountInputs, TransactionScript};
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
-use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
 use super::TransactionRequestError;
 use crate::rpc::domain::account::{
@@ -172,47 +171,6 @@ impl Ord for ForeignAccount {
 impl PartialOrd for ForeignAccount {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-impl Serializable for ForeignAccount {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        match self {
-            ForeignAccount::Public(account_id, storage_requirements) => {
-                target.write(0u8);
-                account_id.write_into(target);
-                storage_requirements.write_into(target);
-            },
-            ForeignAccount::Private(partial_account) => {
-                target.write(1u8);
-                partial_account.write_into(target);
-            },
-            ForeignAccount::Prefetched(inputs) => {
-                target.write(2u8);
-                inputs.write_into(target);
-            },
-        }
-    }
-}
-
-impl Deserializable for ForeignAccount {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        let account_type: u8 = source.read_u8()?;
-        match account_type {
-            0 => {
-                let account_id = AccountId::read_from(source)?;
-                let storage_requirements = AccountStorageRequirements::read_from(source)?;
-                Ok(ForeignAccount::Public(account_id, storage_requirements))
-            },
-            1 => {
-                let foreign_inputs = PartialAccount::read_from(source)?;
-                Ok(ForeignAccount::Private(foreign_inputs))
-            },
-            2 => Ok(ForeignAccount::Prefetched(AccountInputs::read_from(source)?)),
-            _ => Err(DeserializationError::InvalidValue("Invalid account type".to_string())),
-        }
     }
 }
 

@@ -3,7 +3,6 @@
 //! See module-level docs on [`crate::pswap`].
 
 use alloc::collections::BTreeMap;
-use alloc::string::ToString;
 
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
@@ -13,13 +12,12 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{PswapNote, PswapNoteAttachment};
 
 use super::errors::PswapLineageError;
-use crate::utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 
 // PSWAP LINEAGE STATE
 // ================================================================================================
 
-/// Lifecycle state of a PSWAP order. Discriminants are part of the serialized encoding — do not
-/// renumber.
+/// Lifecycle state of a PSWAP order. A store can persist the discriminants, so do not renumber
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PswapLineageState {
@@ -36,7 +34,8 @@ impl PswapLineageState {
         self as u8
     }
 
-    /// Errors on unknown discriminants, guards against forward-incompatible serialized encodings.
+    /// Returns an error for an unknown discriminant, for example a value that a newer client
+    /// version persisted.
     pub fn try_from_u8(value: u8) -> Result<Self, PswapLineageError> {
         match value {
             0 => Ok(Self::Active),
@@ -411,50 +410,6 @@ impl PswapLineageFilter {
     }
 }
 
-// VALUE CODEC
-// ================================================================================================
-
-/// Encodes the record's fields in declaration order: the `original_note_id` fetch handle, the
-/// mirrored order id and creator, then the mutable tip state. Only the remaining *amounts* are
-/// written — the faucets and full note live on the depth-0 note, recovered via `original_note_id`
-/// when needed.
-impl Serializable for PswapLineageRecord {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.original_note_id.write_into(target);
-        self.order_id.write_into(target);
-        self.creator_account_id.write_into(target);
-        self.current_tip_note_id.write_into(target);
-        self.current_depth.write_into(target);
-        self.remaining_offered.write_into(target);
-        self.remaining_requested.write_into(target);
-        self.state.as_u8().write_into(target);
-    }
-}
-
-impl Deserializable for PswapLineageRecord {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let original_note_id = NoteId::read_from(source)?;
-        let order_id = Felt::read_from(source)?;
-        let creator_account_id = AccountId::read_from(source)?;
-        let current_tip_note_id = NoteId::read_from(source)?;
-        let current_depth = u32::read_from(source)?;
-        let remaining_offered = AssetAmount::read_from(source)?;
-        let remaining_requested = AssetAmount::read_from(source)?;
-        let state = PswapLineageState::try_from_u8(u8::read_from(source)?)
-            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
-        Ok(Self::from_parts(
-            original_note_id,
-            order_id,
-            creator_account_id,
-            current_tip_note_id,
-            current_depth,
-            remaining_offered,
-            remaining_requested,
-            state,
-        ))
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod test_helpers {
     //! Synthetic-PSWAP factory shared across lineage / discovery / store tests.
@@ -549,8 +504,8 @@ mod tests {
         )
     }
 
-    /// Stable byte encoding of `PswapLineageState`. The values are persisted in the serialized
-    /// lineage record; reordering would silently corrupt existing stores.
+    /// Stable byte encoding of `PswapLineageState`. A store can persist these values, so a
+    /// reordering would corrupt the stored lineages.
     #[test]
     fn state_byte_encoding_is_stable() {
         assert_eq!(PswapLineageState::Active.as_u8(), 0);
@@ -558,8 +513,8 @@ mod tests {
         assert_eq!(PswapLineageState::Reclaimed.as_u8(), 2);
     }
 
-    /// Round-trip every state via `try_from_u8`. Belt-and-suspenders against a future renumbering
-    /// breaking the serialized format.
+    /// Round-trips every state through `try_from_u8`, so a renumbering cannot change the persisted
+    /// values.
     #[test]
     fn state_try_from_u8_round_trips_known_variants() {
         for state in [
@@ -581,25 +536,6 @@ mod tests {
         }
     }
 
-    /// A stored record with an unknown state discriminant does not deserialize.
-    #[test]
-    fn value_codec_rejects_unknown_state() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        let record =
-            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
-
-        // The state byte is the last field of the encoding.
-        let mut bytes = record.to_bytes();
-        *bytes.last_mut().unwrap() = 42;
-
-        assert!(matches!(
-            PswapLineageRecord::read_from_bytes(&bytes),
-            Err(DeserializationError::InvalidValue(_))
-        ));
-    }
-
     /// The mirrored scalars back the accessors with the same values the depth-0 note would yield,
     /// so `order_id()` and `creator_account_id()` stay correct without re-fetching the note.
     #[test]
@@ -616,31 +552,6 @@ mod tests {
         assert_eq!(record.original_note_id, note.id());
         assert_eq!(record.order_id(), expected_order_id);
         assert_eq!(record.creator_account_id(), creator);
-    }
-
-    /// `Serializable`/`Deserializable` round-trip preserves every field. Exercised at an advanced
-    /// depth with reduced amounts to catch an offered/requested mix-up.
-    #[test]
-    fn value_codec_round_trips() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active);
-
-        let bytes = record.to_bytes();
-        let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();
-
-        assert_eq!(decoded.original_note_id, record.original_note_id);
-        assert_eq!(decoded.creator_account_id(), record.creator_account_id());
-        assert_eq!(decoded.order_id(), record.order_id());
-        assert_eq!(decoded.current_tip_note_id, record.current_tip_note_id);
-        assert_eq!(decoded.current_depth, record.current_depth);
-        assert_eq!(decoded.remaining_offered, record.remaining_offered);
-        assert_eq!(decoded.remaining_requested, record.remaining_requested);
-        assert_eq!(decoded.remaining_offered, AssetAmount::new(70).unwrap());
-        assert_eq!(decoded.remaining_requested, AssetAmount::new(35).unwrap());
-        assert_eq!(decoded.state, record.state);
     }
 
     // PER-ROUND CLASSIFICATION TESTS

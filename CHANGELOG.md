@@ -21,6 +21,7 @@
 * [BREAKING][param][rust] `Store::set_setting`, `Store::get_setting`, `Store::remove_setting` and `Store::list_setting_keys` no longer take a scope and reach the user settings only. The client data is available only through the typed `Store` methods ([#2702](https://github.com/0xMiden/rust-sdk/pull/2702)).
 * [BREAKING][removal][rust] Removed `SettingScope`, `SettingMutation`, `Store::apply_settings_mutations`, `protocol_config_setting_key` and `NOTE_TRANSPORT_CURSORS_KEY`, and the deprecated `Store::get_note_transport_cursor`, `Store::update_note_transport_cursor`, `NOTE_TRANSPORT_CURSOR_STORE_SETTING` and `NOTE_TRANSPORT_COVERED_TAGS_KEY` ([#2702](https://github.com/0xMiden/rust-sdk/pull/2702)).
 * [BREAKING][arch][store] The SQLite store keeps the client data in the new `client_config` table and the user settings in the new `user_settings` table. Store migration 5 creates them, copies the user settings and the protocol configurations, and drops the `settings` table. The client fetches the RPC limits and the transaction encryption key again, and note transport reads the retained notes again from the start ([#2702](https://github.com/0xMiden/rust-sdk/pull/2702)).
+* [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `PswapLineageRecord`, `RpcLimits`, `TransactionEncryptionKey`, `TransactionDetails`, `TransactionStatus`, `DiscardCause` and `TransportNote` ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ### Features
 

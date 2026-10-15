@@ -1,5 +1,6 @@
+use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::account::{AccountId, AccountType};
-use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::BlockNumber;
 use miden_client::rpc::{
     EndpointError,

@@ -8,15 +8,13 @@ use miden_client::Client;
 use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
-    BurnPolicy,
-    FungibleFaucet,
     InitStorageData,
     InitStorageDataError,
     MIDEN_PACKAGE_EXTENSION,
-    MintPolicy,
-    TokenName,
-    TokenPolicyManager,
 };
+use miden_client::account::standards::auth::AuthSingleSig;
+use miden_client::account::standards::faucets::{FungibleFaucet, TokenName};
+use miden_client::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -24,7 +22,7 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::keystore::Keystore;
 use miden_client::utils::Deserializable;
@@ -854,16 +852,16 @@ fn process_packages(
 mod tests {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
-        BasicWallet,
         FeltSchema,
         SchemaType,
         StorageSchema,
         StorageSlotSchema,
-        TokenName,
         ValueSlotSchema,
         WordSchema,
         WordValue,
     };
+    use miden_client::account::standards::faucets::TokenName;
+    use miden_client::account::standards::wallets::BasicWallet;
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
     use miden_client::utils::Serializable;

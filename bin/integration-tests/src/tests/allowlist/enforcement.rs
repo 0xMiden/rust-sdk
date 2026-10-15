@@ -10,7 +10,6 @@ use super::invitations::create_invitation_code;
 use super::{
     assert_rejected_before_submission,
     insert_unfunded_wallet,
-    is_deployed,
     registered_deploy_request,
     service_funded_deploy_request,
 };
@@ -25,7 +24,6 @@ pub async fn test_allowlist_registered_account_can_deploy(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
     let account = insert_unfunded_wallet(&mut client, Some(&invitation_code))
@@ -40,7 +38,7 @@ pub async fn test_allowlist_registered_account_can_deploy(
     client.wait_for_tx(transaction_id).await?;
 
     assert!(
-        is_deployed(&client, &account).await?,
+        client.is_deployed(account.id()).await?,
         "a registered account should have been created on chain"
     );
 
@@ -55,7 +53,6 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let account = insert_unfunded_wallet(&mut client, None).await?;
     // The account can pay the fee, so the only thing that stops the deploy is the allowlist.
@@ -67,7 +64,7 @@ pub async fn test_allowlist_unregistered_account_is_rejected(
     assert_rejected_before_submission(&error, &account);
 
     assert!(
-        !is_deployed(&client, &account).await?,
+        !client.is_deployed(account.id()).await?,
         "a rejected account should not have been created on chain"
     );
 
@@ -85,7 +82,6 @@ pub async fn test_allowlist_network_account_needs_no_registration(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let account = add_network_counter_contract(&mut client, &[]).await?;
 
@@ -97,7 +93,7 @@ pub async fn test_allowlist_network_account_needs_no_registration(
     client.wait_for_tx(transaction_id).await?;
 
     assert!(
-        is_deployed(&client, &account).await?,
+        client.is_deployed(account.id()).await?,
         "a network account should have been created on chain without registration"
     );
 
@@ -111,7 +107,6 @@ pub async fn test_allowlist_network_account_needs_no_registration(
 /// opening transaction of a batch.
 pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let invitation_code = create_invitation_code().await?;
     let registered = insert_unfunded_wallet(&mut client, Some(&invitation_code))
@@ -134,12 +129,12 @@ pub async fn test_allowlist_is_enforced_per_batch(client_config: ClientConfig) -
     assert_rejected_before_submission(&error, &unregistered);
 
     assert!(
-        !is_deployed(&client, &unregistered).await?,
+        !client.is_deployed(unregistered.id()).await?,
         "the unregistered account should not have been created on chain"
     );
     // The batch is refused as a whole, so the registered account is not created either.
     assert!(
-        !is_deployed(&client, &registered).await?,
+        !client.is_deployed(registered.id()).await?,
         "the rejected batch should not have created the registered account"
     );
 

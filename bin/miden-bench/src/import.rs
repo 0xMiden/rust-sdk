@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::testing::common::TestClient;
 use miden_client::{Client, Serializable};
 
 use crate::report::format_size;
@@ -12,11 +13,7 @@ use crate::report::format_size;
 /// Imports an account from a `.mac` file. The file is read with [`AccountFile::read`], the auth
 /// secret keys are inserted into the filesystem keystore, and the account is added to the client's
 /// store. Fails if the account already exists in the store.
-pub async fn import_from_file(
-    client: &mut Client<FilesystemKeyStore>,
-    store_path: &Path,
-    filename: &Path,
-) -> anyhow::Result<()> {
+pub async fn import_from_file(client: &mut TestClient, filename: &Path) -> anyhow::Result<()> {
     let file_size = std::fs::metadata(filename)?.len() as usize;
 
     println!("Importing account from {}...", filename.display());
@@ -26,11 +23,8 @@ pub async fn import_from_file(
     let (account, auth_secret_keys) = account_file.into_parts();
     let account_id = account.id();
 
-    let keystore_path = store_path.join("keystore");
-    let keystore = FilesystemKeyStore::new(keystore_path)
-        .map_err(|e| anyhow::anyhow!("Failed to create keystore: {e}"))?;
     for key in auth_secret_keys {
-        keystore.add_key(&key, account_id).await?;
+        client.keystore().add_key(&key, account_id).await?;
     }
 
     client.add_account(&account, false).await?;

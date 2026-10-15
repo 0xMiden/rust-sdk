@@ -28,6 +28,8 @@ use miden_client_integration_tests::funding;"#;
 const TOKIO_TEST_WRAPPER: &str = r#"/// Auto-generated tokio test wrapper for {ORIGINAL_FUNCTION_NAME}
 #[tokio::test]
 async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
+    miden_client_integration_tests::init_tracing();
+
     // ClientConfig::default() resolves TEST_MIDEN_NETWORK, TEST_MIDEN_RPC_URL,
     // TEST_MIDEN_PROVER_URL, TEST_MIDEN_NOTE_TRANSPORT_URL, and MIDEN_TEST_TIMEOUT.
     // Note transport is cleared here to avoid eager gRPC connections for every test;
@@ -248,6 +250,7 @@ fn parse_test_function_name(line: &str) -> Option<String> {
 ///   (default: derived from network)
 /// - `TEST_MIDEN_NOTE_TRANSPORT_URL` - Used by transport tests directly (not in generated wrappers)
 /// - `MIDEN_TEST_TIMEOUT` - Test timeout in milliseconds (default: 10000)
+/// - `RUST_LOG` - Filters the `tracing` output of the tests (default: info)
 fn generate_integration_tests(test_cases: &[TestCaseInfo]) -> String {
     let mut result = String::new();
 

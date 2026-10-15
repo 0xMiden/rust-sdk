@@ -60,9 +60,9 @@ std = [
   "miden-processor/std",
   "miden-protocol/std",
   "miden-tx/std",
-  "tonic/tls-native-roots",
-  "tonic/tls-ring",
-  "tonic/transport",
+  "tonic?/tls-native-roots",
+  "tonic?/tls-ring",
+  "tonic?/transport",
 ]
 testing = [
   "dep:miden-testing",
@@ -72,7 +72,7 @@ testing = [
   "miden-standards/testing",
   "miden-tx/testing",
 ]
-tonic = []
+tonic = ["dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
 
 [dependencies]
 # Miden dependencies
@@ -101,9 +101,9 @@ serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }
-tonic        = { features = ["codegen"], workspace = true }
-tonic-health = { version = "0.14" }
-tonic-prost  = { version = "0.14" }
+tonic        = { features = ["codegen"], optional = true, workspace = true }
+tonic-health = { optional = true, version = "0.14" }
+tonic-prost  = { optional = true, version = "0.14" }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
@@ -111,7 +111,7 @@ uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = 
 getrandom             = { features = ["wasm_js"], version = "0.3" }
 gloo-timers           = { features = ["futures"], version = "0.3" }
 tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
-tonic-web-wasm-client = { default-features = false, version = "0.9" }
+tonic-web-wasm-client = { default-features = false, optional = true, version = "0.9" }
 
 [build-dependencies]
 miden-node-proto-build = { workspace = true }

@@ -286,8 +286,7 @@ async fn dispatch_command(
 ) {
     match command {
         Command::Deploy(deploy_args) => {
-            let result =
-                Box::pin(deploy::deploy_account(client, &store_path, deploy_args.maps)).await;
+            let result = Box::pin(deploy::deploy_account(client, deploy_args.maps)).await;
 
             match result {
                 Ok(account_id) => {
@@ -353,7 +352,7 @@ async fn dispatch_command(
         Command::Import(import_args) => {
             let result = match (import_args.filename, import_args.account_id) {
                 (Some(filename), None) => {
-                    Box::pin(import::import_from_file(client, &store_path, &filename)).await
+                    Box::pin(import::import_from_file(client, &filename)).await
                 },
                 (None, Some(account_id)) => {
                     Box::pin(import::import_from_network(client, &account_id)).await
@@ -369,7 +368,6 @@ async fn dispatch_command(
         Command::Export(export_args) => {
             let result = Box::pin(export::export_account(
                 client,
-                &store_path,
                 &export_args.account_id,
                 export_args.filename,
             ))

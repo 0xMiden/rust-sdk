@@ -33,7 +33,6 @@ pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig)
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 =
         client_config.clone().with_note_transport_endpoint(None).into_client().await?;
-    client_2.wait_for_node().await;
 
     let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
     let basic_wallet = client_2.insert_wallet(AccountType::Private).await?;
@@ -98,7 +97,6 @@ pub async fn test_input_note_tag_lifecycle(client_config: ClientConfig) -> Resul
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 =
         client_config.clone().with_note_transport_endpoint(None).into_client().await?;
-    client_1.wait_for_node().await;
 
     let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
     let wallet_a = client_1.insert_wallet(AccountType::Private).await?;

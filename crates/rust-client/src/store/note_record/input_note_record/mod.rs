@@ -248,6 +248,47 @@ impl InputNoteRecord {
     // TRANSITIONS
     // ================================================================================================
 
+    /// Applies an inclusion proof and its authenticated block header. Keeps a processing note held
+    /// by its transaction. Returns `true` if the state changes.
+    pub(crate) fn inclusion_received(
+        &mut self,
+        inclusion_proof: NoteInclusionProof,
+        metadata: NoteMetadata,
+        block_header: &BlockHeader,
+    ) -> Result<bool, NoteRecordError> {
+        if let InputNoteState::ProcessingUnauthenticated(state) = &self.state {
+            if state.metadata != metadata {
+                return Err(NoteRecordError::StateTransitionError(
+                    "Metadata does not match the processing note".to_string(),
+                ));
+            }
+
+            let unverified: InputNoteState =
+                UnverifiedNoteState { metadata, inclusion_proof }.into();
+            let note_id = NoteId::new(self.details_commitment(), &metadata);
+            let Some(InputNoteState::Committed(committed)) =
+                unverified.block_header_received(note_id, block_header)?
+            else {
+                return Err(NoteRecordError::StateTransitionError(
+                    "Inclusion proof does not authenticate the processing note".to_string(),
+                ));
+            };
+
+            self.state = ProcessingAuthenticatedNoteState {
+                metadata: committed.metadata,
+                inclusion_proof: committed.inclusion_proof,
+                block_note_root: committed.block_note_root,
+                submission_data: state.submission_data,
+            }
+            .into();
+            return Ok(true);
+        }
+
+        let mut changed = self.inclusion_proof_received(inclusion_proof, metadata)?;
+        changed |= self.block_header_received(block_header)?;
+        Ok(changed)
+    }
+
     /// Modifies the state of the note record to reflect that the it has received an inclusion
     /// proof. It is assumed to be unverified until the block header information is received.
     /// Returns `true` if the state was changed.
@@ -349,6 +390,22 @@ impl InputNoteRecord {
             Ok(false)
         }
     }
+
+    /// Modifies the state of the note record to reflect that the transaction consuming the note was
+    /// discarded, making the note available again. Only a note being processed by that transaction
+    /// is affected. Returns `true` if the state was changed.
+    pub(crate) fn transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<bool, NoteRecordError> {
+        let new_state = self.state.transaction_discarded(transaction_id)?;
+        if let Some(new_state) = new_state {
+            self.state = new_state;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 // SERIALIZATION
@@ -413,25 +470,25 @@ impl From<InputNote> for InputNoteRecord {
     }
 }
 
-impl TryInto<InputNote> for InputNoteRecord {
+impl TryFrom<InputNoteRecord> for InputNote {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<InputNote, Self::Error> {
-        match (self.metadata(), self.inclusion_proof()) {
+    fn try_from(record: InputNoteRecord) -> Result<Self, Self::Error> {
+        match (record.metadata(), record.inclusion_proof()) {
             (Some(metadata), Some(inclusion_proof)) => Ok(InputNote::authenticated(
                 Note::with_attachments(
-                    self.details.assets().clone(),
+                    record.details.assets().clone(),
                     *metadata.partial_metadata(),
-                    self.details.recipient().clone(),
-                    self.attachments.clone(),
+                    record.details.recipient().clone(),
+                    record.attachments.clone(),
                 ),
                 inclusion_proof.clone(),
             )),
             (Some(metadata), None) => Ok(InputNote::unauthenticated(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             ))),
             _ => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -440,16 +497,16 @@ impl TryInto<InputNote> for InputNoteRecord {
     }
 }
 
-impl TryInto<Note> for InputNoteRecord {
+impl TryFrom<InputNoteRecord> for Note {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<Note, Self::Error> {
-        match self.metadata() {
+    fn try_from(record: InputNoteRecord) -> Result<Self, Self::Error> {
+        match record.metadata() {
             Some(metadata) => Ok(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             )),
             None => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -458,16 +515,16 @@ impl TryInto<Note> for InputNoteRecord {
     }
 }
 
-impl TryInto<Note> for &InputNoteRecord {
+impl TryFrom<&InputNoteRecord> for Note {
     type Error = NoteRecordError;
 
-    fn try_into(self) -> Result<Note, Self::Error> {
-        match self.metadata() {
+    fn try_from(record: &InputNoteRecord) -> Result<Self, Self::Error> {
+        match record.metadata() {
             Some(metadata) => Ok(Note::with_attachments(
-                self.details.assets().clone(),
+                record.details.assets().clone(),
                 *metadata.partial_metadata(),
-                self.details.recipient().clone(),
-                self.attachments.clone(),
+                record.details.recipient().clone(),
+                record.attachments.clone(),
             )),
             None => Err(NoteRecordError::ConversionError(
                 "Input Note Record does not contain metadata".to_string(),
@@ -479,5 +536,50 @@ impl TryInto<Note> for &InputNoteRecord {
 impl From<InputNoteRecord> for NoteDetails {
     fn from(value: InputNoteRecord) -> Self {
         value.details
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_protocol::Word;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::note::{Note, NoteAttachments, NoteDetails};
+    use miden_protocol::transaction::InputNote;
+
+    use super::{ExpectedNoteState, InputNoteRecord};
+
+    #[test]
+    fn record_converts_into_a_note_through_try_from() {
+        let note = Note::mock_noop(Word::from([1u32, 2, 3, 4]));
+        let record = InputNoteRecord::from(note.clone());
+
+        assert_eq!(Note::try_from(&record).unwrap(), note);
+        assert_eq!(
+            InputNote::try_from(record.clone()).unwrap(),
+            InputNote::unauthenticated(note.clone())
+        );
+        assert_eq!(Note::try_from(record).unwrap(), note);
+    }
+
+    #[test]
+    fn record_without_metadata_does_not_convert_into_a_note() {
+        let note = Note::mock_noop(Word::from([1u32, 2, 3, 4]));
+        let state = ExpectedNoteState {
+            metadata: None,
+            after_block_num: BlockNumber::from(0),
+            tag: None,
+        };
+        let record = InputNoteRecord::new(
+            NoteDetails::from(note),
+            NoteAttachments::empty(),
+            None,
+            state.into(),
+        );
+
+        assert!(Note::try_from(&record).is_err());
+        assert!(InputNote::try_from(record).is_err());
     }
 }

@@ -122,7 +122,7 @@ impl ClientConfig {
         Ok(self.with_fee_funder(fee_funder))
     }
 
-    /// Creates a `TestClient` without syncing it, for tests that have to wait for the node first.
+    /// Creates a `TestClient` without a state sync.
     ///
     /// The client gets its own store and keystore, the latter reachable through
     /// `TestClient::keystore`. The store is a `SQLite` database at a temporary location, and the
@@ -155,12 +155,8 @@ impl ClientConfig {
 
         if let Some(transport) = &self.note_transport_endpoint {
             let transport_url = transport.to_url();
-            let transport_timeout = std::env::var("MIDEN_TEST_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(10_000);
             let nt_client =
-                Arc::new(GrpcNoteTransportClient::new(transport_url.clone(), transport_timeout));
+                Arc::new(GrpcNoteTransportClient::new(transport_url.clone(), self.rpc_timeout_ms));
             builder = builder.note_transport(nt_client);
         }
 

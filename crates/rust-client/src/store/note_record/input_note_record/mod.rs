@@ -248,6 +248,47 @@ impl InputNoteRecord {
     // TRANSITIONS
     // ================================================================================================
 
+    /// Applies an inclusion proof and its authenticated block header. Keeps a processing note held
+    /// by its transaction. Returns `true` if the state changes.
+    pub(crate) fn inclusion_received(
+        &mut self,
+        inclusion_proof: NoteInclusionProof,
+        metadata: NoteMetadata,
+        block_header: &BlockHeader,
+    ) -> Result<bool, NoteRecordError> {
+        if let InputNoteState::ProcessingUnauthenticated(state) = &self.state {
+            if state.metadata != metadata {
+                return Err(NoteRecordError::StateTransitionError(
+                    "Metadata does not match the processing note".to_string(),
+                ));
+            }
+
+            let unverified: InputNoteState =
+                UnverifiedNoteState { metadata, inclusion_proof }.into();
+            let note_id = NoteId::new(self.details_commitment(), &metadata);
+            let Some(InputNoteState::Committed(committed)) =
+                unverified.block_header_received(note_id, block_header)?
+            else {
+                return Err(NoteRecordError::StateTransitionError(
+                    "Inclusion proof does not authenticate the processing note".to_string(),
+                ));
+            };
+
+            self.state = ProcessingAuthenticatedNoteState {
+                metadata: committed.metadata,
+                inclusion_proof: committed.inclusion_proof,
+                block_note_root: committed.block_note_root,
+                submission_data: state.submission_data,
+            }
+            .into();
+            return Ok(true);
+        }
+
+        let mut changed = self.inclusion_proof_received(inclusion_proof, metadata)?;
+        changed |= self.block_header_received(block_header)?;
+        Ok(changed)
+    }
+
     /// Modifies the state of the note record to reflect that the it has received an inclusion
     /// proof. It is assumed to be unverified until the block header information is received.
     /// Returns `true` if the state was changed.
@@ -342,6 +383,22 @@ impl InputNoteRecord {
         block_height: BlockNumber,
     ) -> Result<bool, NoteRecordError> {
         let new_state = self.state.transaction_committed(transaction_id, block_height)?;
+        if let Some(new_state) = new_state {
+            self.state = new_state;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Modifies the state of the note record to reflect that the transaction consuming the note was
+    /// discarded, making the note available again. Only a note being processed by that transaction
+    /// is affected. Returns `true` if the state was changed.
+    pub(crate) fn transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<bool, NoteRecordError> {
+        let new_state = self.state.transaction_discarded(transaction_id)?;
         if let Some(new_state) = new_state {
             self.state = new_state;
             Ok(true)

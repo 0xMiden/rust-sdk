@@ -8,6 +8,10 @@
 * [FEATURE][cli] When the fee token faucet has asset callbacks, the first command after the first sync adds the faucet as a watched account one time and keeps its state and account witness up to date. A transaction that pays a fee then reads the faucet from the store and does not fetch it from the node ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
 * [FEATURE][rust] Re-exported `MAX_INPUT_NOTES_PER_TX`, the largest number of input notes in one transaction ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
 
+### Fixes
+
+* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+
 ## 0.18.0 (2026-10-27)
 
 ### Breaking Changes

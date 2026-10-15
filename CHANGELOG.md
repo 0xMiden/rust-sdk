@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust] `miden-client-proto` encodes `TransactionRequest`, `TransactionResult`, `TransactionStoreUpdate`, `SyncSummary` and `ChainAnchor`, with the note records, the note update tracker and note tag records they contain. Its new `testing` feature also encodes `MockNoteTransportNode`. Added the constructors and accessors these encodings need: `TransactionRequest::from_parts` with `TransactionRequestParts`, `TransactionRequest::input_notes_args`, `explicit_input_notes` and `expiration_delta`, `NoteUpdateTracker::from_parts` with its index accessors, `InputNoteUpdate::from_parts`, `OutputNoteUpdate::from_parts`, and `MockNoteTransportNode::from_parts` with its state accessors ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
 
 ### Breaking Changes
@@ -24,6 +25,7 @@
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `PswapLineageRecord`, `RpcLimits`, `TransactionEncryptionKey`, `TransactionDetails`, `TransactionStatus`, `DiscardCause` and `TransportNote` ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of the remaining client types, among them `TransactionRequest`, `TransactionResult`, `TransactionStoreUpdate`, `SyncSummary`, `ChainAnchor`, `NoteTagSource`, `FaucetMetadata`, `MockNoteTransportNode` and the input and output note records and their states ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 * [BREAKING][param][rust] `Client::set_setting` takes the value as `Vec<u8>` and `Client::get_setting` returns `Option<Vec<u8>>`, so the caller encodes the value ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][type][rust] Added the `TransactionRequestError::UnknownExplicitInputNote` variant, which `TransactionRequest::from_parts` returns for an explicit input note that is not one of the input notes ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ### Features
 

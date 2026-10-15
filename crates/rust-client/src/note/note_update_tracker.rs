@@ -87,6 +87,12 @@ pub struct InputNoteUpdate {
 }
 
 impl InputNoteUpdate {
+    /// Creates an [`InputNoteUpdate`] of `note` with `update_type`. An encoder uses this to rebuild
+    /// an update that it encoded in its own format.
+    pub fn from_parts(note: InputNoteRecord, update_type: NoteUpdateType) -> Self {
+        Self { note, update_type }
+    }
+
     /// Creates a new [`InputNoteUpdate`] with the provided note with a `None` update type.
     fn new_none(note: InputNoteRecord) -> Self {
         Self { note, update_type: NoteUpdateType::None }
@@ -163,6 +169,12 @@ pub struct OutputNoteUpdate {
 }
 
 impl OutputNoteUpdate {
+    /// Creates an [`OutputNoteUpdate`] of `note` with `update_type`. An encoder uses this to
+    /// rebuild an update that it encoded in its own format.
+    pub fn from_parts(note: OutputNoteRecord, update_type: NoteUpdateType) -> Self {
+        Self { note, update_type }
+    }
+
     /// Creates a new [`OutputNoteUpdate`] with the provided note with a `None` update type.
     fn new_none(note: OutputNoteRecord) -> Self {
         Self { note, update_type: NoteUpdateType::None }
@@ -260,6 +272,69 @@ impl NoteUpdateTracker {
         }
 
         tracker
+    }
+
+    /// Creates a [`NoteUpdateTracker`] from all of its parts. An encoder uses this to rebuild a
+    /// tracker that it encoded in its own format.
+    ///
+    /// The indices are taken as they are, because a tracker keeps index entries that its records do
+    /// not imply, such as the id of a note that was consumed externally.
+    pub fn from_parts(
+        input_notes: impl IntoIterator<Item = InputNoteUpdate>,
+        output_notes: impl IntoIterator<Item = OutputNoteUpdate>,
+        nullifier_order: BTreeMap<Nullifier, u32>,
+        input_notes_by_id: BTreeMap<NoteId, NoteDetailsCommitment>,
+        input_notes_by_nullifier: BTreeMap<Nullifier, NoteDetailsCommitment>,
+    ) -> Self {
+        let input_notes = input_notes
+            .into_iter()
+            .map(|update| (update.note.details_commitment(), update))
+            .collect();
+        let output_notes: BTreeMap<NoteId, OutputNoteUpdate> =
+            output_notes.into_iter().map(|update| (update.note.id(), update)).collect();
+        // Output notes always carry metadata, so this index follows from the records.
+        let output_notes_by_nullifier = output_notes
+            .iter()
+            .filter_map(|(note_id, update)| {
+                update.inner().nullifier().map(|nullifier| (nullifier, *note_id))
+            })
+            .collect();
+
+        Self {
+            input_notes,
+            output_notes,
+            input_notes_by_nullifier,
+            input_notes_by_id,
+            output_notes_by_nullifier,
+            nullifier_order,
+        }
+    }
+
+    /// Returns every input note update, including the notes that the tracker holds without a
+    /// change.
+    pub fn input_note_updates(&self) -> impl Iterator<Item = &InputNoteUpdate> {
+        self.input_notes.values()
+    }
+
+    /// Returns every output note update, including the notes that the tracker holds without a
+    /// change.
+    pub fn output_note_updates(&self) -> impl Iterator<Item = &OutputNoteUpdate> {
+        self.output_notes.values()
+    }
+
+    /// Returns the index from nullifier to the details commitment of the input note.
+    pub fn input_notes_by_nullifier(&self) -> &BTreeMap<Nullifier, NoteDetailsCommitment> {
+        &self.input_notes_by_nullifier
+    }
+
+    /// Returns the index from note id to the details commitment of the input note.
+    pub fn input_notes_by_id(&self) -> &BTreeMap<NoteId, NoteDetailsCommitment> {
+        &self.input_notes_by_id
+    }
+
+    /// Returns the position of each nullifier in the consuming transaction order of its account.
+    pub fn nullifier_order(&self) -> &BTreeMap<Nullifier, u32> {
+        &self.nullifier_order
     }
 
     /// Creates a [`NoteUpdateTracker`] for updates related to transactions.

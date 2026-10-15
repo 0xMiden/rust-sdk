@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+// Sync values. Field numbers are part of the encoded format, so a released number must keep its
+// meaning. Add fields, do not renumber or reuse them.
+package client.sync;
+
+import "account.proto";
+import "block_number.proto";
+import "primitives.proto";
+
+// A note tag that the client tracks, with the reason it tracks the tag.
+message NoteTagRecord {
+  // The user added the tag.
+  message User {}
+
+  fixed32 tag = 1;
+  oneof source {
+    // Tag of an address of a tracked native account.
+    account.AccountId account = 2;
+    // Upstream encoding of the details commitment of a tracked expected note.
+    bytes note = 3;
+    User user = 4;
+    // Key of a long-lived subscription.
+    primitives.Word subscription = 5;
+  }
+}
+
+// What a state sync changed.
+message SyncSummary {
+  blockchain.BlockNumber block_num = 1;
+  repeated primitives.Word new_public_notes = 2;
+  repeated primitives.Word new_private_notes = 3;
+  repeated primitives.Word committed_notes = 4;
+  repeated primitives.Word consumed_notes = 5;
+  repeated account.AccountId updated_accounts = 6;
+  repeated account.AccountId locked_accounts = 7;
+  repeated primitives.Word committed_transactions = 8;
+}

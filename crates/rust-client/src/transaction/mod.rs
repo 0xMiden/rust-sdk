@@ -152,6 +152,7 @@ pub use request::{
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionRequestParts,
     TransactionScriptTemplate,
     build_fpi_script,
 };

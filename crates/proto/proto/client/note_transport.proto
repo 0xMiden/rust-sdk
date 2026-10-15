@@ -4,6 +4,8 @@ syntax = "proto3";
 // keep its meaning. Add fields, do not renumber or reuse them.
 package client.note_transport;
 
+import "block_number.proto";
+
 // Position in the stored-note sequence of the note transport service.
 message NoteTransportCursor {
   message Position {
@@ -23,4 +25,33 @@ message NoteTransportCursors {
   }
 
   repeated Entry entries = 1;
+}
+
+// A note that the note transport service stores.
+message NoteInfo {
+  // Upstream encoding of the note header.
+  bytes header = 1;
+  // Upstream encoding of the note details.
+  bytes details = 2;
+  // Block from which the recipient scans for the note. Absent means the default window.
+  blockchain.BlockNumber block_hint = 3;
+}
+
+// State of the mock note transport service.
+message MockNoteTransportNode {
+  // A stored note with its cursor.
+  message Entry {
+    NoteInfo note = 1;
+    NoteTransportCursor cursor = 2;
+  }
+
+  // The stored notes of one tag.
+  message TagNotes {
+    fixed32 tag = 1;
+    repeated Entry notes = 2;
+  }
+
+  repeated TagNotes notes = 1;
+  uint64 nonce = 2;
+  uint64 next_sequence = 3;
 }

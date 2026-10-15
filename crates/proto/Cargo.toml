@@ -13,6 +13,10 @@ version.workspace      = true
 crate-type = ["lib"]
 doctest    = false
 
+[features]
+# Encodes the testing types of miden-client, such as the mock note transport node.
+testing = ["miden-client/testing"]
+
 [dependencies]
 # Miden dependencies
 miden-client   = { workspace = true }

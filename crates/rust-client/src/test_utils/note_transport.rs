@@ -46,6 +46,38 @@ impl MockNoteTransportNode {
         }
     }
 
+    /// Builds a mock from the state that [`Self::notes`], [`Self::nonce`] and
+    /// [`Self::next_sequence`] return. An encoder uses this to rebuild a mock that it encoded in
+    /// its own format. The batch cap and the proven notes are not part of that state.
+    pub fn from_parts(
+        notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
+        nonce: u64,
+        next_sequence: u64,
+    ) -> Self {
+        Self {
+            notes,
+            nonce,
+            next_sequence,
+            max_batch: None,
+            proven_notes: BTreeMap::default(),
+        }
+    }
+
+    /// Returns the stored notes of each tag with their cursors.
+    pub fn notes(&self) -> &BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>> {
+        &self.notes
+    }
+
+    /// Returns the nonce of the mock.
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Returns the sequence number that the next stored note gets.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
     /// Build a mock that caps each `get_notes` response at `max_batch` entries.
     pub fn with_max_batch(max_batch: usize) -> Self {
         Self {

@@ -11,15 +11,17 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use miden_client::store::StoreError;
-use miden_client::utils::DeserializationError;
+use miden_client::utils::{Deserializable, DeserializationError};
 use miden_objects::ConversionError;
 
 mod input_note;
 mod note_transport;
+mod note_update;
 mod output_note;
 mod protocol;
 mod pswap;
 mod rpc;
+mod sync;
 mod transaction;
 
 pub use output_note::{
@@ -45,6 +47,9 @@ mod generated {
     pub mod note_transport {
         include!(concat!(env!("OUT_DIR"), "/client.note_transport.rs"));
     }
+    pub mod note_update {
+        include!(concat!(env!("OUT_DIR"), "/client.note_update.rs"));
+    }
     pub mod output_note {
         include!(concat!(env!("OUT_DIR"), "/client.output_note.rs"));
     }
@@ -57,16 +62,21 @@ mod generated {
     pub mod rpc {
         include!(concat!(env!("OUT_DIR"), "/client.rpc.rs"));
     }
+    pub mod sync {
+        include!(concat!(env!("OUT_DIR"), "/client.sync.rs"));
+    }
     pub mod transaction {
         include!(concat!(env!("OUT_DIR"), "/client.transaction.rs"));
     }
 }
 pub use generated::input_note::*;
 pub use generated::note_transport::*;
+pub use generated::note_update::*;
 pub use generated::output_note::*;
 pub use generated::protocol::*;
 pub use generated::pswap::*;
 pub use generated::rpc::*;
+pub use generated::sync::*;
 pub use generated::transaction::*;
 
 // PROTOBUF VALUE
@@ -143,6 +153,11 @@ impl From<ProtoDecodeError> for StoreError {
 
 // HELPERS
 // ================================================================================================
+
+/// Decodes a value of an upstream type from its upstream encoding.
+pub(crate) fn read_upstream<T: Deserializable>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
+    T::read_from_bytes(bytes).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+}
 
 /// Returns a required field, or an error that names it.
 pub(crate) fn required<T>(

@@ -102,3 +102,13 @@ message NoteSubmissionData {
   account.AccountId consumer_account = 2;
   .transaction.TransactionId consumer_transaction = 3;
 }
+
+// A note the client tracks as an input note.
+message InputNoteRecord {
+  // Upstream encoding of the note details.
+  bytes details = 1;
+  note.NoteAttachments attachments = 2;
+  // Time at which the client started to track the note, in seconds since the Unix epoch.
+  optional uint64 created_at = 3;
+  InputNoteState state = 4;
+}

@@ -5,9 +5,13 @@ syntax = "proto3";
 package client.transaction;
 
 import "account.proto";
+import "block.proto";
 import "block_number.proto";
 import "primitives.proto";
 import "transaction.proto";
+import "client/note_update.proto";
+import "client/protocol.proto";
+import "client/sync.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -57,4 +61,106 @@ message TransactionDetails {
   blockchain.BlockNumber expiration_block_num = 8;
   // Time at which the client created the transaction, in seconds since the Unix epoch.
   uint64 creation_timestamp = 9;
+}
+
+// A note that a later transaction creates.
+message FutureNote {
+  // Upstream encoding of the note details.
+  bytes details = 1;
+  fixed32 tag = 2;
+}
+
+// An executed transaction with the notes that later transactions create from it.
+message TransactionResult {
+  // Upstream encoding of the executed transaction.
+  bytes executed_transaction = 1;
+  repeated FutureNote future_notes = 2;
+}
+
+// The changes that a transaction gives to the store.
+message TransactionStoreUpdate {
+  // Upstream encoding of the executed transaction.
+  bytes executed_transaction = 1;
+  blockchain.BlockNumber submission_height = 2;
+  repeated FutureNote future_notes = 3;
+  note_update.NoteUpdateTracker note_updates = 4;
+  repeated sync.NoteTagRecord new_tags = 5;
+}
+
+// Storage map entries to fetch with a foreign account.
+message AccountStorageRequirements {
+  // Keys to fetch from one storage slot. No keys request every entry of the slot.
+  message Slot {
+    string name = 1;
+    repeated primitives.Word keys = 2;
+  }
+
+  repeated Slot slots = 1;
+}
+
+// An account that a transaction reads through a foreign procedure call.
+message ForeignAccount {
+  // A public account that the client fetches at execution time.
+  message Public {
+    account.AccountId account_id = 1;
+    AccountStorageRequirements storage_requirements = 2;
+  }
+
+  oneof account {
+    Public public = 1;
+    // Upstream encoding of the partial account of a private account.
+    bytes private = 2;
+    // Upstream encoding of the account inputs that the caller supplies.
+    bytes prefetched = 3;
+  }
+}
+
+// A request for a transaction that an account executes.
+message TransactionRequest {
+  // An input note id with its optional argument.
+  message NoteArgs {
+    primitives.Word note_id = 1;
+    primitives.Word args = 2;
+  }
+
+  // Output notes that the transaction script creates.
+  message SendNotes {
+    // Upstream encoding of each partial note.
+    repeated bytes notes = 1;
+  }
+
+  repeated blockchain.BlockNumber block_numbers = 1;
+  // Upstream encoding of each input note, in consumption order.
+  repeated bytes input_notes = 2;
+  repeated NoteArgs input_notes_args = 3;
+  // Upstream encoding of each input note whose consumption mode the request pins.
+  repeated bytes explicit_input_notes = 4;
+  oneof script_template {
+    protocol.TransactionScript custom_script = 5;
+    SendNotes send_notes = 6;
+  }
+  // Upstream encoding of each expected output note recipient.
+  repeated bytes expected_output_recipients = 7;
+  repeated FutureNote expected_future_notes = 8;
+  // Upstream encoding of the advice map.
+  bytes advice_map = 9;
+  // Upstream encoding of the Merkle store.
+  bytes merkle_store = 10;
+  repeated ForeignAccount foreign_accounts = 11;
+  optional uint32 expiration_delta = 12;
+  bool ignore_invalid_input_notes = 13;
+  primitives.Word script_arg = 14;
+  primitives.Word auth_arg = 15;
+  primitives.Word fee_conversion_salt = 16;
+  repeated protocol.NoteScript expected_ntx_scripts = 17;
+  // Upstream encoding of the account code upgrade.
+  optional bytes account_code_upgrade = 18;
+}
+
+// A reference block with a partial blockchain that is consistent with it.
+message ChainAnchor {
+  blockchain.BlockHeader header = 1;
+  // Upstream encoding of the partial MMR of the chain.
+  bytes partial_mmr = 2;
+  repeated blockchain.BlockHeader blocks = 3;
 }

@@ -143,7 +143,103 @@ pub struct TransactionRequest {
     account_code_upgrade: Option<AccountCodeUpgrade>,
 }
 
+/// All the parts of a [`TransactionRequest`]. An encoder uses this to rebuild a request that it
+/// encoded in its own format, with [`TransactionRequest::from_parts`].
+#[derive(Clone, Debug)]
+pub struct TransactionRequestParts {
+    /// Blocks that the transaction must be able to authenticate.
+    pub block_numbers: BTreeSet<BlockNumber>,
+    /// Notes that the transaction consumes, in consumption order.
+    pub input_notes: Vec<Note>,
+    /// The id and the optional argument of each input note, in consumption order.
+    pub input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
+    /// Input notes whose consumption mode the request pins.
+    pub explicit_input_notes: Vec<InputNote>,
+    /// Template for the transaction script.
+    pub script_template: Option<TransactionScriptTemplate>,
+    /// Recipients of the output notes that the transaction creates.
+    pub expected_output_recipients: Vec<NoteRecipient>,
+    /// Details and tags of the notes that later transactions create.
+    pub expected_future_notes: Vec<(NoteDetails, NoteTag)>,
+    /// Initial state of the advice map.
+    pub advice_map: AdviceMap,
+    /// Initial state of the Merkle store.
+    pub merkle_store: MerkleStore,
+    /// Foreign accounts that the transaction reads.
+    pub foreign_accounts: Vec<ForeignAccount>,
+    /// Number of blocks after the reference block at which the transaction expires.
+    pub expiration_delta: Option<u16>,
+    /// Whether the transaction skips the input notes that are not valid.
+    pub ignore_invalid_input_notes: bool,
+    /// Word that goes on the stack before the transaction script runs.
+    pub script_arg: Option<Word>,
+    /// Word that goes on the stack for the authentication procedure.
+    pub auth_arg: Option<Word>,
+    /// Salt of the native fee conversion info.
+    pub fee_conversion_salt: Option<Word>,
+    /// Note scripts that the network transaction builder needs.
+    pub expected_ntx_scripts: Vec<NoteScript>,
+    /// New code of the executing account.
+    pub account_code_upgrade: Option<AccountCodeUpgrade>,
+}
+
 impl TransactionRequest {
+    // CONSTRUCTORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Builds a request from all of its parts and checks the invariants of a request.
+    ///
+    /// The first foreign account for an account ID wins.
+    ///
+    /// # Errors
+    /// - If an explicit input note is not one of the input notes.
+    /// - If a note appears more than once among the input notes.
+    pub fn from_parts(parts: TransactionRequestParts) -> Result<Self, TransactionRequestError> {
+        let mut explicit_input_notes = BTreeMap::new();
+        for input_note in parts.explicit_input_notes {
+            if !parts.input_notes.contains(input_note.note()) {
+                return Err(TransactionRequestError::UnknownExplicitInputNote(input_note.id()));
+            }
+            explicit_input_notes.insert(input_note.id(), input_note);
+        }
+
+        let mut foreign_accounts = BTreeMap::new();
+        for foreign_account in parts.foreign_accounts {
+            foreign_accounts.entry(foreign_account.account_id()).or_insert(foreign_account);
+        }
+
+        let request = Self {
+            block_numbers: parts.block_numbers,
+            input_notes: parts.input_notes,
+            input_notes_args: parts.input_notes_args,
+            explicit_input_notes,
+            script_template: parts.script_template,
+            expected_output_recipients: parts
+                .expected_output_recipients
+                .into_iter()
+                .map(|recipient| (recipient.digest(), recipient))
+                .collect(),
+            expected_future_notes: parts
+                .expected_future_notes
+                .into_iter()
+                .map(|note| (note.0.commitment(), note))
+                .collect(),
+            advice_map: parts.advice_map,
+            merkle_store: parts.merkle_store,
+            foreign_accounts,
+            expiration_delta: parts.expiration_delta,
+            ignore_invalid_input_notes: parts.ignore_invalid_input_notes,
+            script_arg: parts.script_arg,
+            auth_arg: parts.auth_arg,
+            fee_conversion_salt: parts.fee_conversion_salt,
+            expected_ntx_scripts: parts.expected_ntx_scripts,
+            account_code_upgrade: parts.account_code_upgrade,
+        };
+        request.validate()?;
+
+        Ok(request)
+    }
+
     // PUBLIC ACCESSORS
     // --------------------------------------------------------------------------------------------
 
@@ -272,6 +368,22 @@ impl TransactionRequest {
     /// Returns the new code that the transaction gives to the executing account, if any.
     pub fn account_code_upgrade(&self) -> Option<&AccountCodeUpgrade> {
         self.account_code_upgrade.as_ref()
+    }
+
+    /// Returns the id and the optional argument of each input note, in consumption order.
+    pub fn input_notes_args(&self) -> &[(NoteId, Option<NoteArgs>)] {
+        &self.input_notes_args
+    }
+
+    /// Returns the input notes whose consumption mode the request pins.
+    pub fn explicit_input_notes(&self) -> impl Iterator<Item = &InputNote> {
+        self.explicit_input_notes.values()
+    }
+
+    /// Returns the number of blocks after the reference block at which the transaction expires, or
+    /// `None` if it does not expire.
+    pub fn expiration_delta(&self) -> Option<u16> {
+        self.expiration_delta
     }
 
     // STATE MUTATORS
@@ -495,6 +607,8 @@ pub enum TransactionRequestError {
     AssetError(#[from] AssetError),
     #[error("duplicate input note: note {0} was added more than once to the transaction")]
     DuplicateInputNote(NoteId),
+    #[error("explicit input note {0} is not one of the input notes of the request")]
+    UnknownExplicitInputNote(NoteId),
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error(

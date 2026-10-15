@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+// Note update values. Field numbers are part of the encoded format, so a released number must keep
+// its meaning. Add fields, do not renumber or reuse them.
+package client.note_update;
+
+import "primitives.proto";
+import "client/input_note.proto";
+import "client/output_note.proto";
+
+// What the store does with a note record of an update.
+enum NoteUpdateType {
+  // The type is absent. Decoding rejects a value with this type.
+  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
+  // The note is tracked and does not change.
+  NOTE_UPDATE_TYPE_NONE = 1;
+  // The note is new.
+  NOTE_UPDATE_TYPE_INSERT = 2;
+  // The note is tracked and changes.
+  NOTE_UPDATE_TYPE_UPDATE = 3;
+  // An expected note that the chain committed.
+  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 4;
+}
+
+message InputNoteUpdate {
+  input_note.InputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+message OutputNoteUpdate {
+  output_note.OutputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+// The note changes that a sync or a transaction gives to the store, with the lookup indices.
+message NoteUpdateTracker {
+  // Position of a nullifier in the consuming transaction order of its account.
+  message NullifierOrder {
+    // Upstream encoding of the nullifier.
+    bytes nullifier = 1;
+    uint32 order = 2;
+  }
+
+  // Entry of the index from note id to the details commitment of an input note.
+  message NoteIdEntry {
+    primitives.Word note_id = 1;
+    // Upstream encoding of the note details commitment.
+    bytes details_commitment = 2;
+  }
+
+  // Entry of the index from nullifier to the details commitment of an input note.
+  message NullifierEntry {
+    // Upstream encoding of the nullifier.
+    bytes nullifier = 1;
+    // Upstream encoding of the note details commitment.
+    bytes details_commitment = 2;
+  }
+
+  repeated InputNoteUpdate input_notes = 1;
+  repeated OutputNoteUpdate output_notes = 2;
+  repeated NullifierOrder nullifier_order = 3;
+  repeated NoteIdEntry input_notes_by_id = 4;
+  repeated NullifierEntry input_notes_by_nullifier = 5;
+}

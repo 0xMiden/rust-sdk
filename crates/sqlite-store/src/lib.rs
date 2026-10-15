@@ -30,8 +30,8 @@ use miden_client::asset::{Asset, AssetVault, AssetWitness};
 use miden_client::block::{AccountWitness, BlockHeader};
 use miden_client::crypto::{InOrderIndex, MmrPeaks};
 use miden_client::note::{BlockNumber, NoteId, NoteScript, NoteTag, Nullifier};
-use miden_client::note_transport::{NOTE_TRANSPORT_CURSORS_KEY, NoteTransportCursor};
-use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
+use miden_client::note_transport::NoteTransportCursor;
+use miden_client::protocol_config::ProtocolConfig;
 use miden_client::pswap::{PswapLineageFilter, PswapLineageRecord};
 use miden_client::rpc::RpcLimits;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
@@ -46,8 +46,6 @@ use miden_client::store::{
     NoteFilter,
     OutputNoteRecord,
     PartialBlockchainFilter,
-    SettingMutation,
-    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
@@ -64,7 +62,13 @@ use rusqlite::types::Value;
 use sql_error::SqlResultExt;
 
 use crate::account::rows::query_vault_assets;
-use crate::settings::{RPC_LIMITS_KEY, TRANSACTION_ENCRYPTION_KEY_KEY};
+use crate::settings::{
+    NOTE_TRANSPORT_CURSORS_KEY,
+    RPC_LIMITS_KEY,
+    SettingsTable,
+    TRANSACTION_ENCRYPTION_KEY_KEY,
+    protocol_config_key,
+};
 
 mod account;
 mod builder;
@@ -489,56 +493,30 @@ impl Store for SqliteStore {
         .await
     }
 
-    async fn set_setting(
-        &self,
-        scope: SettingScope,
-        key: String,
-        value: Vec<u8>,
-    ) -> Result<(), StoreError> {
+    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::set_setting(conn, scope, &key, &value)
+            SqliteStore::set_setting(conn, SettingsTable::User, &key, &value)
         })
         .await
     }
 
-    async fn get_setting(
-        &self,
-        scope: SettingScope,
-        key: String,
-    ) -> Result<Option<Vec<u8>>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::get_setting(conn, scope, &key))
-            .await
-    }
-
-    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::remove_setting(conn, scope, &key))
-            .await
-    }
-
-    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::list_setting_keys(conn, scope))
-            .await
-    }
-
-    async fn apply_settings_mutations(
-        &self,
-        scope: SettingScope,
-        mutations: Vec<SettingMutation>,
-    ) -> Result<(), StoreError> {
+    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError> {
         self.interact_with_connection(move |conn| {
-            with_write_tx(conn, |tx| {
-                for mutation in &mutations {
-                    match mutation {
-                        SettingMutation::Set { key, value } => {
-                            SqliteStore::set_setting(tx, scope, key, value)?;
-                        },
-                        SettingMutation::Remove { key } => {
-                            SqliteStore::remove_setting(tx, scope, key)?;
-                        },
-                    }
-                }
-                Ok(())
-            })
+            SqliteStore::get_setting(conn, SettingsTable::User, &key)
+        })
+        .await
+    }
+
+    async fn remove_setting(&self, key: String) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::remove_setting(conn, SettingsTable::User, &key)
+        })
+        .await
+    }
+
+    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError> {
+        self.interact_with_connection(|conn| {
+            SqliteStore::list_setting_keys(conn, SettingsTable::User)
         })
         .await
     }
@@ -589,7 +567,7 @@ impl Store for SqliteStore {
             if cursors.is_empty() {
                 SqliteStore::remove_setting(
                     conn,
-                    SettingScope::Client,
+                    SettingsTable::Client,
                     NOTE_TRANSPORT_CURSORS_KEY,
                 )?;
                 return Ok(());
@@ -604,7 +582,7 @@ impl Store for SqliteStore {
         commitment: Word,
     ) -> Result<Option<ProtocolConfig>, StoreError> {
         self.interact_with_connection(move |conn| {
-            SqliteStore::get_client_setting(conn, &protocol_config_setting_key(commitment))
+            SqliteStore::get_client_setting(conn, &protocol_config_key(commitment))
         })
         .await
     }
@@ -614,7 +592,7 @@ impl Store for SqliteStore {
         self.interact_with_connection(move |conn| {
             SqliteStore::set_client_setting(
                 conn,
-                &protocol_config_setting_key(config.to_commitment()),
+                &protocol_config_key(config.to_commitment()),
                 &config,
             )
         })
@@ -655,7 +633,7 @@ impl Store for SqliteStore {
 
     async fn remove_transaction_encryption_key(&self) -> Result<(), StoreError> {
         self.interact_with_connection(|conn| {
-            SqliteStore::remove_setting(conn, SettingScope::Client, TRANSACTION_ENCRYPTION_KEY_KEY)
+            SqliteStore::remove_setting(conn, SettingsTable::Client, TRANSACTION_ENCRYPTION_KEY_KEY)
         })
         .await?;
         Ok(())

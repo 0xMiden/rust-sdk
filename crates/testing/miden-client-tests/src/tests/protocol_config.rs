@@ -5,15 +5,15 @@ use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::protocol_config::{ProtocolConfig, protocol_config_setting_key};
-use miden_client::store::{SettingScope, StoreError};
+use miden_client::protocol_config::ProtocolConfig;
+use miden_client::store::StoreError;
 use miden_client::testing::common::create_test_store_path;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{ClientError, Word};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2;
 
-use super::{TestClient, create_test_client, prebuilt_rpc_api};
+use super::{TestClient, create_test_client, open_store_file, prebuilt_rpc_api};
 
 /// Returns the current protocol configuration for `faucet`.
 fn protocol_config_for(faucet: u128) -> ProtocolConfig {
@@ -96,16 +96,17 @@ async fn protocol_config_rejects_a_substituted_preimage() {
     assert_ne!(other.to_commitment(), commitment);
     // Copy the stored bytes of `other` under `commitment`, so the store encoding does not matter.
     client.seed_protocol_config(other.clone()).await.unwrap();
-    let store = client.test_store();
-    let other_bytes = store
-        .get_setting(SettingScope::Client, protocol_config_setting_key(other.to_commitment()))
-        .await
-        .unwrap()
+    let copied = open_store_file(&mut client)
+        .execute(
+            "INSERT OR REPLACE INTO client_config (name, value) \
+             SELECT ?1, value FROM client_config WHERE name = ?2",
+            [
+                format!("protocol_config:{commitment}"),
+                format!("protocol_config:{}", other.to_commitment()),
+            ],
+        )
         .unwrap();
-    store
-        .set_setting(SettingScope::Client, protocol_config_setting_key(commitment), other_bytes)
-        .await
-        .unwrap();
+    assert_eq!(copied, 1);
     assert!(matches!(
         client.get_protocol_config(commitment).await,
         Err(ClientError::StoreError(StoreError::ProtocolConfigCommitmentMismatch(_)))
@@ -119,11 +120,13 @@ async fn execution_requires_the_reference_block_protocol_config() {
     let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
     let config = rpc.protocol_config();
     let commitment = config.to_commitment();
-    client
-        .test_store()
-        .remove_setting(SettingScope::Client, protocol_config_setting_key(commitment))
-        .await
+    let removed = open_store_file(&mut client)
+        .execute(
+            "DELETE FROM client_config WHERE name = ?1",
+            [format!("protocol_config:{commitment}")],
+        )
         .unwrap();
+    assert_eq!(removed, 1);
     let other = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
     assert_ne!(other.to_commitment(), commitment);
     client.seed_protocol_config(other).await.unwrap();

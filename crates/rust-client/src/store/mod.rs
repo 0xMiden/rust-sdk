@@ -55,10 +55,8 @@ use miden_protocol::note::{
 };
 use miden_protocol::transaction::TransactionId;
 use miden_protocol::{Felt, Word};
-use miden_tx::utils::serde::{Deserializable, Serializable};
 
-#[allow(deprecated)]
-use crate::note_transport::{NOTE_TRANSPORT_CURSOR_STORE_SETTING, NoteTransportCursor};
+use crate::note_transport::NoteTransportCursor;
 use crate::protocol_config::ProtocolConfig;
 use crate::pswap::{PswapLineageFilter, PswapLineageRecord};
 use crate::rpc::RpcLimits;
@@ -94,42 +92,6 @@ pub use note_record::{
     OutputNoteState,
     input_note_states,
 };
-
-// SETTING SCOPE
-// ================================================================================================
-
-/// Which side of the client/user boundary a `settings` row belongs to.
-///
-/// The discriminants are what a store persists, so they are part of its schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SettingScope {
-    /// Owned by the client itself. A store persists these rows but the public settings API on
-    /// [`Client`](crate::Client) never reaches them.
-    Client = 0,
-    /// Owned by the user of the client.
-    User = 1,
-}
-
-impl SettingScope {
-    /// Returns the value this scope is stored as.
-    pub fn as_u8(self) -> u8 {
-        self as u8
-    }
-}
-
-// SETTING MUTATION
-// ================================================================================================
-
-/// A single mutation against the `settings` KV store, applied as part of an atomic batch via
-/// [`Store::apply_settings_mutations`].
-#[derive(Debug, Clone)]
-pub enum SettingMutation {
-    /// Insert or overwrite `key` with `value`.
-    Set { key: String, value: Vec<u8> },
-    /// Delete `key`.
-    Remove { key: String },
-}
 
 // INPUT NOTE CURSOR
 // ================================================================================================
@@ -543,34 +505,20 @@ pub trait Store: Send + Sync {
     // SETTINGS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds a value to `scope` in the `settings` table.
-    async fn set_setting(
-        &self,
-        scope: SettingScope,
-        key: String,
-        value: Vec<u8>,
-    ) -> Result<(), StoreError>;
+    /// Stores `value` under `key` in the user settings.
+    ///
+    /// The user settings hold the values of the user of the client only. The client data is
+    /// available through the typed methods of this trait.
+    async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), StoreError>;
 
-    /// Retrieves a value from `scope` in the `settings` table.
-    async fn get_setting(
-        &self,
-        scope: SettingScope,
-        key: String,
-    ) -> Result<Option<Vec<u8>>, StoreError>;
+    /// Returns the value of `key` in the user settings, or `None` if `key` has no value.
+    async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Deletes a value from `scope` in the `settings` table. Returns `true` if the key was present.
-    async fn remove_setting(&self, scope: SettingScope, key: String) -> Result<bool, StoreError>;
+    /// Deletes `key` from the user settings. Returns `true` if the key was present.
+    async fn remove_setting(&self, key: String) -> Result<bool, StoreError>;
 
-    /// Returns the keys held by `scope` in the `settings` table.
-    async fn list_setting_keys(&self, scope: SettingScope) -> Result<Vec<String>, StoreError>;
-
-    /// Applies a batch of [`SettingMutation`]s against `scope`. Use this when several `settings`
-    /// entries must stay mutually consistent (e.g. a record and its secondary index).
-    async fn apply_settings_mutations(
-        &self,
-        scope: SettingScope,
-        mutations: Vec<SettingMutation>,
-    ) -> Result<(), StoreError>;
+    /// Returns the keys of the user settings.
+    async fn list_setting_keys(&self) -> Result<Vec<String>, StoreError>;
 
     // PSWAP
     // --------------------------------------------------------------------------------------------
@@ -681,41 +629,6 @@ pub trait Store: Send + Sync {
 
     // TRANSPORT
     // --------------------------------------------------------------------------------------------
-
-    /// Gets the unused aggregate note transport cursor.
-    ///
-    /// The client stores a cursor for each tag. If the aggregate cursor does not exist, this
-    /// returns an initial cursor.
-    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
-    #[allow(deprecated)]
-    async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
-        let Some(cursor_bytes) = self
-            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
-            .await?
-        else {
-            return Ok(NoteTransportCursor::init());
-        };
-        NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
-    }
-
-    /// Updates the unused aggregate note transport cursor.
-    ///
-    /// The client stores a cursor for each tag and does not read this value.
-    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
-    #[allow(deprecated)]
-    async fn update_note_transport_cursor(
-        &self,
-        cursor: NoteTransportCursor,
-    ) -> Result<(), StoreError> {
-        let cursor_bytes = cursor.to_bytes();
-        self.set_setting(
-            SettingScope::Client,
-            NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),
-            cursor_bytes,
-        )
-        .await?;
-        Ok(())
-    }
 
     /// Returns the note transport cursor of each tag. Returns an empty map if no cursors are
     /// stored.

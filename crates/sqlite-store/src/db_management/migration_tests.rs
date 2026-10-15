@@ -2,7 +2,6 @@ use std::sync::LazyLock;
 
 use miden_client::account::AccountId;
 use miden_client::note::{NoteDetailsCommitment, NoteTag};
-use miden_client::store::SettingScope;
 use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::ACCOUNT_ID_REGULAR;
 use miden_client::utils::{Deserializable, Serializable};
@@ -16,6 +15,12 @@ use crate::db_management::schema::SchemaHash;
 
 mod m0002_drop_note_transport_outbox;
 mod m0004_pswap_lineages;
+mod m0005_split_settings;
+
+/// The `scope` of a client row in the `settings` table, which migration 5 removes.
+const CLIENT_SCOPE: u8 = 0;
+/// The `scope` of a user row in the `settings` table, which migration 5 removes.
+const USER_SCOPE: u8 = 1;
 
 // FIXTURE MIGRATIONS
 // ================================================================================================
@@ -281,8 +286,8 @@ fn user_data_does_not_change_schema_hash() {
     assert_eq!(hash_before.to_string(), client.expected_hash(client.latest_version()));
 
     conn.execute(
-        "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
-        params![SettingScope::User.as_u8(), "test-setting", b"value"],
+        "INSERT INTO user_settings (name, value) VALUES (?1, ?2)",
+        params!["test-setting", b"value"],
     )
     .expect("user data should insert");
 

@@ -4914,6 +4914,14 @@ pub async fn create_test_client() -> (TestClient, MockRpcApi) {
     (TestClient::from(client), rpc_api)
 }
 
+/// Opens the SQLite file of the store of `client`.
+///
+/// The `Store` trait does not expose the `client_config` rows. Tests use this connection to remove
+/// or damage them.
+pub fn open_store_file(client: &mut TestClient) -> rusqlite::Connection {
+    rusqlite::Connection::open(client.test_store().identifier()).unwrap()
+}
+
 /// Returns a mock node over the prebuilt chain (see [`create_prebuilt_mock_chain`]).
 pub async fn prebuilt_rpc_api() -> MockRpcApi {
     MockRpcApi::new(Box::pin(create_prebuilt_mock_chain()).await)

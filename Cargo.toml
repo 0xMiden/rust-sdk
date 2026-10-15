@@ -83,6 +83,7 @@ rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }
 reqwest            = { default-features = false, features = ["json", "rustls-tls"], version = "0.12" }
 rstest             = { version = "0.25" }
+rusqlite           = { version = "0.37" }
 serde              = { features = ["derive"], version = "1.0" }
 serde_json         = { version = "1.0" }
 sha2               = { default-features = false, version = "0.11" }

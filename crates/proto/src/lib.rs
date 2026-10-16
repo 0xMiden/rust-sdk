@@ -10,9 +10,9 @@
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-use miden_client::store::StoreError;
-use miden_client::utils::DeserializationError;
+use miden_client_core::errors::StoreError;
 use miden_objects::ConversionError;
+use miden_protocol::utils::serde::DeserializationError;
 
 mod input_note;
 mod output_note;
@@ -140,8 +140,8 @@ pub(crate) fn required<T>(
 
 #[cfg(test)]
 mod tests {
-    use miden_client::note::BlockNumber;
-    use miden_client::transaction::TransactionStatus;
+    use miden_client_core::transaction::TransactionStatus;
+    use miden_protocol::block::BlockNumber;
 
     use super::*;
 

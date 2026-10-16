@@ -15,9 +15,9 @@ doctest    = false
 
 [dependencies]
 # Miden dependencies
-miden-client   = { workspace = true }
-miden-objects  = { workspace = true }
-miden-protocol = { workspace = true }
+miden-client-core = { workspace = true }
+miden-objects     = { workspace = true }
+miden-protocol    = { workspace = true }
 
 # Workspace dependencies
 prost     = { features = ["derive", "std"], workspace = true }

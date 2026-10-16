@@ -17,9 +17,8 @@
 //! [`Note`](miden_protocol::note::Note), although this is not always possible. Check both
 //! [`InputNoteRecord`]'s and [`OutputNoteRecord`]'s documentation for more details about this.
 
-use alloc::string::{String, ToString};
-
-use thiserror::Error;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteDetailsCommitment;
 
 mod input_note_record;
 mod output_note_record;
@@ -44,28 +43,43 @@ pub mod input_note_states {
     };
 }
 
-// NOTE RECORD ERROR
+// INPUT NOTE CURSOR
 // ================================================================================================
 
-/// Errors generated from note records.
-#[derive(Debug, Error)]
-pub enum NoteRecordError {
-    /// Error generated during conversion of note record.
-    #[error("note record conversion error: {0}")]
-    ConversionError(String),
-    /// Note record isn't consumable.
-    #[error("note not consumable: {0}")]
-    NoteNotConsumable(String),
-    /// Invalid state transition.
-    #[error("invalid state transition: {0}")]
-    InvalidStateTransition(String),
-    /// Error generated during a state transition.
-    #[error("state transition error: {0}")]
-    StateTransitionError(String),
+/// Identifies a position in the per-account consumption order of input notes.
+///
+/// Obtained from a record returned by
+/// [`Store::get_input_note_after`](crate::store::Store::get_input_note_after) and passed back to
+/// fetch the note that follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputNoteCursor {
+    consumed_block_height: BlockNumber,
+    consumed_tx_order: u32,
+    details_commitment: NoteDetailsCommitment,
 }
 
-impl From<NoteRecordError> for String {
-    fn from(err: NoteRecordError) -> String {
-        err.to_string()
+impl InputNoteCursor {
+    /// Returns the cursor pointing at `record`, or `None` if the note is not consumed.
+    pub fn from_record(record: &InputNoteRecord) -> Option<Self> {
+        Some(Self {
+            consumed_block_height: record.state().consumed_block_height()?,
+            consumed_tx_order: record.state().consumed_tx_order()?,
+            details_commitment: record.details_commitment(),
+        })
+    }
+
+    /// Returns the block height at which the note was consumed.
+    pub fn consumed_block_height(&self) -> BlockNumber {
+        self.consumed_block_height
+    }
+
+    /// Returns the per-account position of the consuming transaction within the block.
+    pub fn consumed_tx_order(&self) -> u32 {
+        self.consumed_tx_order
+    }
+
+    /// Returns the commitment to the note's details.
+    pub fn details_commitment(&self) -> NoteDetailsCommitment {
+        self.details_commitment
     }
 }

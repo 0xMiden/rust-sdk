@@ -7,18 +7,17 @@ use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
 
 use super::{
-    CommittedNoteState,
-    ConsumedAuthenticatedLocalNoteState,
     ConsumedExternalNoteState,
     InputNoteState,
     NoteStateHandler,
     NoteSubmissionData,
+    ProcessingAuthenticatedNoteState,
 };
-use crate::store::NoteRecordError;
+use crate::errors::NoteRecordError;
 
-/// Information related to notes in the [`InputNoteState::ProcessingAuthenticated`] state.
+/// Information related to notes in the [`InputNoteState::Committed`] state.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProcessingAuthenticatedNoteState {
+pub struct CommittedNoteState {
     /// Metadata associated with the note, including sender, note type, tag and other additional
     /// information.
     pub metadata: NoteMetadata,
@@ -26,11 +25,9 @@ pub struct ProcessingAuthenticatedNoteState {
     pub inclusion_proof: NoteInclusionProof,
     /// Root of the note tree inside the block that verifies the note inclusion proof.
     pub block_note_root: Word,
-    /// Information about the submission of the note.
-    pub submission_data: NoteSubmissionData,
 }
 
-impl NoteStateHandler for ProcessingAuthenticatedNoteState {
+impl NoteStateHandler for CommittedNoteState {
     fn inclusion_proof_received(
         &self,
         inclusion_proof: NoteInclusionProof,
@@ -63,59 +60,46 @@ impl NoteStateHandler for ProcessingAuthenticatedNoteState {
     fn block_header_received(
         &self,
         _note_id: NoteId,
-        _block_header: &BlockHeader,
+        block_header: &BlockHeader,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
+        if block_header.note_root() != self.block_note_root {
+            return Err(NoteRecordError::StateTransitionError(
+                "Block header does not match the expected note root".to_string(),
+            ));
+        }
         Ok(None)
     }
 
     fn consumed_locally(
         &self,
-        _consumer_account: AccountId,
-        _consumer_transaction: TransactionId,
-        _current_timestamp: Option<u64>,
+        consumer_account: miden_protocol::account::AccountId,
+        consumer_transaction: miden_protocol::transaction::TransactionId,
+        current_timestamp: Option<u64>,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        Err(NoteRecordError::NoteNotConsumable("Note being consumed".to_string()))
-    }
-
-    fn transaction_committed(
-        &self,
-        transaction_id: TransactionId,
-        block_height: BlockNumber,
-    ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        if transaction_id != self.submission_data.consumer_transaction {
-            return Err(NoteRecordError::StateTransitionError(
-                "Transaction ID does not match the expected value".to_string(),
-            ));
-        }
+        let submission_data = NoteSubmissionData {
+            submitted_at: current_timestamp,
+            consumer_account,
+            consumer_transaction,
+        };
 
         Ok(Some(
-            ConsumedAuthenticatedLocalNoteState {
+            ProcessingAuthenticatedNoteState {
                 metadata: self.metadata,
                 inclusion_proof: self.inclusion_proof.clone(),
                 block_note_root: self.block_note_root,
-                nullifier_block_height: block_height,
-                submission_data: self.submission_data,
-                consumed_tx_order: None,
+                submission_data,
             }
             .into(),
         ))
     }
 
-    fn transaction_discarded(
+    fn transaction_committed(
         &self,
-        transaction_id: TransactionId,
+        _transaction_id: TransactionId,
+        _block_height: BlockNumber,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
-        if transaction_id != self.submission_data.consumer_transaction {
-            return Ok(None);
-        }
-
-        Ok(Some(
-            CommittedNoteState {
-                metadata: self.metadata,
-                inclusion_proof: self.inclusion_proof.clone(),
-                block_note_root: self.block_note_root,
-            }
-            .into(),
+        Err(NoteRecordError::InvalidStateTransition(
+            "Only processing notes can be committed in a local transaction".to_string(),
         ))
     }
 
@@ -128,38 +112,35 @@ impl NoteStateHandler for ProcessingAuthenticatedNoteState {
     }
 
     fn consumer_transaction_id(&self) -> Option<&TransactionId> {
-        Some(&self.submission_data.consumer_transaction)
+        None
     }
 }
 
-impl miden_tx::utils::serde::Serializable for ProcessingAuthenticatedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl miden_protocol::utils::serde::Serializable for CommittedNoteState {
+    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
         self.block_note_root.write_into(target);
-        self.submission_data.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for ProcessingAuthenticatedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+impl miden_protocol::utils::serde::Deserializable for CommittedNoteState {
+    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
         source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         let block_note_root = Word::read_from(source)?;
-        let submission_data = NoteSubmissionData::read_from(source)?;
-        Ok(ProcessingAuthenticatedNoteState {
+        Ok(CommittedNoteState {
             metadata,
             inclusion_proof,
             block_note_root,
-            submission_data,
         })
     }
 }
 
-impl From<ProcessingAuthenticatedNoteState> for InputNoteState {
-    fn from(state: ProcessingAuthenticatedNoteState) -> Self {
-        InputNoteState::ProcessingAuthenticated(state)
+impl From<CommittedNoteState> for InputNoteState {
+    fn from(state: CommittedNoteState) -> Self {
+        InputNoteState::Committed(state)
     }
 }

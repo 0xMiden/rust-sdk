@@ -23,7 +23,7 @@ use miden_client::note_transport::{
     NoteTransportError,
 };
 use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
-use miden_client::store::{InputNoteRecord, NoteFilter, SettingScope};
+use miden_client::store::{InputNoteRecord, NoteFilter};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -35,6 +35,7 @@ use miden_client::testing::note_transport::{
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
 use miden_client::{ClientError, Deserializable};
+use miden_client_core::store::SettingScope;
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,

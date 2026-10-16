@@ -135,6 +135,7 @@ fn faucet_metadata_from_token_config(token_config: [Felt; 4]) -> Option<FaucetMe
 
 mod account_reader;
 pub use account_reader::AccountReader;
+use miden_client_core::store::{AccountStorageFilter, ClientAccountType};
 /// Provides built-in account components and their configuration types.
 ///
 /// Use the [`component`] module to define custom account components.
@@ -161,7 +162,7 @@ use crate::errors::ClientError;
 use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::rpc::node::{EndpointError, GetAccountError};
-use crate::store::{AccountStatus, AccountStorageFilter, ClientAccountType};
+use crate::store::AccountStatus;
 use crate::sync::validate_account_witness;
 
 /// Provides types to define account components and their storage schemas.
@@ -547,8 +548,8 @@ impl<AUTH> Client<AUTH> {
     }
 
     /// Fetches a public [`Account`] from the network at the sync height, returning a typed error
-    /// when the account doesn't exist on chain or is private. The account's witness must open
-    /// under the sync height header's account root, and the account must commit to the witness.
+    /// when the account doesn't exist on chain or is private. The account's witness must open under
+    /// the sync height header's account root, and the account must commit to the witness.
     async fn fetch_public_account(&self, account_id: AccountId) -> Result<Account, ClientError> {
         let (header, at) = self.sync_height_anchor().await?;
         let (_, witness, account) = self

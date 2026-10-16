@@ -12,7 +12,7 @@ use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::rpc::{GrpcClient, VerifyingRpcClient};
 use miden_client::store::{NoteFilter as ClientNoteFilter, OutputNoteRecord, TransactionFilter};
 use miden_client::transaction::TransactionRecord;
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_sqlite_store::SqliteStore;
 
 mod commands;
 use commands::account::AccountCmd;
@@ -138,8 +138,12 @@ impl CliClient {
                 .with_max_decoding_message_size(CLI_MAX_RESPONSE_SIZE_BYTES),
         ));
 
+        let store = SqliteStore::new(config.store_filepath.clone())
+            .await
+            .map_err(|err| CliError::from(ClientError::from(err)))?;
+
         let mut builder = ClientBuilder::new()
-            .sqlite_store(config.store_filepath.clone())
+            .store(Arc::new(store))
             .rpc(rpc_client)
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(Some(TX_DISCARD_DELTA));

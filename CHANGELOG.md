@@ -24,6 +24,9 @@
 * [BREAKING][type][rust] `TransactionResult::new` returns `Self` instead of `Result<Self, ClientError>` ([#2681](https://github.com/0xMiden/rust-sdk/pull/2681)).
 * [BREAKING][type][rust] Added the `AccountProofError::InconsistentStorageCommitment` variant, so exhaustive matches on `AccountProofError` must handle it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [BREAKING][behavior][rust] `Client::import_account_by_id`, `Client::import_watched_account_by_id`, `Client::fetch_remote_token_metadata` and the locked-account check of `Client::add_account` read the account at the sync height and require its witness to open under the sync height header's account root, failing with `ClientError::ChainValidationError` otherwise. An account created after the last sync is not found until the client syncs ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
+* [BREAKING][arch][rust,store] Moved the `Store` trait and the types in its signatures (note and account records, filters, settings, sync and transaction updates, and their errors) to the new `miden-client-core` crate. `miden-client` re-exports the types that its API uses, so their paths keep working. Types that only a store uses are no longer re-exported and must be imported from `miden_client_core`: `AccountRecord`, `AccountRecordData`, `AccountRecordError`, `AccountSmtForest`, `AccountStorageFilter`, `AccountUpdate`, `ClientAccountType`, `InputNoteCursor`, `PartialBlockchainFilter`, `SettingMutation`, `SettingScope`, `protocol_config_setting_key` and `NOTE_TRANSPORT_CURSOR_STORE_SETTING` ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
+* [BREAKING][removal][rust,store] Removed `ClientBuilderSqliteExt` and `ClientBuilder::sqlite_store`. Build a `SqliteStore` and pass it with `ClientBuilder::store` ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
+* [BREAKING][type][rust] `Account::try_from(AccountRecord)` and `PartialAccount::try_from(AccountRecord)` return the new `AccountRecordError` instead of `ClientError`, and `AttestedTransactionEncryptionKey::verify` returns the new `TransactionEncryptionError` instead of `RpcError`. `ClientError` and `RpcError` implement `From` for them ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
 
 ### Features
 
@@ -31,6 +34,7 @@
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] `account --show` no longer fetches storage map entries for an account that the client does not track ([#2680](https://github.com/0xMiden/rust-sdk/pull/2680)).
+* [FEATURE][rust] The note record state transitions (`InputNoteRecord::consumed_locally`, `consumed_externally`, `transaction_committed`, etc., and `OutputNoteRecord::inclusion_proof_received` and `nullifier_received`) and the `NoteUpdateTracker` getters and update methods are public ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
 
 ### Fixes
 
@@ -38,7 +42,9 @@
 * [FIX][rust] Implemented `TryFrom` for the `InputNoteRecord` conversions to `Note`, `InputNote`, and `NoteTagRecord`. Existing `.try_into()` calls remain supported ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FIX][rust] Sync no longer stores public notes whose tag matches a tracked account's tag without checking that a tracked account can consume them. Only tags added by the user skip the check ([#2684](https://github.com/0xMiden/rust-sdk/pull/2684)).
 * [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+* [FIX][rust] Reused the kernel and standard-library MAST store across `NoteScreener` calls. Each screening pass reads current account state ([#2711](https://github.com/0xMiden/rust-sdk/pull/2711)).
 
 ### Fixes
 

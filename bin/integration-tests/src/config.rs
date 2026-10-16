@@ -16,7 +16,7 @@ use miden_client::note_transport::{
 use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
+use miden_client_sqlite_store::SqliteStore;
 use uuid::Uuid;
 
 use crate::funding;
@@ -143,9 +143,11 @@ impl ClientConfig {
             self.rpc_timeout_ms,
         )));
 
+        let store = SqliteStore::new(store_config).await?;
+
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)
-            .sqlite_store(store_config)
+            .store(Arc::new(store))
             .authenticator(Arc::new(keystore))
             .tx_discard_delta(None);
 

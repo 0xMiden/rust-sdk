@@ -476,3 +476,29 @@ fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
         other => panic!("expected an unauthorized multisig summary, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn reused_screener_reads_current_account_state() {
+    let (mut client, account) = Box::pin(fee_charging_client()).await;
+    let script = client
+        .code_builder()
+        .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
+        .unwrap();
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(122))
+        .script(script)
+        .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+    let screener = client.note_screener();
+    assert_eq!(screener.get_consumability(&note).await.unwrap().len(), 1);
+    let mut updated = client.get_account(account.id()).await.unwrap().unwrap();
+    let asset =
+        FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), FEE_ASSET_BALANCE).unwrap();
+    updated.vault_mut().remove_asset(asset.into()).unwrap();
+    client.test_store().update_account(&updated).await.unwrap();
+    let fresh = client.note_screener().get_consumability(&note).await.unwrap();
+    assert!(fresh.is_empty(), "the account cannot pay a fee after its balance is removed");
+    let reused = screener.get_consumability(&note).await.unwrap();
+    assert!(reused.is_empty(), "reusing a screener must see the current account balance");
+}

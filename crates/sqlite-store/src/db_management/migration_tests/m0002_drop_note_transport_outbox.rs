@@ -1,6 +1,6 @@
 //! Tests for migration `0002`, which deletes the client scope `note_transport_outbox` setting.
 
-use miden_client::store::SettingScope;
+use miden_client_core::store::SettingScope;
 use rusqlite::params;
 
 use super::open_memory_db;

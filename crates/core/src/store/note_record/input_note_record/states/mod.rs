@@ -6,7 +6,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
-pub use miden_tx::utils::serde::{
+pub use miden_protocol::utils::serde::{
     ByteReader,
     ByteWriter,
     Deserializable,
@@ -34,7 +34,7 @@ pub use processing_authenticated::ProcessingAuthenticatedNoteState;
 pub use processing_unauthenticated::ProcessingUnauthenticatedNoteState;
 pub use unverified::UnverifiedNoteState;
 
-use super::NoteRecordError;
+use crate::errors::NoteRecordError;
 
 #[derive(Clone, Debug, PartialEq)]
 
@@ -442,5 +442,99 @@ impl Deserializable for NoteSubmissionData {
             consumer_account,
             consumer_transaction,
         })
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use miden_protocol::Word;
+    use miden_protocol::account::{AccountIdVersion, AccountType, AssetCallbackFlag};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
+    use miden_protocol::note::{NoteAttachments, NoteTag, NoteType, PartialNoteMetadata};
+
+    use super::*;
+
+    fn metadata(tag: u32) -> NoteMetadata {
+        let sender = AccountId::dummy(
+            [1; 15],
+            AccountIdVersion::Version1,
+            AccountType::Public,
+            AssetCallbackFlag::Disabled,
+        );
+        NoteMetadata::new(
+            PartialNoteMetadata::new(sender, NoteType::Private).with_tag(NoteTag::new(tag)),
+            &NoteAttachments::empty(),
+        )
+    }
+
+    fn inclusion_proof(block_num: u32) -> NoteInclusionProof {
+        NoteInclusionProof::new(
+            block_num.into(),
+            0,
+            SparseMerklePath::from_parts(0, Vec::new()).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn expected(metadata: Option<NoteMetadata>) -> InputNoteState {
+        ExpectedNoteState {
+            metadata,
+            after_block_num: BlockNumber::from(0u32),
+            tag: None,
+        }
+        .into()
+    }
+
+    fn unverified(metadata: NoteMetadata) -> InputNoteState {
+        UnverifiedNoteState {
+            metadata,
+            inclusion_proof: inclusion_proof(1),
+        }
+        .into()
+    }
+
+    fn invalid(metadata: NoteMetadata) -> InputNoteState {
+        InvalidNoteState {
+            metadata,
+            invalid_inclusion_proof: inclusion_proof(1),
+            block_note_root: Word::default(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn expected_note_without_metadata_takes_the_received_metadata() {
+        let state = expected(None).inclusion_proof_received(inclusion_proof(2), metadata(7));
+
+        assert!(matches!(state, Ok(Some(InputNoteState::Unverified(_)))), "got {state:?}");
+    }
+
+    #[test]
+    fn known_metadata_accepts_a_new_proof_with_the_same_metadata() {
+        for state in [expected(Some(metadata(7))), unverified(metadata(7)), invalid(metadata(7))] {
+            let new_state = state.inclusion_proof_received(inclusion_proof(2), metadata(7));
+
+            assert!(
+                matches!(new_state, Ok(Some(InputNoteState::Unverified(_)))),
+                "got {new_state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_metadata_rejects_different_metadata() {
+        for state in [expected(Some(metadata(7))), unverified(metadata(7)), invalid(metadata(7))] {
+            let new_state = state.inclusion_proof_received(inclusion_proof(2), metadata(8));
+
+            assert!(
+                matches!(new_state, Err(NoteRecordError::StateTransitionError(_))),
+                "got {new_state:?}"
+            );
+        }
     }
 }

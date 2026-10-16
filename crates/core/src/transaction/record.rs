@@ -6,7 +6,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{RawOutputNotes, TransactionId, TransactionScript};
-use miden_tx::utils::serde::{
+use miden_protocol::utils::serde::{
     ByteReader,
     ByteWriter,
     Deserializable,
@@ -293,7 +293,7 @@ mod tests {
     use miden_protocol::block::BlockNumber;
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
     use miden_protocol::transaction::RawOutputNotes;
-    use miden_tx::utils::serde::Serializable;
+    use miden_protocol::utils::serde::Serializable;
 
     use super::TransactionDetails;
 

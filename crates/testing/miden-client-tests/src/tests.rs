@@ -24,24 +24,24 @@ use miden_client::note::{
     NoteFile,
     NoteSyncHint,
 };
-use miden_client::protocol_config::protocol_config_setting_key;
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
+use miden_client::rpc::domain::note::CommittedNote;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
-use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;
+use miden_client::store::input_note_states::{
+    CommittedNoteState,
+    ConsumedAuthenticatedLocalNoteState,
+};
 use miden_client::store::{
-    AccountStorageFilter,
-    ClientAccountType,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
     OutputNoteState,
-    SettingScope,
     Store,
     StoreError,
     TransactionFilter,
 };
-use miden_client::sync::{NoteTagRecord, NoteTagSource};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     AccountSetup,
@@ -65,7 +65,13 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
-use miden_client_sqlite_store::{ClientBuilderSqliteExt, SqliteStore};
+use miden_client_core::store::{
+    AccountStorageFilter,
+    ClientAccountType,
+    SettingScope,
+    protocol_config_setting_key,
+};
+use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::account::{
     Account,
     AccountBuilder,
@@ -85,7 +91,7 @@ use miden_protocol::account::{
 };
 use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
-use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note,
@@ -93,6 +99,8 @@ use miden_protocol::note::{
     NoteAttachment,
     NoteAttachmentScheme,
     NoteAttachments,
+    NoteDetails,
+    NoteInclusionProof,
     NoteRecipient,
     NoteStorage,
     NoteTag,
@@ -2352,6 +2360,60 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
     }
 }
 
+/// A public note that carries a tracked account's tag but no tracked account can consume is
+/// discarded, while the same note is kept once the user adds its tag.
+#[tokio::test]
+async fn note_screening_is_skipped_for_user_tags() {
+    let (mut client, _mock_rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, ..) = client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
+
+    let account_tag = client
+        .test_store()
+        .get_account_note_tags()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.source == NoteTagSource::Account(wallet.id()))
+        .unwrap()
+        .tag;
+
+    let untracked = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+    let script = client.code_builder().compile_note_script(TARGET_BOUND_NOTE_SCRIPT).unwrap();
+    let note = NoteBuilder::new(untracked, ChaCha20Rng::seed_from_u64(0))
+        .script(script)
+        .note_storage([untracked.suffix(), untracked.prefix().as_felt()])
+        .unwrap()
+        .tag(account_tag.as_u32())
+        .build()
+        .unwrap();
+
+    let block_num = client.get_sync_height().await.unwrap();
+    let proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
+    let committed = CommittedNote::new(note.id(), *note.metadata(), proof.clone());
+    let state = CommittedNoteState {
+        metadata: *note.metadata(),
+        inclusion_proof: proof,
+        block_note_root: EMPTY_WORD,
+    }
+    .into();
+    let record = InputNoteRecord::new(
+        NoteDetails::from(note.clone()),
+        note.attachments().clone(),
+        None,
+        state,
+    );
+
+    let screener = client.note_screener();
+    let action = Box::pin(screener.on_note_received(committed.clone(), Some(record.clone())))
+        .await
+        .unwrap();
+    assert!(matches!(action, NoteUpdateAction::Discard));
+
+    client.add_note_tag(account_tag).await.unwrap();
+    let action = Box::pin(screener.on_note_received(committed, Some(record))).await.unwrap();
+    assert!(matches!(action, NoteUpdateAction::Insert(_)));
+}
+
 /// Reads transaction inputs straight from the data store the screener runs its trial executions
 /// against, without going through a screening pass.
 ///
@@ -4276,8 +4338,8 @@ async fn import_watched_account_by_id_ignores_tag_limit() {
     client.import_watched_account_by_id(account.id()).await.unwrap();
 }
 
-/// Builds a client on a mock chain with one public account, plus a second chain that holds the
-/// same account under a different account root. Swapping the second chain into the RPC afterwards
+/// Builds a client on a mock chain with one public account, plus a second chain that holds the same
+/// account under a different account root. Swapping the second chain into the RPC afterwards
 /// simulates a node serving a witness that does not open under the header the client synced.
 async fn client_with_forgeable_account_root() -> (TestClient, MockRpcApi, MockChain, Account) {
     let mut honest_builder = MockChainBuilder::new();
@@ -4303,10 +4365,8 @@ async fn client_with_forgeable_account_root() -> (TestClient, MockRpcApi, MockCh
     );
 
     let rpc_api = MockRpcApi::new(honest_chain);
-    let (builder, _rpc_api) = Box::pin(create_test_client_builder()).await;
-    let mut client =
-        TestClient::from(builder.rpc(Arc::new(rpc_api.clone())).build().await.unwrap());
-    client.ensure_genesis_in_place().await.unwrap();
+    let client = mock_client_builder(Arc::new(rpc_api.clone())).await.build().await.unwrap();
+    let client = TestClient::from(client);
 
     (client, rpc_api, forged_chain, account)
 }
@@ -4957,7 +5017,7 @@ async fn prepare_offline_bootstrap_inserts_mock_chain_genesis() {
 
     let mut client = ClientBuilder::new()
         .rpc(Arc::new(MockRpcApi::default()))
-        .sqlite_store(create_test_store_path())
+        .store(Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap()))
         .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
         .build()
         .await

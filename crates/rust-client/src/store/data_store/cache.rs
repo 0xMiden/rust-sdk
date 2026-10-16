@@ -69,9 +69,9 @@ pub(super) struct DataStoreCache {
 }
 
 impl DataStoreCache {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(mast_store: Arc<TransactionMastStore>) -> Self {
         Self {
-            mast_store: Arc::new(TransactionMastStore::new()),
+            mast_store,
             foreign_account_inputs: RwLock::new(BTreeMap::new()),
             note_scripts: RwLock::new(BTreeMap::new()),
             block_numbers: RwLock::new(BTreeSet::new()),

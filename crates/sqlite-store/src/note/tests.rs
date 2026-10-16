@@ -9,33 +9,33 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
-    NoteUpdateTracker,
     PartialNoteMetadata,
 };
-use miden_client::store::input_note_states::{
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
+use miden_client::{Felt, ZERO};
+use miden_client_core::errors::StoreError;
+use miden_client_core::store::input_note_states::{
     ConsumedExternalNoteState,
     ConsumedUnauthenticatedLocalNoteState,
     ExpectedNoteState,
     NoteSubmissionData,
 };
-use miden_client::store::{
+use miden_client_core::store::{
     InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
+    NoteUpdateTracker,
     OutputNoteRecord,
     OutputNoteState,
     Store,
-    StoreError,
 };
-use miden_client::sync::{
+use miden_client_core::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
-use miden_client::utils::{Deserializable, DeserializationError, Serializable};
-use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -829,7 +829,7 @@ async fn get_note_script_by_root() {
 
     let missing_root = Word::default();
     let err = store.get_note_script(missing_root).await.unwrap_err();
-    assert!(matches!(err, miden_client::store::StoreError::NoteScriptNotFound(_)));
+    assert!(matches!(err, StoreError::NoteScriptNotFound(_)));
 }
 
 #[tokio::test]

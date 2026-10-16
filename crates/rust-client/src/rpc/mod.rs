@@ -92,10 +92,9 @@ mod errors;
 pub use errors::*;
 
 mod endpoint;
-pub(crate) use domain::limits::RPC_LIMITS_STORE_SETTING;
-pub use domain::limits::RpcLimits;
 pub use domain::status::{NetworkNoteStatus, NetworkNoteStatusInfo, RpcStatusInfo};
 pub use endpoint::Endpoint;
+pub use miden_client_core::rpc::RpcLimits;
 
 #[cfg(not(feature = "testing"))]
 mod generated;
@@ -441,7 +440,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the account from the node, using the `/GetAccount` endpoint.
     ///
     /// The response carries an
-    /// [`AccountWitness`](miden_protocol::block::account_tree::AccountWitness) and the target
+    /// [`AccountWitness`] and the target
     /// block. Public accounts additionally get [`AccountDetails`]; for private accounts the other
     /// `request` fields are ignored.
     ///

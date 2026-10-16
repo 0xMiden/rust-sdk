@@ -2803,12 +2803,12 @@ version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",
  "miden-agglayer",
  "miden-assembly-syntax",
+ "miden-client-core",
  "miden-debug",
  "miden-node-proto-build",
  "miden-objects",
@@ -2846,6 +2846,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "miden-client",
+ "miden-client-core",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
  "predicates",
@@ -2885,6 +2886,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-client-core"
+version = "0.17.2"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "miden-testing",
+ "rand 0.10.3",
+ "rand_chacha 0.10.0",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "miden-client-integration-tests"
 version = "0.17.2"
 dependencies = [
@@ -2913,7 +2930,7 @@ dependencies = [
 name = "miden-client-proto"
 version = "0.17.2"
 dependencies = [
- "miden-client",
+ "miden-client-core",
  "miden-objects",
  "miden-protocol",
  "miden-standards",
@@ -2933,6 +2950,7 @@ dependencies = [
  "deadpool",
  "deadpool-sync",
  "miden-client",
+ "miden-client-core",
  "miden-client-proto",
  "miden-protocol",
  "miden-standards",
@@ -2948,6 +2966,7 @@ name = "miden-client-unit-tests"
 version = "0.17.2"
 dependencies = [
  "miden-client",
+ "miden-client-core",
  "miden-client-sqlite-store",
  "miden-debug",
  "miden-protocol",

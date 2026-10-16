@@ -3,7 +3,7 @@
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client::store::OutputNoteState;
+use miden_client_core::store::OutputNoteState;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::note::{NoteRecipient, NoteScript};
 

@@ -15,6 +15,7 @@ use miden_tx::{
     NoteConsumptionChecker,
     NoteConsumptionInfo,
     TransactionExecutor,
+    TransactionMastStore,
 };
 use thiserror::Error;
 
@@ -23,7 +24,7 @@ use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::CommittedNote;
 use crate::store::data_store::ClientDataStore;
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
-use crate::sync::{NoteUpdateAction, OnNoteReceived};
+use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use crate::transaction::{
     AdviceMap,
     InputNote,
@@ -31,6 +32,7 @@ use crate::transaction::{
     TransactionArgs,
     native_fee_conversion_info,
 };
+use crate::utils::LazyLock;
 
 /// Represents the consumability of a note by a specific account.
 ///
@@ -54,6 +56,8 @@ fn is_relevant(consumption_status: &NoteConsumptionStatus) -> bool {
 /// tracked in the provided `store`. This can be derived in a number of ways, such as looking at the
 /// combination of script root and note inputs. For example, a P2ID note is relevant for a specific
 /// account ID if this ID is its first note input.
+///
+/// Screening calls share the MAST store. Each call reads current execution inputs from the store.
 #[derive(Clone)]
 pub struct NoteScreener {
     /// A reference to the client's store, used to fetch necessary data to check consumability.
@@ -62,11 +66,18 @@ pub struct NoteScreener {
     tx_args: Option<TransactionArgs>,
     /// RPC client used for lazy-loading foreign account data during note screening.
     rpc_api: Arc<dyn NodeRpcClient>,
+    /// Shared code loaded when the first screening pass needs it.
+    mast_store: Arc<LazyLock<Arc<TransactionMastStore>>>,
 }
 
 impl NoteScreener {
     pub fn new(store: Arc<dyn Store>, rpc_api: Arc<dyn NodeRpcClient>) -> Self {
-        Self { store, tx_args: None, rpc_api }
+        Self {
+            store,
+            tx_args: None,
+            rpc_api,
+            mast_store: Arc::new(LazyLock::new(|| Arc::new(TransactionMastStore::new()))),
+        }
     }
 
     /// Sets the transaction arguments to use when checking note consumability. If not set, a
@@ -81,6 +92,15 @@ impl NoteScreener {
         self.tx_args
             .clone()
             .unwrap_or_else(|| TransactionArgs::new(AdviceMap::default()))
+    }
+
+    fn data_store(&self) -> ClientDataStore {
+        ClientDataStore::new_with_mast_store(
+            self.store.clone(),
+            self.rpc_api.clone(),
+            LazyLock::force(&self.mast_store).clone(),
+        )
+        .with_execution_input_cache()
     }
 
     /// Checks whether the provided note could be consumed by any of the accounts tracked by this
@@ -141,8 +161,7 @@ impl NoteScreener {
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
-            .with_execution_input_cache();
+        let data_store = self.data_store();
         // Don't attach the real authenticator for consumability checks. The NoteConsumptionChecker
         // gracefully handles a missing authenticator by returning `ConsumableWithAuthorization`
         // instead of calling `get_signature()`. Attaching the real authenticator here causes the
@@ -204,8 +223,7 @@ impl NoteScreener {
             .with_native_fee_conversion_info(self.tx_args(), account_id, &account_code, block_ref)
             .await?;
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
-            .with_execution_input_cache();
+        let data_store = self.data_store();
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
             TransactionExecutor::new(&data_store);
 
@@ -324,9 +342,12 @@ impl OnNoteReceived for NoteScreener {
 
         match public_note {
             Some(public_note) => {
-                // If tracked by the user, keep note regardless of inputs and extra checks
+                // If its tag was added by the user, keep note regardless of inputs and extra
+                // checks.
                 if let Some(metadata) = public_note.metadata()
-                    && self.store.get_unique_note_tags().await?.contains(&metadata.tag())
+                    && self.store.get_note_tags().await?.iter().any(|record| {
+                        record.source == NoteTagSource::User && record.tag == metadata.tag()
+                    })
                 {
                     return Ok(NoteUpdateAction::Insert(public_note));
                 }

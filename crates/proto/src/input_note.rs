@@ -1,4 +1,4 @@
-use miden_client::store::input_note_states::{
+use miden_client_core::store::input_note_states::{
     CommittedNoteState,
     ConsumedAuthenticatedLocalNoteState,
     ConsumedExternalNoteState,

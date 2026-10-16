@@ -3,7 +3,8 @@
 use std::string::String;
 use std::vec::Vec;
 
-use miden_client::store::{SettingScope, StoreError};
+use miden_client_core::errors::StoreError;
+use miden_client_core::store::SettingScope;
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
 
@@ -90,7 +91,7 @@ impl SqliteStore {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::{SettingScope, Store};
+    use miden_client_core::store::{SettingScope, Store};
 
     use super::SqliteStore;
     use crate::tests::create_test_store;

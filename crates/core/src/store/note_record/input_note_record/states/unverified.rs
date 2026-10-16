@@ -14,7 +14,7 @@ use super::{
     NoteSubmissionData,
     ProcessingUnauthenticatedNoteState,
 };
-use crate::store::NoteRecordError;
+use crate::errors::NoteRecordError;
 
 /// Information related to notes in the [`InputNoteState::Unverified`] state.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +32,11 @@ impl NoteStateHandler for UnverifiedNoteState {
         inclusion_proof: NoteInclusionProof,
         metadata: NoteMetadata,
     ) -> Result<Option<InputNoteState>, NoteRecordError> {
+        if self.metadata != metadata {
+            return Err(NoteRecordError::StateTransitionError(
+                "Metadata does not match the expected value".to_string(),
+            ));
+        }
         Ok(Some(UnverifiedNoteState { metadata, inclusion_proof }.into()))
     }
 
@@ -139,17 +144,17 @@ impl NoteStateHandler for UnverifiedNoteState {
     }
 }
 
-impl miden_tx::utils::serde::Serializable for UnverifiedNoteState {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+impl miden_protocol::utils::serde::Serializable for UnverifiedNoteState {
+    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
         self.metadata.write_into(target);
         self.inclusion_proof.write_into(target);
     }
 }
 
-impl miden_tx::utils::serde::Deserializable for UnverifiedNoteState {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+impl miden_protocol::utils::serde::Deserializable for UnverifiedNoteState {
+    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
         source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
+    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
         let metadata = NoteMetadata::read_from(source)?;
         let inclusion_proof = NoteInclusionProof::read_from(source)?;
         Ok(UnverifiedNoteState { metadata, inclusion_proof })

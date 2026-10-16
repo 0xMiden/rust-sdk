@@ -5,6 +5,7 @@
 ### Enhancements
 
 * [rust] On official networks, `std` builds now fetch the genesis block from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node. Builds without `std` still fetch it from the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+* `account --show`, `notes --show` and the transaction summary show non-fungible assets in a separate table with their faucet ID and asset ID. The fungible asset tables no longer have an asset type column. `tx --show` shows the asset ID of a non-fungible asset, and `account --list` and `account --show` label a non-fungible faucet as `Non-fungible faucet` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 
@@ -30,6 +31,9 @@
 
 ### Features
 
+* [FEATURE][rust] Added `TransactionRequestBuilder::build_mint_non_fungible_asset`, which builds a request for a non-fungible faucet to mint a non-fungible asset to a target account, and `TransactionRequestBuilder::build_burn_non_fungible_asset`, which builds a request that sends a non-fungible asset to its faucet in a BURN note ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
+* [FEATURE][rust] Re-exported `BurnNote` from `miden_client::note` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
+* [FEATURE][rust] Added `Client::fetch_remote_non_fungible_faucet_symbol`, which fetches the token symbol of a public non-fungible faucet from the network ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [FEATURE][cli] Added `tx --show <ID>`, which prints the transaction record and its input and output notes with their standard note name, store state and decoded P2ID, P2IDE, SWAP or PSWAP storage. Added `--account-id`, `--status` and `--limit` filters to `tx --list`, which now orders transactions by creation time ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added the `SendNotesTransactionScript` re-export to `miden_client::transaction` ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
@@ -38,10 +42,14 @@
 
 ### Fixes
 
+* [FIX][rust] Transaction requests from a non-fungible faucet skip the vault balance check, as requests from a fungible faucet do, so minting a non-fungible asset no longer fails with `MissingNonFungibleAsset` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
+* [FIX][rust] Note screening treats an account whose trial execution fails in the transaction prologue as unable to consume the note, instead of failing. Before, submitting a transaction that sends a non-fungible asset in a BURN note failed after the node accepted it, because the stored vault of the sender still held the asset ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [FIX][rust] Implemented `TryFrom` for the `InputNoteRecord` conversions to `Note`, `InputNote`, and `NoteTagRecord`. Existing `.try_into()` calls remain supported ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
+* [FIX][rust] Sync no longer stores public notes whose tag matches a tracked account's tag without checking that a tracked account can consume them. Only tags added by the user skip the check ([#2684](https://github.com/0xMiden/rust-sdk/pull/2684)).
 * [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+* [FIX][rust] Reused the kernel and standard-library MAST store across `NoteScreener` calls. Each screening pass reads current account state ([#2711](https://github.com/0xMiden/rust-sdk/pull/2711)).
 
 ### Fixes
 

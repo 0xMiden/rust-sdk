@@ -66,9 +66,18 @@ pub struct ClientDataStore {
 
 impl ClientDataStore {
     pub fn new(store: alloc::sync::Arc<dyn Store>, rpc_api: Arc<dyn NodeRpcClient>) -> Self {
+        Self::new_with_mast_store(store, rpc_api, Arc::new(TransactionMastStore::new()))
+    }
+
+    /// Uses shared code with fresh execution state.
+    pub(crate) fn new_with_mast_store(
+        store: Arc<dyn Store>,
+        rpc_api: Arc<dyn NodeRpcClient>,
+        mast_store: Arc<TransactionMastStore>,
+    ) -> Self {
         Self {
             store,
-            cache: DataStoreCache::new(),
+            cache: DataStoreCache::new(mast_store),
             rpc_api,
             anchor: None,
         }

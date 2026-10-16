@@ -36,7 +36,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 pub use miden_objects::account_file::{AccountFile, AccountFileError};
-use miden_protocol::Felt;
+use miden_protocol::account::StorageSlotHeader;
 use miden_protocol::account::auth::PublicKey;
 pub use miden_protocol::account::{
     Account,
@@ -81,6 +81,7 @@ pub use miden_protocol::account::{
 pub use miden_protocol::address::{Address, AddressInterface, AddressType, NetworkId};
 use miden_protocol::asset::AssetVault;
 pub use miden_protocol::errors::{AccountIdError, AddressError, NetworkIdError};
+use miden_protocol::{Felt, Word};
 use miden_tx::utils::serde::{
     ByteReader,
     ByteWriter,
@@ -140,7 +141,7 @@ use miden_client_core::store::{AccountStorageFilter, ClientAccountType};
 /// Use the [`component`] module to define custom account components.
 pub use miden_standards::account as standards;
 use miden_standards::account::auth::{Approver, AuthSingleSig, NetworkAccount};
-use miden_standards::account::faucets::FungibleFaucet;
+use miden_standards::account::faucets::{FungibleFaucet, NonFungibleFaucet};
 pub use miden_standards::account::inspection::{
     AccountBuilderSchemaCommitmentExt,
     AccountSchemaCommitment,
@@ -548,7 +549,47 @@ impl<AUTH> Client<AUTH> {
         &self,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, ClientError> {
-        let proof = match self.rpc_api.get_account(faucet_id, GetAccountRequest::new()).await {
+        let token_config = self
+            .fetch_remote_value_slot(faucet_id, FungibleFaucet::token_config_slot())
+            .await?;
+
+        Ok(token_config.and_then(|token_config| faucet_metadata_from_token_config(*token_config)))
+    }
+
+    /// Fetches the token symbol of a public non-fungible faucet from the network.
+    ///
+    /// Uses [`get_account`](crate::rpc::NodeRpcClient::get_account) with a minimal request so that
+    /// the node does not return vault data. The faucet's symbol lives in a single value slot, which
+    /// is always present in the returned storage header.
+    ///
+    /// Returns:
+    /// - `Ok(Some(_))` — the account is public and its symbol storage slot decoded.
+    /// - `Ok(None)`    — the account is private, not on chain, or the storage slot does not parse
+    ///   as a token symbol.
+    /// - `Err(_)`      — transport-level RPC error.
+    pub async fn fetch_remote_non_fungible_faucet_symbol(
+        &self,
+        faucet_id: AccountId,
+    ) -> Result<Option<TokenSymbol>, ClientError> {
+        let symbol_word = self
+            .fetch_remote_value_slot(faucet_id, NonFungibleFaucet::symbol_slot())
+            .await?;
+
+        // Symbol slot word layout: `[symbol, 0, 0, 0]` (see
+        // `NonFungibleFaucet::symbol_slot_value`).
+        Ok(symbol_word.and_then(|symbol_word| TokenSymbol::try_from(symbol_word[0]).ok()))
+    }
+
+    /// Fetches the value of a value storage slot of a public account from the network.
+    ///
+    /// Returns `Ok(None)` when the account is private, is not on chain, or has no slot with
+    /// `slot_name`. Returns an error for a transport-level RPC error.
+    async fn fetch_remote_value_slot(
+        &self,
+        account_id: AccountId,
+        slot_name: &StorageSlotName,
+    ) -> Result<Option<Word>, ClientError> {
+        let proof = match self.rpc_api.get_account(account_id, GetAccountRequest::new()).await {
             Ok((_, proof)) => proof,
             Err(err) => match err.endpoint_error() {
                 Some(EndpointError::GetAccount(
@@ -562,13 +603,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(None);
         };
 
-        let Some(slot_header) =
-            storage_header.find_slot_header_by_name(FungibleFaucet::token_config_slot())
-        else {
-            return Ok(None);
-        };
-
-        Ok(faucet_metadata_from_token_config(*slot_header.value()))
+        Ok(storage_header.find_slot_header_by_name(slot_name).map(StorageSlotHeader::value))
     }
 
     /// Adds an [`Address`] to the associated [`AccountId`].

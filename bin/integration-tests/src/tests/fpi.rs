@@ -319,15 +319,10 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
     let tx_script = client.code_builder().compile_tx_script(&tx_script)?;
     client.sync_state().await?;
 
-    // Wait for blocks so the account is committed on-chain.
-    client.wait_for_blocks(2).await?;
-
     // Create a new client to ensure no cached data.
     let mut client2 = client_config.clone().into_client().await?;
 
     let native_account = client2.insert_wallet(AccountType::Public).await?;
-
-    client2.wait_for_blocks_no_sync(2).await?;
 
     // Before the transaction there are no cached foreign accounts.
     let cached = client2.test_store().get_foreign_account_code(vec![foreign_account_id]).await?;
@@ -395,14 +390,10 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
     let tx_script = client.code_builder().compile_tx_script(&tx_script)?;
     client.sync_state().await?;
 
-    client.wait_for_blocks(2).await?;
-
     // Create a new client to ensure no cached data.
     let mut client2 = client_config.clone().into_client().await?;
 
     let native_account = client2.insert_wallet(AccountType::Public).await?;
-
-    client2.wait_for_blocks_no_sync(2).await?;
 
     // Build request WITHOUT specifying the foreign account — lazy loading should handle both the
     // account inputs and the storage map entries via separate RPC calls.

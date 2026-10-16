@@ -26,8 +26,12 @@ use miden_client::note::{
 };
 use miden_client::pswap::PswapLineageState;
 use miden_client::rpc::NodeRpcClient;
+use miden_client::rpc::domain::note::CommittedNote;
 use miden_client::rpc::encryption::TransactionEncryptionKey;
-use miden_client::store::input_note_states::ConsumedAuthenticatedLocalNoteState;
+use miden_client::store::input_note_states::{
+    CommittedNoteState,
+    ConsumedAuthenticatedLocalNoteState,
+};
 use miden_client::store::{
     InputNoteRecord,
     InputNoteState,
@@ -37,7 +41,7 @@ use miden_client::store::{
     StoreError,
     TransactionFilter,
 };
-use miden_client::sync::{NoteTagRecord, NoteTagSource};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     AccountSetup,
@@ -85,9 +89,16 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{Asset, AssetAmount, AssetId, FungibleAsset, TokenSymbol};
+use miden_protocol::asset::{
+    Asset,
+    AssetAmount,
+    AssetId,
+    FungibleAsset,
+    NonFungibleAsset,
+    TokenSymbol,
+};
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
-use miden_protocol::crypto::merkle::MerklePath;
+use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note,
@@ -95,6 +106,8 @@ use miden_protocol::note::{
     NoteAttachment,
     NoteAttachmentScheme,
     NoteAttachments,
+    NoteDetails,
+    NoteInclusionProof,
     NoteRecipient,
     NoteStorage,
     NoteTag,
@@ -116,7 +129,12 @@ use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
-use miden_standards::account::faucets::{FungibleFaucet, TokenName};
+use miden_standards::account::faucets::{
+    AssetStatus,
+    FungibleFaucet,
+    NonFungibleFaucet,
+    TokenName,
+};
 use miden_standards::account::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_standards::account::wallets::BasicWallet;
 use miden_standards::note::{
@@ -917,6 +935,123 @@ async fn mint_transaction() {
     let executed_tx = transaction_result.executed_transaction().clone();
 
     assert_eq!(executed_tx.account_patch().final_nonce(), Some(ONE));
+}
+
+#[tokio::test]
+async fn mint_and_burn_non_fungible_transaction() {
+    // generate test client with a random store name
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
+
+    let faucet = client.insert_non_fungible_faucet(AccountType::Private).await.unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    client.sync_state().await.unwrap();
+
+    let user_data = b"token #1";
+    let salt = Word::from([1, 2, 3, 4u32]);
+    let commitment = NonFungibleFaucet::compute_asset_commitment(user_data, salt);
+    let asset = NonFungibleAsset::from_parts(faucet.id(), commitment);
+
+    // Mint the NFT to the wallet, and consume the mint note with the wallet.
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, wallet.id(), NoteType::Private, client.rng())
+        .unwrap();
+
+    let mint_notes = mint_request.expected_output_own_notes();
+    assert_eq!(mint_notes.len(), 1);
+    let note_assets: Vec<Asset> = mint_notes[0].assets().iter().copied().collect();
+    assert_eq!(note_assets, vec![Asset::from(asset)]);
+
+    client
+        .execute_tx_and_consume_output_notes(mint_request, faucet.id(), wallet.id())
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let wallet_account = client.get_account(wallet.id()).await.unwrap().unwrap();
+    assert!(wallet_account.vault().assets().any(|vault_asset| vault_asset == asset.into()));
+
+    let faucet_account = client.get_account(faucet.id()).await.unwrap().unwrap();
+    assert_eq!(
+        NonFungibleFaucet::get_asset_status(faucet_account.storage(), commitment).unwrap(),
+        AssetStatus::Issued
+    );
+
+    // Send the NFT back to the faucet in a BURN note, and consume the note with the faucet.
+    let burn_request = TransactionRequestBuilder::new()
+        .build_burn_non_fungible_asset(asset, wallet.id(), client.rng())
+        .unwrap();
+
+    client
+        .execute_tx_and_consume_output_notes(burn_request, wallet.id(), faucet.id())
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let wallet_account = client.get_account(wallet.id()).await.unwrap().unwrap();
+    assert!(wallet_account.vault().assets().all(|vault_asset| vault_asset != asset.into()));
+
+    let faucet_account = client.get_account(faucet.id()).await.unwrap().unwrap();
+    assert_eq!(
+        NonFungibleFaucet::get_asset_status(faucet_account.storage(), commitment).unwrap(),
+        AssetStatus::Burned
+    );
+}
+
+#[tokio::test]
+async fn fetch_remote_non_fungible_faucet_symbol() {
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
+
+    let public_faucet = client.insert_non_fungible_faucet(AccountType::Public).await.unwrap();
+    let private_faucet = client.insert_non_fungible_faucet(AccountType::Private).await.unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
+
+    client.sync_state().await.unwrap();
+
+    // The node only knows a public account after a transaction of the account is committed.
+    let user_data = b"token #1";
+    let salt = Word::from([1, 2, 3, 4u32]);
+    let commitment = NonFungibleFaucet::compute_asset_commitment(user_data, salt);
+    let asset = NonFungibleAsset::from_parts(public_faucet.id(), commitment);
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, wallet.id(), NoteType::Private, client.rng())
+        .unwrap();
+    Box::pin(client.submit_new_transaction(public_faucet.id(), mint_request))
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let symbol = client
+        .fetch_remote_non_fungible_faucet_symbol(public_faucet.id())
+        .await
+        .unwrap()
+        .expect("the symbol of a public non-fungible faucet is fetched");
+    assert_eq!(symbol, TokenSymbol::new("NFT").unwrap());
+
+    // The node does not return the storage of a private account.
+    let symbol = client
+        .fetch_remote_non_fungible_faucet_symbol(private_faucet.id())
+        .await
+        .unwrap();
+    assert!(symbol.is_none());
+
+    // A public fungible faucet has no non-fungible symbol slot.
+    let fungible_faucet = client.insert_faucet(AccountType::Public).await.unwrap();
+    client
+        .mint_and_consume(wallet.id(), fungible_faucet.id(), NoteType::Private)
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let symbol = client
+        .fetch_remote_non_fungible_faucet_symbol(fungible_faucet.id())
+        .await
+        .unwrap();
+    assert!(symbol.is_none());
 }
 
 #[tokio::test]
@@ -2352,6 +2487,60 @@ async fn note_screening_reports_only_the_account_bound_by_the_note() {
         let accounts: Vec<AccountId> = relevances.iter().map(|(id, _)| *id).collect();
         assert_eq!(accounts, vec![target]);
     }
+}
+
+/// A public note that carries a tracked account's tag but no tracked account can consume is
+/// discarded, while the same note is kept once the user adds its tag.
+#[tokio::test]
+async fn note_screening_is_skipped_for_user_tags() {
+    let (mut client, _mock_rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, ..) = client.setup_two_wallets_and_faucet(AccountType::Private).await.unwrap();
+
+    let account_tag = client
+        .test_store()
+        .get_account_note_tags()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.source == NoteTagSource::Account(wallet.id()))
+        .unwrap()
+        .tag;
+
+    let untracked = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+    let script = client.code_builder().compile_note_script(TARGET_BOUND_NOTE_SCRIPT).unwrap();
+    let note = NoteBuilder::new(untracked, ChaCha20Rng::seed_from_u64(0))
+        .script(script)
+        .note_storage([untracked.suffix(), untracked.prefix().as_felt()])
+        .unwrap()
+        .tag(account_tag.as_u32())
+        .build()
+        .unwrap();
+
+    let block_num = client.get_sync_height().await.unwrap();
+    let proof = NoteInclusionProof::new(block_num, 0, SparseMerklePath::default()).unwrap();
+    let committed = CommittedNote::new(note.id(), *note.metadata(), proof.clone());
+    let state = CommittedNoteState {
+        metadata: *note.metadata(),
+        inclusion_proof: proof,
+        block_note_root: EMPTY_WORD,
+    }
+    .into();
+    let record = InputNoteRecord::new(
+        NoteDetails::from(note.clone()),
+        note.attachments().clone(),
+        None,
+        state,
+    );
+
+    let screener = client.note_screener();
+    let action = Box::pin(screener.on_note_received(committed.clone(), Some(record.clone())))
+        .await
+        .unwrap();
+    assert!(matches!(action, NoteUpdateAction::Discard));
+
+    client.add_note_tag(account_tag).await.unwrap();
+    let action = Box::pin(screener.on_note_received(committed, Some(record))).await.unwrap();
+    assert!(matches!(action, NoteUpdateAction::Insert(_)));
 }
 
 /// Reads transaction inputs straight from the data store the screener runs its trial executions

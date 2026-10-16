@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
+use miden_client::account::standards::faucets::NonFungibleFaucet;
 use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     AccountBuilder,
@@ -8,7 +9,7 @@ use miden_client::account::{
     AccountType,
     build_wallet_id,
 };
-use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
 use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{
@@ -404,6 +405,53 @@ pub async fn test_import_account_by_id(client_config: ClientConfig) -> Result<()
     Ok(())
 }
 
+/// Checks that two clients that import a public account get the non-fungible asset that is later
+/// minted to it. The first client executes the mint, and the second client gets it through a sync.
+pub async fn test_sync_imported_account_with_non_fungible_asset(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let mut client_1 = client_config.clone().into_client().await?;
+    let mut client_2 = client_config.clone().into_client().await?;
+
+    let faucet = client_1.insert_non_fungible_faucet(AccountType::Public).await?;
+    let wallet = client_1.insert_wallet(AccountType::Public).await?;
+
+    // Deploy the wallet so that the clients can import it from the node. The first client already
+    // tracks the wallet, so the import replaces its local state.
+    client_1.deploy_account(wallet.id()).await?;
+    client_1.import_account_by_id(wallet.id()).await?;
+    client_2.import_account_by_id(wallet.id()).await?;
+
+    let salt = Word::from([1, 2, 3, 4u32]);
+    let commitment = NonFungibleFaucet::compute_asset_commitment(b"token #1", salt);
+    let nft = NonFungibleAsset::from_parts(faucet.id(), commitment);
+
+    // Mint the NFT to the wallet, and consume the mint note with the wallet.
+    let mint_request = TransactionRequestBuilder::new().build_mint_non_fungible_asset(
+        nft,
+        wallet.id(),
+        NoteType::Public,
+        client_1.rng(),
+    )?;
+    let tx_id = client_1
+        .execute_tx_and_consume_output_notes(mint_request, faucet.id(), wallet.id())
+        .await?;
+    client_1.wait_for_tx(tx_id).await?;
+
+    // The second client gets the new wallet state through a sync.
+    client_2.sync_state().await?;
+
+    for client in [&client_1, &client_2] {
+        let wallet = client
+            .get_account(wallet.id())
+            .await?
+            .context("wallet not found in the client")?;
+        assert!(wallet.vault().assets().any(|asset| asset == nft.into()));
+    }
+
+    Ok(())
+}
+
 /// Watched-account flow:
 ///   - `client_1` owns the wallet and faucet, executes transactions.
 ///   - `client_2` watches the wallet via `import_watched_account_by_id` (no note tag).
@@ -547,17 +595,17 @@ pub async fn test_consumed_note_ordering(client_config: ClientConfig) -> Result<
     client.wait_for_tx(bootstrap_tx_id).await?;
     client.sync_state().await?;
 
-    // Mint 3 notes, each in a separate transaction.
-    let mut minted_notes = Vec::new();
-    for i in 0..3 {
-        let (tx_id, note) = client
-            .mint_note(wallet_account.id(), faucet_account.id(), NoteType::Private)
-            .await?;
-        info!(tx_id = %tx_id, note_id = %note.id(), index = i, "Minted note");
-        client.wait_for_tx(tx_id).await?;
-        minted_notes.push(note);
-    }
-    client.sync_state().await?;
+    // Mint 3 notes in one transaction. The ordering assertion needs three distinct notes to
+    // consume, not three distinct mint blocks.
+    let fungible_asset = FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)?;
+    let mint_tx_request = client.mint_multiple_fungible_asset(
+        fungible_asset,
+        &[wallet_account.id(); 3],
+        NoteType::Private,
+    )?;
+    let minted_notes = mint_tx_request.expected_output_own_notes();
+    client.execute_tx_and_sync(faucet_account.id(), mint_tx_request).await?;
+    info!(count = minted_notes.len(), "Minted notes");
 
     let mut batch = client.new_transaction_batch();
     for (i, note) in minted_notes.iter().enumerate() {

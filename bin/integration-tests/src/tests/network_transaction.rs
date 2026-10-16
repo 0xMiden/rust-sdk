@@ -597,8 +597,9 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
     client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    // Wait for the network account to consume the note (check counter increment).
-    let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
+    // Wait for the network account to consume the note: one bump note takes the counter from 0 to
+    // 1.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
     for _ in 0..15 {
         client.sync_state().await?;
         let account_details = client
@@ -665,8 +666,9 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
     client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    // Wait for the network account to consume the note (check counter increment).
-    let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
+    // Wait for the network account to consume the note: one bump note takes the counter from 0 to
+    // 1.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
     for _ in 0..15 {
         client.sync_state().await?;
         let account_details = client
@@ -796,6 +798,12 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
 
     // A mint cannot double as the account's deploy.
     client.deploy_account(alice.id()).await?;
+
+    // The note screener executes custom-script notes, and an execution fails if the account cannot
+    // pay the fee. Bob's deploy puts his funding in his vault, so his sync keeps the public note.
+    // TODO: remove once the note checker can detect consumable notes for accounts that cannot pay
+    // the fee (related: https://github.com/0xMiden/protocol/issues/3345).
+    client_2.deploy_account(bob.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a

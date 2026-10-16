@@ -804,6 +804,8 @@ async fn tx_show_decodes_p2ide_note_storage() -> Result<()> {
         .get_output_note(NoteId::try_from_hex(&note_id)?)
         .await?
         .expect("the transfer should store its output note");
+    // The store holds an exclusive lock, so the CLI cannot open it while this client is alive.
+    drop(client);
 
     let mut show_cmd = cargo_bin_cmd!("miden-client");
     show_cmd.args(["tx", "--show", &transaction_id]);

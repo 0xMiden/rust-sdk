@@ -210,13 +210,13 @@ mod tests {
         Ok(())
     }
 
-    /// Two stores open on the same file must wait on each other's write locks rather than fail with
-    /// `SQLITE_BUSY`.
+    /// Two unlocked stores open on the same file must wait on each other's write locks rather than
+    /// fail with `SQLITE_BUSY`.
     #[tokio::test]
     async fn overlapping_accessors_wait_instead_of_failing() -> anyhow::Result<()> {
         let path = create_test_store_path();
-        let first = SqliteStore::new(path.clone()).await?;
-        let second = SqliteStore::new(path).await?;
+        let first = SqliteStore::new_unlocked(path.clone()).await?;
+        let second = SqliteStore::new_unlocked(path).await?;
 
         first
             .set_setting(SettingScope::User, "from-first".to_string(), b"1".to_vec())

@@ -251,7 +251,8 @@ async fn bench_account_methods(
     iterations: usize,
 ) -> anyhow::Result<Vec<BenchmarkResult>> {
     let store_path = workdir.join(format!("accounts-{count}.sqlite3"));
-    let store = SqliteStore::new(store_path.clone())
+    // The measured opens below run while `store` is open, so every store on this file is unlocked.
+    let store = SqliteStore::new_unlocked(store_path.clone())
         .await
         .context("failed to create the account benchmark store")?;
 
@@ -267,7 +268,7 @@ async fn bench_account_methods(
 
     let mut results = vec![
         measure("SqliteStore::new [open]", iterations, async |_| {
-            SqliteStore::new(store_path.clone()).await?;
+            SqliteStore::new_unlocked(store_path.clone()).await?;
             Ok(())
         })
         .await?,

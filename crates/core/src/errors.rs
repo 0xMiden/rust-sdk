@@ -20,6 +20,9 @@ use miden_protocol::utils::serde::DeserializationError;
 use miden_protocol::{Word, WordError};
 use thiserror::Error;
 
+mod rpc;
+pub use rpc::*;
+
 // STORE ERROR
 // ================================================================================================
 

@@ -2809,6 +2809,7 @@ dependencies = [
  "miden-agglayer",
  "miden-assembly-syntax",
  "miden-client-core",
+ "miden-client-grpc",
  "miden-debug",
  "miden-node-proto-build",
  "miden-objects",
@@ -2899,6 +2900,29 @@ dependencies = [
  "rand_chacha 0.10.0",
  "thiserror",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "miden-client-grpc"
+version = "0.17.2"
+dependencies = [
+ "async-trait",
+ "gloo-timers",
+ "miden-client-core",
+ "miden-node-proto-build",
+ "miden-objects",
+ "miden-protocol",
+ "miden-standards",
+ "miden-testing",
+ "miette",
+ "prost",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tonic-web-wasm-client",
+ "tracing",
 ]
 
 [[package]]

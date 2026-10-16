@@ -140,9 +140,9 @@ fn sync_notes_block(block_num: u32, tags: &[NoteTag]) -> SyncNotesBlock {
 }
 
 fn transaction_record(account_id: AccountId) -> TransactionRecord {
-    TransactionRecord {
-        block_num: BlockNumber::GENESIS,
-        transaction_header: TransactionHeader::new(
+    TransactionRecord::new(
+        BlockNumber::GENESIS,
+        TransactionHeader::new(
             account_id,
             Word::default(),
             Word::default(),
@@ -150,10 +150,10 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             vec![],
         )
         .unwrap(),
-        output_notes: vec![],
-        erased_output_notes: vec![],
-        consumed_note_refs: vec![],
-    }
+        vec![],
+        vec![],
+        vec![],
+    )
 }
 
 fn account_proof() -> AccountProof {

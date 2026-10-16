@@ -2,7 +2,7 @@ use alloc::string::String;
 
 use thiserror::Error;
 
-use crate::rpc::errors::GrpcError;
+use crate::errors::GrpcError;
 
 // GET ACCOUNT ERROR
 // ================================================================================================

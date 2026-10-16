@@ -1,77 +1,27 @@
-mod account;
-mod block;
-mod note;
-mod sync;
-mod transaction;
-
-pub use account::{GetAccountError, RegisterAccountError};
-pub use block::{GetBlockByNumberError, GetBlockHeaderError};
-pub use note::{GetNoteScriptByRootError, GetNotesByIdError};
-pub use sync::{
+use miden_client_core::errors::GrpcError;
+use miden_client_core::errors::node::{
+    AddTransactionError,
+    EndpointError,
+    GetAccountError,
+    GetBlockByNumberError,
+    GetBlockHeaderError,
+    GetNoteScriptByRootError,
+    GetNotesByIdError,
     NoteSyncError,
+    RegisterAccountError,
     SyncAccountStorageMapsError,
     SyncAccountVaultError,
     SyncChainMmrError,
     SyncNullifiersError,
     SyncTransactionsError,
 };
-use thiserror::Error;
-pub use transaction::AddTransactionError;
-
-use crate::rpc::RpcEndpoint;
-use crate::rpc::errors::GrpcError;
-
-/// Application-level error returned by the node for a specific RPC endpoint.
-///
-/// Each variant wraps a typed error parsed from the error code in the node's gRPC response.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum EndpointError {
-    /// Error from the `SubmitProvenTransaction` or `SubmitProvenBatch` endpoint
-    #[error(transparent)]
-    AddTransaction(#[from] AddTransactionError),
-    /// Error from the `GetBlockHeaderByNumber` endpoint
-    #[error(transparent)]
-    GetBlockHeader(#[from] GetBlockHeaderError),
-    /// Error from the `GetBlockByNumber` endpoint
-    #[error(transparent)]
-    GetBlockByNumber(#[from] GetBlockByNumberError),
-    /// Error from the `SyncNotes` endpoint
-    #[error(transparent)]
-    NoteSync(#[from] NoteSyncError),
-    /// Error from the `SyncNullifiers` endpoint
-    #[error(transparent)]
-    SyncNullifiers(#[from] SyncNullifiersError),
-    /// Error from the `SyncAccountVault` endpoint
-    #[error(transparent)]
-    SyncAccountVault(#[from] SyncAccountVaultError),
-    /// Error from the `SyncStorageMaps` endpoint
-    #[error(transparent)]
-    SyncStorageMaps(#[from] SyncAccountStorageMapsError),
-    /// Error from the `SyncTransactions` endpoint
-    #[error(transparent)]
-    SyncTransactions(#[from] SyncTransactionsError),
-    /// Error from the `SyncChainMmr` endpoint
-    #[error(transparent)]
-    SyncChainMmr(#[from] SyncChainMmrError),
-    /// Error from the `GetNotesById` endpoint
-    #[error(transparent)]
-    GetNotesById(#[from] GetNotesByIdError),
-    /// Error from the `GetNoteScriptByRoot` endpoint
-    #[error(transparent)]
-    GetNoteScriptByRoot(#[from] GetNoteScriptByRootError),
-    /// Error from the `GetAccount` endpoint
-    #[error(transparent)]
-    GetAccount(#[from] GetAccountError),
-    /// Error from the `RegisterAccount` endpoint
-    #[error(transparent)]
-    RegisterAccount(#[from] RegisterAccountError),
-}
+use miden_client_core::rpc::RpcEndpoint;
 
 /// Parses the application-level error code into a typed error for the given endpoint.
 ///
 /// Returns `None` if details are empty or if the endpoint doesn't have typed errors.
-pub fn parse_node_error(
-    endpoint: &RpcEndpoint,
+pub(crate) fn parse_node_error(
+    endpoint: RpcEndpoint,
     details: &[u8],
     message: &str,
 ) -> Option<EndpointError> {
@@ -125,8 +75,8 @@ pub fn parse_node_error(
 }
 
 /// Parses the gRPC status code into a typed error for the given endpoint.
-pub fn parse_status_error(
-    endpoint: &RpcEndpoint,
+pub(crate) fn parse_status_error(
+    endpoint: RpcEndpoint,
     error_kind: &GrpcError,
     message: &str,
 ) -> Option<EndpointError> {
@@ -169,7 +119,7 @@ mod tests {
     #[test]
     fn only_the_register_account_endpoint_classifies_a_status_code() {
         let registration =
-            parse_status_error(&RpcEndpoint::RegisterAccount, &GrpcError::NotFound, "unknown");
+            parse_status_error(RpcEndpoint::RegisterAccount, &GrpcError::NotFound, "unknown");
 
         assert!(matches!(
             registration,
@@ -183,7 +133,7 @@ mod tests {
             RpcEndpoint::Status,
         ] {
             assert!(
-                parse_status_error(&endpoint, &GrpcError::NotFound, "unknown").is_none(),
+                parse_status_error(endpoint, &GrpcError::NotFound, "unknown").is_none(),
                 "{endpoint:?} must not classify a status code"
             );
         }
@@ -195,7 +145,7 @@ mod tests {
     fn a_transport_failure_on_the_registration_endpoint_stays_unclassified() {
         assert!(
             parse_status_error(
-                &RpcEndpoint::RegisterAccount,
+                RpcEndpoint::RegisterAccount,
                 &GrpcError::Unavailable,
                 "node is down"
             )
@@ -209,27 +159,27 @@ mod tests {
     fn a_block_after_the_chain_tip_parses_as_future_block() {
         let message = "block_to (5) is greater than chain tip (4)";
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncNotes, &[2], message),
+            parse_node_error(RpcEndpoint::SyncNotes, &[2], message),
             Some(EndpointError::NoteSync(NoteSyncError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncChainMmr, &[2], message),
+            parse_node_error(RpcEndpoint::SyncChainMmr, &[2], message),
             Some(EndpointError::SyncChainMmr(SyncChainMmrError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncNullifiers, &[4], message),
+            parse_node_error(RpcEndpoint::SyncNullifiers, &[4], message),
             Some(EndpointError::SyncNullifiers(SyncNullifiersError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncAccountVault, &[4], message),
+            parse_node_error(RpcEndpoint::SyncAccountVault, &[4], message),
             Some(EndpointError::SyncAccountVault(SyncAccountVaultError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncStorageMaps, &[5], message),
+            parse_node_error(RpcEndpoint::SyncStorageMaps, &[5], message),
             Some(EndpointError::SyncStorageMaps(SyncAccountStorageMapsError::FutureBlock))
         );
         assert_eq!(
-            parse_node_error(&RpcEndpoint::SyncTransactions, &[5], message),
+            parse_node_error(RpcEndpoint::SyncTransactions, &[5], message),
             Some(EndpointError::SyncTransactions(SyncTransactionsError::FutureBlock))
         );
     }

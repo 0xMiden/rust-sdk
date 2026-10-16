@@ -4,11 +4,10 @@
 use alloc::format;
 use core::convert::TryFrom;
 
-use miden_client_core::rpc::RpcLimits;
+use miden_client_core::errors::RpcConversionError;
+use miden_client_core::rpc::{RpcEndpoint, RpcLimits};
 
-use crate::rpc::RpcEndpoint;
-use crate::rpc::errors::RpcConversionError;
-use crate::rpc::generated::rpc as proto;
+use crate::generated::rpc as proto;
 
 /// Extracts a parameter limit from the proto response for a given endpoint and parameter name.
 fn get_param(

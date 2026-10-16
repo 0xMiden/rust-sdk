@@ -334,6 +334,39 @@ fn extend_with_length_prefixed(payload: &mut Vec<u8>, field: &[u8]) {
     payload.extend_from_slice(field);
 }
 
+// SEALED TRANSACTION INPUTS
+// ================================================================================================
+
+/// The sealed, wire-ready form of a transaction's
+/// [`TransactionInputs`](miden_protocol::transaction::TransactionInputs).
+///
+/// Wraps the serialized bytes of a [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage) so
+/// that a plaintext blob cannot be passed to submission by mistake, alongside the identifier of the
+/// key they were sealed against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedTransactionInputs {
+    key_id: Vec<u8>,
+    ciphertext: Vec<u8>,
+}
+
+impl SealedTransactionInputs {
+    /// Creates a new [`SealedTransactionInputs`] from sealed bytes and the identifier of the key
+    /// they were sealed against.
+    pub fn new(key_id: Vec<u8>, ciphertext: Vec<u8>) -> Self {
+        Self { key_id, ciphertext }
+    }
+
+    /// Returns the identifier of the key these inputs were sealed against.
+    pub fn key_id(&self) -> &[u8] {
+        &self.key_id
+    }
+
+    /// Returns the sealed bytes.
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+}
+
 // TESTS
 // ================================================================================================
 

@@ -610,15 +610,14 @@ async fn store_genesis(
 ) -> Result<(), ClientError> {
     validate_genesis(&block_header, &protocol_config)?;
 
-    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
-        if stored.commitment() != block_header.commitment() {
-            return Err(ClientError::ChainValidationError(format!(
-                "stored genesis block commitment {} does not match {}",
-                stored.commitment(),
-                block_header.commitment()
-            )));
-        }
-        return Ok(());
+    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await?
+        && stored.commitment() != block_header.commitment()
+    {
+        return Err(ClientError::ChainValidationError(format!(
+            "stored genesis block commitment {} does not match {}",
+            stored.commitment(),
+            block_header.commitment()
+        )));
     }
 
     store.insert_genesis(&block_header, Some(&protocol_config)).await?;

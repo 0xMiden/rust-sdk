@@ -1,5 +1,7 @@
-//! Client-side persistence for PSWAP lineages. The lineage key scheme lives with the default
-//! [`Store`] PSWAP methods in `miden-client-core`.
+//! Client-side persistence for PSWAP lineages. The [`Store`] PSWAP methods keep each lineage under
+//! its stable `order_id`. They also keep an index from the current tip to the `order_id`. The tip
+//! changes each round. The index lets discovery resolve a consumed tip back to its order without a
+//! full scan.
 
 use alloc::sync::Arc;
 use alloc::vec;

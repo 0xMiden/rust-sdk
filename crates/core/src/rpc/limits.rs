@@ -9,9 +9,6 @@ use miden_protocol::utils::serde::{
     Serializable,
 };
 
-/// Key used to store RPC limits in the settings table.
-pub const RPC_LIMITS_STORE_SETTING: &str = "rpc_limits";
-
 const DEFAULT_NOTE_IDS_LIMIT: u32 = 100;
 const DEFAULT_NULLIFIERS_LIMIT: u32 = 1000;
 const DEFAULT_ACCOUNT_IDS_LIMIT: u32 = 1000;

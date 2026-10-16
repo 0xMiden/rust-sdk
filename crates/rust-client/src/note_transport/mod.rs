@@ -38,17 +38,13 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-pub use miden_client_core::note_transport::{NOTE_TRANSPORT_CURSORS_KEY, NoteTransportCursor};
+pub use miden_client_core::note_transport::NoteTransportCursor;
 
 type NoteTransportCursors = BTreeMap<NoteTag, NoteTransportCursor>;
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
 /// Limits the pages for each request group so other groups can progress in the same sync.
 const MAX_NOTE_TRANSPORT_PAGES_PER_GROUP: usize = 32;
-
-/// Legacy settings key for note transport backfill state.
-#[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
-pub const NOTE_TRANSPORT_COVERED_TAGS_KEY: &str = "note_transport_covered_tags";
 
 /// Client note transport methods.
 impl<AUTH> Client<AUTH> {

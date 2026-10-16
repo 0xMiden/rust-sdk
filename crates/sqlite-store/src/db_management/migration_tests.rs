@@ -5,7 +5,6 @@ use miden_client::note::{NoteDetailsCommitment, NoteTag};
 use miden_client::testing::common::ACCOUNT_ID_REGULAR;
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{ONE, Word, ZERO};
-use miden_client_core::store::SettingScope;
 use miden_client_core::sync::NoteTagSource;
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
@@ -280,8 +279,8 @@ fn user_data_does_not_change_schema_hash() {
     assert_eq!(hash_before.to_string(), client.expected_hash(client.latest_version()));
 
     conn.execute(
-        "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
-        params![SettingScope::User.as_u8(), "test-setting", b"value"],
+        "INSERT INTO user_settings (name, value) VALUES (?1, ?2)",
+        params!["test-setting", b"value"],
     )
     .expect("user data should insert");
 

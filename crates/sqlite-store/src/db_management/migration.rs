@@ -16,16 +16,16 @@ use super::schema::SchemaHash;
 pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 3] = [
     SqliteMigration::new(
         include_str!("../migrations/0001_init.sql"),
-        "0x682f512c83400617c486ccd6761076fcbcbb52865e9cc0b5e36f25b0a096e234",
+        "0x96190962d13a98f12da1c1ea63f4ca59039b0556c88c011494ad3745b84f3ce6",
     ),
     // Deletes data only, so the schema keeps the fingerprint of version 1.
     SqliteMigration::new(
         include_str!("../migrations/0002_drop_note_transport_outbox.sql"),
-        "0x682f512c83400617c486ccd6761076fcbcbb52865e9cc0b5e36f25b0a096e234",
+        "0x96190962d13a98f12da1c1ea63f4ca59039b0556c88c011494ad3745b84f3ce6",
     ),
     SqliteMigration::new(
         include_str!("../migrations/0003_derive_account_note_tags.sql"),
-        "0x682f512c83400617c486ccd6761076fcbcbb52865e9cc0b5e36f25b0a096e234",
+        "0x96190962d13a98f12da1c1ea63f4ca59039b0556c88c011494ad3745b84f3ce6",
     ),
 ];
 

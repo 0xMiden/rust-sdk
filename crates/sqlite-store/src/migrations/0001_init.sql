@@ -1,15 +1,20 @@
--- Table for storing different settings in run-time, which need to persist over runs.
---
--- `scope` separates the client's own state from the user's, so the same name in each addresses a
--- different row. It leads the primary key, so listing one scope's keys reads a contiguous run.
-CREATE TABLE settings (
-    scope INTEGER NOT NULL,  -- owner of the row (0 = Client, 1 = User)
+-- The data of the client, as protobuf messages. The client reaches it only through the typed store
+-- methods.
+CREATE TABLE client_config (
     name  TEXT NOT NULL,
     value BLOB NOT NULL,
 
-    PRIMARY KEY (scope, name),
-    CONSTRAINT setting_scope_is_valid    CHECK (scope IN (0, 1)),
-    CONSTRAINT setting_name_is_not_empty CHECK (length(name) > 0)
+    PRIMARY KEY (name),
+    CONSTRAINT client_config_name_is_not_empty CHECK (length(name) > 0)
+) WITHOUT ROWID, STRICT;
+
+-- The values of the user of the client.
+CREATE TABLE user_settings (
+    name  TEXT NOT NULL,
+    value BLOB NOT NULL,
+
+    PRIMARY KEY (name),
+    CONSTRAINT user_setting_name_is_not_empty CHECK (length(name) > 0)
 ) WITHOUT ROWID, STRICT;
 
 -- Create account_code table

@@ -3,7 +3,6 @@
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
-use miden_client_core::store::protocol_config_setting_key;
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -15,6 +14,7 @@ use rusqlite::{Connection, Transaction, params};
 use super::SqliteStore;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
+use crate::settings::protocol_config_key;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
 use crate::{insert_sql, proto, subst, with_write_tx};
@@ -159,7 +159,7 @@ impl SqliteStore {
             if let Some(config) = &protocol_config {
                 Self::set_client_setting(
                     db_tx,
-                    &protocol_config_setting_key(config.to_commitment()),
+                    &protocol_config_key(config.to_commitment()),
                     config,
                 )?;
             }

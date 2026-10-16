@@ -15,13 +15,14 @@ doctest    = false
 
 [features]
 default = ["std"]
-std     = ["miden-objects/std", "miden-protocol/std"]
-testing = []
+std     = ["miden-objects/std", "miden-protocol/std", "miden-standards/std"]
+testing = ["miden-standards/testing"]
 
 [dependencies]
 # Miden dependencies
-miden-objects  = { workspace = true }
-miden-protocol = { workspace = true }
+miden-objects   = { workspace = true }
+miden-protocol  = { workspace = true }
+miden-standards = { workspace = true }
 
 # External dependencies
 async-trait = { workspace = true }
@@ -30,7 +31,7 @@ thiserror   = { workspace = true }
 
 [dev-dependencies]
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
-miden-standards = { workspace = true }
+miden-standards = { features = ["testing"], workspace = true }
 miden-testing   = { default-features = false, workspace = true }
 rand            = { workspace = true }
 rand_chacha     = { workspace = true }

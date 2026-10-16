@@ -1,3 +1,4 @@
+#[cfg(feature = "tonic")]
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
@@ -12,8 +13,9 @@ use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
+
+pub use miden_client_core::rpc::AccountStorageRequirements;
 
 use crate::alloc::string::ToString;
 use crate::rpc::{AccountStateAt, RpcError};
@@ -660,91 +662,25 @@ impl AccountProof {
 // ACCOUNT STORAGE REQUEST
 // ================================================================================================
 
-/// Per-slot map data to include in a `/GetAccount` response. Slots absent here are omitted from
-/// `map_details` (the storage header still lists every slot).
-///
-/// - Empty key list: all entries, no proof. May come back as [`StorageMapEntries::LimitExceeded`].
-/// - Non-empty key list: just those keys, covered by one partial SMT.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct AccountStorageRequirements(BTreeMap<StorageSlotName, Vec<StorageMapKey>>);
-
-impl AccountStorageRequirements {
-    /// Requests the specified ke ys per slot, covered by one partial SMT per slot. An empty key
-    /// iterator for a slot behaves like [`Self::all_entries`].
-    ///
-    /// Repeated keys within a slot are collapsed, since the node rejects a request that names the
-    /// same key twice.
-    pub fn new<'a>(
-        slots_and_keys: impl IntoIterator<
-            Item = (StorageSlotName, impl IntoIterator<Item = &'a StorageMapKey>),
-        >,
-    ) -> Self {
-        let map = slots_and_keys
-            .into_iter()
-            .map(|(slot_name, keys_iter)| {
-                let mut keys_vec: Vec<StorageMapKey> = Vec::new();
-                for key in keys_iter {
-                    if !keys_vec.contains(key) {
-                        keys_vec.push(*key);
-                    }
-                }
-                (slot_name, keys_vec)
-            })
-            .collect();
-
-        AccountStorageRequirements(map)
+/// Builds the per-slot storage map requests of a `/GetAccount` request.
+fn storage_map_detail_requests(
+    requirements: &AccountStorageRequirements,
+) -> Vec<StorageMapDetailRequest> {
+    let request_map = requirements.inner();
+    let mut requests = Vec::with_capacity(request_map.len());
+    for (slot_name, map_keys) in request_map {
+        let slot_data = if map_keys.is_empty() {
+            Some(SlotData::AllEntries(true))
+        } else {
+            let keys = map_keys.iter().map(|key| Word::from(*key).into()).collect();
+            Some(SlotData::MapKeys(MapKeys { map_keys: keys }))
+        };
+        requests.push(StorageMapDetailRequest {
+            slot_name: slot_name.to_string(),
+            slot_data,
+        });
     }
-
-    /// Requests every entry of each given slot, without a proof. Oversize maps come back as
-    /// [`StorageMapEntries::LimitExceeded`].
-    pub fn all_entries(slot_names: &[StorageSlotName]) -> Self {
-        AccountStorageRequirements(
-            slot_names.iter().map(|name| (name.clone(), Vec::new())).collect(),
-        )
-    }
-
-    pub fn inner(&self) -> &BTreeMap<StorageSlotName, Vec<StorageMapKey>> {
-        &self.0
-    }
-
-    /// Returns the keys requested for a given slot, or an empty slice if none were specified.
-    pub fn keys_for_slot(&self, slot_name: &StorageSlotName) -> &[StorageMapKey] {
-        self.0.get(slot_name).map_or(&[], Vec::as_slice)
-    }
-}
-
-impl From<AccountStorageRequirements> for Vec<StorageMapDetailRequest> {
-    fn from(value: AccountStorageRequirements) -> Vec<StorageMapDetailRequest> {
-        let request_map = value.0;
-        let mut requests = Vec::with_capacity(request_map.len());
-        for (slot_name, map_keys) in request_map {
-            let slot_data = if map_keys.is_empty() {
-                Some(SlotData::AllEntries(true))
-            } else {
-                let keys = map_keys.into_iter().map(|key| Word::from(key).into()).collect();
-                Some(SlotData::MapKeys(MapKeys { map_keys: keys }))
-            };
-            requests.push(StorageMapDetailRequest {
-                slot_name: slot_name.to_string(),
-                slot_data,
-            });
-        }
-        requests
-    }
-}
-
-impl Serializable for AccountStorageRequirements {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        target.write(&self.0);
-    }
-}
-
-impl Deserializable for AccountStorageRequirements {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_tx::utils::serde::DeserializationError> {
-        Ok(AccountStorageRequirements(source.read()?))
-    }
+    requests
 }
 
 // GET ACCOUNT REQUEST
@@ -804,7 +740,7 @@ impl From<StorageMapFetch> for Option<StorageRequest> {
             StorageMapFetch::All => Some(StorageRequest::AllStorageMaps(true)),
             StorageMapFetch::Slots(reqs) => {
                 Some(StorageRequest::StorageMaps(StorageMapDetailRequests {
-                    storage_maps: reqs.into(),
+                    storage_maps: storage_map_detail_requests(&reqs),
                 }))
             },
         }

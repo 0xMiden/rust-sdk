@@ -1,8 +1,7 @@
 //! Contains the transaction script that upgrades the code of the executing account.
 use miden_protocol::transaction::TransactionScript;
+use miden_protocol::utils::sync::LazyLock;
 use miden_standards::code_builder::CodeBuilder;
-
-use crate::utils::LazyLock;
 
 // ACCOUNT CODE UPGRADE SCRIPT
 // ================================================================================================

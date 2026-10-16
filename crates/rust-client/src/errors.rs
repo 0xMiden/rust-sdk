@@ -301,7 +301,7 @@ impl From<&ClientError> for Option<ErrorHint> {
             ClientError::MissingOutputRecipients(recipients) => {
                 Some(missing_recipient_hint(recipients))
             },
-            ClientError::TransactionRequestError(inner) => inner.into(),
+            ClientError::TransactionRequestError(inner) => transaction_request_hint(inner),
             ClientError::TransactionExecutorError(inner) => transaction_executor_hint(inner),
             ClientError::NoteNotFoundOnChain(note_id) => Some(ErrorHint {
                 message: format!(
@@ -391,65 +391,58 @@ impl ClientError {
     }
 }
 
-impl From<&TransactionRequestError> for Option<ErrorHint> {
-    fn from(err: &TransactionRequestError) -> Self {
-        match err {
-            TransactionRequestError::NoInputNotesNorAccountChange => Some(ErrorHint {
-                message: "Transactions must consume input notes or mutate tracked account state. Add at least one authenticated/unauthenticated input note or include an explicit account state update in the request.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            TransactionRequestError::StorageSlotNotFound(slot, account_id) => {
-                Some(storage_miss_hint(*slot, *account_id))
-            },
-            TransactionRequestError::InputNoteNotAuthenticated(note_id) => Some(ErrorHint {
+/// Returns the hint for a [`TransactionRequestError`], if it has one.
+fn transaction_request_hint(err: &TransactionRequestError) -> Option<ErrorHint> {
+    match err {
+        TransactionRequestError::NoInputNotesNorAccountChange => Some(ErrorHint {
+            message: "Transactions must consume input notes or mutate tracked account state. Add at least one authenticated/unauthenticated input note or include an explicit account state update in the request.".to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        TransactionRequestError::StorageSlotNotFound(slot, account_id) => {
+            Some(storage_miss_hint(*slot, *account_id))
+        },
+        TransactionRequestError::InputNoteNotAuthenticated(note_id) => Some(ErrorHint {
+            message: format!(
+                "Note {note_id} needs an inclusion proof before it can be consumed as an \
+                 authenticated input. Run `sync` to fetch the latest proofs from the network."
+            ),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        TransactionRequestError::InputNoteBeingProcessed { transaction_id, .. } => {
+            Some(ErrorHint {
                 message: format!(
-                    "Note {note_id} needs an inclusion proof before it can be consumed as an \
-                     authenticated input. Run `sync` to fetch the latest proofs from the network."
+                    "The note is an input of pending transaction {transaction_id}. Run `sync` \
+                     until that transaction is committed or discarded before consuming the \
+                     note again."
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            TransactionRequestError::InputNoteBeingProcessed { transaction_id, .. } => {
-                Some(ErrorHint {
-                    message: format!(
-                        "The note is an input of pending transaction {transaction_id}. Run `sync` \
-                         until that transaction is committed or discarded before consuming the \
-                         note again."
-                    ),
-                    docs_url: Some(TROUBLESHOOTING_DOC),
-                })
-            },
-            TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
-                message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
-                          Add at least one fungible or non-fungible asset to the note.".to_string(),
-                docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+            })
+        },
+        TransactionRequestError::P2IDNoteWithoutAsset => Some(ErrorHint {
+            message: "A pay-to-ID (P2ID) note transfers assets to a target account. \
+                      Add at least one fungible or non-fungible asset to the note.".to_string(),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        TransactionRequestError::SwapNoteWithZeroAsset(side) => Some(ErrorHint {
+            message: format!(
+                "A swap note exchanges the offered asset for the requested one, and its \
+                 payback is a P2ID note carrying the requested asset. A zero {side} asset \
+                 leaves one side of that exchange empty. Set a non-zero amount."
+            ),
+            docs_url: Some(TROUBLESHOOTING_DOC),
+        }),
+        TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {
+            Some(ErrorHint {
                 message: format!(
-                    "A swap note exchanges the offered asset for the requested one, and its \
-                     payback is a P2ID note carrying the requested asset. A zero {side} asset \
-                     leaves one side of that exchange empty. Set a non-zero amount."
+                    "A note's sender is the account that emits it: it must be the account \
+                     executing the transaction. This transaction runs as account {expected}, \
+                     but one of its output notes declares sender {actual}. Rebuild the note \
+                     with {expected} as its sender, or execute the transaction from {actual}."
                 ),
                 docs_url: Some(TROUBLESHOOTING_DOC),
-            }),
-            TransactionRequestError::OutputNoteSenderMismatch { expected, actual } => {
-                Some(ErrorHint {
-                    message: format!(
-                        "A note's sender is the account that emits it: it must be the account \
-                         executing the transaction. This transaction runs as account {expected}, \
-                         but one of its output notes declares sender {actual}. Rebuild the note \
-                         with {expected} as its sender, or execute the transaction from {actual}."
-                    ),
-                    docs_url: Some(TROUBLESHOOTING_DOC),
-                })
-            },
-            _ => None,
-        }
-    }
-}
-
-impl TransactionRequestError {
-    pub fn error_hint(&self) -> Option<ErrorHint> {
-        self.into()
+            })
+        },
+        _ => None,
     }
 }
 

@@ -11,3 +11,18 @@ pub use record::{
 
 mod store_update;
 pub use store_update::TransactionStoreUpdate;
+
+mod request;
+pub use request::{
+    ForeignAccount,
+    NoteArgs,
+    PaymentNoteDescription,
+    PswapTransactionData,
+    SwapTransactionData,
+    TransactionRequest,
+    TransactionRequestBuilder,
+    TransactionRequestError,
+    TransactionScriptTemplate,
+    build_fpi_script,
+    collect_assets,
+};

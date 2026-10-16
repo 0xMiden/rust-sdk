@@ -39,7 +39,6 @@ use super::{
     TransactionRequestError,
     TransactionScriptTemplate,
 };
-use crate::ClientRng;
 
 // TRANSACTION REQUEST BUILDER
 // ================================================================================================
@@ -178,8 +177,8 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the
-    /// [`ChainAnchor`](crate::transaction::ChainAnchor) the request executes against.
+    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
+    /// against.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
@@ -238,7 +237,7 @@ impl TransactionRequestBuilder {
     /// - **Prefetched accounts**: the caller supplies the state and inclusion witness as
     ///   [`ForeignAccount::Prefetched`] and nothing is fetched for them. The witness must open
     ///   against the transaction's reference block.
-    ///   [`Client::get_foreign_account_inputs`](crate::Client::get_foreign_account_inputs) fetches
+    ///   `Client::get_foreign_account_inputs` fetches
     ///   inputs for a given block.
     ///
     /// Declaring an account ID more than once keeps the last declaration.
@@ -420,7 +419,7 @@ impl TransactionRequestBuilder {
         asset: FungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
         // path for the same reason: it costs a transaction and leaves the target a note with
@@ -444,7 +443,7 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`] for a transaction to mint a
     /// non-fungible asset. This request must be executed against a a non-fungible faucet account
     /// (i.e. an account that has the
-    /// [`NonFungibleFaucet`](crate::account::standards::faucets::NonFungibleFaucet) component).
+    /// [`NonFungibleFaucet`](miden_standards::account::faucets::NonFungibleFaucet) component).
     ///
     /// - `asset` is the non-fungible asset to be minted. Its faucet must be the executing account.
     /// - `target_id` is the account ID of the account to receive the minted asset.
@@ -458,7 +457,7 @@ impl TransactionRequestBuilder {
         asset: NonFungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
@@ -490,7 +489,7 @@ impl TransactionRequestBuilder {
         self,
         asset: NonFungibleAsset,
         sender: AccountId,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = BurnNote::builder()
             .sender(sender)
@@ -517,7 +516,7 @@ impl TransactionRequestBuilder {
         self,
         payment_data: PaymentNoteDescription,
         note_type: NoteType,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         if payment_data
             .assets()
@@ -549,7 +548,7 @@ impl TransactionRequestBuilder {
         swap_data: &SwapTransactionData,
         note_type: NoteType,
         payback_note_type: NoteType,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
         // P2ID payback carrying the requested one. A zero amount on either side leaves one of those
@@ -598,7 +597,7 @@ impl TransactionRequestBuilder {
         self,
         sender_account_id: AccountId,
         scripts: Vec<NoteScript>,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let registration_notes: Vec<Note> = scripts
             .into_iter()
@@ -636,7 +635,7 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         payback_note_type: NoteType,
         note_attachment: Option<NoteAttachment>,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
         if is_zero_fungible(&pswap_data.offered_asset().into()) {
@@ -745,9 +744,9 @@ impl TransactionRequestBuilder {
     }
 
     /// Builds a [`TransactionRequest`] that upgrades the executing account to `code`. The account
-    /// must contain the [`UpgradeManager`](crate::account::standards::upgrade::UpgradeManager)
+    /// must contain the [`UpgradeManager`](miden_standards::account::upgrade::UpgradeManager)
     /// component. The component must use the
-    /// [`Authority::AuthControlled`](crate::account::standards::access::Authority::AuthControlled)
+    /// [`Authority::AuthControlled`](miden_standards::account::access::Authority::AuthControlled)
     /// authority.
     ///
     /// - `code` is the new code of the account.
@@ -755,8 +754,8 @@ impl TransactionRequestBuilder {
     /// An upgrade does not change the account storage. The new code must use the same storage
     /// layout as the current code, otherwise the account can become unusable.
     ///
-    /// To upgrade a network account, build an [`UpgradeNote`](crate::note::UpgradeNote) and add it
-    /// with [`Self::own_output_notes`].
+    /// To upgrade a network account, build an [`UpgradeNote`](miden_standards::note::UpgradeNote)
+    /// and add it with [`Self::own_output_notes`].
     ///
     /// The request uses a custom script and gives it the new code commitment as the script
     /// argument. This function replaces a previously set custom script and script argument.
@@ -932,7 +931,7 @@ impl PaymentNoteDescription {
     pub(crate) fn into_note(
         self,
         note_type: NoteType,
-        rng: &mut ClientRng,
+        rng: &mut impl FeltRng,
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note

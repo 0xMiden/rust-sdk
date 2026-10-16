@@ -28,6 +28,7 @@
 * [BREAKING][removal][rust,store] Removed `ClientBuilderSqliteExt` and `ClientBuilder::sqlite_store`. Build a `SqliteStore` and pass it with `ClientBuilder::store` ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
 * [BREAKING][type][rust] `Account::try_from(AccountRecord)` and `PartialAccount::try_from(AccountRecord)` return the new `AccountRecordError` instead of `ClientError`, and `AttestedTransactionEncryptionKey::verify` returns the new `TransactionEncryptionError` instead of `RpcError`. `ClientError` and `RpcError` implement `From` for them ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
 * [BREAKING][param][rust] The `Store` methods for the client settings have no default bodies, so every out-of-tree implementation must provide them. These are the PSWAP lineage, note transport cursor and protocol configuration methods, and also `get_rpc_limits`, `set_rpc_limits`, `get_transaction_encryption_key`, `set_transaction_encryption_key` and `remove_transaction_encryption_key`. `Store::apply_state_sync` and `Store::insert_protocol_config` must store a protocol configuration with the same encoding ([#2700](https://github.com/0xMiden/rust-sdk/pull/2700)).
+* [BREAKING][behavior][store] The SQLite store keeps the PSWAP lineages in the new `pswap_lineages` table, with an index on the creator and a unique index on the tip of each active lineage ([#2701](https://github.com/0xMiden/rust-sdk/pull/2701)).
 
 ### Features
 

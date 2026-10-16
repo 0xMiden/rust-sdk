@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod errors;
 pub mod note_transport;
+pub mod pswap;
 pub mod rpc;
 pub mod store;
 pub mod sync;

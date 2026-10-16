@@ -65,12 +65,7 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
-use miden_client_core::store::{
-    AccountStorageFilter,
-    ClientAccountType,
-    SettingScope,
-    protocol_config_setting_key,
-};
+use miden_client_core::store::{AccountStorageFilter, ClientAccountType};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::account::{
     Account,
@@ -4998,15 +4993,7 @@ pub async fn mock_client_builder(rpc_api: Arc<MockRpcApi>) -> ClientBuilder<File
         .unwrap();
     store.insert_block_header(&genesis, &[], false).await.unwrap();
 
-    let protocol_config = rpc_api.protocol_config();
-    store
-        .set_setting(
-            SettingScope::Client,
-            protocol_config_setting_key(protocol_config.to_commitment()),
-            protocol_config.to_bytes(),
-        )
-        .await
-        .unwrap();
+    store.insert_protocol_config(&rpc_api.protocol_config()).await.unwrap();
 
     store
         .set_transaction_encryption_key(&TransactionEncryptionKey::new_unattested(

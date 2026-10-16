@@ -6,7 +6,7 @@ use miden_protocol::Felt;
 use miden_protocol::account::AccountId;
 use miden_protocol::note::NoteId;
 
-use super::lineage::PswapLineageState;
+use super::PswapLineageState;
 use crate::store::StoreError;
 
 /// Failures raised by the PSWAP chain-tracking subsystem.
@@ -40,10 +40,6 @@ pub enum PswapLineageError {
         "PSWAP original note {0} is unavailable in the output-note store or lacks recipient details"
     )]
     OriginalNoteUnavailable(NoteId),
-
-    /// A stored lineage's `state` byte has no matching [`PswapLineageState`] variant.
-    #[error("unknown PSWAP lineage state byte: {0}")]
-    UnknownState(u8),
 
     /// A store call from the PSWAP layer failed.
     #[error("PSWAP store call failed: {0}")]

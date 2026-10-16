@@ -2,7 +2,7 @@
 
 Protobuf schemas and conversions for the miden-client types.
 
-- Schemas for input notes, output notes, transactions and the protocol types they contain, under `proto/client`
+- Schemas for input notes, output notes, transactions, the protocol types they contain, and the client settings (note transport, RPC, PSWAP), under `proto/client`
 - The `ProtobufValue` trait, with `encode`, `decode` and `decode_unchecked`
 - Protocol objects reuse the messages and conversions from `miden-objects`
 

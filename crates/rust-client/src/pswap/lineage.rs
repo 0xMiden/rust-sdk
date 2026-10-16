@@ -1,10 +1,10 @@
-//! Persistent record and per-round transition types for one PSWAP order.
+//! Per-round transition types for one PSWAP order.
 //!
 //! See module-level docs on [`crate::pswap`].
 
 use alloc::collections::BTreeMap;
-use alloc::string::ToString;
 
+use miden_client_core::pswap::{PswapLineageRecord, PswapLineageState};
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::AssetAmount;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -13,99 +13,24 @@ use miden_protocol::{Felt, Word};
 use miden_standards::note::{PswapNote, PswapNoteAttachment};
 
 use super::errors::PswapLineageError;
-use crate::utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable};
 
-// PSWAP LINEAGE STATE
-// ================================================================================================
-
-/// Lifecycle state of a PSWAP order. Discriminants are part of the serialized encoding — do not
-/// renumber.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PswapLineageState {
-    /// Still fillable / reclaimable.
-    Active = 0,
-    /// Fully filled. Terminal.
-    FullyFilled = 1,
-    /// Reclaimed by the creator. Terminal.
-    Reclaimed = 2,
-}
-
-impl PswapLineageState {
-    pub fn as_u8(self) -> u8 {
-        self as u8
-    }
-
-    /// Errors on unknown discriminants, guards against forward-incompatible serialized encodings.
-    pub fn try_from_u8(value: u8) -> Result<Self, PswapLineageError> {
-        match value {
-            0 => Ok(Self::Active),
-            1 => Ok(Self::FullyFilled),
-            2 => Ok(Self::Reclaimed),
-            other => Err(PswapLineageError::UnknownState(other)),
-        }
-    }
-}
-
-// PSWAP LINEAGE RECORD
-// ================================================================================================
-
-/// Persistent record of one PSWAP order's chain state. The order id and creator are mirrored here
-/// so the common read paths — keying, filtering — stay lookup-free. Only the remaining *amounts*
-/// are stored; the asset pair's faucets, the script/recipient, and the `note_type` all live on the
-/// depth-0 note, fetched on demand from `output_notes` by `original_note_id` (see
-/// `store::get_original_pswap`) when reconstruction, a depth-0 reclaim, or asset-pair-tag
-/// derivation needs them.
-#[derive(Debug, Clone)]
-pub struct PswapLineageRecord {
-    /// Fetch handle for the depth-0 PSWAP note in `output_notes`. Stable for the order's lifetime;
-    /// distinct from `current_tip_note_id`, which advances each round.
-    pub original_note_id: NoteId,
-
-    // Immutable order facts, mirrored from the depth-0 note so keying and filtering need no store
-    // lookup.
-    order_id: Felt,
-    creator_account_id: AccountId,
-
-    /// Current tip's note id. Equals `original_note_id` at depth 0; otherwise a remainder we didn't
-    /// originate.
-    pub current_tip_note_id: NoteId,
-    /// 0 for the original tip; +1 per round. Matches `PswapNoteAttachment::depth()`.
-    pub current_depth: u32,
-    /// Remaining offered amount. The order's offered faucet is chain-invariant and recovered from
-    /// the depth-0 note when needed (e.g. for tag derivation).
-    pub remaining_offered: AssetAmount,
-    /// Remaining requested amount (requested faucet recovered the same way).
-    pub remaining_requested: AssetAmount,
-    pub state: PswapLineageState,
-}
-
-impl PswapLineageRecord {
-    /// Builds the depth-0 record for a PSWAP the wallet has just emitted. Mirrors the order id and
-    /// creator off the note and seeds the mutable tip state: the tip is the original note, depth is
-    /// 0, and `remaining_*` equal the initial offered/requested amounts.
-    pub fn new_depth_zero(original_note_id: NoteId, pswap: &PswapNote) -> Self {
-        Self {
-            original_note_id,
-            order_id: pswap.order_id(),
-            creator_account_id: pswap.storage().creator_account_id(),
-            current_tip_note_id: original_note_id,
-            current_depth: 0,
-            remaining_offered: pswap.offered_asset().amount(),
-            remaining_requested: pswap.storage().min_requested_asset().amount(),
-            state: PswapLineageState::Active,
-        }
-    }
-
-    /// Stable identifier (== the depth-0 note's `serial[1]`) shared by every note in the chain.
-    pub fn order_id(&self) -> Felt {
-        self.order_id
-    }
-
-    /// Account that created the order (recipient of every payback).
-    pub fn creator_account_id(&self) -> AccountId {
-        self.creator_account_id
-    }
+/// Builds the depth-0 record for a PSWAP the wallet has just emitted. Mirrors the order id and
+/// creator off the note and seeds the mutable tip state: the tip is the original note, depth is 0,
+/// and `remaining_*` equal the initial offered/requested amounts.
+pub(crate) fn new_depth_zero_record(
+    original_note_id: NoteId,
+    pswap: &PswapNote,
+) -> PswapLineageRecord {
+    PswapLineageRecord::from_parts(
+        original_note_id,
+        pswap.order_id(),
+        pswap.storage().creator_account_id(),
+        original_note_id,
+        0,
+        pswap.offered_asset().amount(),
+        pswap.storage().min_requested_asset().amount(),
+        PswapLineageState::Active,
+    )
 }
 
 // PSWAP LINEAGE ROUND UPDATE
@@ -153,7 +78,22 @@ pub(crate) struct ObservedPswapNote {
 // PER-ROUND CLASSIFICATION AND ADVANCE
 // ================================================================================================
 
-impl PswapLineageRecord {
+/// Round transitions of a [`PswapLineageRecord`]. They need [`PswapNote`], so they live in the
+/// client and not with the record.
+pub(crate) trait PswapLineageRounds: Sized {
+    fn build_round_update(
+        &self,
+        round_depth: u32,
+        notes: &[&ObservedPswapNote],
+        block_headers: &BTreeMap<BlockNumber, BlockHeader>,
+        original_pswap: Option<&PswapNote>,
+        tip_consumed: bool,
+    ) -> Result<Option<PswapLineageRoundUpdate>, PswapLineageError>;
+
+    fn advance(self, update: &PswapLineageRoundUpdate) -> Self;
+}
+
+impl PswapLineageRounds for PswapLineageRecord {
     /// Builds this round's [`PswapLineageRoundUpdate`] from the chain notes observed at
     /// `round_depth`.
     ///
@@ -165,7 +105,7 @@ impl PswapLineageRecord {
     ///
     /// Returns `Ok(None)` when the bucket holds no genuine note and the tip wasn't consumed — the
     /// notes are forged/unrelated and this isn't our round, so the caller stops advancing.
-    pub(crate) fn build_round_update(
+    fn build_round_update(
         &self,
         round_depth: u32,
         notes: &[&ObservedPswapNote],
@@ -175,7 +115,7 @@ impl PswapLineageRecord {
     ) -> Result<Option<PswapLineageRoundUpdate>, PswapLineageError> {
         // No outputs at all: the only way the round fired is a consumed tip → reclaim.
         if notes.is_empty() {
-            return Ok(Some(self.build_reclaim_round(round_depth)));
+            return Ok(Some(build_reclaim_round(self, round_depth)));
         }
 
         // Fetched by the caller before any fill round; absence is a broken invariant.
@@ -194,7 +134,7 @@ impl PswapLineageRecord {
         else {
             // No valid fill: a consumed tip with no genuine payback is a reclaim; otherwise the
             // notes are forged against a still-live tip and this isn't our round.
-            return Ok(tip_consumed.then(|| self.build_reclaim_round(round_depth)));
+            return Ok(tip_consumed.then(|| build_reclaim_round(self, round_depth)));
         };
 
         // Requested amount filled this round, read straight off the validated payback's attachment.
@@ -204,11 +144,12 @@ impl PswapLineageRecord {
         // the payback's fill. Present → partial fill; absent → full fill.
         let remainder =
             notes.iter().copied().filter(|note| note.tag != payback_tag).find_map(|note| {
-                self.validate_remainder(pswap, note, fill_amount).map(|recon| (note, recon))
+                validate_remainder(self, pswap, note, fill_amount).map(|recon| (note, recon))
             });
 
         Ok(Some(match remainder {
-            Some((observed_remainder, remainder_note)) => self.build_partial_fill_round(
+            Some((observed_remainder, remainder_note)) => build_partial_fill_round(
+                self,
                 round_depth,
                 observed_payback,
                 payback_note,
@@ -217,7 +158,8 @@ impl PswapLineageRecord {
                 fill_amount,
                 block_headers,
             ),
-            None => self.build_full_fill_round(
+            None => build_full_fill_round(
+                self,
                 round_depth,
                 observed_payback,
                 payback_note,
@@ -226,116 +168,9 @@ impl PswapLineageRecord {
         }))
     }
 
-    /// The genuine remainder for `observed`, if it reconstructs (against the post-round balances
-    /// derived from `fill_amount` and the candidate's own payout) to a matching id; `None`
-    /// otherwise.
-    fn validate_remainder(
-        &self,
-        pswap: &PswapNote,
-        observed: &ObservedPswapNote,
-        fill_amount: AssetAmount,
-    ) -> Option<Note> {
-        let payout_amount = observed.attachment.amount();
-        let (remaining_offered, remaining_requested) =
-            self.remaining_after_fill(fill_amount, payout_amount);
-        let remainder_note = pswap
-            .remainder_note(
-                observed.sender,
-                &observed.attachment,
-                remaining_offered,
-                remaining_requested,
-            )
-            .ok()?;
-        (remainder_note.id() == observed.note_id).then_some(remainder_note)
-    }
-
-    /// Saturating post-round balances after filling `fill_amount` (requested) for `payout_amount`
-    /// (offered). Clamps to zero on over-fill.
-    fn remaining_after_fill(
-        &self,
-        fill_amount: AssetAmount,
-        payout_amount: AssetAmount,
-    ) -> (AssetAmount, AssetAmount) {
-        (
-            saturating_sub(self.remaining_offered, payout_amount),
-            saturating_sub(self.remaining_requested, fill_amount),
-        )
-    }
-
-    /// Reclaim — cancel branch emits no outputs; only the creator can hit it.
-    fn build_reclaim_round(&self, round_depth: u32) -> PswapLineageRoundUpdate {
-        PswapLineageRoundUpdate {
-            order_id: self.order_id(),
-            round_depth,
-            remaining_offered: AssetAmount::ZERO,
-            remaining_requested: AssetAmount::ZERO,
-            state: PswapLineageState::Reclaimed,
-            tip_note_id: None,
-            at_block_note_root: None,
-            payback: None,
-            remainder: None,
-        }
-    }
-
-    /// Full fill — only payback emitted; both `remaining_*` → 0. Takes the already-validated
-    /// `payback_note` and its observed note (for the inclusion proof and commit block).
-    fn build_full_fill_round(
-        &self,
-        round_depth: u32,
-        observed_payback: &ObservedPswapNote,
-        payback_note: Note,
-        block_headers: &BTreeMap<BlockNumber, BlockHeader>,
-    ) -> PswapLineageRoundUpdate {
-        PswapLineageRoundUpdate {
-            order_id: self.order_id(),
-            round_depth,
-            remaining_offered: AssetAmount::ZERO,
-            remaining_requested: AssetAmount::ZERO,
-            state: PswapLineageState::FullyFilled,
-            tip_note_id: None,
-            at_block_note_root: block_headers
-                .get(&observed_payback.block_num)
-                .map(BlockHeader::note_root),
-            payback: Some((payback_note, observed_payback.inclusion_proof.clone())),
-            remainder: None,
-        }
-    }
-
-    /// Partial fill — payback + remainder. Takes the already-validated notes; balances come from
-    /// the payback's `fill_amount` and the remainder's payout.
-    #[allow(clippy::too_many_arguments)]
-    fn build_partial_fill_round(
-        &self,
-        round_depth: u32,
-        observed_payback: &ObservedPswapNote,
-        payback_note: Note,
-        observed_remainder: &ObservedPswapNote,
-        remainder_note: Note,
-        fill_amount: AssetAmount,
-        block_headers: &BTreeMap<BlockNumber, BlockHeader>,
-    ) -> PswapLineageRoundUpdate {
-        let payout_amount = observed_remainder.attachment.amount();
-        let (remaining_offered, remaining_requested) =
-            self.remaining_after_fill(fill_amount, payout_amount);
-
-        PswapLineageRoundUpdate {
-            order_id: self.order_id(),
-            round_depth,
-            remaining_offered,
-            remaining_requested,
-            state: PswapLineageState::Active,
-            tip_note_id: Some(observed_remainder.note_id),
-            at_block_note_root: block_headers
-                .get(&observed_payback.block_num)
-                .map(BlockHeader::note_root),
-            payback: Some((payback_note, observed_payback.inclusion_proof.clone())),
-            remainder: Some((remainder_note, observed_remainder.inclusion_proof.clone())),
-        }
-    }
-
     /// Returns the post-round version of the record. Drives the same-block multi-fill loop in
     /// `discovery`, and is reused by `store::apply_round` to compute the persisted advance.
-    pub(crate) fn advance(mut self, update: &PswapLineageRoundUpdate) -> PswapLineageRecord {
+    fn advance(mut self, update: &PswapLineageRoundUpdate) -> PswapLineageRecord {
         self.current_depth = update.round_depth;
         self.remaining_offered = update.remaining_offered;
         self.remaining_requested = update.remaining_requested;
@@ -344,6 +179,112 @@ impl PswapLineageRecord {
             self.current_tip_note_id = note_id;
         }
         self
+    }
+}
+
+/// The genuine remainder for `observed`, if it reconstructs (against the post-round balances
+/// derived from `fill_amount` and the candidate's own payout) to a matching id; `None` otherwise.
+fn validate_remainder(
+    record: &PswapLineageRecord,
+    pswap: &PswapNote,
+    observed: &ObservedPswapNote,
+    fill_amount: AssetAmount,
+) -> Option<Note> {
+    let payout_amount = observed.attachment.amount();
+    let (remaining_offered, remaining_requested) =
+        remaining_after_fill(record, fill_amount, payout_amount);
+    let remainder_note = pswap
+        .remainder_note(
+            observed.sender,
+            &observed.attachment,
+            remaining_offered,
+            remaining_requested,
+        )
+        .ok()?;
+    (remainder_note.id() == observed.note_id).then_some(remainder_note)
+}
+
+/// Saturating post-round balances after filling `fill_amount` (requested) for `payout_amount`
+/// (offered). Clamps to zero on over-fill.
+fn remaining_after_fill(
+    record: &PswapLineageRecord,
+    fill_amount: AssetAmount,
+    payout_amount: AssetAmount,
+) -> (AssetAmount, AssetAmount) {
+    (
+        saturating_sub(record.remaining_offered, payout_amount),
+        saturating_sub(record.remaining_requested, fill_amount),
+    )
+}
+
+/// Reclaim — cancel branch emits no outputs; only the creator can hit it.
+fn build_reclaim_round(record: &PswapLineageRecord, round_depth: u32) -> PswapLineageRoundUpdate {
+    PswapLineageRoundUpdate {
+        order_id: record.order_id(),
+        round_depth,
+        remaining_offered: AssetAmount::ZERO,
+        remaining_requested: AssetAmount::ZERO,
+        state: PswapLineageState::Reclaimed,
+        tip_note_id: None,
+        at_block_note_root: None,
+        payback: None,
+        remainder: None,
+    }
+}
+
+/// Full fill — only payback emitted; both `remaining_*` → 0. Takes the already-validated
+/// `payback_note` and its observed note (for the inclusion proof and commit block).
+fn build_full_fill_round(
+    record: &PswapLineageRecord,
+    round_depth: u32,
+    observed_payback: &ObservedPswapNote,
+    payback_note: Note,
+    block_headers: &BTreeMap<BlockNumber, BlockHeader>,
+) -> PswapLineageRoundUpdate {
+    PswapLineageRoundUpdate {
+        order_id: record.order_id(),
+        round_depth,
+        remaining_offered: AssetAmount::ZERO,
+        remaining_requested: AssetAmount::ZERO,
+        state: PswapLineageState::FullyFilled,
+        tip_note_id: None,
+        at_block_note_root: block_headers
+            .get(&observed_payback.block_num)
+            .map(BlockHeader::note_root),
+        payback: Some((payback_note, observed_payback.inclusion_proof.clone())),
+        remainder: None,
+    }
+}
+
+/// Partial fill — payback + remainder. Takes the already-validated notes; balances come from the
+/// payback's `fill_amount` and the remainder's payout.
+#[allow(clippy::too_many_arguments)]
+fn build_partial_fill_round(
+    record: &PswapLineageRecord,
+    round_depth: u32,
+    observed_payback: &ObservedPswapNote,
+    payback_note: Note,
+    observed_remainder: &ObservedPswapNote,
+    remainder_note: Note,
+    fill_amount: AssetAmount,
+    block_headers: &BTreeMap<BlockNumber, BlockHeader>,
+) -> PswapLineageRoundUpdate {
+    let payout_amount = observed_remainder.attachment.amount();
+    let (remaining_offered, remaining_requested) =
+        remaining_after_fill(record, fill_amount, payout_amount);
+
+    PswapLineageRoundUpdate {
+        order_id: record.order_id(),
+        round_depth,
+        remaining_offered,
+        remaining_requested,
+        state: PswapLineageState::Active,
+        tip_note_id: Some(observed_remainder.note_id),
+        at_block_note_root: block_headers
+            .get(&observed_payback.block_num)
+            .map(BlockHeader::note_root),
+        payback: Some((payback_note, observed_payback.inclusion_proof.clone())),
+        remainder: Some((remainder_note, observed_remainder.inclusion_proof.clone())),
     }
 }
 
@@ -358,91 +299,6 @@ fn validate_payback(pswap: &PswapNote, observed: &ObservedPswapNote) -> Option<N
 fn saturating_sub(total: AssetAmount, used: AssetAmount) -> AssetAmount {
     AssetAmount::new(total.as_u64().saturating_sub(used.as_u64()))
         .expect("a value <= an existing AssetAmount is itself a valid AssetAmount")
-}
-
-// PSWAP LINEAGE FILTER
-// ================================================================================================
-
-/// Client-side filter for `crate::pswap::store::list_lineages`. Applied in Rust after a prefix-scan
-/// of the `settings` KV — not a store-trait concept.
-#[derive(Debug, Clone)]
-pub(crate) enum PswapLineageFilter {
-    All,
-    Active,
-    ByCreator(AccountId),
-}
-
-// SERDE HELPERS
-// ================================================================================================
-
-/// Builds a [`PswapLineageRecord`] from its decoded fields. Lives here (not in a store backend) so
-/// alternative backends can reuse it. The only validation is decoding the `state_byte` into a known
-/// [`PswapLineageState`].
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_record_from_fields(
-    original_note_id: NoteId,
-    order_id: Felt,
-    creator_account_id: AccountId,
-    current_tip_note_id: NoteId,
-    current_depth: u32,
-    remaining_offered: AssetAmount,
-    remaining_requested: AssetAmount,
-    state_byte: u8,
-) -> Result<PswapLineageRecord, PswapLineageError> {
-    Ok(PswapLineageRecord {
-        original_note_id,
-        order_id,
-        creator_account_id,
-        current_tip_note_id,
-        current_depth,
-        remaining_offered,
-        remaining_requested,
-        state: PswapLineageState::try_from_u8(state_byte)?,
-    })
-}
-
-// VALUE CODEC
-// ================================================================================================
-
-/// Encodes the record's fields in declaration order: the `original_note_id` fetch handle, the
-/// mirrored order id and creator, then the mutable tip state. Only the remaining *amounts* are
-/// written — the faucets and full note live on the depth-0 note, recovered via `original_note_id`
-/// when needed.
-impl Serializable for PswapLineageRecord {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.original_note_id.write_into(target);
-        self.order_id.write_into(target);
-        self.creator_account_id.write_into(target);
-        self.current_tip_note_id.write_into(target);
-        self.current_depth.write_into(target);
-        self.remaining_offered.write_into(target);
-        self.remaining_requested.write_into(target);
-        self.state.as_u8().write_into(target);
-    }
-}
-
-impl Deserializable for PswapLineageRecord {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let original_note_id = NoteId::read_from(source)?;
-        let order_id = Felt::read_from(source)?;
-        let creator_account_id = AccountId::read_from(source)?;
-        let current_tip_note_id = NoteId::read_from(source)?;
-        let current_depth = u32::read_from(source)?;
-        let remaining_offered = AssetAmount::read_from(source)?;
-        let remaining_requested = AssetAmount::read_from(source)?;
-        let state_byte = u8::read_from(source)?;
-        build_record_from_fields(
-            original_note_id,
-            order_id,
-            creator_account_id,
-            current_tip_note_id,
-            current_depth,
-            remaining_offered,
-            remaining_requested,
-            state_byte,
-        )
-        .map_err(|err| DeserializationError::InvalidValue(err.to_string()))
-    }
 }
 
 #[cfg(test)]
@@ -514,6 +370,7 @@ mod tests {
 
     use super::test_helpers::{build_test_pswap, fixed_account_ids};
     use super::*;
+    use crate::utils::{Deserializable, DeserializationError, Serializable};
 
     /// Builds a record from a test `PswapNote`, mirroring the immutable scalars the observer would
     /// extract. Keeps the codec/accessor tests focused on the fields they exercise instead of the
@@ -524,10 +381,10 @@ mod tests {
         current_depth: u32,
         remaining_offered: u64,
         remaining_requested: u64,
-        state_byte: u8,
-    ) -> Result<PswapLineageRecord, PswapLineageError> {
+        state: PswapLineageState,
+    ) -> PswapLineageRecord {
         let original_note_id = miden_protocol::note::Note::from(pswap.clone()).id();
-        build_record_from_fields(
+        PswapLineageRecord::from_parts(
             original_note_id,
             pswap.order_id(),
             pswap.storage().creator_account_id(),
@@ -535,89 +392,27 @@ mod tests {
             current_depth,
             AssetAmount::new(remaining_offered).unwrap(),
             AssetAmount::new(remaining_requested).unwrap(),
-            state_byte,
+            state,
         )
     }
 
-    /// Stable byte encoding of `PswapLineageState`. The values are persisted in the serialized
-    /// lineage record; reordering would silently corrupt existing stores.
+    /// A stored record with an unknown state discriminant does not deserialize.
     #[test]
-    fn state_byte_encoding_is_stable() {
-        assert_eq!(PswapLineageState::Active.as_u8(), 0);
-        assert_eq!(PswapLineageState::FullyFilled.as_u8(), 1);
-        assert_eq!(PswapLineageState::Reclaimed.as_u8(), 2);
-    }
-
-    /// Round-trip every state via `try_from_u8`. Belt-and-suspenders against a future renumbering
-    /// breaking the serialized format.
-    #[test]
-    fn state_try_from_u8_round_trips_known_variants() {
-        for state in [
-            PswapLineageState::Active,
-            PswapLineageState::FullyFilled,
-            PswapLineageState::Reclaimed,
-        ] {
-            assert_eq!(PswapLineageState::try_from_u8(state.as_u8()).unwrap(), state);
-        }
-    }
-
-    /// Unknown discriminants must error — defends against a future store reading a
-    /// forward-incompatible byte.
-    #[test]
-    fn state_try_from_u8_rejects_unknown() {
-        match PswapLineageState::try_from_u8(99) {
-            Err(PswapLineageError::UnknownState(99)) => {},
-            other => panic!("expected UnknownState(99), got {other:?}"),
-        }
-    }
-
-    /// Happy path for `build_record_from_fields` at depth 0.
-    #[test]
-    fn build_record_from_fields_accepts_valid_depth_zero_record() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let initial_note_id = miden_protocol::note::Note::from(pswap.clone()).id();
-
-        let record = record_from_test_pswap(
-            &pswap,
-            initial_note_id,
-            0,
-            100,
-            50,
-            PswapLineageState::Active.as_u8(),
-        )
-        .unwrap();
-
-        assert_eq!(record.current_depth, 0);
-        assert_eq!(record.remaining_offered, AssetAmount::new(100).unwrap());
-        assert_eq!(record.remaining_requested, AssetAmount::new(50).unwrap());
-        assert_eq!(record.state, PswapLineageState::Active);
-    }
-
-    /// Happy path at `current_depth > 0`.
-    #[test]
-    fn build_record_from_fields_accepts_valid_advanced_record() {
+    fn value_codec_rejects_unknown_state() {
         let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
         let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
         let note = miden_protocol::note::Note::from(pswap.clone());
         let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
-                .unwrap();
+            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
 
-        assert_eq!(record.current_depth, 3);
-        assert_eq!(record.remaining_offered, AssetAmount::new(70).unwrap());
-    }
+        // The state byte is the last field of the encoding.
+        let mut bytes = record.to_bytes();
+        *bytes.last_mut().unwrap() = 42;
 
-    /// Unknown state discriminant in a stored record bubbles up as `UnknownState`.
-    #[test]
-    fn build_record_from_fields_rejects_unknown_state() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        match record_from_test_pswap(&pswap, note.id(), 0, 100, 50, 42) {
-            Err(PswapLineageError::UnknownState(42)) => {},
-            other => panic!("expected UnknownState(42), got {other:?}"),
-        }
+        assert!(matches!(
+            PswapLineageRecord::read_from_bytes(&bytes),
+            Err(DeserializationError::InvalidValue(_))
+        ));
     }
 
     /// The mirrored scalars back the accessors with the same values the depth-0 note would yield,
@@ -630,15 +425,8 @@ mod tests {
         let expected_order_id = pswap.order_id();
 
         let note = miden_protocol::note::Note::from(pswap.clone());
-        let record = record_from_test_pswap(
-            &pswap,
-            note.id(),
-            0,
-            100,
-            50,
-            PswapLineageState::Active.as_u8(),
-        )
-        .unwrap();
+        let record =
+            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
 
         assert_eq!(record.original_note_id, note.id());
         assert_eq!(record.order_id(), expected_order_id);
@@ -653,8 +441,7 @@ mod tests {
         let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
         let note = miden_protocol::note::Note::from(pswap.clone());
         let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active.as_u8())
-                .unwrap();
+            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active);
 
         let bytes = record.to_bytes();
         let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();
@@ -690,7 +477,7 @@ mod tests {
     /// Active lineage at depth 0 built from a fresh test PSWAP.
     fn initial_record(pswap: &PswapNote, offered: u64, requested: u64) -> PswapLineageRecord {
         let original_note_id = Note::from(pswap.clone()).id();
-        let mut record = PswapLineageRecord::new_depth_zero(original_note_id, pswap);
+        let mut record = new_depth_zero_record(original_note_id, pswap);
         // Override the seeded remaining_* so callers can exercise reduced balances.
         record.remaining_offered =
             AssetAmount::new(offered).expect("test value fits in AssetAmount");

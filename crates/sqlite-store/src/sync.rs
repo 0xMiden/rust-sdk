@@ -3,7 +3,7 @@
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
-use miden_client_core::store::{SettingScope, protocol_config_setting_key};
+use miden_client_core::store::protocol_config_setting_key;
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -157,11 +157,10 @@ impl SqliteStore {
             }
 
             if let Some(config) = &protocol_config {
-                Self::set_setting(
+                Self::set_client_setting(
                     db_tx,
-                    SettingScope::Client,
                     &protocol_config_setting_key(config.to_commitment()),
-                    &config.to_bytes(),
+                    config,
                 )?;
             }
 

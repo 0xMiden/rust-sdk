@@ -68,6 +68,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_client_core::store::AccountRecord;
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::account_tree::AccountWitness;
@@ -107,7 +108,6 @@ use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{
-    AccountRecord,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
@@ -128,19 +128,15 @@ pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 #[cfg(feature = "dap")]
 mod dap_executor;
 mod prover;
-pub use prover::TransactionProver;
-
-mod record;
-pub use record::{
+pub use miden_client_core::transaction::{
     DiscardCause,
     TransactionDetails,
     TransactionRecord,
     TransactionStatus,
     TransactionStatusVariant,
+    TransactionStoreUpdate,
 };
-
-mod store_update;
-pub use store_update::TransactionStoreUpdate;
+pub use prover::TransactionProver;
 
 mod request;
 pub use request::{
@@ -362,7 +358,7 @@ where
     /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
     ///   expiration block has already been reached, which the network would reject.
     pub async fn execute_transaction_at(
-        &mut self,
+        &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
         anchor: ChainAnchor,
@@ -567,7 +563,7 @@ where
         };
 
         validate_executed_transaction(&executed_transaction, &prep.output_recipients)?;
-        TransactionResult::new(executed_transaction, prep.future_notes)
+        Ok(TransactionResult::new(executed_transaction, prep.future_notes))
     }
 
     /// Performs the data-store-independent setup shared by `execute_transaction` and

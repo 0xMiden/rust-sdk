@@ -2,11 +2,12 @@
 
 use alloc::sync::Arc;
 
+use miden_client_core::store::InputNoteCursor;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 
 use crate::ClientError;
-use crate::store::{InputNoteCursor, InputNoteRecord, NoteFilter, Store};
+use crate::store::{InputNoteRecord, NoteFilter, Store};
 
 /// A lazy iterator over consumed input notes for a specific consumer account.
 ///

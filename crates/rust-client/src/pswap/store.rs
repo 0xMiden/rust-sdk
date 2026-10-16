@@ -15,6 +15,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use miden_client_core::store::{SettingMutation, SettingScope};
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteInclusionProof};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::PswapNote;
@@ -27,7 +28,7 @@ use super::lineage::{
     PswapLineageState,
 };
 use crate::store::input_note_states::{CommittedNoteState, UnverifiedNoteState};
-use crate::store::{InputNoteRecord, NoteFilter, SettingMutation, SettingScope, Store, StoreError};
+use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteTagRecord, NoteTagSource};
 use crate::utils::{Deserializable, Serializable, bytes_to_hex_string};
 

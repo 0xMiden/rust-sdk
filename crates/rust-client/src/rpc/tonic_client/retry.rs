@@ -3,6 +3,7 @@ use core::time::Duration;
 use tonic::Status;
 use tracing::warn;
 
+use crate::grpc_support::{async_sleep, extract_retry_after};
 use crate::rpc::RpcEndpoint;
 
 // CONSTS
@@ -97,26 +98,6 @@ fn retry_delay(status: &Status, fallback_ms: u64) -> Duration {
     extract_retry_after(status)
         .filter(|delay| !delay.is_zero())
         .unwrap_or(Duration::from_millis(fallback_ms))
-}
-
-fn extract_retry_after(status: &Status) -> Option<Duration> {
-    status
-        .metadata()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn async_sleep(duration: Duration) {
-    tokio::time::sleep(duration).await;
-}
-
-/// On WASM, sleep using browser timers so retry delays are honored.
-#[cfg(target_arch = "wasm32")]
-async fn async_sleep(duration: Duration) {
-    gloo_timers::future::sleep(duration).await;
 }
 
 #[cfg(test)]

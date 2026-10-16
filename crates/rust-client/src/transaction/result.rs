@@ -20,8 +20,6 @@ use miden_tx::utils::serde::{
     Serializable,
 };
 
-use crate::ClientError;
-
 // TRANSACTION RESULT
 // ================================================================================================
 
@@ -36,13 +34,12 @@ pub struct TransactionResult {
 }
 
 impl TransactionResult {
-    /// Screens the output notes to store and track the relevant ones, and instantiates a
-    /// [`TransactionResult`].
+    /// Wraps an executed transaction with the notes the client expects to receive later.
     pub fn new(
         transaction: ExecutedTransaction,
         future_notes: Vec<(NoteDetails, NoteTag)>,
-    ) -> Result<Self, ClientError> {
-        Ok(Self { transaction, future_notes })
+    ) -> Self {
+        Self { transaction, future_notes }
     }
 
     /// Returns a unique identifier of this transaction.

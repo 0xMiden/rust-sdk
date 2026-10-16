@@ -1,9 +1,9 @@
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::transaction::{DiscardCause, TransactionDetails, TransactionStatus};
+use miden_client_core::transaction::{DiscardCause, TransactionDetails, TransactionStatus};
 use miden_objects::DecodeMessageExt;
+use miden_protocol::Word;
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};

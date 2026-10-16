@@ -10,22 +10,17 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use miden_client::account::component::{
     AccountComponentMetadata,
     FeltSchema,
-    FungibleFaucet,
     StorageSchema,
     StorageSlotSchema,
     ValueSlotSchema,
     WordSchema,
 };
+use miden_client::account::standards::auth::AuthSingleSig;
+use miden_client::account::standards::faucets::FungibleFaucet;
 use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{
-    AuthSchemeId,
-    AuthSecretKey,
-    AuthSingleSig,
-    PublicKey,
-    TransactionAuthenticator,
-};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKey, TransactionAuthenticator};
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::Keystore;
 use miden_client::note::{NoteId, NoteTag};

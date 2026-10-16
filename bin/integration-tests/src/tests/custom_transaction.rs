@@ -55,9 +55,7 @@ const NOTE_ARGS: [Felt; 8] = [
 
 pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
-    client.sync_state().await?;
     // Insert Account
     let regular_account = client.insert_wallet(AccountType::Private).await?;
 
@@ -151,9 +149,7 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
 
 pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
-    client.sync_state().await?;
     // Insert Account
     let regular_account = client.insert_wallet(AccountType::Private).await?;
 
@@ -235,7 +231,6 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
     // Client 3 will be the control client. We won't add any tags and expect the note not to be
     // fetched
     let mut client_3 = client_config.clone().into_client().await?;
-    client_3.wait_for_node().await;
 
     // Create accounts
     let basic_account_1 = client_1.insert_wallet(AccountType::Private).await?;

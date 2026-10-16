@@ -683,10 +683,10 @@ impl TransactionRequestBuilder {
         self.input_notes(vec![(pswap_note, None)]).build()
     }
 
-    /// Consumes the builder and returns a [`TransactionRequest`] for a transaction that upgrades
-    /// the code of the executing account to `code`. This request must be executed against an
-    /// account with the [`UpgradeManager`](crate::account::component::UpgradeManager) component and
-    /// the [`Authority::AuthControlled`](crate::account::component::Authority::AuthControlled)
+    /// Builds a [`TransactionRequest`] that upgrades the executing account to `code`. The account
+    /// must contain the [`UpgradeManager`](crate::account::standards::upgrade::UpgradeManager)
+    /// component. The component must use the
+    /// [`Authority::AuthControlled`](crate::account::standards::access::Authority::AuthControlled)
     /// authority.
     ///
     /// - `code` is the new code of the account.

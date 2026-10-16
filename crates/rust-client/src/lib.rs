@@ -195,31 +195,20 @@ pub mod asset {
     };
 }
 
-/// Provides authentication-related types and functionalities for the Miden network.
+/// Provides authentication keys, signature schemes, and transaction signing interfaces.
+///
+/// Use [`account::standards::auth`] for built-in authentication components.
 pub mod auth {
     pub use miden_protocol::account::auth::{
+        AuthScheme,
         AuthScheme as AuthSchemeId,
         AuthSecretKey,
         PublicKey,
         PublicKeyCommitment,
         Signature,
     };
-    pub use miden_standards::account::auth::{
-        Approver,
-        ApproverSet,
-        AuthGuardedMultisig,
-        AuthGuardedMultisigConfig,
-        AuthMultisig,
-        AuthMultisigConfig,
-        AuthMultisigSmart,
-        AuthMultisigSmartConfig,
-        AuthSingleSig,
-        GuardianConfig,
-        NoAuth,
-    };
+    pub use miden_protocol::errors::AuthSchemeError;
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
-
-    pub use crate::account::component::AuthScheme;
 
     pub const RPO_FALCON_SCHEME_ID: AuthSchemeId = AuthSchemeId::Falcon512Poseidon2;
     pub const ECDSA_K256_KECCAK_SCHEME_ID: AuthSchemeId = AuthSchemeId::EcdsaK256Keccak;

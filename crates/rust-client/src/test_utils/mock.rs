@@ -73,7 +73,6 @@ struct BlockHeaderRequest {
 ///   updates were made will return the chain tip block number instead.
 #[derive(Clone)]
 pub struct MockRpcApi {
-    account_commitment_updates: Arc<RwLock<BTreeMap<BlockNumber, BTreeMap<AccountId, Word>>>>,
     pub mock_chain: Arc<RwLock<MockChain>>,
     /// Chain snapshots used to answer block-pinned account queries.
     historical_chains: Arc<RwLock<BTreeMap<BlockNumber, Arc<MockChain>>>>,
@@ -126,7 +125,6 @@ impl MockRpcApi {
     /// Creates a new [`MockRpcApi`] instance with the state of the provided [`MockChain`].
     pub fn new(mock_chain: MockChain) -> Self {
         Self {
-            account_commitment_updates: Arc::new(RwLock::new(build_account_updates(&mock_chain))),
             mock_chain: Arc::new(RwLock::new(mock_chain)),
             historical_chains: Arc::new(RwLock::new(BTreeMap::new())),
             oversize_threshold: 1000,
@@ -272,26 +270,11 @@ impl MockRpcApi {
     /// Advances the mock chain by proving the next block, committing all pending objects to the
     /// chain in the process.
     pub fn prove_block(&self) {
-        let proven_block = {
-            let mut mock_chain = self.mock_chain.write();
-            let historical_block_num = mock_chain.latest_block_header().block_num();
-            let snapshot = Arc::new(mock_chain.clone());
-            let proven_block = mock_chain.prove_next_block().unwrap();
-            self.historical_chains.write().insert(historical_block_num, snapshot);
-            proven_block
-        };
-        let block_num = proven_block.header().block_num();
-        let mut account_commitment_updates = self.account_commitment_updates.write();
-        let updates: BTreeMap<AccountId, Word> = proven_block
-            .body()
-            .updated_accounts()
-            .iter()
-            .map(|update| (update.account_id(), update.final_state_commitment()))
-            .collect();
-
-        if !updates.is_empty() {
-            account_commitment_updates.insert(block_num, updates);
-        }
+        let mut mock_chain = self.mock_chain.write();
+        let historical_block_num = mock_chain.latest_block_header().block_num();
+        let snapshot = Arc::new(mock_chain.clone());
+        mock_chain.prove_next_block().unwrap();
+        self.historical_chains.write().insert(historical_block_num, snapshot);
     }
 
     /// Removes the account-state snapshot for the specified block.
@@ -1039,28 +1022,4 @@ impl From<MockChain> for MockRpcApi {
     fn from(mock_chain: MockChain) -> Self {
         MockRpcApi::new(mock_chain)
     }
-}
-
-// HELPERS
-// ================================================================================================
-
-fn build_account_updates(
-    mock_chain: &MockChain,
-) -> BTreeMap<BlockNumber, BTreeMap<AccountId, Word>> {
-    let mut account_commitment_updates = BTreeMap::new();
-    for block in mock_chain.proven_blocks() {
-        let block_num = block.header().block_num();
-        let mut updates = BTreeMap::new();
-
-        for update in block.body().updated_accounts() {
-            updates.insert(update.account_id(), update.final_state_commitment());
-        }
-
-        if updates.is_empty() {
-            continue;
-        }
-
-        account_commitment_updates.insert(block_num, updates);
-    }
-    account_commitment_updates
 }

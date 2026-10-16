@@ -14,7 +14,7 @@ doctest    = false
 
 [dependencies]
 # Miden dependencies
-miden-client       = { features = ["std"], workspace = true }
+miden-client-core  = { features = ["std"], workspace = true }
 miden-client-proto = { workspace = true }
 miden-protocol     = { workspace = true }
 
@@ -37,5 +37,5 @@ workspace = true
 
 [dev-dependencies]
 # Enable client testing utilities only for tests
-miden-client    = { features = ["testing"], workspace = true }
+miden-client    = { features = ["std", "testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }

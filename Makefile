@@ -16,6 +16,10 @@ endif
 FEATURES_CLIENT=--features "std dap"
 WARNINGS=RUSTDOCFLAGS="-D warnings"
 
+# Nightly toolchain for the docs build. Later nightlies have an ICE when they compile p3-goldilocks.
+# https://github.com/0xMiden/rust-sdk/issues/2696
+DOC_TOOLCHAIN?=nightly-2026-10-09
+
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
 
 # Pre-deployed agglayer accounts the agglayer tests transact with, written here by
@@ -82,11 +86,11 @@ typos-check: ## Run typos to check for spelling mistakes
 .PHONY: doc
 doc: ## Generate & check rust documentation. Ensure you have the nightly toolchain installed.
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release
+	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +$(DOC_TOOLCHAIN) doc --lib --no-deps --all-features --keep-going --release
 
 doc-open: ## Generate & open rust documentation in browser. Ensure you have the nightly toolchain installed.
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release --open
+	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +$(DOC_TOOLCHAIN) doc --lib --no-deps --all-features --keep-going --release --open
 
 .PHONY: serve-docs
 serve-docs: ## Serves the docs

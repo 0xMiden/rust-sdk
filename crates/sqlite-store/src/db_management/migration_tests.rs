@@ -2,17 +2,19 @@ use std::sync::LazyLock;
 
 use miden_client::account::AccountId;
 use miden_client::note::{NoteDetailsCommitment, NoteTag};
-use miden_client::store::SettingScope;
-use miden_client::sync::NoteTagSource;
 use miden_client::testing::common::ACCOUNT_ID_REGULAR;
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::{ONE, Word, ZERO};
+use miden_client_core::store::SettingScope;
+use miden_client_core::sync::NoteTagSource;
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
 
 use crate::db_management::errors::SqliteStoreError;
 use crate::db_management::migration::{MigrationHook, SqliteMigration, SqliteMigrator};
 use crate::db_management::schema::SchemaHash;
+
+mod m0002_drop_note_transport_outbox;
 
 // FIXTURE MIGRATIONS
 // ================================================================================================

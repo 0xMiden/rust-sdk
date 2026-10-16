@@ -4,11 +4,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use miden_client_core::store::SettingScope;
 use miden_tx::utils::serde::{Deserializable, Serializable};
 
 use super::Client;
 use crate::errors::ClientError;
-use crate::store::SettingScope;
 
 // CLIENT METHODS
 // ================================================================================================

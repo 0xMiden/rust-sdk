@@ -26,12 +26,12 @@
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
+use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::note::Note;
 use miden_client::rpc::{EndpointError, RegisterAccountError, RpcEndpoint, RpcError};
 use miden_client::testing::common::*;
-use miden_client::transaction::{InputNote, TransactionRequest, TransactionRequestBuilder};
-use miden_client::{ClientError, Felt};
+use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder};
 
 pub mod enforcement;
 pub mod invitations;
@@ -74,14 +74,7 @@ async fn funding_notes(client: &mut TestClient, account: &Account) -> Result<Vec
     client
         .wait_for_consumable_notes(account.id(), FUNDING_NOTE_MAX_BLOCKS)
         .await
-        .with_context(|| format!("failed to wait for a funding note for account {}", account.id()))?
-        .into_iter()
-        .map(|(record, _)| {
-            let note: InputNote =
-                record.try_into().context("a committed note should convert to an input note")?;
-            Ok(note.into_note())
-        })
-        .collect()
+        .with_context(|| format!("failed to wait for a funding note for account {}", account.id()))
 }
 
 /// Builds the request for the first transaction of an account that does not register.
@@ -151,16 +144,4 @@ fn assert_registration_rejected(error: &ClientError, expected: &RegisterAccountE
         }) if actual == expected,
         "expected the registration to be rejected with {expected}, got: {error}"
     );
-}
-
-/// Returns whether the account has been created on chain. A zero nonce marks an account that has
-/// never transacted.
-async fn is_deployed(client: &TestClient, account: &Account) -> Result<bool> {
-    let nonce = client
-        .account_reader(account.id())
-        .nonce()
-        .await
-        .with_context(|| format!("account {} is not tracked by the client", account.id()))?;
-
-    Ok(nonce != Felt::ZERO)
 }

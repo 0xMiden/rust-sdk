@@ -108,6 +108,7 @@ impl AccountReader {
             .await?
             .ok_or(ClientError::AccountDataNotFound(self.account_id))?
             .try_into()
+            .map_err(ClientError::from)
     }
 
     /// Retrieves the addresses associated with this account.

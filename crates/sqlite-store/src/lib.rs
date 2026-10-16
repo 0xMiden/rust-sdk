@@ -6,6 +6,7 @@
 
 use std::boxed::Box;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::string::{String, ToString};
@@ -76,23 +77,97 @@ mod transaction;
 ///
 /// Current table definitions are the result of applying every migration under `migrations/` in
 /// order.
+///
+/// # Concurrent access
+///
+/// Only one client instance must use a database file at a time. Two clients that sync, import
+/// notes, or apply transactions on the same file at the same time can leave the store in an
+/// incorrect state, because each operation reads the store, waits for the node, and then writes.
+/// `SQLite` makes each write atomic, but it cannot prevent a write that is based on data that
+/// another client changed.
+///
+/// To prevent this, each store locks a `.lock` file next to the database for its lifetime:
+///
+/// - [`SqliteStore::new`] takes an exclusive lock. No other store can open the file while this store is alive.
+/// - [`SqliteStore::new_unlocked`] takes a shared lock. Other unlocked stores can open the file, but a store from [`SqliteStore::new`] cannot.
+///
+/// A store that cannot get its lock fails to open with [`StoreError::StoreLocked`]. The store does
+/// not wait for the lock.
+///
+/// The lock applies to stores in the same process and in different processes. It is advisory, so it
+/// does not stop a program that opens the database file without a `SqliteStore`.
+///
+/// The lock does not stop several clients from sharing one `SqliteStore` instance, for example
+/// through clones of an `Arc<SqliteStore>`. Do not share one store between clients.
+///
+/// The operating system releases the lock when the store is dropped or the process stops, also
+/// after a crash or a restart. The `.lock` file stays on disk and has no effect when no store holds
+/// it. Do not delete it while a store is open. On network file systems, the lock can be unreliable
+/// or can stay held for some time after a crash.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
     database_filepath: PathBuf,
+    /// The open `.lock` file that holds the lock on the database file.
+    ///
+    /// Closing this handle releases the lock. This field is declared after `pool`, so all
+    /// connections close before the lock is released.
+    _lock: File,
 }
 
 impl SqliteStore {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns a new instance of [Store] instantiated with the specified configuration options.
+    /// Opens the store at `database_filepath` and holds an exclusive lock on it until the store is
+    /// dropped.
+    ///
+    /// Creates the database if it does not exist and applies the schema migrations. The lock is
+    /// taken before the migrations run. See [Concurrent access](SqliteStore#concurrent-access) for
+    /// how the lock works.
+    ///
+    /// Use this constructor unless several stores must open the same file.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::StoreLocked`] if another store holds a lock on the file, in this process or in a different process.
+    /// - [`StoreError::DatabaseError`] if the path is not valid UTF-8, if the `.lock` file cannot be opened or locked, or if the database cannot be opened or migrated.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
+        Self::open(database_filepath, true).await
+    }
+
+    /// Opens the store at `database_filepath` and holds a shared lock on it until the store is
+    /// dropped.
+    ///
+    /// Other stores from this constructor can open the same file at the same time. A store from
+    /// [`SqliteStore::new`] cannot. See [Concurrent access](SqliteStore#concurrent-access) for how
+    /// the lock works.
+    ///
+    /// The store does not coordinate with the other unlocked stores on the file. The caller must
+    /// make sure that only one of them syncs, imports notes, or applies transactions at a time. Use
+    /// this constructor only for tools and tests that need several stores on one file, for example
+    /// to read the store while a client is open.
+    ///
+    /// # Errors
+    ///
+    /// - [`StoreError::StoreLocked`] if a store from [`SqliteStore::new`] holds the file.
+    /// - [`StoreError::DatabaseError`] if the path is not valid UTF-8, if the `.lock` file cannot be opened or locked, or if the database cannot be opened or migrated.
+    pub async fn new_unlocked(database_filepath: PathBuf) -> Result<Self, StoreError> {
+        Self::open(database_filepath, false).await
+    }
+
+    /// Opens the store and takes an exclusive lock if `exclusive` is `true`, or a shared lock
+    /// otherwise.
+    async fn open(database_filepath: PathBuf, exclusive: bool) -> Result<Self, StoreError> {
         if database_filepath.to_str().is_none() {
             return Err(database_error(format!(
                 "database path is not valid UTF-8: {}",
                 database_filepath.display()
             )));
         }
+
+        // The lock is taken before the migrations, so a locked store never migrates a file that
+        // another store uses.
+        let lock = lock_store(&database_filepath, exclusive)?;
 
         let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
         let pool = Pool::builder(sqlite_pool_manager)
@@ -105,7 +180,7 @@ impl SqliteStore {
 
         // Account SMT data is persisted in the forest tables and read on demand, so no state needs
         // to be rebuilt here.
-        Ok(SqliteStore { pool, database_filepath })
+        Ok(SqliteStore { pool, database_filepath, _lock: lock })
     }
 
     /// Returns the path of the database file backing this store.
@@ -633,6 +708,41 @@ impl Store for SqliteStore {
 // UTILS
 // ================================================================================================
 
+/// Locks the `.lock` file next to the database and returns the handle that holds the lock.
+///
+/// The lock is on a separate file because `SQLite` takes its own locks on the database file and its
+/// journal files. An exclusive lock conflicts with every other lock on the file. A shared lock
+/// conflicts only with an exclusive one. The function does not wait. It returns
+/// [`StoreError::StoreLocked`] if the lock conflicts with a lock that another handle holds.
+///
+/// The operating system releases the lock when the handle closes or the process stops, so a crash
+/// cannot leave the store locked. The file is not deleted. A deleted file lets a new store lock a
+/// new file while an old store still holds the lock on the deleted one.
+fn lock_store(database_filepath: &Path, exclusive: bool) -> Result<File, StoreError> {
+    let mut lock_path = database_filepath.as_os_str().to_owned();
+    lock_path.push(".lock");
+
+    let file = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(database_error)?;
+    let locked = if exclusive {
+        file.try_lock()
+    } else {
+        file.try_lock_shared()
+    };
+    locked.map_err(|err| match err {
+        TryLockError::WouldBlock => {
+            StoreError::StoreLocked(database_filepath.display().to_string())
+        },
+        TryLockError::Error(err) => database_error(err),
+    })?;
+
+    Ok(file)
+}
+
 fn database_error(err: impl core::fmt::Display) -> StoreError {
     StoreError::DatabaseError(err.to_string())
 }
@@ -745,6 +855,27 @@ pub mod tests {
         );
         // Reopening verifies the schema, so it only succeeds if the dropped table is still there.
         SqliteStore::new(database_filepath).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn store_lock_keeps_a_locked_store_alone() -> anyhow::Result<()> {
+        let path = create_test_store_path();
+        let locked = SqliteStore::new(path.clone()).await?;
+        assert!(matches!(SqliteStore::new(path.clone()).await, Err(StoreError::StoreLocked(_))));
+        assert!(matches!(
+            SqliteStore::new_unlocked(path.clone()).await,
+            Err(StoreError::StoreLocked(_))
+        ));
+        drop(locked);
+
+        let unlocked = SqliteStore::new_unlocked(path.clone()).await?;
+        SqliteStore::new_unlocked(path.clone()).await?;
+        assert!(matches!(SqliteStore::new(path.clone()).await, Err(StoreError::StoreLocked(_))));
+        drop(unlocked);
+
+        SqliteStore::new(path).await?;
+
+        Ok(())
     }
 
     fn assert_send_sync<T: Send + Sync>() {}

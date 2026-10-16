@@ -75,6 +75,12 @@ pub enum StoreError {
     QueryError(String),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
+    /// Another store instance holds a lock on the store, so this instance cannot open it.
+    ///
+    /// The value is the identifier of the store, such as the path of the database file. Close the
+    /// other client that uses the store, or use a different store.
+    #[error("store {0} is locked by another store instance")]
+    StoreLocked(String),
     #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]

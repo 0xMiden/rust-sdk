@@ -5,7 +5,9 @@ use miden_client::account::AccountType;
 use miden_client::asset::AssetId;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
+use miden_client::note::BlockNumber;
 use miden_client::protocol_config::ProtocolConfig;
+use miden_client::rpc::NodeRpcClient;
 use miden_client::store::StoreError;
 use miden_client::testing::common::create_test_store_path;
 use miden_client::transaction::TransactionRequestBuilder;
@@ -45,6 +47,47 @@ async fn the_first_sync_stores_the_protocol_config() {
     client.sync_state().await.unwrap();
 
     assert_eq!(client.get_protocol_config(config.to_commitment()).await.unwrap(), config);
+}
+
+#[tokio::test]
+async fn seed_genesis_stores_the_genesis_header_and_protocol_config() {
+    let rpc = prebuilt_rpc_api().await;
+    let (genesis, _) =
+        rpc.get_block_header_by_number(Some(BlockNumber::GENESIS), false).await.unwrap();
+    let protocol_config = rpc.protocol_config();
+    let client = ClientBuilder::new()
+        .rpc(Arc::new(rpc.clone()))
+        .store(Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap()))
+        .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()))
+        .seed_genesis(genesis.clone(), protocol_config.clone())
+        .build()
+        .await
+        .unwrap();
+
+    let (stored, _) = client.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().unwrap();
+    assert_eq!(stored.commitment(), genesis.commitment());
+    let expected_protocol_config =
+        client.get_protocol_config(protocol_config.to_commitment()).await.unwrap();
+    assert_eq!(expected_protocol_config, protocol_config);
+}
+
+#[tokio::test]
+async fn seed_genesis_rejects_a_protocol_config_the_header_does_not_commit_to() {
+    let rpc = prebuilt_rpc_api().await;
+    let (genesis, _) =
+        rpc.get_block_header_by_number(Some(BlockNumber::GENESIS), false).await.unwrap();
+
+    let builder = ClientBuilder::new()
+        .rpc(Arc::new(rpc.clone()))
+        .store(Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap()))
+        .authenticator(Arc::new(FilesystemKeyStore::new(temp_dir()).unwrap()));
+
+    let wrong_protocol_config = protocol_config_for(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2);
+    assert_ne!(wrong_protocol_config.to_commitment(), genesis.protocol_config_commitment());
+
+    let result = builder.seed_genesis(genesis, wrong_protocol_config).build().await;
+
+    assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
 }
 
 #[tokio::test]

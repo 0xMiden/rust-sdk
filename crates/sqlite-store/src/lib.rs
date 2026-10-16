@@ -51,6 +51,7 @@ use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteScript, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
@@ -279,6 +280,19 @@ impl Store for SqliteStore {
         let nodes = nodes.to_vec();
         self.interact_with_connection(move |conn| {
             SqliteStore::insert_block_header(conn, &block_header, &nodes, has_client_notes)
+        })
+        .await
+    }
+
+    async fn insert_genesis(
+        &self,
+        block_header: &BlockHeader,
+        protocol_config: Option<&ProtocolConfig>,
+    ) -> Result<(), StoreError> {
+        let block_header = block_header.clone();
+        let protocol_config = protocol_config.cloned();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::insert_genesis(conn, &block_header, protocol_config.as_ref())
         })
         .await
     }

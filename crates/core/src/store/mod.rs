@@ -35,6 +35,7 @@ use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteScript, NoteTag, Nullifier};
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 
@@ -290,6 +291,30 @@ pub trait Store: Send + Sync {
         nodes: &[(InOrderIndex, Word)],
         has_client_notes: bool,
     ) -> Result<(), StoreError>;
+
+    /// Inserts the genesis block header and, if present, its protocol configuration.
+    ///
+    /// The header is untracked and has no MMR authentication nodes. The protocol configuration is
+    /// stored under [`protocol_config_setting_key`] in [`SettingScope::Client`]. The default
+    /// implementation does two separate writes, so a failure between them can leave the header
+    /// without its protocol configuration. Implementations should override this method to do both
+    /// writes in one transaction.
+    async fn insert_genesis(
+        &self,
+        block_header: &BlockHeader,
+        protocol_config: Option<&ProtocolConfig>,
+    ) -> Result<(), StoreError> {
+        self.insert_block_header(block_header, &[], false).await?;
+        if let Some(protocol_config) = protocol_config {
+            self.set_setting(
+                SettingScope::Client,
+                protocol_config_setting_key(protocol_config.to_commitment()),
+                protocol_config.to_bytes(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
 
     /// Prunes irrelevant block data from the store.
     ///

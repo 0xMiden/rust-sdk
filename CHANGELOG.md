@@ -4,12 +4,15 @@
 
 ### Enhancements
 
+* [rust] On official networks, `std` builds now fetch the genesis block from the official `genesis` service (`https://genesis.<network>.miden.io`) instead of the node. Builds without `std` still fetch it from the node ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * `account --show`, `notes --show` and the transaction summary show non-fungible assets in a separate table with their faucet ID and asset ID. The fungible asset tables no longer have an asset type column. `tx --show` shows the asset ID of a non-fungible asset, and `account --list` and `account --show` label a non-fungible faucet as `Non-fungible faucet` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 
 ### Features
 
+* [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+* [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
 

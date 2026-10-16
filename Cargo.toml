@@ -20,8 +20,9 @@ default-members = ["bin/miden-cli", "crates/rust-client"]
 
 [workspace.metadata.inheritance-check]
 ignore = [
-  # rust-client's wasm32 target needs a sync-only tokio and can't inherit the workspace's rt-multi-thread features.
+  # rust-client's and grpc's wasm32 targets need a sync-only tokio and can't inherit the workspace's rt-multi-thread features.
   { dependency = "tokio", member = "crates/rust-client" },
+  { dependency = "tokio", member = "crates/grpc" },
   # web3signer-authenticator is no_std and needs hex without its std default. A member can add
   # features to an inherited dependency but cannot turn the workspace's default features off.
   { dependency = "hex", member = "crates/web3signer-authenticator" },
@@ -70,34 +71,38 @@ miden-mast-package    = { default-features = false, version = "0.35" }
 miden-processor       = { default-features = false, version = "0.35" }
 
 # External dependencies
-anyhow             = { default-features = false, version = "1.0" }
-assert_cmd         = { version = "2.0" }
-async-trait        = { version = "0.1" }
-chrono             = { version = "0.4" }
-clap               = { version = "4.5" }
-comfy-table        = { version = "7.1" }
-futures            = { version = "0.3" }
-hex                = { version = "0.4" }
-miette             = { features = ["fancy"], version = "7.6" }
-predicates         = { version = "3.0" }
-prost              = { default-features = false, version = "0.14" }
-protox             = { version = "0.9.1" }
-rand               = { version = "0.10" }
-rand_chacha        = { version = "0.10" }
-regex              = { version = "1.0" }
-reqwest            = { default-features = false, features = ["json", "rustls-tls"], version = "0.12" }
-rstest             = { version = "0.25" }
-serde              = { features = ["derive"], version = "1.0" }
-serde_json         = { version = "1.0" }
-sha2               = { default-features = false, version = "0.11" }
-tempfile           = { version = "3.0" }
-thiserror          = { default-features = false, version = "2.0" }
-tokio              = { features = ["macros", "rt-multi-thread"], version = "1.48" }
-toml               = { version = "0.9" }
-tonic              = { default-features = false, version = "0.14" }
-tracing            = { version = "0.1" }
-tracing-subscriber = { default-features = false, version = "0.3" }
-uuid               = { version = "1.10" }
+anyhow                = { default-features = false, version = "1.0" }
+assert_cmd            = { version = "2.0" }
+async-trait           = { version = "0.1" }
+chrono                = { version = "0.4" }
+clap                  = { version = "4.5" }
+comfy-table           = { version = "7.1" }
+futures               = { version = "0.3" }
+gloo-timers           = { features = ["futures"], version = "0.3" }
+hex                   = { version = "0.4" }
+miette                = { features = ["fancy"], version = "7.6" }
+predicates            = { version = "3.0" }
+prost                 = { default-features = false, version = "0.14" }
+protox                = { version = "0.9.1" }
+rand                  = { version = "0.10" }
+rand_chacha           = { version = "0.10" }
+regex                 = { version = "1.0" }
+reqwest               = { default-features = false, features = ["json", "rustls-tls"], version = "0.12" }
+rstest                = { version = "0.25" }
+serde                 = { features = ["derive"], version = "1.0" }
+serde_json            = { version = "1.0" }
+sha2                  = { default-features = false, version = "0.11" }
+tempfile              = { version = "3.0" }
+thiserror             = { default-features = false, version = "2.0" }
+tokio                 = { features = ["macros", "rt-multi-thread"], version = "1.48" }
+toml                  = { version = "0.9" }
+tonic                 = { default-features = false, version = "0.14" }
+tonic-prost           = { version = "0.14" }
+tonic-prost-build     = { version = "0.14" }
+tonic-web-wasm-client = { default-features = false, version = "0.9" }
+tracing               = { version = "0.1" }
+tracing-subscriber    = { default-features = false, version = "0.3" }
+uuid                  = { version = "1.10" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

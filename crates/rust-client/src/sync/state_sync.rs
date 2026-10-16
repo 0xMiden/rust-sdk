@@ -2217,9 +2217,9 @@ mod tests {
                     .collect(),
             );
 
-            RpcTransactionRecord {
-                block_num: BlockNumber::from(block_number),
-                transaction_header: TransactionHeader::new(
+            RpcTransactionRecord::new(
+                BlockNumber::from(block_number),
+                TransactionHeader::new(
                     account_id,
                     word(init_state),
                     word(final_state),
@@ -2227,10 +2227,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            }
+                vec![],
+                vec![],
+                vec![],
+            )
         }
 
         #[test]
@@ -2264,9 +2264,9 @@ mod tests {
             )
             .unwrap();
 
-            let tx_b1 = RpcTransactionRecord {
-                block_num: BlockNumber::from(5u32),
-                transaction_header: TransactionHeader::new(
+            let tx_b1 = RpcTransactionRecord::new(
+                BlockNumber::from(5u32),
+                TransactionHeader::new(
                     account_b,
                     word(100),
                     word(200),
@@ -2276,10 +2276,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            };
+                vec![],
+                vec![],
+                vec![],
+            );
 
             let result = super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]);
 
@@ -2329,9 +2329,9 @@ mod tests {
     #[test]
     fn derive_account_commitments_walks_chains_per_account() {
         let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
-            RpcTransactionRecord {
-                block_num: BlockNumber::from(block_num),
-                transaction_header: TransactionHeader::new(
+            RpcTransactionRecord::new(
+                BlockNumber::from(block_num),
+                TransactionHeader::new(
                     account,
                     word(init_state),
                     word(final_state),
@@ -2339,10 +2339,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            }
+                vec![],
+                vec![],
+                vec![],
+            )
         };
 
         let account_a: AccountId =
@@ -3123,9 +3123,9 @@ mod tests {
 
     /// Builds a minimal RPC transaction record at `block_num`, for range-validation tests.
     fn make_tx_record(account_id: AccountId, block_num: u32) -> RpcTransactionRecord {
-        RpcTransactionRecord {
-            block_num: BlockNumber::from(block_num),
-            transaction_header: TransactionHeader::new(
+        RpcTransactionRecord::new(
+            BlockNumber::from(block_num),
+            TransactionHeader::new(
                 account_id,
                 word(1),
                 word(2),
@@ -3133,9 +3133,9 @@ mod tests {
                 vec![],
             )
             .unwrap(),
-            output_notes: vec![],
-            erased_output_notes: vec![],
-            consumed_note_refs: vec![],
-        }
+            vec![],
+            vec![],
+            vec![],
+        )
     }
 }

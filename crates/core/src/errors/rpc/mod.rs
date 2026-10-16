@@ -9,7 +9,8 @@ use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::DeserializationError;
 use thiserror::Error;
 
-use super::RpcEndpoint;
+use super::TransactionEncryptionError;
+use crate::rpc::RpcEndpoint;
 
 pub mod node;
 pub use node::{AddTransactionError, EndpointError, RegisterAccountError};
@@ -125,6 +126,16 @@ impl From<RpcConversionError> for RpcError {
 impl From<ConversionError> for RpcError {
     fn from(err: ConversionError) -> Self {
         Self::DeserializationError(err.to_string())
+    }
+}
+
+impl From<TransactionEncryptionError> for RpcError {
+    fn from(err: TransactionEncryptionError) -> Self {
+        match err {
+            TransactionEncryptionError::KeyRejected(reason) => {
+                RpcError::TransactionEncryptionKeyRejected(reason)
+            },
+        }
     }
 }
 

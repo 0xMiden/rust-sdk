@@ -351,13 +351,13 @@ impl MockRpcApi {
 
                 let erased_output_notes = self.erased_notes.read().clone();
 
-                transactions.push(TransactionRecord {
-                    block_num: block_number,
-                    transaction_header: transaction_header.clone(),
-                    output_notes: vec![],
+                transactions.push(TransactionRecord::new(
+                    block_number,
+                    transaction_header.clone(),
+                    vec![],
                     erased_output_notes,
-                    consumed_note_refs: vec![],
-                });
+                    vec![],
+                ));
             }
         }
 

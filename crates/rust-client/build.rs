@@ -1,22 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use miden_node_proto_build::{
-    note_transport_api_descriptor,
-    remote_prover_api_descriptor,
-    rpc_api_descriptor,
-};
+use miden_node_proto_build::{note_transport_api_descriptor, remote_prover_api_descriptor};
 use miette::IntoDiagnostic;
 
-const RPC_STD_DIR: &str = "rpc/std";
-const RPC_NOSTD_DIR: &str = "rpc/nostd";
 const NOTE_TRANSPORT_STD_DIR: &str = "note_transport/std";
 const NOTE_TRANSPORT_NOSTD_DIR: &str = "note_transport/nostd";
 const REMOTE_PROVER_STD_DIR: &str = "remote_prover/std";
 const REMOTE_PROVER_NOSTD_DIR: &str = "remote_prover/nostd";
 
-const RPC_STD_WRAPPER: &str = "rpc_std.rs";
-const RPC_NOSTD_WRAPPER: &str = "rpc_nostd.rs";
 const NOTE_TRANSPORT_STD_WRAPPER: &str = "note_transport_std.rs";
 const NOTE_TRANSPORT_NOSTD_WRAPPER: &str = "note_transport_nostd.rs";
 const REMOTE_PROVER_STD_WRAPPER: &str = "remote_prover_std.rs";
@@ -31,16 +23,12 @@ fn main() -> miette::Result<()> {
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").into_diagnostic()?);
 
-    compile_tonic_client_proto(&out_dir)?;
     compile_tonic_note_transport_proto(&out_dir)?;
     compile_tonic_remote_prover_proto(&out_dir)?;
 
-    replace_no_std_types_in_dir(&out_dir.join(RPC_NOSTD_DIR))?;
     replace_no_std_types_in_dir(&out_dir.join(NOTE_TRANSPORT_NOSTD_DIR))?;
     replace_no_std_types_in_dir(&out_dir.join(REMOTE_PROVER_NOSTD_DIR))?;
 
-    generate_wrapper(&out_dir, RPC_STD_DIR, RPC_STD_WRAPPER)?;
-    generate_wrapper(&out_dir, RPC_NOSTD_DIR, RPC_NOSTD_WRAPPER)?;
     generate_wrapper(&out_dir, NOTE_TRANSPORT_STD_DIR, NOTE_TRANSPORT_STD_WRAPPER)?;
     generate_wrapper(&out_dir, NOTE_TRANSPORT_NOSTD_DIR, NOTE_TRANSPORT_NOSTD_WRAPPER)?;
     generate_wrapper(&out_dir, REMOTE_PROVER_STD_DIR, REMOTE_PROVER_STD_WRAPPER)?;
@@ -117,46 +105,6 @@ fn compile_tonic_note_transport_proto(out_dir: &Path) -> miette::Result<()> {
 
     let mut web_tonic_prost_config = canonical_object_config();
     // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap.
-    web_tonic_prost_config.btree_map(["."]);
-
-    // Generate the header of the user facing server from its proto file
-    tonic_prost_build::configure()
-        .build_client(tonic_client_codegen_enabled())
-        .build_transport(false)
-        .build_server(false)
-        .out_dir(&nostd_out)
-        .compile_fds_with_config(file_descriptors.clone(), web_tonic_prost_config)
-        .into_diagnostic()?;
-
-    tonic_prost_build::configure()
-        .build_client(tonic_client_codegen_enabled())
-        .build_server(false)
-        .out_dir(&std_out)
-        .compile_fds_with_config(file_descriptors, prost_config)
-        .into_diagnostic()?;
-
-    Ok(())
-}
-
-// NODE RPC CLIENT PROTO CODEGEN
-// ===============================================================================================
-
-/// Generates the Rust protobuf bindings for the RPC client.
-fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
-    let file_descriptors = rpc_api_descriptor();
-
-    let std_out = out_dir.join(RPC_STD_DIR);
-    let nostd_out = out_dir.join(RPC_NOSTD_DIR);
-    fs::create_dir_all(&std_out).into_diagnostic()?;
-    fs::create_dir_all(&nostd_out).into_diagnostic()?;
-
-    let mut prost_config = canonical_object_config();
-    prost_config.skip_debug(["RegisterAccountRequest"]);
-
-    let mut web_tonic_prost_config = canonical_object_config();
-    web_tonic_prost_config.skip_debug(["RegisterAccountRequest"]);
-
-    // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap
     web_tonic_prost_config.btree_map(["."]);
 
     // Generate the header of the user facing server from its proto file

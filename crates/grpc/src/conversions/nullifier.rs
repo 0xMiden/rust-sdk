@@ -1,28 +1,10 @@
+use miden_client_core::errors::RpcConversionError;
+use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_protocol::Word;
-use miden_protocol::block::BlockNumber;
 use miden_protocol::note::Nullifier;
 
-use crate::rpc::domain::MissingFieldHelper;
-use crate::rpc::errors::RpcConversionError;
-use crate::rpc::generated as proto;
-
-// NULLIFIER UPDATE
-// ================================================================================================
-
-/// Represents a note that was consumed in the node at a certain block.
-#[derive(Debug, Clone, Eq, PartialOrd, Ord)]
-pub struct NullifierUpdate {
-    /// The nullifier of the consumed note.
-    pub nullifier: Nullifier,
-    /// The number of the block in which the note consumption was registered.
-    pub block_num: BlockNumber,
-}
-
-impl PartialEq for NullifierUpdate {
-    fn eq(&self, other: &Self) -> bool {
-        self.nullifier == other.nullifier
-    }
-}
+use super::MissingFieldHelper;
+use crate::generated as proto;
 
 // CONVERSIONS
 // ================================================================================================

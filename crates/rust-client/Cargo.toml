@@ -23,7 +23,7 @@ ignored = ["getrandom", "prost-types", "tonic-prost"]
 [package.metadata.cargo-shear]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
 # generated proto bindings and std-only keystore code that shear does not fully resolve.
-ignored = ["getrandom", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+ignored = ["getrandom", "prost", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
 
 [lib]
 crate-type = ["lib"]
@@ -57,6 +57,7 @@ std = [
   "miden-agglayer/std",
   "miden-assembly-syntax/std",
   "miden-client-core/std",
+  "miden-client-grpc?/std",
   "miden-objects/std",
   "miden-processor/std",
   "miden-protocol/std",
@@ -74,13 +75,14 @@ testing = [
   "miden-standards/testing",
   "miden-tx/testing",
 ]
-tonic = ["dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
+tonic = ["dep:miden-client-grpc", "dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
 
 [dependencies]
 # Miden dependencies
 miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
 miden-client-core     = { workspace = true }
+miden-client-grpc     = { optional = true, workspace = true }
 miden-debug           = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }
@@ -121,7 +123,6 @@ miden-objects          = { workspace = true }
 miden-protocol         = { workspace = true }
 miden-standards        = { workspace = true }
 miette                 = { workspace = true }
-prost                  = { features = ["derive"], workspace = true }
 tonic-prost-build      = { version = "0.14" }
 
 [dev-dependencies]

@@ -1,0 +1,64 @@
+[package]
+authors.workspace      = true
+description            = "gRPC implementation of the miden-client node RPC client"
+edition.workspace      = true
+license.workspace      = true
+name                   = "miden-client-grpc"
+publish                = true
+repository.workspace   = true
+rust-version.workspace = true
+version.workspace      = true
+
+[package.metadata.cargo-shear]
+# "tonic-prost" is used by the generated proto bindings, which shear does not resolve.
+ignored = ["tonic-prost"]
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = ["std"]
+std = [
+  "dep:tokio",
+  "miden-client-core/std",
+  "miden-objects/std",
+  "miden-protocol/std",
+  "tonic/tls-native-roots",
+  "tonic/tls-ring",
+  "tonic/transport",
+]
+testing = []
+
+[dependencies]
+# Miden dependencies
+miden-client-core = { workspace = true }
+miden-objects     = { workspace = true }
+miden-protocol    = { workspace = true }
+
+# External dependencies
+async-trait = { workspace = true }
+prost       = { features = ["derive"], workspace = true }
+tokio       = { features = ["sync", "time"], optional = true, workspace = true }
+tonic       = { features = ["codegen"], workspace = true }
+tonic-prost = { version = "0.14" }
+tracing     = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers           = { features = ["futures"], version = "0.3" }
+tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
+tonic-web-wasm-client = { default-features = false, version = "0.9" }
+
+[build-dependencies]
+miden-node-proto-build = { workspace = true }
+miden-objects          = { workspace = true }
+miette                 = { workspace = true }
+tonic-prost-build      = { version = "0.14" }
+
+[dev-dependencies]
+miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
+miden-standards = { workspace = true }
+miden-testing   = { default-features = false, workspace = true }
+tokio           = { workspace = true }
+
+[lints]
+workspace = true

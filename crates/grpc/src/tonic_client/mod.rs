@@ -10,6 +10,33 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
+use miden_client_core::errors::{
+    AcceptHeaderContext,
+    AcceptHeaderError,
+    GrpcError,
+    RpcConversionError,
+    RpcError,
+};
+use miden_client_core::rpc::domain::account::{
+    AccountProof,
+    AccountStorageRequirements,
+    GetAccountRequest,
+    StorageMapFetch,
+};
+use miden_client_core::rpc::domain::account_vault::AccountVaultInfo;
+use miden_client_core::rpc::domain::note::{FetchedNote, SyncNotesBlock};
+use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
+use miden_client_core::rpc::domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
+use miden_client_core::rpc::domain::storage_map::StorageMapInfo;
+use miden_client_core::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
+use miden_client_core::rpc::domain::transaction::TransactionRecord;
+use miden_client_core::rpc::encryption::{
+    AttestedTransactionEncryptionKey,
+    NextTransactionEncryptionKey,
+    SealedTransactionInputs,
+    ValidatorAttestation,
+};
+use miden_client_core::rpc::{AccountStateAt, Endpoint, NodeRpcClient, RpcEndpoint, RpcLimits};
 use miden_objects::DecodeMessageExt;
 use miden_protocol::account::{
     AccountCode,
@@ -26,38 +53,17 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
 
-use super::domain::account::{
-    AccountProof,
-    AccountStorageRequirements,
-    GetAccountRequest,
-    StorageMapFetch,
-};
-use super::domain::note::{FetchedNote, SyncNotesBlock};
-use super::domain::nullifier::NullifierUpdate;
-use super::encryption::{
-    AttestedTransactionEncryptionKey,
-    NextTransactionEncryptionKey,
-    SealedTransactionInputs,
-    ValidatorAttestation,
-};
-use super::generated::rpc::GetAccountRequest as ProtoGetAccountRequest;
-use super::generated::rpc::get_account_request::AccountDetailRequest;
-use super::{Endpoint, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
-use crate::rpc::domain::account_vault::AccountVaultInfo;
-use crate::rpc::domain::status::NetworkNoteStatusInfo;
-use crate::rpc::domain::storage_map::StorageMapInfo;
-use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use crate::rpc::domain::transaction::TransactionRecord;
-use crate::rpc::errors::node::{parse_node_error, parse_status_error};
-use crate::rpc::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcConversionError};
-use crate::rpc::generated::rpc::BlockRange;
-use crate::rpc::{AccountStateAt, RpcLimits, generated as proto};
+use crate::conversions::{storage_map_fetch_to_proto, vault_fetch_to_proto};
+use crate::generated::rpc::get_account_request::AccountDetailRequest;
+use crate::generated::rpc::{BlockRange, GetAccountRequest as ProtoGetAccountRequest};
+use crate::generated::{self as proto};
+use crate::node_errors::{parse_node_error, parse_status_error};
 
 mod api_client;
 mod retry;
@@ -239,13 +245,14 @@ impl GrpcClient {
     /// Validation of the token against [`AsciiMetadataValue`](tonic::metadata::AsciiMetadataValue)
     /// is deferred to connection time (printable ASCII plus tab only — `HeaderValue::from_str`
     /// semantics): invalid tokens surface as
-    /// [`RpcError::ConnectionError`](crate::rpc::RpcError::ConnectionError) on the first request,
-    /// so CR/LF header-injection attempts are rejected.
+    /// [`RpcError::ConnectionError`](miden_client_core::errors::RpcError::ConnectionError) on the
+    /// first request, so CR/LF header-injection attempts are rejected.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use miden_client::rpc::{Endpoint, GrpcClient};
+    /// # use miden_client_core::rpc::Endpoint;
+    /// # use miden_client_grpc::GrpcClient;
     /// let endpoint = Endpoint::new("https".into(), "node.example".into(), Some(443));
     /// let client = GrpcClient::new(&endpoint, 10_000).with_bearer_auth("<api-key>".into());
     /// ```
@@ -293,7 +300,27 @@ impl GrpcClient {
             client_version: env!("CARGO_PKG_VERSION").to_string(),
             genesis_commitment,
         };
-        RpcError::from_grpc_error_with_context(endpoint, status, context)
+
+        if let Some(accept_error) =
+            AcceptHeaderError::try_from_message_with_context(status.message(), context)
+        {
+            return RpcError::AcceptHeaderError(accept_error);
+        }
+
+        let error_kind = grpc_error_from_status(&status);
+
+        // Parse the application-level error from the status details
+        let endpoint_error = parse_node_error(endpoint, status.details(), status.message())
+            .or_else(|| parse_status_error(endpoint, &error_kind, status.message()));
+
+        let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
+
+        RpcError::RequestError {
+            endpoint,
+            error_kind,
+            endpoint_error,
+            source: Some(source),
+        }
     }
 
     /// Executes an RPC call and automatically retries transient failures.
@@ -630,8 +657,8 @@ impl NodeRpcClient for GrpcClient {
         let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                asset_vault_commitment: vault.into(),
-                storage_request: storage.into(),
+                asset_vault_commitment: vault_fetch_to_proto(&vault),
+                storage_request: storage_map_fetch_to_proto(storage),
             })
         } else {
             None
@@ -1079,39 +1106,8 @@ impl NodeRpcClient for GrpcClient {
 // ERRORS
 // ================================================================================================
 
-impl RpcError {
-    pub fn from_grpc_error_with_context(
-        endpoint: RpcEndpoint,
-        status: Status,
-        context: AcceptHeaderContext,
-    ) -> Self {
-        if let Some(accept_error) =
-            AcceptHeaderError::try_from_message_with_context(status.message(), context)
-        {
-            return Self::AcceptHeaderError(accept_error);
-        }
-
-        let error_kind = GrpcError::from(&status);
-
-        // Parse the application-level error from the status details
-        let endpoint_error = parse_node_error(&endpoint, status.details(), status.message())
-            .or_else(|| parse_status_error(&endpoint, &error_kind, status.message()));
-
-        let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
-
-        Self::RequestError {
-            endpoint,
-            error_kind,
-            endpoint_error,
-            source: Some(source),
-        }
-    }
-}
-
-impl From<&Status> for GrpcError {
-    fn from(status: &Status) -> Self {
-        GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))
-    }
+fn grpc_error_from_status(status: &Status) -> GrpcError {
+    GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))
 }
 
 // HELPERS
@@ -1144,6 +1140,8 @@ mod tests {
     use std::boxed::Box;
     use std::vec;
 
+    use miden_client_core::errors::RpcError;
+    use miden_client_core::rpc::{Endpoint, NodeRpcClient};
     use miden_protocol::Word;
     use miden_protocol::block::{BlockNumber, SignedBlock};
     use miden_testing::MockChain;
@@ -1157,7 +1155,6 @@ mod tests {
         proto,
     };
     use crate::alloc::string::ToString;
-    use crate::rpc::{Endpoint, NodeRpcClient, RpcError};
 
     fn assert_send_sync<T: Send + Sync>() {}
 

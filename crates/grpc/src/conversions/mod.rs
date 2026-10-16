@@ -1,21 +1,23 @@
 use core::any::type_name;
 
-use super::errors::RpcConversionError;
+use miden_client_core::errors::RpcConversionError;
 
-pub mod account;
-pub mod account_vault;
-pub mod limits;
-pub mod note;
-pub mod nullifier;
-pub mod status;
-pub mod storage_map;
-pub mod sync;
-pub mod transaction;
+mod account;
+pub(crate) use account::{storage_map_fetch_to_proto, vault_fetch_to_proto};
+mod account_vault;
+mod encryption;
+mod limits;
+mod note;
+mod nullifier;
+mod status;
+mod storage_map;
+mod sync;
+mod transaction;
 
 // UTILITIES
 // ================================================================================================
 
-pub trait MissingFieldHelper {
+pub(crate) trait MissingFieldHelper {
     fn missing_field(field_name: &'static str) -> RpcConversionError;
 }
 

@@ -1,10 +1,10 @@
 use core::time::Duration;
 
+use miden_client_core::rpc::RpcEndpoint;
 use tonic::Status;
 use tracing::warn;
 
 use crate::grpc_support::{async_sleep, extract_retry_after};
-use crate::rpc::RpcEndpoint;
 
 // CONSTS
 // ================================================================================================

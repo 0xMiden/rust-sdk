@@ -1,13 +1,13 @@
 use clap::ValueEnum;
 use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
 use miden_client::address::Address;
+use miden_client::asset::Asset;
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     Note,
     NoteConsumability,
     NoteConsumptionStatus,
     NoteMetadata,
-    NoteStorage,
     StandardNote,
     get_input_note_with_id_prefix,
 };
@@ -15,7 +15,13 @@ use miden_client::store::{InputNoteRecord, NoteFilter as ClientNoteFilter, Outpu
 use miden_client::{Client, ClientError, IdPrefixFetchError, PrettyPrint};
 
 use crate::errors::CliError;
+use crate::note_decoding::{
+    format_attachment_content,
+    note_storage_rows,
+    standard_attachment_name,
+};
 use crate::utils::{
+    FormattedAsset,
     configured_network_id,
     load_faucet_metadata_resolver,
     parse_account_id,
@@ -215,6 +221,14 @@ async fn show_note<AUTH: Keystore + Sync>(
     } = note_summary(input_note_record.as_ref(), output_note_record.as_ref());
     table.add_row(vec![Cell::new("ID"), Cell::new(id)]);
 
+    // A note can be both an input and an output note of this client.
+    let record = match (input_note_record.is_some(), output_note_record.is_some()) {
+        (true, true) => "Input, Output",
+        (true, false) => "Input",
+        _ => "Output",
+    };
+    table.add_row(vec![Cell::new("Record"), Cell::new(record)]);
+
     // Identify if this is a standard note type by script root
     let script_root_word = match (&input_note_record, &output_note_record) {
         (Some(record), _) => Some(record.details().script().root()),
@@ -222,7 +236,9 @@ async fn show_note<AUTH: Keystore + Sync>(
         _ => None,
     };
 
-    if let Some(standard_note) = script_root_word.and_then(StandardNote::from_script_root) {
+    let standard_note = script_root_word.and_then(StandardNote::from_script_root);
+
+    if let Some(standard_note) = standard_note {
         table.add_row(vec![Cell::new("Standard Note"), Cell::new(standard_note.name())]);
     }
 
@@ -236,25 +252,30 @@ async fn show_note<AUTH: Keystore + Sync>(
     table.add_row(vec![Cell::new("Sender"), Cell::new(sender)]);
     table.add_row(vec![Cell::new("Exportable"), Cell::new(if exportable { "✔" } else { "✘" })]);
 
+    // An input note has a consumer after this client submits a transaction that consumes it.
+    if let Some(record) = input_note_record.as_ref() {
+        if let Some(tx_id) = record.consumer_transaction_id() {
+            table.add_row(vec![Cell::new("Consumer Transaction"), Cell::new(tx_id.to_hex())]);
+        }
+        if let Some(account) = record.consumer_account() {
+            table.add_row(vec![Cell::new("Consumer Account"), Cell::new(account.to_string())]);
+        }
+    }
+
     println!("{table}");
 
     let inputs = match (&input_note_record, &output_note_record) {
-        (Some(record), _) => {
-            let details = record.details();
-            Some(details.storage().items().to_vec())
-        },
-        (_, Some(record)) => {
-            record.recipient().map(|recipient| recipient.storage().items().to_vec())
-        },
+        (Some(record), _) => Some(record.details().storage().items()),
+        (_, Some(record)) => record.recipient().map(|recipient| recipient.storage().items()),
         (None, None) => {
             panic!("One of the two records should be Some")
         },
     };
 
     let assets = input_note_record
-        .clone()
-        .map(|record| record.assets().clone())
-        .or(output_note_record.clone().map(|record| record.assets().clone()))
+        .as_ref()
+        .map(InputNoteRecord::assets)
+        .or_else(|| output_note_record.as_ref().map(OutputNoteRecord::assets))
         .expect("One of the two records should be Some");
 
     // print note vault
@@ -280,7 +301,12 @@ async fn show_note<AUTH: Keystore + Sync>(
     for asset in assets.iter() {
         match asset.as_fungible() {
             Some(fungible) => {
-                let (faucet, amount) = resolver.format_fungible_asset(client, &fungible).await?;
+                let metadata = resolver.resolve(client, fungible.faucet_id()).await?;
+                let (faucet, amount) = FormattedAsset::fungible_parts(
+                    &fungible,
+                    metadata.as_ref(),
+                    resolver.network_id(),
+                );
                 fungible_table.add_row(vec![faucet, amount]);
             },
             None => {
@@ -292,20 +318,55 @@ async fn show_note<AUTH: Keystore + Sync>(
     println!("{fungible_table}");
     println!("{non_fungible_table}");
 
+    // Show named fields for a standard note, and raw items otherwise.
     if let Some(inputs) = inputs {
-        let inputs = NoteStorage::new(inputs.clone()).map_err(ClientError::NoteError)?;
-        let mut table = create_dynamic_table(&["Note Inputs"]);
+        let mut table = create_dynamic_table(&["Note Storage"]);
+        table
+            .load_preset(presets::UTF8_HORIZONTAL_ONLY)
+            .set_content_arrangement(ContentArrangement::DynamicFullWidth);
+
+        let (label, rows) = note_storage_rows(client, &resolver, standard_note, inputs).await?;
+        table.add_row(vec![
+            Cell::new(label).add_attribute(Attribute::Bold),
+            Cell::new("Value").add_attribute(Attribute::Bold),
+        ]);
+        for (name, value) in rows {
+            table.add_row(vec![Cell::new(name).add_attribute(Attribute::Bold), Cell::new(value)]);
+        }
+        println!("{table}");
+    }
+
+    // An input record has no attachments until a sync fetches the note, so fall back to the output
+    // record.
+    let attachments = input_note_record
+        .as_ref()
+        .map(InputNoteRecord::attachments)
+        .filter(|attachments| !attachments.is_empty())
+        .or_else(|| output_note_record.as_ref().map(OutputNoteRecord::attachments))
+        .filter(|attachments| !attachments.is_empty());
+
+    if let Some(attachments) = attachments {
+        let mut table = create_dynamic_table(&["Note Attachments"]);
         table
             .load_preset(presets::UTF8_HORIZONTAL_ONLY)
             .set_content_arrangement(ContentArrangement::DynamicFullWidth);
         table.add_row(vec![
-            Cell::new("Index").add_attribute(Attribute::Bold),
-            Cell::new("Value").add_attribute(Attribute::Bold),
+            Cell::new("Scheme").add_attribute(Attribute::Bold),
+            Cell::new("Content").add_attribute(Attribute::Bold),
         ]);
-
-        inputs.items().iter().enumerate().for_each(|(idx, input)| {
-            table.add_row(vec![Cell::new(idx).add_attribute(Attribute::Bold), Cell::new(input)]);
-        });
+        // A PSWAP attachment amount is in units of the only fungible asset of the note.
+        let mut fungible_assets = assets.iter().filter_map(Asset::as_fungible);
+        let amount_metadata = match (fungible_assets.next(), fungible_assets.next()) {
+            (Some(asset), None) => resolver.resolve(client, asset.faucet_id()).await?,
+            _ => None,
+        };
+        for attachment in attachments.iter() {
+            let scheme = attachment.attachment_scheme();
+            let scheme = standard_attachment_name(scheme)
+                .map_or_else(|| scheme.to_string(), |name| format!("{scheme} ({name})"));
+            let content = format_attachment_content(attachment, amount_metadata.as_ref());
+            table.add_row(vec![Cell::new(scheme), Cell::new(content)]);
+        }
         println!("{table}");
     }
 

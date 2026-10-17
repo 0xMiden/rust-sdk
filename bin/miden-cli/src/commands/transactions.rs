@@ -27,10 +27,11 @@ use miden_client::transaction::{
 
 use crate::commands::notes::note_record_type;
 use crate::errors::CliError;
+use crate::note_decoding::format_note_storage;
 use crate::utils::{
     FaucetMetadataResolver,
+    FormattedAsset,
     NO_VALUE,
-    format_standard_note_storage,
     load_faucet_metadata_resolver,
     parse_account_id,
 };
@@ -247,7 +248,7 @@ async fn print_input_notes<AUTH: Keystore + Sync>(
 
         let id = record.id().map_or_else(|| NO_VALUE.to_string(), |id| id.to_hex());
         let standard_note = StandardNote::from_script_root(record.details().script().root());
-        let storage = format_standard_note_storage(
+        let storage = format_note_storage(
             client,
             resolver,
             standard_note,
@@ -310,13 +311,8 @@ async fn print_output_notes<AUTH: Keystore + Sync>(
             .and_then(|recipient| StandardNote::from_script_root(recipient.script().root()));
         let storage = match recipient {
             Some(recipient) => {
-                format_standard_note_storage(
-                    client,
-                    resolver,
-                    standard_note,
-                    recipient.storage().items(),
-                )
-                .await?
+                format_note_storage(client, resolver, standard_note, recipient.storage().items())
+                    .await?
             },
             None => NO_VALUE.to_string(),
         };
@@ -408,7 +404,9 @@ async fn format_note_assets<AUTH: Keystore + Sync>(
 ) -> Result<String, CliError> {
     let mut formatted = Vec::with_capacity(assets.num_assets());
     for asset in assets.iter() {
-        formatted.push(resolver.format_asset(client, asset).await?.to_string());
+        let resolved_faucet = resolver.resolve_asset(client, asset).await?;
+        formatted
+            .push(FormattedAsset::new(asset, &resolved_faucet, resolver.network_id()).to_string());
     }
 
     if formatted.is_empty() {

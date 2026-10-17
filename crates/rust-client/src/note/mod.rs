@@ -118,6 +118,7 @@ pub use miden_standards::note::costs::{NoteConsumptionCost, NoteCost};
 pub use miden_standards::note::{
     AccountCodeUpgradeAttachment,
     AccountCodeUpgradeAttachmentError,
+    BurnNote,
     FeeSponsorshipNote,
     MintNote,
     MintNoteStorage,

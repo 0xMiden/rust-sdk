@@ -4,6 +4,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use async_trait::async_trait;
+use miden_processor::ExecutionError;
+use miden_processor::mast::error_code_from_msg;
+use miden_processor::operation::OperationError;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
 use miden_protocol::block::BlockNumber;
@@ -15,6 +18,7 @@ use miden_tx::{
     NoteConsumptionChecker,
     NoteConsumptionInfo,
     TransactionExecutor,
+    TransactionExecutorError,
     TransactionMastStore,
 };
 use thiserror::Error;
@@ -185,14 +189,19 @@ impl NoteScreener {
                 .await?;
 
             for note in notes {
-                let consumption_status = consumption_checker
+                let consumption_status = match consumption_checker
                     .can_consume(
                         account_id,
                         block_ref,
                         InputNote::unauthenticated(note.clone()),
                         account_tx_args.clone(),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(status) => status,
+                    Err(err) if adds_existing_non_fungible_asset(&err) => continue,
+                    Err(err) => return Err(err.into()),
+                };
 
                 if is_relevant(&consumption_status) {
                     relevant_notes
@@ -389,4 +398,27 @@ pub enum NoteScreenerError {
     StoreError(#[from] StoreError),
     #[error("note consumption check failed")]
     NoteCheckerError(#[from] NoteCheckerError),
+}
+
+/// The message of the transaction kernel error that the prologue returns when an input note holds a
+/// non-fungible asset that is already in the account vault.
+const NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS: &str =
+    "failed to add non-fungible asset that already exists in the vault";
+
+/// Returns `true` if the consumption check failed in the prologue because an input note holds a
+/// non-fungible asset that is already in the account vault.
+fn adds_existing_non_fungible_asset(err: &NoteCheckerError) -> bool {
+    let NoteCheckerError::PrologueExecution(
+        TransactionExecutorError::TransactionProgramExecutionFailed(
+            ExecutionError::OperationError {
+                err: OperationError::FailedAssertion { err_code, .. },
+                ..
+            },
+        ),
+    ) = err
+    else {
+        return false;
+    };
+
+    *err_code == error_code_from_msg(NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS)
 }

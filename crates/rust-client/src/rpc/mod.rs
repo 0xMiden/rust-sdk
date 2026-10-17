@@ -439,10 +439,9 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the account from the node, using the `/GetAccount` endpoint.
     ///
-    /// The response carries an
-    /// [`AccountWitness`] and the target
-    /// block. Public accounts additionally get [`AccountDetails`]; for private accounts the other
-    /// `request` fields are ignored.
+    /// The response carries an [`AccountWitness`] and the target block. Public accounts
+    /// additionally get [`AccountDetails`]; for private accounts the other `request` fields are
+    /// ignored.
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///

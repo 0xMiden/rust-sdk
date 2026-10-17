@@ -31,10 +31,11 @@ use miden_agglayer::{
     ConversionMetadata,
     UpdateGerNote,
 };
-use miden_client::account::AccountType;
+use miden_client::account::{AccountId, AccountType};
 use miden_client::agglayer::{EthAddress, EthEmbeddedAccountId};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
-use miden_client::note::NoteAssets;
+use miden_client::note::{NoteAssets, NoteDetailsCommitment};
+use miden_client::testing::common::TestClient;
 use miden_client::transaction::TransactionRequestBuilder;
 use tracing::info;
 
@@ -50,6 +51,39 @@ const L1_NETWORK_ID: u32 = 0;
 
 /// Placeholder L1 destination address for the bridge-out test.
 const TEST_L1_DESTINATION: &str = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+/// Upper bound, in blocks, on how long the bridge gets to consume one note as a network
+/// transaction.
+const MAX_BRIDGE_CONSUME_BLOCKS: usize = 10;
+
+// HELPERS
+// ================================================================================================
+
+/// Syncs `client` until the bridge has consumed the note `client` created with
+/// `details_commitment`, one block at a time, for at most [`MAX_BRIDGE_CONSUME_BLOCKS`] blocks.
+///
+/// The reader is backed by the local store, so `client` must be the client that created the note. A
+/// consumed note has no id, so it is matched by its details commitment.
+async fn wait_for_bridge_to_consume(
+    client: &mut TestClient,
+    bridge_id: AccountId,
+    details_commitment: NoteDetailsCommitment,
+    note_name: &str,
+) -> Result<()> {
+    for _ in 0..MAX_BRIDGE_CONSUME_BLOCKS {
+        client.sync_state().await?;
+        let mut reader = client.input_note_reader(bridge_id);
+        while let Some(note) = reader.next().await? {
+            if note.details_commitment() == details_commitment {
+                return Ok(());
+            }
+        }
+        client.wait_for_blocks(1).await?;
+    }
+    anyhow::bail!(
+        "the bridge did not consume the {note_name} note within {MAX_BRIDGE_CONSUME_BLOCKS} blocks"
+    )
+}
 
 // BRIDGE-IN-OUT TEST
 // ================================================================================================
@@ -112,16 +146,21 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         bridge_id,
         bridge_admin.rng(),
     )?;
+    let config_note_commitment = config_note.details_commitment();
     let config_output_tx =
         TransactionRequestBuilder::new().own_output_notes(vec![config_note]).build()?;
     let tx_id = bridge_admin.submit_new_transaction(bridge_admin_id, config_output_tx).await?;
     bridge_admin.wait_for_tx(tx_id).await?;
     info!(%tx_id, "CONFIG_AGG_BRIDGE note committed");
 
-    // Wait for the bridge to consume the config note as a network transaction. In CI the node's
-    // network transaction queue may be congested, so allow more blocks than the local minimum.
-    bridge_admin.wait_for_blocks(5).await?;
-    info!("Waited for bridge to consume CONFIG_AGG_BRIDGE note");
+    wait_for_bridge_to_consume(
+        &mut bridge_admin,
+        bridge_id,
+        config_note_commitment,
+        "CONFIG_AGG_BRIDGE",
+    )
+    .await?;
+    info!("Bridge consumed CONFIG_AGG_BRIDGE note");
 
     // ============================================================================================
     // PHASE 1: BRIDGE-IN (x2) - two independent claim cycles
@@ -149,6 +188,7 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         // Submit UPDATE_GER note: done by the ger manager
         let update_ger_note =
             UpdateGerNote::create(ger, ger_manager_id, bridge_id, ger_manager.rng())?;
+        let update_ger_commitment = update_ger_note.details_commitment();
         let tx_request = TransactionRequestBuilder::new()
             .own_output_notes(vec![update_ger_note])
             .build()?;
@@ -156,8 +196,14 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
         ger_manager.wait_for_tx(tx_id).await?;
         info!(round, %tx_id, "UPDATE_GER note committed");
 
-        ger_manager.wait_for_blocks(5).await?;
-        info!(round, "Waited for bridge to consume UPDATE_GER note");
+        wait_for_bridge_to_consume(
+            &mut ger_manager,
+            bridge_id,
+            update_ger_commitment,
+            "UPDATE_GER",
+        )
+        .await?;
+        info!(round, "Bridge consumed UPDATE_GER note");
 
         // Submit CLAIM note: done by the user (or could also be a claim manager entity)
         let miden_claim_amount = leaf_data
@@ -232,16 +278,15 @@ pub async fn test_agglayer_bridge_in_out(client_config: ClientConfig) -> Result<
     )?;
     info!(amount = BRIDGE_OUT_AMOUNT, "B2AGG note created");
 
+    let b2agg_commitment = b2agg_note.details_commitment();
     let b2agg_output_tx =
         TransactionRequestBuilder::new().own_output_notes(vec![b2agg_note]).build()?;
     let tx_id = user.submit_new_transaction(destination_account.id(), b2agg_output_tx).await?;
     user.wait_for_tx(tx_id).await?;
     info!(%tx_id, "B2AGG note committed");
 
-    // Wait for bridge to consume the B2AGG note as network transaction. Allow extra blocks for CI
-    // where the node processes many concurrent network transactions.
-    user.wait_for_blocks(5).await?;
-    info!("Waited for bridge to consume B2AGG note");
+    wait_for_bridge_to_consume(&mut user, bridge_id, b2agg_commitment, "B2AGG").await?;
+    info!("Bridge consumed B2AGG note");
 
     Ok(())
 }

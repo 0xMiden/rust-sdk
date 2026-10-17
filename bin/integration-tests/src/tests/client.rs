@@ -634,7 +634,7 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
             .unwrap()
             .is_empty()
         {
-            std::thread::sleep(Duration::from_secs(3));
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
         let proven_transaction = client.prove_transaction(&transaction_result).await.unwrap();
         let submission_height = client
@@ -674,7 +674,7 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
             .unwrap()
             .is_empty()
         {
-            std::thread::sleep(Duration::from_secs(3));
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
         let proven_transaction = client.prove_transaction(&transaction_result).await.unwrap();
         let submission_height = client
@@ -694,7 +694,7 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
         .unwrap()
         .is_empty()
     {
-        std::thread::sleep(Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     client.sync_state().await.unwrap();
@@ -1360,24 +1360,8 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
         .execute_tx_and_sync(account_with_map_item.id(), tx_request.clone())
         .await?;
 
-    // Mint a new fungible asset to check account vault changes
-    let faucet = client.insert_faucet(AccountType::Private).await?;
-
-    let fungible_asset = FungibleAsset::new(faucet.id(), MINT_AMOUNT)?;
-    let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
-        fungible_asset,
-        first_basic_account.id(),
-        NoteType::Public,
-        client.rng(),
-    )?;
-    let note = tx_request.expected_output_own_notes().pop().unwrap();
-    client
-        .execute_tx_and_sync(fungible_asset.faucet_id(), tx_request.clone())
-        .await?;
-
-    let tx_request = TransactionRequestBuilder::new().build_consume_notes(vec![note.clone()])?;
-    client.execute_tx_and_sync(first_basic_account.id(), tx_request).await?;
-
+    // The public note minted and consumed above is what the nullifier, note script and vault
+    // queries below look up.
     let nullifier = note.nullifier();
 
     let sync_height = client.get_sync_height().await?;
@@ -1428,23 +1412,19 @@ pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()
     let second_account_id = second_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
 
-    // Mint 2 valid notes
-    let (tx_id_1, note_1) =
-        client.mint_note(account_id, faucet_account_id, NoteType::Private).await?;
-    client.wait_for_tx(tx_id_1).await?;
-    let (tx_id_2, note_2) =
-        client.mint_note(account_id, faucet_account_id, NoteType::Private).await?;
-    client.wait_for_tx(tx_id_2).await?;
-
-    // Mint 2 invalid notes
-    let (tx_id_3, note_3) = client
-        .mint_note(second_account_id, faucet_account_id, NoteType::Private)
-        .await?;
-    client.wait_for_tx(tx_id_3).await?;
-    let (tx_id_4, note_4) = client
-        .mint_note(second_account_id, faucet_account_id, NoteType::Private)
-        .await?;
-    client.wait_for_tx(tx_id_4).await?;
+    // Mint 2 valid notes and 2 notes that target the other account, all in one transaction. The
+    // test needs four distinct notes, not four distinct mint blocks.
+    let fungible_asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT)?;
+    let mint_tx_request = client.mint_multiple_fungible_asset(
+        fungible_asset,
+        &[account_id, account_id, second_account_id, second_account_id],
+        NoteType::Private,
+    )?;
+    let minted_notes = mint_tx_request.expected_output_own_notes();
+    let [note_1, note_2, note_3, note_4]: [_; 4] = minted_notes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("the mint request should produce four notes"))?;
+    client.execute_tx_and_sync(faucet_account_id, mint_tx_request).await?;
 
     // Create a transaction to consume all 4 notes but ignore the invalid ones
     let tx_request = TransactionRequestBuilder::new()

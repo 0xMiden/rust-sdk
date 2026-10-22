@@ -631,7 +631,7 @@ impl NodeRpcClient for GrpcClient {
         let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                vault_request: vault.into(),
+                vault_request: vault.clone().into(),
                 storage_request: storage.into(),
             })
         } else {
@@ -673,7 +673,7 @@ impl NodeRpcClient for GrpcClient {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &requirements)?;
+                .into_domain(&known_codes_by_commitment, &requirements, &vault)?;
 
             Some(details)
         } else {

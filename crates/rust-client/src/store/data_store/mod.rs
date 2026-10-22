@@ -14,7 +14,7 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotName,
 };
-use miden_protocol::asset::{AssetId, AssetVault, AssetWitness};
+use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
@@ -34,6 +34,7 @@ use miden_tx::{
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
     AccountStorageRequirements,
+    AccountVaultDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
@@ -262,15 +263,19 @@ impl ClientDataStore {
         Ok(witness)
     }
 
-    /// Fetches an account's full vault via RPC — anchored at the transaction reference block — and
-    /// verifies it against the vault root the executor requires. Fallback for vault reads the local
-    /// store cannot serve, typically foreign accounts whose [`AccountInputs`] carry only their
-    /// vault root.
-    async fn fetch_vault_via_rpc(
+    /// Fetches witnesses for `asset_ids` via RPC, anchored at the transaction reference block, and
+    /// verifies them against the vault root the executor requires. Fallback for vault reads the
+    /// local store cannot serve, typically foreign accounts whose [`AccountInputs`] carry only
+    /// their vault root.
+    ///
+    /// The node proves only the requested assets, so the cost does not depend on the size of the
+    /// vault. The returned witnesses follow the order of `asset_ids`.
+    async fn fetch_vault_asset_witnesses_via_rpc(
         &self,
         account_id: AccountId,
         vault_root: Word,
-    ) -> Result<AssetVault, DataStoreError> {
+        asset_ids: &BTreeSet<AssetId>,
+    ) -> Result<Vec<AssetWitness>, DataStoreError> {
         let account_state_at =
             self.cache.ref_block().map_or(AccountStateAt::ChainTip, AccountStateAt::Block);
 
@@ -279,46 +284,54 @@ impl ClientDataStore {
             .cache
             .with_foreign_account_inputs(account_id, |inputs| inputs.code().clone());
 
-        let (block_num, mut account_proof) = self
-            .rpc_api
-            .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .at(account_state_at)
-                    .with_known_code(known_code)
-                    .with_vault(VaultFetch::Always),
-            )
-            .await
-            .map_err(|err| {
-                DataStoreError::other_with_source("failed to fetch account vault via RPC", err)
-            })?;
+        let asset_ids: Vec<AssetId> = asset_ids.iter().copied().collect();
+        let mut witnesses = Vec::with_capacity(asset_ids.len());
+        for chunk in asset_ids.chunks(AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS) {
+            let (_, account_proof) = self
+                .rpc_api
+                .get_account(
+                    account_id,
+                    GetAccountRequest::new()
+                        .at(account_state_at)
+                        .with_known_code(known_code.clone())
+                        .with_vault(VaultFetch::Assets(chunk.iter().copied().collect())),
+                )
+                .await
+                .map_err(|err| {
+                    DataStoreError::other_with_source("failed to fetch vault assets via RPC", err)
+                })?;
 
-        let details = account_proof.details_mut().ok_or_else(|| {
-            DataStoreError::other(format!(
-                "RPC returned no account details for account {account_id}"
-            ))
-        })?;
+            let partial_vault = account_proof
+                .into_details()
+                .and_then(|details| details.vault_details.partial_vault)
+                .ok_or_else(|| {
+                    DataStoreError::other(format!(
+                        "RPC returned no vault proofs for account {account_id}"
+                    ))
+                })?;
 
-        self.rpc_api
-            .resolve_oversize_vault(account_id, block_num, details)
-            .await
-            .map_err(|err| {
-                DataStoreError::other_with_source("failed to resolve oversize vault via RPC", err)
-            })?;
+            // Reject a wrong-root response here rather than as an opaque merkle error inside the
+            // VM. All proofs in the response share one root.
+            if partial_vault.root() != vault_root {
+                return Err(DataStoreError::other(format!(
+                    "vault proofs fetched for account {account_id} verify against root {} but \
+                     the executor requires root {vault_root}",
+                    partial_vault.root()
+                )));
+            }
 
-        let vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
-            DataStoreError::other_with_source("failed to build the fetched vault", err)
-        })?;
-
-        if vault.root() != vault_root {
-            return Err(DataStoreError::other(format!(
-                "vault fetched for account {account_id} has root {} but the executor requires \
-                 root {vault_root}",
-                vault.root()
-            )));
+            for asset_id in chunk {
+                let witness = partial_vault.open(*asset_id).map_err(|err| {
+                    DataStoreError::other_with_source(
+                        "failed to open the requested vault asset",
+                        err,
+                    )
+                })?;
+                witnesses.push(witness);
+            }
         }
 
-        Ok(vault)
+        Ok(witnesses)
     }
 }
 
@@ -451,8 +464,8 @@ impl DataStore for ClientDataStore {
         Ok((partial_account, block_header, protocol_config, partial_blockchain))
     }
 
-    /// Retrieves witnesses for the requested assets from the local store, falling back to a single
-    /// RPC vault fetch when the store cannot serve the requested root.
+    /// Retrieves witnesses for the requested assets from the local store, falling back to RPC
+    /// proofs for the requested assets when the store cannot serve the requested root.
     ///
     /// Assets absent from the vault are served too: the store returns an emptiness proof for them,
     /// which the executor needs when an asset is being added to the vault.
@@ -479,8 +492,8 @@ impl DataStore for ClientDataStore {
                     %err,
                     "local store cannot serve the requested vault root, will fetch it via RPC"
                 );
-                let vault = self.fetch_vault_via_rpc(account_id, vault_root).await?;
-                asset_ids.iter().copied().map(|asset_id| vault.open(asset_id)).collect()
+                self.fetch_vault_asset_witnesses_via_rpc(account_id, vault_root, &asset_ids)
+                    .await?
             },
         };
 

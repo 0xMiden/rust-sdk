@@ -18,6 +18,7 @@ use miden_protocol::account::{
     StorageSlotType,
 };
 use miden_protocol::address::NetworkId;
+use miden_protocol::asset::{AssetVault, PartialVault};
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::MerklePath;
@@ -94,6 +95,9 @@ pub struct MockRpcApi {
     /// Number of `get_account` requests served, so a test can assert that a flow avoided the round
     /// trip.
     get_account_calls: Arc<AtomicUsize>,
+    /// Number of `sync_account_vault` requests served, so a test can assert that a flow avoided the
+    /// round trip.
+    sync_account_vault_calls: Arc<AtomicUsize>,
     /// Failures to serve instead of answering, keyed by [`RpcEndpoint::proto_name`] and set by
     /// [`MockRpcApi::fail_next_call`]. An entry is removed when served, so the call after it
     /// answers normally and a test can exercise a retry.
@@ -138,6 +142,7 @@ impl MockRpcApi {
             get_notes_by_id_calls: Arc::new(AtomicUsize::new(0)),
             block_header_requests: Arc::new(RwLock::new(Vec::new())),
             get_account_calls: Arc::new(AtomicUsize::new(0)),
+            sync_account_vault_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
             invitation_codes: Arc::new(RwLock::new(BTreeSet::new())),
@@ -227,6 +232,11 @@ impl MockRpcApi {
         self.get_account_calls.load(Ordering::Relaxed)
     }
 
+    /// Returns how many `sync_account_vault` requests this API has served.
+    pub fn sync_account_vault_call_count(&self) -> usize {
+        self.sync_account_vault_calls.load(Ordering::Relaxed)
+    }
+
     /// Returns how many `is_account_allowed` requests this API has served.
     pub fn is_account_allowed_call_count(&self) -> usize {
         self.is_account_allowed_calls.load(Ordering::Relaxed)
@@ -244,6 +254,37 @@ impl MockRpcApi {
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
         self
+    }
+
+    /// Returns the `get_account` vault details for `vault` under the `request` policy.
+    ///
+    /// Mirrors the node: `Skip` sends no assets, `IfChangedFrom` omits them when the vault root
+    /// already equals the sent commitment, and `Assets` sends proofs for the requested assets for
+    /// any vault size. The node sends no asset list for a vault above `oversize_threshold`.
+    fn vault_details(&self, vault: &AssetVault, request: &VaultFetch) -> AccountVaultDetails {
+        let (assets, partial_vault) = match request {
+            VaultFetch::Always => (vault.assets().collect(), None),
+            VaultFetch::IfChangedFrom(root) if *root != vault.root() => {
+                (vault.assets().collect(), None)
+            },
+            VaultFetch::Skip | VaultFetch::IfChangedFrom(_) => (Vec::new(), None),
+            VaultFetch::Assets(asset_ids) if asset_ids.is_empty() => {
+                (Vec::new(), Some(PartialVault::new(vault.root())))
+            },
+            VaultFetch::Assets(asset_ids) => {
+                let witnesses = asset_ids.iter().map(|asset_id| vault.open(*asset_id));
+                let partial_vault = PartialVault::with_witnesses(witnesses)
+                    .expect("witnesses from one vault share a root");
+                (Vec::new(), Some(partial_vault))
+            },
+        };
+
+        let too_many_assets = assets.len() > self.oversize_threshold;
+        AccountVaultDetails {
+            too_many_assets,
+            assets: if too_many_assets { Vec::new() } else { assets },
+            partial_vault,
+        }
     }
 
     /// Registers a note header to be reported as erased in subsequent sync transaction responses.
@@ -712,9 +753,9 @@ impl NodeRpcClient for MockRpcApi {
         Ok(block_num)
     }
 
-    /// Returns the account proof for the specified account. The `known_code` and `vault` fields are
-    /// ignored: full account data is returned, with truncation flags set when it exceeds
-    /// `oversize_threshold`.
+    /// Returns the account proof for the specified account. The `known_code` field is ignored, so
+    /// the response always contains the account code. Storage maps and vaults above
+    /// `oversize_threshold` come back with truncation flags set.
     async fn get_account(
         &self,
         account_id: AccountId,
@@ -808,23 +849,7 @@ impl NodeRpcClient for MockRpcApi {
                 map_details,
             };
 
-            // Mirror the node: `Skip` sends no assets, and `IfChangedFrom` omits them when the
-            // account's vault root already equals the sent commitment.
-            let include_assets = match request.vault {
-                VaultFetch::Skip => false,
-                VaultFetch::Always => true,
-                VaultFetch::IfChangedFrom(root) => root != account.vault().root(),
-            };
-            let mut assets = vec![];
-            if include_assets {
-                for asset in account.vault().assets() {
-                    assets.push(asset);
-                }
-            }
-            let vault_details = AccountVaultDetails {
-                too_many_assets: assets.len() > self.oversize_threshold,
-                assets,
-            };
+            let vault_details = self.vault_details(account.vault(), &request.vault);
 
             Some(AccountDetails {
                 header: account.into(),
@@ -997,6 +1022,8 @@ impl NodeRpcClient for MockRpcApi {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
+        self.sync_account_vault_calls.fetch_add(1, Ordering::Relaxed);
+
         let mut vault_patch = AccountVaultPatch::default();
         let mut current_block_from = block_from;
         let chain_tip = self.get_chain_tip_block_num();

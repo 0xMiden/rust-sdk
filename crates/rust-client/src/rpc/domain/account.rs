@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 
@@ -6,7 +6,7 @@ use miden_protocol::account::{
     Account, AccountCode, AccountHeader, AccountId, AccountStorage, AccountStorageHeader,
     StorageMap, StorageMapKey, StorageSlot, StorageSlotName, StorageSlotType,
 };
-use miden_protocol::asset::{Asset, AssetVault};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, PartialVault};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
@@ -20,7 +20,7 @@ use crate::rpc::{AccountStateAt, RpcError};
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::generated::rpc::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
 use crate::rpc::generated::rpc::get_account_request::account_detail_request::{
-    StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest, VaultRequest,
+    StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest, VaultAssetIds, VaultRequest,
 };
 use crate::rpc::generated::{self as proto};
 
@@ -57,14 +57,19 @@ impl proto::rpc::get_account_response::AccountDetails {
     /// `storage_requirements` is the request this response answers, used to check that each partial
     /// map covers exactly the keys that were asked for.
     ///
+    /// `vault_request` is the vault request this response answers, used to check that the vault
+    /// proofs cover the requested assets and verify against the account's vault root.
+    ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
     /// - If data cannot be correctly deserialized
     /// - If a partial map does not cover exactly the keys requested for its slot
+    /// - If the vault details do not answer `vault_request` for the account's vault root
     pub fn into_domain(
         self,
         known_account_codes: &BTreeMap<Word, AccountCode>,
         storage_requirements: &AccountStorageRequirements,
+        vault_request: &VaultFetch,
     ) -> Result<AccountDetails, crate::rpc::RpcError> {
         use crate::rpc::RpcError;
         use crate::rpc::domain::MissingFieldHelper;
@@ -107,9 +112,11 @@ impl proto::rpc::get_account_response::AccountDetails {
             }
         };
 
-        let vault_details = vault_details
-            .ok_or(proto::rpc::AccountVaultDetails::missing_field(stringify!(vault_details)))?
-            .try_into()?;
+        let vault_details = AccountVaultDetails::try_from(
+            vault_details
+                .ok_or(proto::rpc::AccountVaultDetails::missing_field(stringify!(vault_details)))?,
+        )?
+        .validate_against_request(header.vault_root(), vault_request)?;
 
         Ok(AccountDetails {
             header,
@@ -138,12 +145,18 @@ impl TryFrom<&AccountDetails> for Account {
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
-    /// requested.
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys or
+    /// vault assets were requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
         if details.vault_details.too_many_assets {
             return Err(RpcError::ExpectedDataMissing(
                 "cannot build account: vault has too many assets".into(),
+            ));
+        }
+
+        if details.vault_details.partial_vault.is_some() {
+            return Err(RpcError::ExpectedDataMissing(
+                "cannot build account: only specific vault assets were requested".into(),
             ));
         }
 
@@ -522,22 +535,143 @@ pub struct AccountVaultDetails {
     /// A flag that is set to true if the account contains too many assets. This indicates to the
     /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
     pub too_many_assets: bool,
-    /// When `too_many_assets` == false, this will contain the list of assets in the account's vault
+    /// When `too_many_assets` == false and `partial_vault` is `None`, this will contain the list of
+    /// assets in the account's vault
     pub assets: Vec<Asset>,
+    /// Proofs for the assets requested with [`VaultFetch::Assets`]. The proofs also cover requested
+    /// assets that are not in the vault. This field is `None` for all other vault requests.
+    pub partial_vault: Option<PartialVault>,
+}
+
+impl AccountVaultDetails {
+    /// The maximum number of assets the node proves in a single response.
+    ///
+    /// TODO: move this to `RpcLimits`.
+    pub const MAX_PARTIAL_VAULT_ASSETS: usize = 64;
+
+    /// Checks the vault details against the request they answer and against `vault_root`, the vault
+    /// root in the account header.
+    ///
+    /// The node can answer a [`VaultFetch::Assets`] request with the full vault contents instead of
+    /// proofs. This function converts that answer into a partial vault. Thus, for an asset request,
+    /// the result always holds the requested assets in `partial_vault`.
+    ///
+    /// # Errors
+    /// - If the details hold proofs for a request other than [`VaultFetch::Assets`]
+    /// - If the proofs or the full vault contents do not verify against `vault_root`
+    /// - If the proofs do not cover all requested assets
+    #[cfg(feature = "tonic")]
+    pub(crate) fn validate_against_request(
+        self,
+        vault_root: Word,
+        vault_request: &VaultFetch,
+    ) -> Result<Self, RpcError> {
+        let VaultFetch::Assets(asset_ids) = vault_request else {
+            if self.partial_vault.is_some() {
+                return Err(RpcError::InvalidResponse(
+                    "the response contains vault proofs that were not requested".into(),
+                ));
+            }
+            return Ok(self);
+        };
+
+        let partial_vault = match self.partial_vault {
+            Some(partial_vault) => partial_vault,
+            None if self.too_many_assets => {
+                return Err(RpcError::InvalidResponse(
+                    "the node did not prove the requested assets because the vault is too large"
+                        .into(),
+                ));
+            },
+            None => PartialVault::new_full(AssetVault::new(&self.assets).map_err(|err| {
+                RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
+            })?),
+        };
+
+        if partial_vault.root() != vault_root {
+            return Err(RpcError::InvalidResponse(format!(
+                "the vault proofs verify against root {} but the account header has vault root \
+                 {vault_root}",
+                partial_vault.root(),
+            )));
+        }
+
+        if let Some(asset_id) =
+            asset_ids.iter().find(|asset_id| partial_vault.open(**asset_id).is_err())
+        {
+            return Err(RpcError::InvalidResponse(format!(
+                "the vault proofs do not cover requested asset {asset_id}"
+            )));
+        }
+
+        Ok(Self {
+            too_many_assets: false,
+            assets: Vec::new(),
+            partial_vault: Some(partial_vault),
+        })
+    }
 }
 
 impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
     type Error = RpcError;
 
     fn try_from(value: proto::rpc::AccountVaultDetails) -> Result<Self, Self::Error> {
-        let too_many_assets = value.too_many_assets;
-        let assets = value
-            .assets
+        let proto::rpc::AccountVaultDetails { too_many_assets, assets, partial_vault } = value;
+        let assets = assets
             .into_iter()
             .map(DecodeMessageExt::decode_and_verify)
             .collect::<Result<Vec<Asset>, _>>()?;
 
-        Ok(Self { too_many_assets, assets })
+        let partial_vault = match partial_vault {
+            None => None,
+            Some(_) if too_many_assets || !assets.is_empty() => {
+                return Err(RpcError::InvalidResponse(
+                    "vault proofs cannot come with the full vault contents or the too many assets \
+                     flag"
+                        .into(),
+                ));
+            },
+            Some(partial_vault) => Some(partial_vault.try_into()?),
+        };
+
+        Ok(Self { too_many_assets, assets, partial_vault })
+    }
+}
+
+impl TryFrom<proto::rpc::account_vault_details::PartialVault> for PartialVault {
+    type Error = RpcError;
+
+    /// Converts the vault proofs of a `/GetAccount` response.
+    ///
+    /// [`PartialVault::try_from_parts`] rejects duplicate asset IDs and asset IDs that the partial
+    /// SMT does not track.
+    fn try_from(
+        value: proto::rpc::account_vault_details::PartialVault,
+    ) -> Result<Self, Self::Error> {
+        if value.asset_ids.len() > AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS {
+            return Err(RpcError::InvalidResponse(format!(
+                "partial vault contains {} assets, exceeding the limit of {}",
+                value.asset_ids.len(),
+                AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS,
+            )));
+        }
+
+        let asset_ids = value
+            .asset_ids
+            .into_iter()
+            .map(DecodeMessageExt::decode_and_verify)
+            .collect::<Result<Vec<AssetId>, _>>()?;
+
+        let partial_smt: PartialSmt = value
+            .partial_smt
+            .ok_or(proto::rpc::account_vault_details::PartialVault::missing_field(stringify!(
+                partial_smt
+            )))?
+            .decode_and_verify()?;
+
+        PartialVault::try_from_parts(partial_smt, asset_ids).map_err(|err| {
+            RpcError::InvalidResponse(format!("rpc api returned a non-valid partial vault: {err}"))
+        })
     }
 }
 
@@ -677,10 +811,11 @@ impl TryFrom<proto::rpc::GetAccountResponse> for AccountProof {
         let details: Option<AccountDetails> = {
             match account_proof.details {
                 None => None,
-                Some(details) => Some(
-                    details
-                        .into_domain(&BTreeMap::new(), &AccountStorageRequirements::default())?,
-                ),
+                Some(details) => Some(details.into_domain(
+                    &BTreeMap::new(),
+                    &AccountStorageRequirements::default(),
+                    &VaultFetch::Skip,
+                )?),
             }
         };
         AccountProof::new(witness.decode_and_verify()?, details)
@@ -794,17 +929,28 @@ pub enum VaultFetch {
     /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
     /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
+    /// Include proofs for these assets only, in [`AccountVaultDetails::partial_vault`]. The node
+    /// proves an asset that is not in the vault as absent.
+    ///
+    /// The node accepts at most [`AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS`] assets in a
+    /// single request.
+    Assets(BTreeSet<AssetId>),
 }
 
 impl From<VaultFetch> for Option<VaultRequest> {
-    /// Encodes the policy as the request's `asset_vault_commitment`: `None` skips the vault, the
-    /// empty word (which no real vault root equals) always fetches it, and a concrete commitment
-    /// fetches only when it differs.
+    /// Encodes the policy as the request's `vault_request`: `None` skips the vault, the empty word
+    /// (which no real vault root equals) always fetches it, a concrete commitment fetches it only
+    /// when it differs, and a set of asset IDs requests proofs for those assets.
     fn from(vault: VaultFetch) -> Self {
         let commitment = match vault {
             VaultFetch::Skip => return None,
             VaultFetch::Always => EMPTY_WORD,
             VaultFetch::IfChangedFrom(commitment) => commitment,
+            VaultFetch::Assets(asset_ids) => {
+                return Some(VaultRequest::AssetIds(VaultAssetIds {
+                    asset_ids: asset_ids.into_iter().map(Into::into).collect(),
+                }));
+            },
         };
         Some(VaultRequest::AssetVaultCommitment(commitment.into()))
     }
@@ -932,5 +1078,200 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(debug.contains("IsInvitationCodeValidRequest"));
         assert!(!debug.contains(code));
+    }
+}
+
+#[cfg(all(test, feature = "testing", feature = "tonic"))]
+mod vault_details_tests {
+    use alloc::collections::BTreeSet;
+    use alloc::vec::Vec;
+
+    use miden_protocol::account::AccountId;
+    use miden_protocol::asset::{Asset, AssetId, AssetVault, FungibleAsset, PartialVault};
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1,
+    };
+
+    use super::{AccountVaultDetails, VaultAssetIds, VaultFetch, VaultRequest, proto};
+
+    /// Returns a vault that holds one asset, that asset, and the ID of an asset that is not in the
+    /// vault.
+    fn vault_with_one_asset() -> (AssetVault, Asset, AssetId) {
+        let held_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+        let absent_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1).unwrap();
+        let asset: Asset = FungibleAsset::new(held_faucet, 100).unwrap().into();
+        let vault = AssetVault::new(&[asset]).unwrap();
+        (vault, asset, AssetId::new_fungible(absent_faucet))
+    }
+
+    /// Returns the proofs of `asset_ids` in `vault`.
+    fn partial_vault(vault: &AssetVault, asset_ids: &[AssetId]) -> PartialVault {
+        PartialVault::with_witnesses(asset_ids.iter().map(|asset_id| vault.open(*asset_id)))
+            .unwrap()
+    }
+
+    /// Returns vault details that hold the proofs of `asset_ids` in `vault`.
+    fn proof_details(vault: &AssetVault, asset_ids: &[AssetId]) -> AccountVaultDetails {
+        AccountVaultDetails {
+            too_many_assets: false,
+            assets: Vec::new(),
+            partial_vault: Some(partial_vault(vault, asset_ids)),
+        }
+    }
+
+    fn asset_request(asset_ids: &[AssetId]) -> VaultFetch {
+        VaultFetch::Assets(asset_ids.iter().copied().collect())
+    }
+
+    #[test]
+    fn asset_request_encodes_the_asset_ids() {
+        let (_, asset, absent) = vault_with_one_asset();
+        let asset_ids = BTreeSet::from([asset.id(), absent]);
+
+        let request: Option<VaultRequest> = VaultFetch::Assets(asset_ids.clone()).into();
+
+        let expected = asset_ids.into_iter().map(Into::into).collect();
+        assert_eq!(request, Some(VaultRequest::AssetIds(VaultAssetIds { asset_ids: expected })));
+    }
+
+    #[test]
+    fn proofs_that_cover_the_request_are_accepted() {
+        let (vault, asset, absent) = vault_with_one_asset();
+        let request = asset_request(&[asset.id(), absent]);
+
+        let details = proof_details(&vault, &[asset.id(), absent])
+            .validate_against_request(vault.root(), &request)
+            .unwrap();
+
+        let partial_vault = details.partial_vault.unwrap();
+        assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
+        assert_eq!(partial_vault.get(absent).unwrap(), None);
+    }
+
+    #[test]
+    fn proofs_against_another_root_are_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+        let other_root = AssetVault::default().root();
+
+        let result = proof_details(&vault, &[asset.id()])
+            .validate_against_request(other_root, &asset_request(&[asset.id()]));
+
+        assert!(result.is_err());
+    }
+
+    /// The vault holds a second asset, so the proof of the first asset does not cover it. With one
+    /// asset only, its proof would also prove the absence of every other asset.
+    #[test]
+    fn proofs_that_miss_a_requested_asset_are_rejected() {
+        let (_, asset, _) = vault_with_one_asset();
+        let other_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1).unwrap();
+        let other_asset: Asset = FungibleAsset::new(other_faucet, 5).unwrap().into();
+        let vault = AssetVault::new(&[asset, other_asset]).unwrap();
+
+        let result = proof_details(&vault, &[asset.id()]).validate_against_request(
+            vault.root(),
+            &asset_request(&[asset.id(), other_asset.id()]),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn proofs_that_were_not_requested_are_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+
+        let result = proof_details(&vault, &[asset.id()])
+            .validate_against_request(vault.root(), &VaultFetch::Always);
+
+        assert!(result.is_err());
+    }
+
+    /// The node can send the full vault contents instead of proofs. The client converts that answer
+    /// into proofs, so the callers handle only one shape.
+    #[test]
+    fn full_vault_answer_is_converted_to_proofs() {
+        let (vault, asset, absent) = vault_with_one_asset();
+        let details = AccountVaultDetails {
+            too_many_assets: false,
+            assets: vec![asset],
+            partial_vault: None,
+        };
+
+        let details = details
+            .validate_against_request(vault.root(), &asset_request(&[asset.id(), absent]))
+            .unwrap();
+
+        assert!(details.assets.is_empty());
+        let partial_vault = details.partial_vault.unwrap();
+        assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
+        assert_eq!(partial_vault.get(absent).unwrap(), None);
+    }
+
+    #[test]
+    fn too_many_assets_answer_to_an_asset_request_is_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+        let details = AccountVaultDetails {
+            too_many_assets: true,
+            assets: Vec::new(),
+            partial_vault: None,
+        };
+
+        let result = details.validate_against_request(vault.root(), &asset_request(&[asset.id()]));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn partial_vault_round_trips_through_proto() {
+        let (vault, asset, absent) = vault_with_one_asset();
+        let expected = partial_vault(&vault, &[asset.id(), absent]);
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: false,
+            assets: Vec::new(),
+            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+                asset_ids: vec![asset.id().into(), absent.into()],
+                partial_smt: Some(expected.partial_smt().clone().into()),
+            }),
+        };
+
+        let details = AccountVaultDetails::try_from(response).unwrap();
+
+        assert_eq!(details.partial_vault, Some(expected));
+    }
+
+    #[test]
+    fn partial_vault_with_an_asset_list_is_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+        let partial_vault = partial_vault(&vault, &[asset.id()]);
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: false,
+            assets: vec![asset.into()],
+            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+                asset_ids: vec![asset.id().into()],
+                partial_smt: Some(partial_vault.partial_smt().clone().into()),
+            }),
+        };
+
+        assert!(AccountVaultDetails::try_from(response).is_err());
+    }
+
+    #[test]
+    fn partial_vault_above_the_limit_is_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+        let partial_vault = partial_vault(&vault, &[asset.id()]);
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: false,
+            assets: Vec::new(),
+            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+                asset_ids: vec![
+                    asset.id().into();
+                    AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS + 1
+                ],
+                partial_smt: Some(partial_vault.partial_smt().clone().into()),
+            }),
+        };
+
+        assert!(AccountVaultDetails::try_from(response).is_err());
     }
 }

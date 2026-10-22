@@ -130,6 +130,21 @@ impl MockNoteTransportNode {
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
+        self.notes_up_to(tags, cursor, self.head())
+    }
+
+    /// Returns the position of the last stored note.
+    fn head(&self) -> NoteTransportCursor {
+        NoteTransportCursor::from_parts(self.nonce, self.next_sequence - 1)
+    }
+
+    /// Returns the notes after `cursor` and up to `sync_to`.
+    fn notes_up_to(
+        &self,
+        tags: &[NoteTag],
+        cursor: NoteTransportCursor,
+        sync_to: NoteTransportCursor,
+    ) -> (Vec<NoteInfo>, NoteTransportCursor) {
         let cursor = if cursor.parts().is_some_and(|(nonce, _)| nonce != self.nonce) {
             NoteTransportCursor::init()
         } else {
@@ -152,7 +167,13 @@ impl MockNoteTransportNode {
                         &[]
                     }
                 })
-                .map(Vec::from)
+                .map(|pg_notes| {
+                    pg_notes
+                        .iter()
+                        .filter(|(_, tcursor)| *tcursor <= sync_to)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             collected.extend(tnotes);
         }
@@ -189,6 +210,7 @@ impl Default for MockNoteTransportNode {
 pub struct MockNoteTransportApi {
     pub mock_node: Arc<RwLock<MockNoteTransportNode>>,
     fetch_tag_counts: Arc<RwLock<Vec<usize>>>,
+    fetch_bounds: Arc<RwLock<Vec<Option<NoteTransportCursor>>>>,
 }
 
 impl MockNoteTransportApi {
@@ -196,12 +218,18 @@ impl MockNoteTransportApi {
         Self {
             mock_node,
             fetch_tag_counts: Arc::default(),
+            fetch_bounds: Arc::default(),
         }
     }
 
     /// Returns the number of tags in each fetch request.
     pub fn fetch_tag_counts(&self) -> Vec<usize> {
         self.fetch_tag_counts.read().clone()
+    }
+
+    /// Returns the `sync_to` bound of each fetch request.
+    pub fn fetch_bounds(&self) -> Vec<Option<NoteTransportCursor>> {
+        self.fetch_bounds.read().clone()
     }
 }
 
@@ -212,14 +240,6 @@ impl MockNoteTransportApi {
         self.mock_node
             .write()
             .add_note_with_proof(header, details_bytes, inclusion_proof);
-    }
-
-    pub fn fetch_notes(
-        &self,
-        tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        self.mock_node.read().get_notes(tags, cursor)
     }
 }
 
@@ -235,25 +255,19 @@ impl NoteTransportClient for MockNoteTransportApi {
         Ok(())
     }
 
-    async fn fetch_notes(
-        &self,
-        tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        let page = self.fetch_notes_page(tags, cursor).await?;
-        Ok((page.notes, page.cursor))
-    }
-
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
+        sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         self.fetch_tag_counts.write().push(tags.len());
+        self.fetch_bounds.write().push(sync_to);
         let node = self.mock_node.read();
-        let (notes, cursor) = node.get_notes(tags, cursor);
-        let has_more = !node.get_notes(tags, cursor).0.is_empty();
-        Ok(NoteTransportPage { notes, cursor, has_more })
+        let sync_to = sync_to.unwrap_or_else(|| node.head());
+        let (notes, cursor) = node.notes_up_to(tags, cursor, sync_to);
+        let has_more = !node.notes_up_to(tags, cursor, sync_to).0.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more, sync_to })
     }
 }
 
@@ -269,7 +283,7 @@ impl NoteTransportClient for MockNoteTransportApi {
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
 /// `send_note_with_proof` calls should fail (`fail_next`); successful calls delegate to an inner
-/// [`MockNoteTransportApi`]. `fetch_notes` failures can be injected separately via
+/// [`MockNoteTransportApi`]. `fetch_notes_page` failures can be injected separately via
 /// [`FaultyNoteTransportApi::fail_next_n_fetches`].
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
@@ -299,7 +313,7 @@ impl FaultyNoteTransportApi {
         self.send_attempts.load(Ordering::SeqCst)
     }
 
-    /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
+    /// Fail the next `n` `fetch_notes_page` calls before delegating to the inner mock again.
     pub fn fail_next_n_fetches(&self, n: usize) {
         self.fail_next_fetches.store(n, Ordering::SeqCst);
     }
@@ -309,7 +323,7 @@ impl FaultyNoteTransportApi {
         self.fail_on_fetch.store(attempt, Ordering::SeqCst);
     }
 
-    /// Total `fetch_notes` calls observed (success + failure).
+    /// Total `fetch_notes_page` calls observed (success + failure).
     pub fn fetch_attempts(&self) -> usize {
         self.fetch_attempts.load(Ordering::SeqCst)
     }
@@ -343,11 +357,12 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         Ok(())
     }
 
-    async fn fetch_notes(
+    async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
+        sync_to: Option<NoteTransportCursor>,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
         let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
@@ -355,10 +370,10 @@ impl NoteTransportClient for FaultyNoteTransportApi {
             .is_ok();
         if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
+                "FaultyNoteTransportApi: simulated fetch_notes_page failure".to_string(),
             ));
         }
-        Ok(self.inner.fetch_notes(tags, cursor))
+        self.inner.fetch_notes_page(tags, cursor, sync_to).await
     }
 }
 

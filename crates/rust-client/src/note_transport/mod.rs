@@ -169,9 +169,10 @@ where
     /// tags, use [`Client::get_note_tags`]. To add a user-source tag, use [`Client::add_note_tag`].
     /// Fetched notes are stored in the client store.
     ///
-    /// An internal pagination mechanism starts each request from the lowest cursor of its tags.
-    /// Tags without a stored cursor start from the first retained note. The service can deliver a
-    /// note again after a tag is added or removed; the import drops these duplicates.
+    /// An internal pagination mechanism fetches the tags that share a cursor in the same requests,
+    /// up to one bound for the whole call. Tags without a stored cursor start from the first
+    /// retained note. A request group that reaches the bound moves its tags to the bound, so the
+    /// tag cursors converge.
     ///
     /// A failed request returns an error after successful pages are imported and their cursors are
     /// saved. Histories that exceed the page budget continue on the next call.
@@ -228,8 +229,8 @@ where
     /// Fetches bounded pages for request groups of at most
     /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags.
     ///
-    /// Each group starts from its lowest cursor. The import drops notes delivered again. Each tag
-    /// keeps the higher of its stored cursor and the page cursor when their database nonces match.
+    /// Each group starts from the cursor that its tags share. The first successful page sets the
+    /// bound for all later requests, and a group that reaches the bound moves its tags to it.
     ///
     /// A failed page keeps the pages fetched before it and leaves the other groups to proceed.
     async fn fetch_transport_notes_in_chunks(
@@ -245,13 +246,14 @@ where
 
         let mut update = NoteTransportLayerUpdate::default();
         let mut notes = Vec::new();
+        let mut sync_to = None;
         for (start, group) in transport_request_groups(&tags, &cursors) {
             let mut cursor = start;
             for _ in 0..MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
                 let page = match api
-                    .fetch_notes_page(&group, cursor)
+                    .fetch_notes_page(&group, cursor, sync_to)
                     .await
-                    .and_then(|page| validate_transport_page(page, &group, cursor))
+                    .and_then(|page| validate_transport_page(page, &group, cursor, sync_to))
                 {
                     Ok(page) => page,
                     Err(error) => {
@@ -259,14 +261,17 @@ where
                         break;
                     },
                 };
+                sync_to.get_or_insert(page.sync_to);
                 for (id, note, block_hint) in page.notes {
                     update.id_by_commitment.insert(note.details_commitment(), id);
                     notes.push((id, note, block_hint));
                 }
                 cursor = page.cursor;
+                // The last page completes the group up to the bound.
+                let reached = if page.has_more { page.cursor } else { page.sync_to };
                 for tag in &group {
-                    let position = cursors.entry(*tag).or_insert(cursor);
-                    *position = advance_transport_cursor(*position, cursor);
+                    let position = cursors.entry(*tag).or_insert(reached);
+                    *position = advance_transport_cursor(*position, reached);
                 }
                 if !page.has_more {
                     break;
@@ -381,9 +386,9 @@ where
     ///
     /// A note that a local transaction is consuming cannot be overwritten, so its import would
     /// fail. A note that is already committed or consumed gains nothing from a second import and
-    /// would cost a node request. A request from a group's lowest cursor can deliver such notes
-    /// again. Expected, unverified, and invalid notes pass through because their records can need a
-    /// new inclusion proof. A resolved record must match the ID in the transport header.
+    /// would cost a node request. A tag that starts again from the first retained note can deliver
+    /// such notes again. Expected, unverified, and invalid notes pass through because their records
+    /// can need a new inclusion proof. A resolved record must match the ID in the transport header.
     async fn drop_notes_resolved_locally(
         &self,
         notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
@@ -431,29 +436,22 @@ pub(crate) struct NoteTransportLayerUpdate {
 
 /// Splits the tracked tags into request groups and returns the cursor each group starts from.
 ///
-/// Tags without a cursor start from the first retained note. Tags with a cursor are grouped by
-/// database nonce, because sequences from different databases do not compare. Each nonce group is
-/// sorted by sequence before it is split, so the tags in one request sit close together and the
-/// lowest cursor limits repeated deliveries.
+/// Tags without a cursor start from the first retained note. Only tags with the same cursor share a
+/// request, so a request delivers no note that one of its tags already received.
 fn transport_request_groups(
     tags: &[NoteTag],
     cursors: &NoteTransportCursors,
 ) -> Vec<(NoteTransportCursor, Vec<NoteTag>)> {
-    let mut by_nonce = BTreeMap::<Option<u64>, Vec<(NoteTransportCursor, NoteTag)>>::new();
+    let mut by_cursor = BTreeMap::<NoteTransportCursor, Vec<NoteTag>>::new();
     for tag in tags {
         let cursor = cursors.get(tag).copied().unwrap_or_else(NoteTransportCursor::init);
-        by_nonce
-            .entry(cursor.parts().map(|(nonce, _)| nonce))
-            .or_default()
-            .push((cursor, *tag));
+        by_cursor.entry(cursor).or_default().push(*tag);
     }
 
     let mut groups = Vec::new();
-    for mut entries in by_nonce.into_values() {
-        entries.sort_unstable();
-        for chunk in entries.chunks(MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
-            let start = chunk[0].0;
-            groups.push((start, chunk.iter().map(|(_, tag)| *tag).collect()));
+    for (cursor, group) in by_cursor {
+        for chunk in group.chunks(MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
+            groups.push((cursor, chunk.to_vec()));
         }
     }
     groups
@@ -479,6 +477,7 @@ struct ValidatedTransportPage {
     notes: Vec<(NoteId, Note, Option<BlockNumber>)>,
     cursor: NoteTransportCursor,
     has_more: bool,
+    sync_to: NoteTransportCursor,
 }
 
 /// Validates a complete page before its notes or cursor can advance local progress.
@@ -486,10 +485,22 @@ fn validate_transport_page(
     page: NoteTransportPage,
     tags: &[NoteTag],
     request_cursor: NoteTransportCursor,
+    request_sync_to: Option<NoteTransportCursor>,
 ) -> Result<ValidatedTransportPage, NoteTransportError> {
     let Some((nonce, sequence)) = page.cursor.parts() else {
         return Err(NoteTransportError::Network(String::from("fetch response has no cursor")));
     };
+    let Some((bound_nonce, bound_sequence)) = page.sync_to.parts() else {
+        return Err(NoteTransportError::Network(String::from("fetch response has no sync bound")));
+    };
+    if request_sync_to.is_some_and(|bound| bound != page.sync_to)
+        || nonce != bound_nonce
+        || sequence > bound_sequence
+    {
+        return Err(NoteTransportError::Network(String::from(
+            "fetch response does not match the sync bound",
+        )));
+    }
     if request_cursor.parts().is_some_and(|(request_nonce, request_sequence)| {
         nonce == request_nonce
             && (sequence < request_sequence
@@ -514,6 +525,7 @@ fn validate_transport_page(
         notes,
         cursor: page.cursor,
         has_more: page.has_more,
+        sync_to: page.sync_to,
     })
 }
 
@@ -598,28 +610,17 @@ pub trait NoteTransportClient: Send + Sync {
         inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError>;
 
-    /// Fetches notes for the given tags.
+    /// Fetches a page of notes after `cursor` and up to `sync_to` for the given tags.
     ///
-    /// Downloads notes for the given tags. Returns notes after the provided cursor (pagination),
-    /// and an updated cursor.
-    async fn fetch_notes(
-        &self,
-        tag: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError>;
-
-    /// Fetches a page and reports whether another page is available.
-    ///
-    /// Transports without a continuation flag use an empty page to confirm the end of the history.
+    /// Without `sync_to`, the service uses its current head as the bound. The page returns the
+    /// bound that the service used. A cursor from another service database restarts from the first
+    /// retained note.
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
         cursor: NoteTransportCursor,
-    ) -> Result<NoteTransportPage, NoteTransportError> {
-        let (notes, cursor) = self.fetch_notes(tags, cursor).await?;
-        let has_more = !notes.is_empty();
-        Ok(NoteTransportPage { notes, cursor, has_more })
-    }
+        sync_to: Option<NoteTransportCursor>,
+    ) -> Result<NoteTransportPage, NoteTransportError>;
 }
 
 /// A page of notes from the transport service.
@@ -628,8 +629,11 @@ pub struct NoteTransportPage {
     pub notes: Vec<NoteInfo>,
     /// Position of the last returned note. An empty page keeps the request position.
     pub cursor: NoteTransportCursor,
-    /// Indicates that the requested tags have another page.
+    /// Indicates that the requested tags have another page up to `sync_to`.
     pub has_more: bool,
+    /// Inclusive upper bound of the request. When `has_more` is `false`, the page completes the
+    /// requested tags up to this bound.
+    pub sync_to: NoteTransportCursor,
 }
 
 /// Information about a note fetched from the note transport network
@@ -751,8 +755,45 @@ mod tests {
                 notes: Vec::new(),
                 cursor: returned,
                 has_more,
+                sync_to: NoteTransportCursor::from_parts(1, 20),
             };
-            assert!(validate_transport_page(page, &[], cursor).is_err());
+            assert!(validate_transport_page(page, &[], cursor, None).is_err());
         }
+    }
+
+    #[test]
+    fn transport_rejects_page_outside_sync_bound() {
+        let cursor = NoteTransportCursor::from_parts(1, 10);
+        let bound = NoteTransportCursor::from_parts(1, 20);
+        let empty_page = |cursor, sync_to| NoteTransportPage {
+            notes: Vec::new(),
+            cursor,
+            has_more: false,
+            sync_to,
+        };
+        for (page, request_sync_to) in [
+            // The page has no bound.
+            (empty_page(cursor, NoteTransportCursor::init()), None),
+            // The page changes the requested bound.
+            (empty_page(cursor, NoteTransportCursor::from_parts(1, 21)), Some(bound)),
+            // The page cursor passes the bound.
+            (empty_page(NoteTransportCursor::from_parts(1, 21), bound), None),
+            // The page cursor and the bound come from different service databases.
+            (empty_page(NoteTransportCursor::from_parts(2, 5), bound), None),
+        ] {
+            assert!(validate_transport_page(page, &[], cursor, request_sync_to).is_err());
+        }
+    }
+
+    #[test]
+    fn transport_request_groups_never_mix_cursors() {
+        let cursor = NoteTransportCursor::from_parts(1, 5);
+        let tags: Vec<_> = (0..130).map(NoteTag::new).collect();
+        let cursors: NoteTransportCursors = tags[1..].iter().map(|tag| (*tag, cursor)).collect();
+
+        let groups = transport_request_groups(&tags, &cursors);
+
+        let shapes: Vec<_> = groups.iter().map(|(start, group)| (*start, group.len())).collect();
+        assert_eq!(shapes, [(NoteTransportCursor::init(), 1), (cursor, 128), (cursor, 1)]);
     }
 }

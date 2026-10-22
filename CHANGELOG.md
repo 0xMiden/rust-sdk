@@ -6,6 +6,9 @@
 
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.18`, Miden VM to `0.36`, `miden-debug` to `0.19` and `miden-node-proto-build` to `0.18.1`. The client uses the node `0.18` RPC and note transport APIs and requires a node `0.18` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
 * [BREAKING][type][rust] Added the `GetAccountError::StorageSlotNotFound` and `GetAccountError::StorageSlotNotMap` variants for the node `0.18` `GetAccount` error codes 6 and 7. These codes previously parsed as `GetAccountError::Unknown` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+* [BREAKING][behavior][rust] Note transport fetches read all tags up to the `sync_to` bound that the service returns for the first request. Only tags with the same cursor share a request, and a request group that reaches the bound moves its tags to the bound, so the tag cursors converge. Adding or removing a tag no longer delivers notes again to the other tags ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][param][rust] `NoteTransportClient::fetch_notes_page` and `GrpcNoteTransportClient::fetch_notes_page` take a `sync_to` bound, and the trait method has no default implementation. `NoteTransportPage` has a `sync_to` field with the bound that the service used ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [BREAKING][removal][rust] Removed `NoteTransportClient::fetch_notes`, `GrpcNoteTransportClient::fetch_notes`, and `MockNoteTransportApi::fetch_notes`. Use `fetch_notes_page` ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ## 0.17.5 (2026-10-21)
 

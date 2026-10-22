@@ -330,14 +330,15 @@ async fn transport_fetch_chunks_tracked_tags() {
 
     recipient.fetch_private_notes().await.unwrap();
 
+    let head = NoteTransportCursor::from_parts(1, 3);
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
+    assert_eq!(transport.fetch_bounds(), [None, Some(head)]);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
 
     recipient.fetch_private_notes().await.unwrap();
     let cursors = stored_note_transport_cursors(&mut recipient).await;
     assert_eq!(cursors.len(), 129);
-    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 2)));
-    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 3));
+    assert!(cursors.values().all(|cursor| *cursor == head));
     recipient.fetch_private_notes().await.unwrap();
     assert_eq!(transport.fetch_tag_counts(), [128, 1, 128, 1, 128, 1]);
 }
@@ -364,7 +365,7 @@ async fn transport_adding_tag_preserves_existing_cursors() {
 
     let cursors = stored_note_transport_cursors(&mut recipient).await;
     assert_eq!(cursors[&existing_tag], cursor);
-    assert_eq!(cursors[&added_tag], NoteTransportCursor::from_parts(1, 1));
+    assert_eq!(cursors[&added_tag], cursor);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
 
     recipient.remove_note_tag(added_tag).await.unwrap();
@@ -387,15 +388,14 @@ async fn transport_adding_tag_preserves_existing_cursors() {
     assert_eq!(cursors_after_removal[&existing_tag], cursor);
 }
 
-/// Merges chunks after tag removal. The merged request starts from the lowest cursor, and the notes
-/// it delivers again do not create duplicate records.
+/// Merges chunks after tag removal, because both chunks end at the same bound. The merged request
+/// creates no duplicate records.
 #[tokio::test]
 async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
     let (first, second) = two_transport_chunks(&mut recipient).await;
-    // Each group stops at its own last note, so the two groups end at different positions.
     seed_transport_note(&mock_node, first[1], 1);
     seed_transport_note(&mock_node, second[0], 2);
 
@@ -403,7 +403,7 @@ async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
 
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
     let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 1)));
+    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 2)));
     assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 2)));
 
     recipient.remove_note_tag(first[0]).await.unwrap();
@@ -441,7 +441,7 @@ async fn transport_page_budget_preserves_progress_and_resumes() {
     assert_eq!(transport.fetch_tag_counts()[33..], [vec![128; 8], vec![1]].concat());
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 41);
     let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 40)));
+    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 41)));
     assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
 }
 
@@ -460,7 +460,6 @@ async fn transport_groups_tags_by_database_nonce() {
     seed_transport_note(&mock_node, second, 2);
     let stale = NoteTransportCursor::from_parts(2, 10);
     let current = NoteTransportCursor::from_parts(1, 0);
-    let restarted = NoteTransportCursor::from_parts(1, 1);
     let latest = NoteTransportCursor::from_parts(1, 2);
     let cursors = BTreeMap::from([(first, stale), (second, current)]);
     recipient
@@ -471,7 +470,7 @@ async fn transport_groups_tags_by_database_nonce() {
     recipient.fetch_private_notes().await.unwrap();
 
     let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors[&first], restarted);
+    assert_eq!(cursors[&first], latest);
     assert_eq!(cursors[&second], latest);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
 
@@ -490,7 +489,7 @@ async fn transport_chunk_failure_preserves_successful_pages() {
     let mut recipient = create_test_client_with_transport(transport.clone()).await;
     let (first, second) = two_transport_chunks(&mut recipient).await;
     seed_transport_note(&mock_node, first[0], 1);
-    seed_transport_note(&mock_node, first[0], 2);
+    let resumed_note = seed_transport_note(&mock_node, first[0], 2);
     seed_transport_note(&mock_node, second[0], 3);
     let first_cursor = NoteTransportCursor::from_parts(1, 1);
     let second_cursor = NoteTransportCursor::from_parts(1, 3);
@@ -501,10 +500,10 @@ async fn transport_chunk_failure_preserves_successful_pages() {
     assert_eq!(cursors.get(&first[0]), Some(&first_cursor));
     assert_eq!(cursors.get(&second[0]), Some(&second_cursor));
 
-    recipient.sync_note_transport().await.unwrap();
+    assert_eq!(recipient.sync_note_transport().await.unwrap(), [resumed_note.id()]);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
     let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors[&first[0]], NoteTransportCursor::from_parts(1, 2));
+    assert_eq!(cursors[&first[0]], NoteTransportCursor::from_parts(1, 3));
     assert_eq!(cursors[&second[0]], second_cursor);
 }
 

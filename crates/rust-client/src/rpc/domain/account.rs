@@ -544,11 +544,6 @@ pub struct AccountVaultDetails {
 }
 
 impl AccountVaultDetails {
-    /// The maximum number of assets the node proves in a single response.
-    ///
-    /// TODO: move this to `RpcLimits`.
-    pub const MAX_PARTIAL_VAULT_ASSETS: usize = 64;
-
     /// Checks the vault details against the request they answer and against `vault_root`, the vault
     /// root in the account header.
     ///
@@ -560,6 +555,7 @@ impl AccountVaultDetails {
     /// - If the details hold proofs for a request other than [`VaultFetch::Assets`]
     /// - If the proofs or the full vault contents do not verify against `vault_root`
     /// - If the proofs do not cover all requested assets
+    /// - If the proofs track an asset that was not requested
     #[cfg(feature = "tonic")]
     pub(crate) fn validate_against_request(
         self,
@@ -576,7 +572,16 @@ impl AccountVaultDetails {
         };
 
         let partial_vault = match self.partial_vault {
-            Some(partial_vault) => partial_vault,
+            Some(partial_vault) => {
+                if let Some(asset_id) =
+                    partial_vault.asset_ids().find(|asset_id| !asset_ids.contains(asset_id))
+                {
+                    return Err(RpcError::InvalidResponse(format!(
+                        "the vault proofs track asset {asset_id}, which was not requested"
+                    )));
+                }
+                partial_vault
+            },
             None if self.too_many_assets => {
                 return Err(RpcError::InvalidResponse(
                     "the node did not prove the requested assets because the vault is too large"
@@ -648,14 +653,6 @@ impl TryFrom<proto::rpc::account_vault_details::PartialVault> for PartialVault {
     fn try_from(
         value: proto::rpc::account_vault_details::PartialVault,
     ) -> Result<Self, Self::Error> {
-        if value.asset_ids.len() > AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS {
-            return Err(RpcError::InvalidResponse(format!(
-                "partial vault contains {} assets, exceeding the limit of {}",
-                value.asset_ids.len(),
-                AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS,
-            )));
-        }
-
         let asset_ids = value
             .asset_ids
             .into_iter()
@@ -932,7 +929,8 @@ pub enum VaultFetch {
     /// Include proofs for these assets only, in [`AccountVaultDetails::partial_vault`]. The node
     /// proves an asset that is not in the vault as absent.
     ///
-    /// The node accepts at most [`AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS`] assets in a
+    /// The node accepts at most
+    /// [`RpcLimits::vault_assets_limit`](crate::rpc::RpcLimits::vault_assets_limit) assets in a
     /// single request.
     Assets(BTreeSet<AssetId>),
 }
@@ -1257,21 +1255,15 @@ mod vault_details_tests {
     }
 
     #[test]
-    fn partial_vault_above_the_limit_is_rejected() {
-        let (vault, asset, _) = vault_with_one_asset();
-        let partial_vault = partial_vault(&vault, &[asset.id()]);
-        let response = proto::rpc::AccountVaultDetails {
-            too_many_assets: false,
-            assets: Vec::new(),
-            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
-                asset_ids: vec![
-                    asset.id().into();
-                    AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS + 1
-                ],
-                partial_smt: Some(partial_vault.partial_smt().clone().into()),
-            }),
-        };
+    fn proofs_that_track_an_asset_that_was_not_requested_are_rejected() {
+        let (_, asset, _) = vault_with_one_asset();
+        let other_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1).unwrap();
+        let other_asset: Asset = FungibleAsset::new(other_faucet, 5).unwrap().into();
+        let vault = AssetVault::new(&[asset, other_asset]).unwrap();
 
-        assert!(AccountVaultDetails::try_from(response).is_err());
+        let result = proof_details(&vault, &[asset.id(), other_asset.id()])
+            .validate_against_request(vault.root(), &asset_request(&[asset.id()]));
+
+        assert!(result.is_err());
     }
 }

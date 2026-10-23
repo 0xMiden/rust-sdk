@@ -34,7 +34,6 @@ use miden_tx::{
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
     AccountStorageRequirements,
-    AccountVaultDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
@@ -284,9 +283,13 @@ impl ClientDataStore {
             .cache
             .with_foreign_account_inputs(account_id, |inputs| inputs.code().clone());
 
+        let limits = self.rpc_api.get_rpc_limits().await.map_err(|err| {
+            DataStoreError::other_with_source("failed to fetch the RPC limits", err)
+        })?;
+
         let asset_ids: Vec<AssetId> = asset_ids.iter().copied().collect();
         let mut witnesses = Vec::with_capacity(asset_ids.len());
-        for chunk in asset_ids.chunks(AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS) {
+        for chunk in asset_ids.chunks(limits.vault_assets_limit as usize) {
             let (_, account_proof) = self
                 .rpc_api
                 .get_account(

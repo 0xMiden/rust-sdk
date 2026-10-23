@@ -5,7 +5,8 @@ use std::env::temp_dir;
 use miden_client::assembly::CodeBuilder;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::domain::account::{AccountStorageRequirements, AccountVaultDetails};
+use miden_client::rpc::RpcLimits;
+use miden_client::rpc::domain::account::AccountStorageRequirements;
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::{ClientDataStore, DataStore};
@@ -106,9 +107,8 @@ async fn oversized_vault_fixture() -> OversizedVaultFixture {
 // ================================================================================================
 
 /// The data store fetches vault proofs for the requested assets only, when the local store does not
-/// hold the vault. It splits the request into groups of
-/// [`AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS`] assets, and the size of the vault does not
-/// cause a vault sync.
+/// hold the vault. It splits the request into groups of [`RpcLimits::vault_assets_limit`] assets,
+/// and the size of the vault does not cause a vault sync.
 #[tokio::test]
 async fn vault_witness_fallback_fetches_proofs_for_the_requested_assets() {
     let mut fixture = Box::pin(oversized_vault_fixture()).await;
@@ -121,7 +121,7 @@ async fn vault_witness_fallback_fetches_proofs_for_the_requested_assets() {
                 AssetId::new_fungible(AccountIdBuilder::new().build_with_seed([seed; 32]))
             }))
             .collect();
-    assert_eq!(asset_ids.len(), AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS + 1);
+    assert_eq!(asset_ids.len(), RpcLimits::default().vault_assets_limit as usize + 1);
 
     let store = fixture.client.test_store().clone();
     let rpc_api = fixture.client.test_rpc_api().clone();

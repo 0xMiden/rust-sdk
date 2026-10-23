@@ -107,7 +107,10 @@ impl MockNoteTransportNode {
     ) {
         let tag = header.metadata().tag();
         let info = NoteInfo { header, details_bytes, block_hint };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        let cursor = NoteTransportCursor {
+            nonce: self.nonce,
+            sequence: self.next_sequence,
+        };
         self.next_sequence += 1;
         self.notes.entry(tag).or_default().push((info, cursor));
     }
@@ -120,7 +123,10 @@ impl MockNoteTransportNode {
         details_bytes: Vec<u8>,
     ) {
         let info = NoteInfo { header, details_bytes, block_hint: None };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
+        let cursor = NoteTransportCursor {
+            nonce: self.nonce,
+            sequence: self.next_sequence,
+        };
         self.next_sequence += 1;
         self.notes.entry(tag).or_default().push((info, cursor));
     }
@@ -128,72 +134,51 @@ impl MockNoteTransportNode {
     pub fn get_notes(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
         self.notes_up_to(tags, cursor, self.head())
     }
 
     /// Returns the position of the last stored note.
     fn head(&self) -> NoteTransportCursor {
-        NoteTransportCursor::from_parts(self.nonce, self.next_sequence - 1)
+        NoteTransportCursor {
+            nonce: self.nonce,
+            sequence: self.next_sequence - 1,
+        }
     }
 
     /// Returns the notes after `cursor` and up to `sync_to`.
     fn notes_up_to(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
         sync_to: NoteTransportCursor,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        let cursor = if cursor.parts().is_some_and(|(nonce, _)| nonce != self.nonce) {
-            NoteTransportCursor::init()
-        } else {
-            cursor
-        };
-        // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
-        // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
-        // `init()`.
-        let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = vec![];
-        for tag in tags {
-            // Assumes stored notes are ordered by cursor
-            let tnotes = self
-                .notes
-                .get(tag)
-                .map(|pg_notes| {
-                    // Find first element after cursor
-                    if let Some(pos) = pg_notes.iter().position(|(_, tcursor)| *tcursor > cursor) {
-                        &pg_notes[pos..]
-                    } else {
-                        &[]
-                    }
-                })
-                .map(|pg_notes| {
-                    pg_notes
-                        .iter()
-                        .filter(|(_, tcursor)| *tcursor <= sync_to)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            collected.extend(tnotes);
-        }
+        // A cursor from another database starts from the first retained note.
+        let after = cursor.filter(|cursor| cursor.nonce == self.nonce).map_or(0, |c| c.sequence);
+        let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = tags
+            .iter()
+            .filter_map(|tag| self.notes.get(tag))
+            .flatten()
+            .filter(|(_, tcursor)| tcursor.sequence > after && tcursor.sequence <= sync_to.sequence)
+            .cloned()
+            .collect();
 
         // Deterministic ordering across tags: sort by cursor ascending so the client sees notes in
         // per-cursor order regardless of tag iteration order, matching the real server's `ORDER BY
         // seq ASC`.
-        collected.sort_by_key(|(_, c)| *c);
+        collected.sort_by_key(|(_, c)| c.sequence);
 
         // Apply the batch cap, if configured.
         if let Some(max) = self.max_batch {
             collected.truncate(max);
         }
 
-        let initial_cursor = cursor
-            .parts()
-            .map_or(NoteTransportCursor::from_parts(self.nonce, 0), |_| cursor);
-        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(initial_cursor);
+        // Matches the real server's contract (`rcursor = max(cursor, max_seq_returned)`), so an
+        // empty batch returns the caller's own position.
+        let sequence = collected.last().map_or(after, |(_, c)| c.sequence);
         let notes = collected.into_iter().map(|(n, _)| n).collect();
-        (notes, rcursor)
+        (notes, NoteTransportCursor { nonce: self.nonce, sequence })
     }
 }
 
@@ -258,7 +243,7 @@ impl NoteTransportClient for MockNoteTransportApi {
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
         sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         self.fetch_tag_counts.write().push(tags.len());
@@ -266,7 +251,7 @@ impl NoteTransportClient for MockNoteTransportApi {
         let node = self.mock_node.read();
         let sync_to = sync_to.unwrap_or_else(|| node.head());
         let (notes, cursor) = node.notes_up_to(tags, cursor, sync_to);
-        let has_more = !node.notes_up_to(tags, cursor, sync_to).0.is_empty();
+        let has_more = !node.notes_up_to(tags, Some(cursor), sync_to).0.is_empty();
         Ok(NoteTransportPage { notes, cursor, has_more, sync_to })
     }
 }
@@ -360,7 +345,7 @@ impl NoteTransportClient for FaultyNoteTransportApi {
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
         sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;

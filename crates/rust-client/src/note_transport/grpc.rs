@@ -115,9 +115,12 @@ impl Verify for DecodedFetchedNote {
     }
 }
 
-/// Builds the wire representation of a cursor. The initial cursor has none.
-fn proto_cursor(cursor: NoteTransportCursor) -> Option<FetchNotesCursor> {
-    cursor.parts().map(|(nonce, sequence)| FetchNotesCursor { nonce, sequence })
+/// Builds the wire representation of a cursor.
+fn proto_cursor(cursor: NoteTransportCursor) -> FetchNotesCursor {
+    FetchNotesCursor {
+        nonce: cursor.nonce,
+        sequence: cursor.sequence,
+    }
 }
 
 /// Builds the wire representation of a transport note.
@@ -284,14 +287,14 @@ impl GrpcNoteTransportClient {
     pub async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
         sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         let tags_int = tags.iter().map(NoteTag::as_u32).collect();
         let request = FetchNotesRequest {
             tags: tags_int,
-            cursor: proto_cursor(cursor),
-            sync_to: sync_to.and_then(proto_cursor),
+            cursor: cursor.map(proto_cursor),
+            sync_to: sync_to.map(proto_cursor),
         };
 
         let mut api = self.api().await?;
@@ -329,9 +332,15 @@ impl GrpcNoteTransportClient {
             .ok_or_else(|| NoteTransportError::Network("fetch response has no sync_to".into()))?;
         Ok(NoteTransportPage {
             notes,
-            cursor: NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence),
+            cursor: NoteTransportCursor {
+                nonce: cursor.nonce,
+                sequence: cursor.sequence,
+            },
             has_more: response.has_more,
-            sync_to: NoteTransportCursor::from_parts(sync_to.nonce, sync_to.sequence),
+            sync_to: NoteTransportCursor {
+                nonce: sync_to.nonce,
+                sequence: sync_to.sequence,
+            },
         })
     }
 
@@ -376,7 +385,7 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
         sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         self.fetch_notes_page(tags, cursor, sync_to).await

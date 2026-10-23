@@ -106,7 +106,7 @@ async fn oversized_vault_fixture() -> OversizedVaultFixture {
 // ================================================================================================
 
 /// The data store fetches vault proofs for the requested assets only, when the local store does not
-/// hold the vault. The node splits the request into groups of
+/// hold the vault. It splits the request into groups of
 /// [`AccountVaultDetails::MAX_PARTIAL_VAULT_ASSETS`] assets, and the size of the vault does not
 /// cause a vault sync.
 #[tokio::test]

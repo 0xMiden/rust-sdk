@@ -33,7 +33,7 @@ use crate::advice_inputs::load_advice_map_from_file;
 use crate::codecs::with_cli_codecs;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 #[cfg(feature = "trace")]
-use crate::commands::call_trace::{EntryCall, print_call_trace};
+use crate::commands::call_trace::{EntryCall, format_felts, print_call_trace};
 use crate::commands::new_account::load_packages;
 use crate::config::CliConfig;
 use crate::errors::CliError;
@@ -347,7 +347,7 @@ async fn execute_and_print_call<AUTH: Keystore + Sync + 'static>(
             .as_ref()
             .ok()
             .zip(output.typed)
-            .and_then(|(stack, typed)| typed.decode_result(stack.as_slice()).ok().flatten());
+            .and_then(|(stack, typed)| entry_result(stack, typed));
         let entry = output.entry.map(|(name, args)| EntryCall { name, args, result });
         print_call_trace(replay.as_ref(), output.package, entry.as_ref(), verbose);
 
@@ -362,6 +362,22 @@ async fn execute_and_print_call<AUTH: Keystore + Sync + 'static>(
         .await?;
     print_call_result(&output_stack, output.typed);
     Ok(())
+}
+
+/// The result for the entry frame: the decoded value, or the felts the procedure returned when they
+/// are not a valid value of its return type. The entry frame itself only holds the C ABI result,
+/// which is a pointer for a value wider than one felt.
+#[cfg(feature = "trace")]
+fn entry_result(output_stack: &[Felt; MIN_STACK_DEPTH], typed: &TypedProcInfo) -> Option<String> {
+    match typed.decode_result(output_stack.as_slice()) {
+        Ok(rendered) => rendered,
+        Err(_) => {
+            let count = typed.output_felt_count()?;
+            let felts =
+                output_stack[..count].iter().map(Felt::as_canonical_u64).collect::<Vec<_>>();
+            Some(format_felts(&felts))
+        },
+    }
 }
 
 /// Joins the argument tokens for the entry frame.
@@ -830,6 +846,34 @@ mod tests {
                 let export = resolve_procedure_export(&manifest, "increment-by").unwrap();
                 assert_eq!(export.signature, interface_form().1, "{} won", untyped.0);
             }
+        }
+    }
+
+    #[cfg(feature = "trace")]
+    #[test]
+    fn the_entry_frame_shows_the_returned_felts_when_they_do_not_decode() {
+        let typed_returning = |result: Type| {
+            TypedProcInfo::new("probe", FunctionType::new(CallConv::ComponentModel, [], [result]))
+                .unwrap()
+        };
+        let stack_with = |top: &[u64]| {
+            let mut stack = [Felt::new(0).unwrap(); MIN_STACK_DEPTH];
+            for (slot, value) in stack.iter_mut().zip(top) {
+                *slot = Felt::new(*value).unwrap();
+            }
+            stack
+        };
+        let too_wide_for_u32 = 1u64 << 40;
+
+        let cases = [
+            (Type::U32, vec![7], Some("7u32")),
+            (Type::U32, vec![too_wide_for_u32], Some("1099511627776")),
+            (Type::U64, vec![too_wide_for_u32, 0], Some("[1099511627776, 0]")),
+        ];
+
+        for (result, top, expected) in cases {
+            let rendered = entry_result(&stack_with(&top), &typed_returning(result.clone()));
+            assert_eq!(rendered.as_deref(), expected, "{result} from {top:?}");
         }
     }
 

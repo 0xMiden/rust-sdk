@@ -2,7 +2,7 @@
 
 use miden_client::assembly::Path;
 use miden_client::transaction::trace::{CallFrameRecord, CallTraceReplay, TracedArg};
-use miden_client::vm::Package;
+use miden_client::vm::{Package, PackageExport};
 
 /// The call as typed. The entry frame prints from this, since the frame itself only carries the C
 /// ABI form: flattened felts in, a pointer out.
@@ -11,13 +11,44 @@ pub struct EntryCall<'a> {
     pub name: &'a str,
     /// The arguments as the caller wrote them, already rendered.
     pub args: &'a str,
-    /// The decoded result, or `None` when the run produced none that could be rendered.
+    /// The decoded result, or the returned felts when they do not decode. `None` when the run
+    /// produced no result.
     pub result: Option<String>,
 }
 
-/// Whether `callee` is the export named `name`. An export runs as `<wit-package>#<export-name>`.
-fn is_entry_frame(callee: &str, name: &str) -> bool {
-    callee.trim_end_matches('"').ends_with(&format!("#{name}"))
+/// What the package tells about which frames are its own code.
+#[derive(Default)]
+struct PackageScope<'a> {
+    /// The modules the package exports from. The package's procedures sit below them.
+    roots: Vec<&'a Path>,
+}
+
+impl<'a> PackageScope<'a> {
+    fn new(package: &'a Package) -> Self {
+        let roots = package
+            .manifest
+            .exports()
+            .filter_map(|export| match export {
+                PackageExport::Procedure(proc) => proc.path.parent(),
+                _ => None,
+            })
+            .collect();
+        Self { roots }
+    }
+
+    /// Whether `path` names a procedure below one of the export modules.
+    fn contains(&self, path: &Path) -> bool {
+        self.roots
+            .iter()
+            .any(|root| path.strip_prefix(root).is_some_and(|rest| !rest.is_empty()))
+    }
+}
+
+/// Whether `callee` is the export named `name`. The export body runs under the plain export name,
+/// while the contract's own procedures carry mangled Rust symbols.
+fn is_entry_frame(callee: &str, name: &str, scope: &PackageScope<'_>) -> bool {
+    let callee = Path::new(callee);
+    scope.contains(callee) && callee.last() == Some(name)
 }
 
 /// What kind of code a frame ran. `--verbose` filters on this.
@@ -27,7 +58,8 @@ enum FrameKind {
     User,
     /// A procedure from another crate in the package: the Rust SDK and its dependencies.
     Library,
-    /// Everything else: hand-written MASM intrinsics, and frames with no name.
+    /// Everything else: hand-written MASM intrinsics, frames with no name, and frames named after
+    /// an inline function.
     Internal,
 }
 
@@ -65,7 +97,14 @@ pub fn print_call_trace(
         None => FrameKind::Internal,
     };
 
-    let mut printer = Printer { entry, max_kind, shown: 0, hidden: 0 };
+    let scope = package.map(PackageScope::new).unwrap_or_default();
+    let mut printer = Printer {
+        entry,
+        scope: &scope,
+        max_kind,
+        shown: 0,
+        hidden: 0,
+    };
     println!("\nCall trace:");
     printer.print(&replay.trace.roots, 0);
 
@@ -85,6 +124,8 @@ pub fn print_call_trace(
 struct Printer<'a> {
     /// The call the user made, which names and renders the entry frame.
     entry: Option<&'a EntryCall<'a>>,
+    /// Which frames are the package's own code.
+    scope: &'a PackageScope<'a>,
     /// The last kind that is still printed.
     max_kind: FrameKind,
     shown: usize,
@@ -96,9 +137,12 @@ impl Printer<'_> {
         for frame in frames {
             // The procedure the user called is always shown, whatever its path looks like.
             let entry = self.entry.filter(|entry| {
-                frame.callee.as_deref().is_some_and(|callee| is_entry_frame(callee, entry.name))
+                frame
+                    .callee
+                    .as_deref()
+                    .is_some_and(|callee| is_entry_frame(callee, entry.name, self.scope))
             });
-            let name = frame.callee.as_deref().map(shorten);
+            let name = frame.callee.as_deref().map(|callee| shorten(callee, self.scope));
 
             let kind = match entry {
                 Some(_) => FrameKind::User,
@@ -147,42 +191,31 @@ struct ShortName {
     kind: FrameKind,
 }
 
-/// Cuts `::"<package>"::<crate>::<symbol>` down to the symbol and tells whose code it is. A symbol
-/// under its own crate is user code. A path without a package, such as
-/// `::intrinsics::mem::load_sw`, is MASM.
-fn shorten(path: &str) -> ShortName {
-    let path = Path::new(path);
-
-    // A package id is always quoted, since it holds `:` and `/`. A bare first component is MASM.
-    let has_package = path
-        .components()
-        .nth(1)
-        .and_then(Result::ok)
-        .is_some_and(|first| first.is_quoted());
-    let after_package = if has_package {
-        path.split_first().and_then(|(_package, rest)| rest.split_first())
-    } else {
-        None
-    };
-    let Some((first, rest)) = after_package else {
+/// Cuts a procedure path down to its Rust path and tells whose code it is.
+///
+/// A procedure of the package has the path `<export module>::<crate>::<symbol>`. A Rust path under
+/// the own crate is user code, except the generated `bindings` module. A path outside the package,
+/// such as `::intrinsics::mem::load_sw`, is MASM.
+///
+/// Every traced frame is a procedure call, so its name is an absolute path. A relative name, such
+/// as `<core::result::Result<T, E>>::unwrap`, is an inline function of the caller that the debug
+/// engine took as the callee. Such a name is wrong, so the frame is internal.
+fn shorten(name: &str, scope: &PackageScope<'_>) -> ShortName {
+    let path = Path::new(name);
+    let procedure = path.split_last().filter(|_| name.starts_with("::") && scope.contains(path));
+    let Some((symbol, module)) = procedure else {
         return ShortName {
             kind: FrameKind::Internal,
             text: path.to_relative().as_str().to_string(),
         };
     };
-
-    // A procedure straight under the package has no crate segment.
-    let (own_crate, symbol) = if rest.is_empty() {
-        (None, first)
-    } else {
-        (Some(first), rest.as_str().trim_matches('"'))
-    };
     let rust_path = demangle(symbol);
 
     // Own code starts with the crate, directly or as the type of a trait method.
-    let own = own_crate.filter(|own_crate| {
-        rust_path.starts_with(&format!("{own_crate}::"))
-            || rust_path.starts_with(&format!("<{own_crate}::"))
+    let own = module.last().filter(|own_crate| {
+        (rust_path.starts_with(&format!("{own_crate}::"))
+            || rust_path.starts_with(&format!("<{own_crate}::")))
+            && !rust_path.contains(&format!("{own_crate}::bindings::"))
     });
 
     // `<T as Trait>::m` becomes `T::m`.
@@ -229,7 +262,7 @@ fn format_args_list(args: &[TracedArg]) -> String {
 }
 
 /// Prints one felt on its own, and more than one as a list.
-fn format_felts(felts: &[u64]) -> String {
+pub(crate) fn format_felts(felts: &[u64]) -> String {
     match felts {
         [single] => single.to_string(),
         many => {
@@ -251,83 +284,149 @@ fn format_results(results: Option<&[u64]>) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn own_crate_paths_are_trimmed_and_recognised() {
-        let name = shorten("::\"counter-contract\"::counter_contract::counter_contract::apply_op");
-        assert_eq!(name.kind, FrameKind::User);
-        assert_eq!(name.text, "apply_op");
+    /// The module the counter contract exports from.
+    const ROOT: &str = "::miden::counter_contract::counter_contract";
 
-        // The assembler quotes a symbol that is not a plain identifier.
-        let name = shorten(
-            "::\"counter-contract\"::counter_contract::\"<counter_contract::Counter as miden::Component>::get\"",
-        );
+    /// A procedure of the contract's crate, which sits one module below the export module.
+    fn crate_proc(symbol: &str) -> String {
+        format!("{ROOT}::counter_contract::{symbol}")
+    }
+
+    fn counter_scope() -> PackageScope<'static> {
+        PackageScope { roots: vec![Path::new(ROOT)] }
+    }
+
+    fn shorten_in_package(path: &str) -> ShortName {
+        shorten(path, &counter_scope())
+    }
+
+    #[test]
+    fn own_crate_symbols_are_demangled_trimmed_and_recognised() {
+        let name = shorten_in_package(&crate_proc("_RNvCs1gvHueIcLs7_16counter_contract6level1"));
         assert_eq!(name.kind, FrameKind::User);
-        assert_eq!(name.text, "Counter::get");
+        assert_eq!(name.text, "level1");
+
+        let name = shorten_in_package(&crate_proc(
+            "_RNvXsa_Cs1gvHueIcLs7_16counter_contractNtB5_22CounterContractStorageNtB5_15CounterContract11depth_probe",
+        ));
+        assert_eq!(name.kind, FrameKind::User);
+        assert_eq!(name.text, "CounterContractStorage::depth_probe");
     }
 
     #[test]
     fn quoted_symbols_are_demangled_and_trimmed() {
         // The assembler quotes a symbol that carries an `.llvm.<hash>` suffix.
-        let name = shorten(
-            "::\"miden:counter-contract/counter-contract@0.1.0\"::counter_contract::\"_RNvXs8_CsawNGMLSRMxb_16counter_contractNtB5_22CounterContractStorageNtB5_15CounterContract8apply_op.llvm.8598756201189951195\"",
-        );
+        let name = shorten_in_package(&crate_proc(
+            "\"_RNvCs1gvHueIcLs7_16counter_contract6level1.llvm.8598756201189951195\"",
+        ));
         assert_eq!(name.kind, FrameKind::User);
-        assert_eq!(name.text, "CounterContractStorage::apply_op");
+        assert_eq!(name.text, "level1");
+
+        // The assembler also quotes a symbol that is not a plain identifier.
+        let name = shorten_in_package(&crate_proc(
+            "\"<counter_contract::Counter as miden::Component>::get\"",
+        ));
+        assert_eq!(name.kind, FrameKind::User);
+        assert_eq!(name.text, "Counter::get");
     }
 
     #[test]
-    fn sdk_paths_are_library_and_masm_paths_are_internal() {
-        let name = shorten("::\"counter-contract\"::counter_contract::\"miden::felt::add\"");
+    fn other_crates_are_library_and_paths_outside_the_package_are_internal() {
+        let name =
+            shorten_in_package(&crate_proc("_RNvNtCs4mQadDl6yut_11wit_bindgen2rt14run_ctors_once"));
         assert_eq!(name.kind, FrameKind::Library);
-        assert_eq!(name.text, "miden::felt::add");
+        assert_eq!(name.text, "wit_bindgen::rt::run_ctors_once");
 
-        let name = shorten(
-            "::\"counter-contract\"::counter_contract::_RNvNtNtCs1gfRmJqte2s_14miden_base_sys8bindings4note15build_recipient",
-        );
-        assert_eq!(name.kind, FrameKind::Library);
-        assert_eq!(name.text, "miden_base_sys::bindings::note::build_recipient");
-
-        let name = shorten("::intrinsics::mem::load_sw");
+        let name = shorten_in_package("::intrinsics::mem::load_sw");
         assert_eq!(name.kind, FrameKind::Internal);
         assert_eq!(name.text, "intrinsics::mem::load_sw");
+
+        // It shares the `miden` namespace with the contract, but it is not under the export module.
+        let name = shorten_in_package("::miden::core::math::u64::gt");
+        assert_eq!(name.kind, FrameKind::Internal);
+        assert_eq!(name.text, "miden::core::math::u64::gt");
+
+        // Without a package nothing is the contract's code.
+        let name = shorten(
+            &crate_proc("_RNvCs1gvHueIcLs7_16counter_contract6level1"),
+            &PackageScope::default(),
+        );
+        assert_eq!(name.kind, FrameKind::Internal);
     }
 
     #[test]
-    fn a_procedure_straight_under_the_package_has_no_crate() {
-        let name = shorten("::\"miden:counter-contract/counter-contract@0.1.0\"::init");
+    fn frames_named_after_an_inline_function_are_internal() {
+        // The debug engine names a frame after an inline function of the caller by its relative
+        // Rust path. The name never belongs to the callee, own crate or not.
+        for name in [
+            "<core::result::Result<miden_field::wasm_miden::Felt, miden_field::wasm_miden::FeltFromIntError>>::unwrap",
+            "counter_contract::tax_of",
+            "<counter_contract::CounterContractStorage as counter_contract::CounterContract>::credit_deposit",
+        ] {
+            let short = shorten_in_package(name);
+            assert_eq!(short.kind, FrameKind::Internal, "{name}");
+            assert_eq!(short.text, name);
+        }
+    }
+
+    #[test]
+    fn a_hidden_frame_leaves_its_children_in_place() {
+        let frame = |callee: &str, children| CallFrameRecord {
+            callee: Some(callee.to_string()),
+            enter_clk: 0,
+            exit_clk: Some(1),
+            args: Vec::new(),
+            results: Some(Vec::new()),
+            children,
+        };
+        let roots = [frame(
+            &crate_proc("_RNvCs1gvHueIcLs7_16counter_contract6level1"),
+            vec![frame(
+                "<core::result::Result<miden_field::wasm_miden::Felt, miden_field::wasm_miden::FeltFromIntError>>::unwrap",
+                vec![frame(&crate_proc("_RNvCs1gvHueIcLs7_16counter_contract6level2"), Vec::new())],
+            )],
+        )];
+
+        let scope = counter_scope();
+        let mut printer = Printer {
+            entry: None,
+            scope: &scope,
+            max_kind: FrameKind::User,
+            shown: 0,
+            hidden: 0,
+        };
+        printer.print(&roots, 0);
+        assert_eq!((printer.shown, printer.hidden), (2, 1));
+    }
+
+    #[test]
+    fn generated_bindings_are_library_code_although_they_name_the_contracts_crate() {
+        // The `Guest` impl that the `#[component]` macro writes for the contract.
+        let name = shorten_in_package(&crate_proc(
+            "_RNvXsb_Cs1gvHueIcLs7_16counter_contractNtB5_22CounterContractStorageNtNtNtNtNtNtB5_8bindings7exports5miden16counter_contract16counter_contract5Guest11depth_probe",
+        ));
         assert_eq!(name.kind, FrameKind::Library);
-        assert_eq!(name.text, "init");
+        assert_eq!(name.text, "counter_contract::CounterContractStorage::depth_probe");
     }
 
     #[test]
     fn the_called_export_is_told_apart_from_the_contracts_own_procedures() {
-        // The export the user called runs under `<wit-package>#<export-name>`, quoted because the
-        // name is not a plain identifier.
-        let export = "::\"miden:counter-contract/counter-contract@0.1.0\"::counter_contract::\"miden:counter-contract/counter-contract@0.1.0#move-point\"";
-        assert!(is_entry_frame(export, "move-point"));
-        assert!(!is_entry_frame(export, "digest-word"));
+        let scope = counter_scope();
+        let export = crate_proc("depth_probe");
+        assert!(is_entry_frame(&export, "depth_probe", &scope));
+        assert!(!is_entry_frame(&export, "apply_op", &scope));
 
-        // Its body is a procedure of its own, and is not the entry frame.
+        // The Rust function behind the export is a procedure of its own, and is not the entry.
         assert!(!is_entry_frame(
-            "::\"miden:counter-contract/counter-contract@0.1.0\"::counter_contract::transform",
-            "move-point"
+            &crate_proc(
+                "_RNvXsa_Cs1gvHueIcLs7_16counter_contractNtB5_22CounterContractStorageNtB5_15CounterContract11depth_probe"
+            ),
+            "depth_probe",
+            &scope
         ));
-    }
 
-    #[test]
-    fn export_wrappers_are_library_code_although_they_name_the_contracts_crate() {
-        // The wrapper names the contract's crate as the type it calls the procedure on.
-        let name = shorten(
-            "::\"miden:counter-contract/counter-contract@0.1.0\"::counter_contract::\"bindings::exports::miden::counter_contract::counter_contract::_export_halve_asset_cabi::<counter_contract::CounterContractStorage>\"",
-        );
-        assert_eq!(name.kind, FrameKind::Library);
-
-        // The same shape without the wrapper name is the contract's code.
-        let name = shorten(
-            "::\"miden:counter-contract/counter-contract@0.1.0\"::counter_contract::\"<counter_contract::CounterContractStorage as counter_contract::CounterContract>::halve_asset\"",
-        );
-        assert_eq!(name.kind, FrameKind::User);
-        assert_eq!(name.text, "CounterContractStorage::halve_asset");
+        // A library procedure with the same name is not the entry.
+        assert!(!is_entry_frame("::miden::core::math::u64::gt", "gt", &scope));
     }
 
     #[test]

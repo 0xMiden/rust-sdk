@@ -3281,9 +3281,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.18.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5642cffd547e43ed719dac369dcf72ae6cc22d0fed93be14420d7dc94c91f9"
+checksum = "ca719ced21d933c503ae0c1ccc4816c6d383a82d4244e39f7f71e0faeb4f2c13"
 dependencies = [
  "build-rs",
  "codegen",
@@ -5805,7 +5805,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

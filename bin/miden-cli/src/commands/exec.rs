@@ -17,6 +17,7 @@ use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::packages::load_packages;
 use crate::utils::{
+    debug_adapter_hint,
     get_input_acc_id_by_prefix_or_default,
     is_empty_transaction_error,
     print_empty_transaction_report,
@@ -190,8 +191,10 @@ impl ExecCmd {
                         return Err(err);
                     }
                 }
-                return result.map_err(|err| {
-                    CliError::Exec(err.into(), "error executing the program".to_string())
+                return result.map_err(|err| CliError::Exec {
+                    error: err.into(),
+                    message: "error executing the program".to_string(),
+                    help: None,
                 });
             }
         }
@@ -199,7 +202,14 @@ impl ExecCmd {
         client
             .execute_program(account_id, tx_script, advice_inputs, foreign_accounts)
             .await
-            .map_err(|err| CliError::Exec(err.into(), "error executing the program".to_string()))
+            .map_err(|err| {
+                let help = debug_adapter_hint(&err);
+                CliError::Exec {
+                    error: err.into(),
+                    message: "error executing the program".to_string(),
+                    help,
+                }
+            })
     }
 }
 
@@ -216,11 +226,10 @@ fn load_tx_script_package(
         .pop()
         .expect("load_packages returns one package per path");
 
-    TransactionScript::from_package(&package).map_err(|err| {
-        CliError::Exec(
-            err.into(),
-            format!("the package at {} is not a transaction script", path.display()),
-        )
+    TransactionScript::from_package(&package).map_err(|err| CliError::Exec {
+        error: err.into(),
+        message: format!("the package at {} is not a transaction script", path.display()),
+        help: None,
     })
 }
 

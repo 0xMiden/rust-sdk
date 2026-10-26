@@ -11,13 +11,14 @@
 use anyhow::{Context, Result, ensure};
 use miden_client::account::Account;
 
-use crate::fee_funding::FUNDING_AMOUNT;
-
 // CONSTANTS
 // ================================================================================================
 
 /// Env var naming the funding service, for example `http://127.0.0.1:50401`.
 pub const FUNDING_SERVICE_ENV: &str = "MIDEN_FUNDING_SERVICE_URL";
+
+/// Amount of the native fee asset, in base units, that the funding service pays each account.
+pub const FUNDING_AMOUNT: u64 = 10_000_000;
 
 // FUNDING
 // ================================================================================================

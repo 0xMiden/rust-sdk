@@ -15,13 +15,18 @@ use anyhow::{Context, Result, bail};
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::asset::FungibleAsset;
 use miden_client::auth::TransactionAuthenticator;
-use miden_client::block::BlockNumber;
+use miden_client::block::{BlockNumber, FeeParameters};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, NoteType, P2idNote};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::fee::FeeFunder;
-use miden_client::transaction::{TransactionId, TransactionRequest, TransactionRequestBuilder};
-use miden_client::{Client, ClientError};
+use miden_client::transaction::{
+    TransactionFee,
+    TransactionId,
+    TransactionRequest,
+    TransactionRequestBuilder,
+};
+use miden_client::{Client, ClientError, MAX_TX_EXECUTION_CYCLES};
 use rand::RngExt;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
@@ -36,9 +41,8 @@ use crate::config::ClientConfig;
 /// Env var naming the funder account file or directory, mirroring the `--funders` argument.
 pub const FUNDER_ACCOUNTS_ENV: &str = "MIDEN_FUNDER_ACCOUNTS_DIR";
 
-/// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
-/// tens of thousands of base units, so this covers far more than any one test spends.
-pub const FUNDING_AMOUNT: u64 = 10_000_000;
+/// Number of transactions at the worst-case fee that each funded account can pay for.
+const FUNDED_TRANSACTIONS: u64 = 10;
 
 /// How long to wait before a rejected payment is submitted again.
 const STALE_WALLET_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -61,6 +65,15 @@ pub async fn fee_faucet_id<AUTH: TransactionAuthenticator + Sync + 'static>(
         .await?
         .fee_asset_id()
         .faucet_id())
+}
+
+/// Returns the amount of the native fee asset, in base units, that pays for [`FUNDED_TRANSACTIONS`]
+/// transactions at the worst-case fee under `fee_parameters`.
+fn funding_amount(fee_parameters: &FeeParameters) -> Result<u64> {
+    let worst_case_fee =
+        TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?.compute_fee(fee_parameters)?;
+
+    Ok(worst_case_fee.as_u64() * FUNDED_TRANSACTIONS)
 }
 
 // LOADING
@@ -251,10 +264,15 @@ impl Funder {
         }
 
         let fee_faucet_id = fee_faucet_id(client).await?;
+        let (genesis, _) = client
+            .get_block_header_by_num(BlockNumber::GENESIS)
+            .await?
+            .context("genesis block header is not in the client's store")?;
+        let amount = funding_amount(genesis.fee_parameters())?;
 
         // The callback flag is part of the vault key, and both the wallet's balance and `pay_fee`
         // use plain assets, so the note has to carry the same flag to be spendable.
-        let asset = FungibleAsset::new(fee_faucet_id, FUNDING_AMOUNT)
+        let asset = FungibleAsset::new(fee_faucet_id, amount)
             .context("failed to build the native fee asset")?;
 
         // Built here rather than through `build_pay_to_id`, which describes a single payment. Notes

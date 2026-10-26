@@ -2,7 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
@@ -35,13 +35,6 @@ use miden_protocol::transaction::{
     TransactionArgs,
     TransactionId,
     TransactionScript,
-};
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
 };
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
@@ -479,118 +472,6 @@ impl TransactionRequest {
     }
 }
 
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for TransactionRequest {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.block_numbers.write_into(target);
-        self.input_notes.write_into(target);
-        self.input_notes_args.write_into(target);
-        self.explicit_input_notes.write_into(target);
-        match &self.script_template {
-            None => target.write_u8(0),
-            Some(TransactionScriptTemplate::CustomScript(script)) => {
-                target.write_u8(1);
-                script.write_into(target);
-            },
-            Some(TransactionScriptTemplate::SendNotes(notes)) => {
-                target.write_u8(2);
-                notes.write_into(target);
-            },
-        }
-        self.expected_output_recipients.write_into(target);
-        self.expected_future_notes.write_into(target);
-        self.advice_map.write_into(target);
-        self.merkle_store.write_into(target);
-        let foreign_accounts: Vec<_> = self.foreign_accounts.values().cloned().collect();
-        foreign_accounts.write_into(target);
-        self.expiration_delta.write_into(target);
-        target.write_u8(u8::from(self.ignore_invalid_input_notes));
-        self.script_arg.write_into(target);
-        self.auth_arg.write_into(target);
-        self.fee_conversion_salt.write_into(target);
-        self.expected_ntx_scripts.write_into(target);
-        self.account_code_upgrade.write_into(target);
-    }
-}
-
-impl Deserializable for TransactionRequest {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let block_numbers = BTreeSet::<BlockNumber>::read_from(source)?;
-        let input_notes = Vec::<Note>::read_from(source)?;
-        let input_notes_args = Vec::<(NoteId, Option<NoteArgs>)>::read_from(source)?;
-        let explicit_input_notes = BTreeMap::<NoteId, InputNote>::read_from(source)?;
-        for (note_id, input_note) in &explicit_input_notes {
-            if *note_id != input_note.id() || !input_notes.contains(input_note.note()) {
-                return Err(DeserializationError::InvalidValue(format!(
-                    "explicit input note {note_id} does not match a request input note"
-                )));
-            }
-        }
-
-        let script_template = match source.read_u8()? {
-            0 => None,
-            1 => {
-                let transaction_script = TransactionScript::read_from(source)?;
-                Some(TransactionScriptTemplate::CustomScript(transaction_script))
-            },
-            2 => {
-                let notes = Vec::<PartialNote>::read_from(source)?;
-                Some(TransactionScriptTemplate::SendNotes(notes))
-            },
-            _ => {
-                return Err(DeserializationError::InvalidValue(
-                    "Invalid script template type".to_string(),
-                ));
-            },
-        };
-
-        let expected_output_recipients = BTreeMap::<Word, NoteRecipient>::read_from(source)?;
-        let expected_future_notes =
-            BTreeMap::<NoteDetailsCommitment, (NoteDetails, NoteTag)>::read_from(source)?;
-
-        let advice_map = AdviceMap::read_from(source)?;
-        let merkle_store = MerkleStore::read_from(source)?;
-        let mut foreign_accounts = BTreeMap::new();
-        for foreign_account in Vec::<ForeignAccount>::read_from(source)? {
-            foreign_accounts.entry(foreign_account.account_id()).or_insert(foreign_account);
-        }
-        let expiration_delta = Option::<u16>::read_from(source)?;
-        let ignore_invalid_input_notes = source.read_u8()? == 1;
-        let script_arg = Option::<Word>::read_from(source)?;
-        let auth_arg = Option::<Word>::read_from(source)?;
-        let fee_conversion_salt = Option::<Word>::read_from(source)?;
-        let expected_ntx_scripts = Vec::<NoteScript>::read_from(source)?;
-        let account_code_upgrade = Option::<AccountCodeUpgrade>::read_from(source)?;
-
-        let request = TransactionRequest {
-            block_numbers,
-            input_notes,
-            input_notes_args,
-            explicit_input_notes,
-            script_template,
-            expected_output_recipients,
-            expected_future_notes,
-            advice_map,
-            merkle_store,
-            foreign_accounts,
-            expiration_delta,
-            ignore_invalid_input_notes,
-            script_arg,
-            auth_arg,
-            fee_conversion_salt,
-            expected_ntx_scripts,
-            account_code_upgrade,
-        };
-        request
-            .validate()
-            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
-
-        Ok(request)
-    }
-}
-
 // HELPERS
 // ================================================================================================
 
@@ -726,29 +607,17 @@ pub enum TransactionRequestError {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
     use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
-    use miden_protocol::account::{
-        AccountBuilder,
-        AccountComponent,
-        AccountId,
-        AccountType,
-        StorageMapKey,
-        StorageSlotName,
-    };
+    use miden_protocol::account::{AccountBuilder, AccountId, AccountType};
     use miden_protocol::asset::FungibleAsset;
-    use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::SequentialCommit;
-    use miden_protocol::note::{Note, NoteRecipient, NoteTag, NoteType};
+    use miden_protocol::note::{Note, NoteRecipient, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{AccountInputs, InputNote};
-    use miden_protocol::utils::serde::{Deserializable, Serializable};
-    use miden_protocol::{EMPTY_WORD, Felt, Word};
+    use miden_protocol::{EMPTY_WORD, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
@@ -759,34 +628,9 @@ mod tests {
         BlockNumber,
         ExpirationTransactionScript,
         NonZeroU16,
-        TransactionRequest,
         TransactionRequestBuilder,
         TransactionScript,
     };
-    use crate::rpc::domain::account::AccountStorageRequirements;
-    use crate::transaction::ForeignAccount;
-
-    #[test]
-    fn transaction_request_serialization() {
-        assert_transaction_request_serialization_with(|| {
-            AuthSingleSig::new(Approver::new(
-                PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
-            ))
-            .into()
-        });
-    }
-
-    #[test]
-    fn transaction_request_serialization_ecdsa() {
-        assert_transaction_request_serialization_with(|| {
-            AuthSingleSig::new(Approver::new(
-                PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::EcdsaK256Keccak,
-            ))
-            .into()
-        });
-    }
 
     #[test]
     fn auth_args_set_the_commitment_and_its_preimage() {
@@ -833,34 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn deserialization_rejects_duplicate_input_notes() {
-        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let target_id =
-            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = ChaCha20Rng::seed_from_u64(0);
-        let note = P2idNote::builder()
-            .sender(sender_id)
-            .target(target_id)
-            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
-            .note_type(NoteType::Private)
-            .serial_number(rng.random())
-            .build()
-            .unwrap();
-
-        // The builder rejects a duplicate, so the built request is corrupted by hand.
-        let mut tx_request = TransactionRequestBuilder::new()
-            .input_notes(vec![(note.into(), None)])
-            .build()
-            .unwrap();
-        let note_id = tx_request.input_note_ids().next().unwrap();
-        tx_request.input_notes.push(tx_request.input_notes[0].clone());
-        tx_request.input_notes_args.push((note_id, None));
-
-        assert!(TransactionRequest::read_from_bytes(&tx_request.to_bytes()).is_err());
-    }
-
-    #[test]
     fn expected_output_recipients_keep_own_output_note_recipients() {
         let mut rng = ChaCha20Rng::seed_from_u64(0);
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
@@ -888,91 +704,5 @@ mod tests {
 
         assert_eq!(tx_request.expected_output_own_notes(), [note]);
         assert_eq!(tx_request.expected_output_recipients().count(), 2);
-    }
-
-    #[allow(deprecated)]
-    fn assert_transaction_request_serialization_with<F>(auth_component: F)
-    where
-        F: FnOnce() -> AccountComponent,
-    {
-        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let target_id =
-            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
-        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = ChaCha20Rng::seed_from_u64(0);
-
-        let mut notes = vec![];
-        for i in 0..7 {
-            let note = P2idNote::builder()
-                .sender(sender_id)
-                .target(target_id)
-                .assets(vec![FungibleAsset::new(faucet_id, 100 + i).unwrap()])
-                .note_type(NoteType::Private)
-                .serial_number(rng.random())
-                .build()
-                .expect("note creation failed");
-            notes.push(note.into());
-        }
-
-        let mut advice_vec: Vec<(Word, Vec<Felt>)> = vec![];
-        for i in 0u32..10 {
-            advice_vec.push((rng.random(), vec![Felt::from(i)]));
-        }
-
-        let account = AccountBuilder::new(Default::default())
-            .with_component(MockAccountComponent::with_empty_slots())
-            .with_component(auth_component())
-            .account_type(AccountType::Private)
-            .build_existing()
-            .unwrap();
-
-        // This transaction request wouldn't be valid in a real scenario, it's intended for testing
-        let tx_request = TransactionRequestBuilder::new()
-            .block_numbers([
-                BlockNumber::from(1u32),
-                BlockNumber::from(3u32),
-                BlockNumber::from(1u32),
-            ])
-            .input_notes(vec![(notes.pop().unwrap(), None)])
-            .explicit_input_notes(vec![(
-                InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.random()),
-            )])
-            .expected_output_recipients(vec![notes.pop().unwrap().recipient().clone()])
-            .expected_future_notes(vec![(
-                notes.pop().unwrap().into(),
-                NoteTag::with_account_target(sender_id),
-            )])
-            .extend_advice_map(advice_vec)
-            .foreign_accounts([
-                ForeignAccount::public(
-                    target_id,
-                    AccountStorageRequirements::new([(
-                        StorageSlotName::new("demo::storage_slot").unwrap(),
-                        &[StorageMapKey::new(Word::default())],
-                    )]),
-                )
-                .unwrap(),
-                ForeignAccount::private(&account).unwrap(),
-            ])
-            .own_output_notes(vec![notes.pop().unwrap(), notes.pop().unwrap()])
-            .script_arg(rng.random())
-            .auth_arg(rng.random())
-            .expected_ntx_scripts(vec![notes.first().unwrap().recipient().script().clone()])
-            .build()
-            .unwrap();
-
-        let mut buffer = Vec::new();
-        tx_request.write_into(&mut buffer);
-
-        let deserialized_tx_request = TransactionRequest::read_from_bytes(&buffer).unwrap();
-        assert_eq!(tx_request, deserialized_tx_request);
-
-        let tree = AccountTree::with_entries([(account.id(), account.to_commitment())]).unwrap();
-        let inputs = AccountInputs::new((&account).into(), tree.open(account.id()));
-        let mut request = tx_request;
-        request.foreign_accounts.insert(inputs.id(), ForeignAccount::Prefetched(inputs));
-        let decoded = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
-        assert_eq!(request, decoded);
     }
 }

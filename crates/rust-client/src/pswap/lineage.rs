@@ -370,11 +370,10 @@ mod tests {
 
     use super::test_helpers::{build_test_pswap, fixed_account_ids};
     use super::*;
-    use crate::utils::{Deserializable, DeserializationError, Serializable};
 
     /// Builds a record from a test `PswapNote`, mirroring the immutable scalars the observer would
-    /// extract. Keeps the codec/accessor tests focused on the fields they exercise instead of the
-    /// new wide constructor signature.
+    /// extract. Keeps the accessor tests focused on the fields they exercise instead of the new
+    /// wide constructor signature.
     fn record_from_test_pswap(
         pswap: &PswapNote,
         current_tip_note_id: NoteId,
@@ -396,25 +395,6 @@ mod tests {
         )
     }
 
-    /// A stored record with an unknown state discriminant does not deserialize.
-    #[test]
-    fn value_codec_rejects_unknown_state() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        let record =
-            record_from_test_pswap(&pswap, note.id(), 0, 100, 50, PswapLineageState::Active);
-
-        // The state byte is the last field of the encoding.
-        let mut bytes = record.to_bytes();
-        *bytes.last_mut().unwrap() = 42;
-
-        assert!(matches!(
-            PswapLineageRecord::read_from_bytes(&bytes),
-            Err(DeserializationError::InvalidValue(_))
-        ));
-    }
-
     /// The mirrored scalars back the accessors with the same values the depth-0 note would yield,
     /// so `order_id()` and `creator_account_id()` stay correct without re-fetching the note.
     #[test]
@@ -431,31 +411,6 @@ mod tests {
         assert_eq!(record.original_note_id, note.id());
         assert_eq!(record.order_id(), expected_order_id);
         assert_eq!(record.creator_account_id(), creator);
-    }
-
-    /// `Serializable`/`Deserializable` round-trip preserves every field. Exercised at an advanced
-    /// depth with reduced amounts to catch an offered/requested mix-up.
-    #[test]
-    fn value_codec_round_trips() {
-        let (sender, creator, offered_faucet, requested_faucet) = fixed_account_ids();
-        let pswap = build_test_pswap(sender, creator, offered_faucet, 100, requested_faucet, 50);
-        let note = miden_protocol::note::Note::from(pswap.clone());
-        let record =
-            record_from_test_pswap(&pswap, note.id(), 3, 70, 35, PswapLineageState::Active);
-
-        let bytes = record.to_bytes();
-        let decoded = PswapLineageRecord::read_from_bytes(&bytes).unwrap();
-
-        assert_eq!(decoded.original_note_id, record.original_note_id);
-        assert_eq!(decoded.creator_account_id(), record.creator_account_id());
-        assert_eq!(decoded.order_id(), record.order_id());
-        assert_eq!(decoded.current_tip_note_id, record.current_tip_note_id);
-        assert_eq!(decoded.current_depth, record.current_depth);
-        assert_eq!(decoded.remaining_offered, record.remaining_offered);
-        assert_eq!(decoded.remaining_requested, record.remaining_requested);
-        assert_eq!(decoded.remaining_offered, AssetAmount::new(70).unwrap());
-        assert_eq!(decoded.remaining_requested, AssetAmount::new(35).unwrap());
-        assert_eq!(decoded.state, record.state);
     }
 
     // PER-ROUND CLASSIFICATION TESTS

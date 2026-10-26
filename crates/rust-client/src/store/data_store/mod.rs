@@ -34,6 +34,7 @@ use miden_tx::{
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
     AccountStorageRequirements,
+    AccountVaultDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
@@ -304,14 +305,13 @@ impl ClientDataStore {
                     DataStoreError::other_with_source("failed to fetch vault assets via RPC", err)
                 })?;
 
-            let partial_vault = account_proof
-                .into_details()
-                .and_then(|details| details.vault_details.partial_vault)
-                .ok_or_else(|| {
-                    DataStoreError::other(format!(
-                        "RPC returned no vault proofs for account {account_id}"
-                    ))
-                })?;
+            let Some(AccountVaultDetails::Partial(partial_vault)) =
+                account_proof.into_details().map(|details| details.vault_details)
+            else {
+                return Err(DataStoreError::other(format!(
+                    "RPC returned no vault proofs for account {account_id}"
+                )));
+            };
 
             // Reject a wrong-root response here rather than as an opaque merkle error inside the
             // VM. All proofs in the response share one root.

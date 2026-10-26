@@ -148,17 +148,19 @@ impl TryFrom<&AccountDetails> for Account {
     /// storage maps or vault exceed the node's size threshold, or when only specific map keys or
     /// vault assets were requested.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
-        if details.vault_details.too_many_assets {
-            return Err(RpcError::ExpectedDataMissing(
-                "cannot build account: vault has too many assets".into(),
-            ));
-        }
-
-        if details.vault_details.partial_vault.is_some() {
-            return Err(RpcError::ExpectedDataMissing(
-                "cannot build account: only specific vault assets were requested".into(),
-            ));
-        }
+        let assets = match &details.vault_details {
+            AccountVaultDetails::Assets(assets) => assets,
+            AccountVaultDetails::TooManyAssets => {
+                return Err(RpcError::ExpectedDataMissing(
+                    "cannot build account: vault has too many assets".into(),
+                ));
+            },
+            AccountVaultDetails::Partial(_) => {
+                return Err(RpcError::ExpectedDataMissing(
+                    "cannot build account: only specific vault assets were requested".into(),
+                ));
+            },
+        };
 
         if let Some(slot_name) = details
             .storage_details
@@ -215,7 +217,7 @@ impl TryFrom<&AccountDetails> for Account {
             }
         }
 
-        let asset_vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
+        let asset_vault = AssetVault::new(assets).map_err(|err| {
             RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
         })?;
 
@@ -530,17 +532,22 @@ impl StorageMapEntries {
 // ACCOUNT VAULT DETAILS
 // ================================================================================================
 
+/// The vault data that a `/GetAccount` response carries for an account. The variants are mutually
+/// exclusive.
 #[derive(Clone, Debug)]
-pub struct AccountVaultDetails {
-    /// A flag that is set to true if the account contains too many assets. This indicates to the
-    /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
-    pub too_many_assets: bool,
-    /// When `too_many_assets` == false and `partial_vault` is `None`, this will contain the list of
-    /// assets in the account's vault
-    pub assets: Vec<Asset>,
+pub enum AccountVaultDetails {
+    /// The vault has more assets than the node returns in a single response. No assets are carried.
+    /// Fetch them with [`crate::rpc::NodeRpcClient::sync_account_vault`].
+    TooManyAssets,
+    /// The assets in the account's vault.
+    ///
+    /// The list is empty if the request skips the vault, or if the vault root is equal to the
+    /// commitment in [`VaultFetch::IfChangedFrom`]. Thus, an empty list does not show that the
+    /// vault is empty.
+    Assets(Vec<Asset>),
     /// Proofs for the assets requested with [`VaultFetch::Assets`]. The proofs also cover requested
-    /// assets that are not in the vault. This field is `None` for all other vault requests.
-    pub partial_vault: Option<PartialVault>,
+    /// assets that are not in the vault.
+    Partial(PartialVault),
 }
 
 impl AccountVaultDetails {
@@ -549,10 +556,11 @@ impl AccountVaultDetails {
     ///
     /// The node can answer a [`VaultFetch::Assets`] request with the full vault contents instead of
     /// proofs. This function converts that answer into a partial vault. Thus, for an asset request,
-    /// the result always holds the requested assets in `partial_vault`.
+    /// the result is always [`Partial`](Self::Partial).
     ///
     /// # Errors
     /// - If the details hold proofs for a request other than [`VaultFetch::Assets`]
+    /// - If the vault has too many assets to answer a [`VaultFetch::Assets`] request
     /// - If the proofs or the full vault contents do not verify against `vault_root`
     /// - If the proofs do not cover all requested assets
     /// - If the proofs track an asset that was not requested
@@ -563,7 +571,7 @@ impl AccountVaultDetails {
         vault_request: &VaultFetch,
     ) -> Result<Self, RpcError> {
         let VaultFetch::Assets(asset_ids) = vault_request else {
-            if self.partial_vault.is_some() {
+            if matches!(self, Self::Partial(_)) {
                 return Err(RpcError::InvalidResponse(
                     "the response contains vault proofs that were not requested".into(),
                 ));
@@ -571,8 +579,8 @@ impl AccountVaultDetails {
             return Ok(self);
         };
 
-        let partial_vault = match self.partial_vault {
-            Some(partial_vault) => {
+        let partial_vault = match self {
+            Self::Partial(partial_vault) => {
                 if let Some(asset_id) =
                     partial_vault.asset_ids().find(|asset_id| !asset_ids.contains(asset_id))
                 {
@@ -582,15 +590,17 @@ impl AccountVaultDetails {
                 }
                 partial_vault
             },
-            None if self.too_many_assets => {
+            Self::TooManyAssets => {
                 return Err(RpcError::InvalidResponse(
                     "the node did not prove the requested assets because the vault is too large"
                         .into(),
                 ));
             },
-            None => PartialVault::new_full(AssetVault::new(&self.assets).map_err(|err| {
-                RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
-            })?),
+            Self::Assets(assets) => {
+                PartialVault::new_full(AssetVault::new(&assets).map_err(|err| {
+                    RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
+                })?)
+            },
         };
 
         if partial_vault.root() != vault_root {
@@ -609,37 +619,35 @@ impl AccountVaultDetails {
             )));
         }
 
-        Ok(Self {
-            too_many_assets: false,
-            assets: Vec::new(),
-            partial_vault: Some(partial_vault),
-        })
+        Ok(Self::Partial(partial_vault))
     }
 }
 
 impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
     type Error = RpcError;
 
+    /// Converts the vault details of a `/GetAccount` response.
+    ///
+    /// The response must set only one of the asset list, the vault proofs, and the too many assets
+    /// flag. A response that sets none of them converts to an empty asset list.
     fn try_from(value: proto::rpc::AccountVaultDetails) -> Result<Self, Self::Error> {
         let proto::rpc::AccountVaultDetails { too_many_assets, assets, partial_vault } = value;
-        let assets = assets
-            .into_iter()
-            .map(DecodeMessageExt::decode_and_verify)
-            .collect::<Result<Vec<Asset>, _>>()?;
 
-        let partial_vault = match partial_vault {
-            None => None,
-            Some(_) if too_many_assets || !assets.is_empty() => {
-                return Err(RpcError::InvalidResponse(
-                    "vault proofs cannot come with the full vault contents or the too many assets \
-                     flag"
-                        .into(),
-                ));
-            },
-            Some(partial_vault) => Some(partial_vault.try_into()?),
-        };
-
-        Ok(Self { too_many_assets, assets, partial_vault })
+        match (too_many_assets, assets.is_empty(), partial_vault) {
+            (false, _, None) => Ok(Self::Assets(
+                assets
+                    .into_iter()
+                    .map(DecodeMessageExt::decode_and_verify)
+                    .collect::<Result<Vec<Asset>, _>>()?,
+            )),
+            (true, true, None) => Ok(Self::TooManyAssets),
+            (false, true, Some(partial_vault)) => Ok(Self::Partial(partial_vault.try_into()?)),
+            _ => Err(RpcError::InvalidResponse(
+                "the vault details set more than one of the asset list, the vault proofs, and the \
+                 too many assets flag"
+                    .into(),
+            )),
+        }
     }
 }
 
@@ -926,8 +934,8 @@ pub enum VaultFetch {
     /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
     /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
-    /// Include proofs for these assets only, in [`AccountVaultDetails::partial_vault`]. The node
-    /// proves an asset that is not in the vault as absent.
+    /// Include proofs for these assets only, in [`AccountVaultDetails::Partial`]. The node proves
+    /// an asset that is not in the vault as absent.
     ///
     /// The node accepts at most
     /// [`RpcLimits::vault_assets_limit`](crate::rpc::RpcLimits::vault_assets_limit) assets in a
@@ -1111,11 +1119,18 @@ mod vault_details_tests {
 
     /// Returns vault details that hold the proofs of `asset_ids` in `vault`.
     fn proof_details(vault: &AssetVault, asset_ids: &[AssetId]) -> AccountVaultDetails {
-        AccountVaultDetails {
-            too_many_assets: false,
-            assets: Vec::new(),
-            partial_vault: Some(partial_vault(vault, asset_ids)),
-        }
+        AccountVaultDetails::Partial(partial_vault(vault, asset_ids))
+    }
+
+    /// Returns the proofs in `details`.
+    ///
+    /// # Panics
+    /// Panics if `details` does not hold proofs.
+    fn into_partial_vault(details: AccountVaultDetails) -> PartialVault {
+        let AccountVaultDetails::Partial(partial_vault) = details else {
+            panic!("expected vault proofs, got {details:?}");
+        };
+        partial_vault
     }
 
     fn asset_request(asset_ids: &[AssetId]) -> VaultFetch {
@@ -1142,7 +1157,7 @@ mod vault_details_tests {
             .validate_against_request(vault.root(), &request)
             .unwrap();
 
-        let partial_vault = details.partial_vault.unwrap();
+        let partial_vault = into_partial_vault(details);
         assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
         assert_eq!(partial_vault.get(absent).unwrap(), None);
     }
@@ -1190,18 +1205,11 @@ mod vault_details_tests {
     #[test]
     fn full_vault_answer_is_converted_to_proofs() {
         let (vault, asset, absent) = vault_with_one_asset();
-        let details = AccountVaultDetails {
-            too_many_assets: false,
-            assets: vec![asset],
-            partial_vault: None,
-        };
-
-        let details = details
+        let details = AccountVaultDetails::Assets(vec![asset])
             .validate_against_request(vault.root(), &asset_request(&[asset.id(), absent]))
             .unwrap();
 
-        assert!(details.assets.is_empty());
-        let partial_vault = details.partial_vault.unwrap();
+        let partial_vault = into_partial_vault(details);
         assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
         assert_eq!(partial_vault.get(absent).unwrap(), None);
     }
@@ -1209,13 +1217,8 @@ mod vault_details_tests {
     #[test]
     fn too_many_assets_answer_to_an_asset_request_is_rejected() {
         let (vault, asset, _) = vault_with_one_asset();
-        let details = AccountVaultDetails {
-            too_many_assets: true,
-            assets: Vec::new(),
-            partial_vault: None,
-        };
-
-        let result = details.validate_against_request(vault.root(), &asset_request(&[asset.id()]));
+        let result = AccountVaultDetails::TooManyAssets
+            .validate_against_request(vault.root(), &asset_request(&[asset.id()]));
 
         assert!(result.is_err());
     }
@@ -1235,7 +1238,7 @@ mod vault_details_tests {
 
         let details = AccountVaultDetails::try_from(response).unwrap();
 
-        assert_eq!(details.partial_vault, Some(expected));
+        assert_eq!(into_partial_vault(details), expected);
     }
 
     #[test]
@@ -1245,6 +1248,47 @@ mod vault_details_tests {
         let response = proto::rpc::AccountVaultDetails {
             too_many_assets: false,
             assets: vec![asset.into()],
+            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+                asset_ids: vec![asset.id().into()],
+                partial_smt: Some(partial_vault.partial_smt().clone().into()),
+            }),
+        };
+
+        assert!(AccountVaultDetails::try_from(response).is_err());
+    }
+
+    #[test]
+    fn too_many_assets_flag_converts_to_its_variant() {
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: true,
+            assets: Vec::new(),
+            partial_vault: None,
+        };
+
+        let details = AccountVaultDetails::try_from(response).unwrap();
+
+        assert!(matches!(details, AccountVaultDetails::TooManyAssets));
+    }
+
+    #[test]
+    fn too_many_assets_flag_with_an_asset_list_is_rejected() {
+        let (_, asset, _) = vault_with_one_asset();
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: true,
+            assets: vec![asset.into()],
+            partial_vault: None,
+        };
+
+        assert!(AccountVaultDetails::try_from(response).is_err());
+    }
+
+    #[test]
+    fn partial_vault_with_the_too_many_assets_flag_is_rejected() {
+        let (vault, asset, _) = vault_with_one_asset();
+        let partial_vault = partial_vault(&vault, &[asset.id()]);
+        let response = proto::rpc::AccountVaultDetails {
+            too_many_assets: true,
+            assets: Vec::new(),
             partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
                 asset_ids: vec![asset.id().into()],
                 partial_smt: Some(partial_vault.partial_smt().clone().into()),

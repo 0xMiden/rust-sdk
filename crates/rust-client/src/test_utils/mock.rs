@@ -249,7 +249,7 @@ impl MockRpcApi {
 
     /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested in
     /// full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault with
-    /// more assets than it comes back with the `too_many_assets` flag set.
+    /// more assets than it comes back as `AccountVaultDetails::TooManyAssets`.
     #[must_use]
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
@@ -262,28 +262,27 @@ impl MockRpcApi {
     /// already equals the sent commitment, and `Assets` sends proofs for the requested assets for
     /// any vault size. The node sends no asset list for a vault above `oversize_threshold`.
     fn vault_details(&self, vault: &AssetVault, request: &VaultFetch) -> AccountVaultDetails {
-        let (assets, partial_vault) = match request {
-            VaultFetch::Always => (vault.assets().collect(), None),
-            VaultFetch::IfChangedFrom(root) if *root != vault.root() => {
-                (vault.assets().collect(), None)
+        match request {
+            VaultFetch::Skip => AccountVaultDetails::Assets(Vec::new()),
+            VaultFetch::IfChangedFrom(root) if *root == vault.root() => {
+                AccountVaultDetails::Assets(Vec::new())
             },
-            VaultFetch::Skip | VaultFetch::IfChangedFrom(_) => (Vec::new(), None),
+            VaultFetch::Always | VaultFetch::IfChangedFrom(_) => {
+                if vault.num_assets() > self.oversize_threshold {
+                    AccountVaultDetails::TooManyAssets
+                } else {
+                    AccountVaultDetails::Assets(vault.assets().collect())
+                }
+            },
             VaultFetch::Assets(asset_ids) if asset_ids.is_empty() => {
-                (Vec::new(), Some(PartialVault::new(vault.root())))
+                AccountVaultDetails::Partial(PartialVault::new(vault.root()))
             },
             VaultFetch::Assets(asset_ids) => {
                 let witnesses = asset_ids.iter().map(|asset_id| vault.open(*asset_id));
                 let partial_vault = PartialVault::with_witnesses(witnesses)
                     .expect("witnesses from one vault share a root");
-                (Vec::new(), Some(partial_vault))
+                AccountVaultDetails::Partial(partial_vault)
             },
-        };
-
-        let too_many_assets = assets.len() > self.oversize_threshold;
-        AccountVaultDetails {
-            too_many_assets,
-            assets: if too_many_assets { Vec::new() } else { assets },
-            partial_vault,
         }
     }
 

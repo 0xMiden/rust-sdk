@@ -1766,31 +1766,51 @@ fn validate_basic_account_request(
     Ok(())
 }
 
-/// Builds a foreign account's [`AccountInputs`] entirely from the store, or returns `None` when it
-/// cannot.
+/// Builds a foreign account's [`AccountInputs`] from the state in the store, or returns `None` when
+/// the store does not hold the account at the reference block.
 ///
-/// Storage maps and vault assets are carried root-only, and resolve against the store during
-/// execution. The store serves entries and assets from [`AccountFetch`] as individual lookups.
+/// The store holds a tracked account at the sync height. The witness comes from the store when
+/// [`Client::track_account_witness`] cached one, and from the node otherwise. Storage maps and
+/// vault assets are carried root-only, and resolve against the store during execution.
 ///
-/// Requires the local header to hash to the commitment the witness proves. Otherwise the local
-/// state is not the one the chain committed at that block, and the kernel would reject it.
+/// Requires the local state to hash to the commitment the witness proves. Otherwise the local state
+/// is not the one the chain committed at that block, and the kernel would reject it.
 async fn local_account_inputs(
     store: &Arc<dyn Store>,
+    rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
     account_state_at: AccountStateAt,
 ) -> Result<Option<AccountInputs>, ClientError> {
-    // The store only holds witnesses at the sync height.
-    if let AccountStateAt::Block(block_num) = account_state_at
-        && block_num == store.get_sync_height().await?
-        && let Some(witness) = store.get_account_witness(account_id).await?
-        && let Some(record) = store.get_minimal_partial_account(account_id).await?
-    {
-        // Derived from the same read that gets handed to the kernel, so what is checked and what is
-        // used cannot drift apart.
-        let account: PartialAccount = record.try_into()?;
-        if account.to_commitment() == witness.state_commitment() {
-            return Ok(Some(AccountInputs::new(account, witness)));
-        }
+    // The store only holds account state and witnesses at the sync height.
+    let AccountStateAt::Block(block_num) = account_state_at else {
+        return Ok(None);
+    };
+    if block_num != store.get_sync_height().await? {
+        return Ok(None);
+    }
+    let Some(record) = store.get_minimal_partial_account(account_id).await? else {
+        return Ok(None);
+    };
+    // Derived from the same read that gets handed to the kernel, so what is checked and what is
+    // used cannot drift apart.
+    let account: PartialAccount = record.try_into()?;
+
+    let witness = if let Some(witness) = store.get_account_witness(account_id).await? {
+        witness
+    } else {
+        // The store already holds the code, so the node omits it from the response.
+        let (_, account_proof) = rpc_api
+            .get_account(
+                GetAccountRequest::new(account_id)
+                    .at(account_state_at)
+                    .with_known_code(Some(account.code().clone())),
+            )
+            .await?;
+        account_proof.into_parts().0
+    };
+
+    if account.to_commitment() == witness.state_commitment() {
+        return Ok(Some(AccountInputs::new(account, witness)));
     }
 
     Ok(None)
@@ -1812,7 +1832,10 @@ pub(crate) async fn fetch_public_account_inputs(
     fetch: AccountFetch,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
-    if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
+    // Boxed because the local inputs hold the account state across the witness request.
+    if let Some(inputs) =
+        Box::pin(local_account_inputs(store, rpc_api, account_id, account_state_at)).await?
+    {
         return Ok(inputs);
     }
 

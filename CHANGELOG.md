@@ -18,6 +18,7 @@
 
 ### Features
 
+* [FEATURE][rust] A public foreign account that the client tracks gets its transaction inputs from the store at the sync height. Only the witness is fetched from the node when `Client::track_account_witness` did not cache one ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
 * [FEATURE][rust] Added `TryFrom<AccountDetails>` for `PartialAccount` and `AccountProof::into_account_inputs`. Both keep the available vault and storage proofs and reject entries, assets, and proofs that do not match the account header ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
 
 ## 0.17.5 (2026-10-21)

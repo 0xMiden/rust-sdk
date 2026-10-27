@@ -1049,10 +1049,10 @@ async fn public_account_state_ahead_of_its_witness_reaches_the_node() {
     );
 }
 
-/// Without a cached witness the inputs cannot be built locally, so the account is fetched with its
-/// details. Isolates the witness as the one piece the store cannot supply on its own.
+/// Without a cached witness the store supplies everything but the witness, which is fetched from
+/// the node once. Isolates the witness as the one piece the store cannot supply on its own.
 #[tokio::test]
-async fn public_account_without_a_cached_witness_reaches_the_node() {
+async fn public_account_without_a_cached_witness_fetches_only_the_witness() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     let setup = Box::pin(deploy_fpi_account(&mut client, &rpc_api, AccountType::Public)).await;
 
@@ -1067,7 +1067,7 @@ async fn public_account_without_a_cached_witness_reaches_the_node() {
     assert_eq!(
         rpc_api.get_account_call_count(),
         calls_before + 1,
-        "without a cached witness the account must be fetched from the node"
+        "without a cached witness the transaction must ask the node for the witness, once"
     );
 }
 

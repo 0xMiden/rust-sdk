@@ -873,13 +873,13 @@ pub(crate) fn print_empty_transaction_report() {
 const DEBUG_ADAPTER_HINT: &str = "Re-run the command with `--start-debug-adapter <ADDR>` and \
      connect a DAP client, such as `miden-debug`, to step through the transaction and find the \
      instruction that failed. See \
-     https://docs.miden.xyz/next/builder/tools/clients/rust-client/debugging";
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
 
 /// The help text for the same failure when the CLI is built without the `dap` feature.
 const DEBUG_ADAPTER_BUILD_HINT: &str = "Build the CLI with `--features dap`, re-run the command \
      with `--start-debug-adapter <ADDR>` and connect a DAP client, such as `miden-debug`, to step \
      through the transaction and find the instruction that failed. See \
-     https://docs.miden.xyz/next/builder/tools/clients/rust-client/debugging";
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
 
 /// Returns the debug adapter hint when the transaction program failed during execution.
 pub(crate) fn debug_adapter_hint(error: &ClientError) -> Option<String> {

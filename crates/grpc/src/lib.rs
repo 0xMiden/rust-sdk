@@ -14,4 +14,6 @@ pub use rpc_method::RpcMethod;
 mod tonic_client;
 pub use tonic_client::GrpcClient;
 
+mod validation;
+
 pub mod v1;

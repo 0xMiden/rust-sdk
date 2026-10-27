@@ -6,19 +6,8 @@ use miden_protocol::vm::FutureMaybeSend;
 
 type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
-use miden_client_core::errors::{
-    AcceptHeaderContext,
-    AcceptHeaderError,
-    GrpcError,
-    RpcConversionError,
-    RpcError,
-};
-use miden_client_core::rpc::domain::account::{
-    AccountProof,
-    AccountStorageRequirements,
-    GetAccountRequest,
-    StorageMapFetch,
-};
+use miden_client_core::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcError};
+use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::domain::account_vault::AccountVaultInfo;
 use miden_client_core::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
@@ -28,14 +17,11 @@ use miden_client_core::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use miden_client_core::rpc::domain::transaction::TransactionRecord;
 use miden_client_core::rpc::encryption::{
     AttestedTransactionEncryptionKey,
-    NextTransactionEncryptionKey,
     SealedTransactionInputs,
-    ValidatorAttestation,
 };
-use miden_client_core::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcLimits};
-use miden_objects::DecodeMessageExt;
+use miden_client_core::rpc::{NodeRpcClient, RpcEndpoint, RpcLimits};
+use miden_protocol::Word;
 use miden_protocol::account::{
-    AccountCode,
     AccountId,
     AccountVaultPatch,
     StorageMapPatchEntries,
@@ -43,7 +29,6 @@ use miden_protocol::account::{
 };
 use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
-use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
@@ -51,13 +36,9 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
-use miden_protocol::{EMPTY_WORD, Word};
 use tonic::Status;
-use tracing::warn;
 
-use crate::conversions::{storage_map_fetch_to_proto, vault_fetch_to_proto};
-use crate::generated::node::v1::get_account_request::AccountDetailRequest;
-use crate::generated::node::v1::{BlockRange, GetAccountRequest as ProtoGetAccountRequest};
+use crate::generated::node::v1::BlockRange;
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
 use crate::{Endpoint, RpcMethod, v1};
@@ -420,71 +401,7 @@ impl NodeRpcClient for GrpcClient {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
-        let api_response = self
-            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
-                Box::pin(async move {
-                    rpc_api
-                        .get_transaction_encryption_key(
-                            proto::node::v1::GetTransactionEncryptionKeyRequest {},
-                        )
-                        .await
-                })
-            })
-            .await?;
-        let response = api_response
-            .into_inner()
-            .key
-            .ok_or(RpcError::ExpectedDataMissing("TransactionEncryptionKey".to_owned()))?;
-
-        // An undecodable attestation is skipped rather than failing the whole response, so that one
-        // junk entry served by the relaying operator cannot hide a valid attestation behind it.
-        // Verification requires one that both decodes and verifies, so dropping the rest is safe.
-        let attestations = response
-            .attestations
-            .into_iter()
-            .filter_map(|attestation| {
-                let validator_key =
-                    attestation.validator_public_key.and_then(|key| key.decode_and_verify().ok());
-                let signature =
-                    attestation.signature.and_then(|signature| signature.decode_and_verify().ok());
-                let decoded = validator_key.zip(signature).map(|(validator_key, signature)| {
-                    ValidatorAttestation { validator_key, signature }
-                });
-                if decoded.is_none() {
-                    warn!(
-                        "skipping a transaction encryption key attestation that failed to decode"
-                    );
-                }
-                decoded
-            })
-            .collect::<Vec<_>>();
-
-        // A negative scheme is a malformed response, not a scheme this client happens to not
-        // support, so it is rejected here rather than aliased onto a valid identifier.
-        let wire_scheme = |scheme: i32| {
-            u32::try_from(scheme)
-                .map_err(|_| RpcError::InvalidResponse(format!("negative IES scheme '{scheme}'")))
-        };
-
-        let next_key = response
-            .next_key
-            .map(|next| {
-                Ok::<_, RpcError>(NextTransactionEncryptionKey {
-                    scheme: wire_scheme(next.scheme)?,
-                    key_id: next.key_id,
-                    public_key: next.public_key,
-                    rotation_block_num: next.rotation_block_num.into(),
-                })
-            })
-            .transpose()?;
-
-        Ok(AttestedTransactionEncryptionKey {
-            scheme: wire_scheme(response.scheme)?,
-            key_id: response.key_id,
-            public_key: response.public_key,
-            attestations,
-            next_key,
-        })
+        self.call(v1::GetTransactionEncryptionKey).await
     }
 
     async fn submit_proven_transaction(
@@ -492,20 +409,11 @@ impl NodeRpcClient for GrpcClient {
         proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::submission::ProvenTransactionSubmission {
-            transaction: Some(proven_transaction.into()),
-            sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
-        };
-
-        let request = proto::node::v1::SubmitProvenTxRequest { submission: Some(request) };
-        let api_response = self
-            .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
-                let request = request.clone();
-                Box::pin(async move { rpc_api.submit_proven_tx(request).await })
-            })
-            .await?;
-
-        Ok(BlockNumber::from(api_response.into_inner().block_num))
+        self.call(v1::SubmitProvenTx {
+            transaction: proven_transaction,
+            sealed_transaction_inputs,
+        })
+        .await
     }
 
     async fn submit_proven_batch(
@@ -514,24 +422,12 @@ impl NodeRpcClient for GrpcClient {
         proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        let request = proto::submission::TransactionBatch {
-            batch: Some(proven_batch.into()),
-            proposed_batch: Some(proposed_batch.into()),
-            sealed_transaction_inputs: sealed_transaction_inputs
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        };
-
-        let request = proto::node::v1::SubmitProvenTxBatchRequest { submission: Some(request) };
-        let api_response = self
-            .call_with_retry(RpcEndpoint::SubmitProvenBatch, |mut rpc_api| {
-                let request = request.clone();
-                Box::pin(async move { rpc_api.submit_proven_tx_batch(request).await })
-            })
-            .await?;
-
-        Ok(BlockNumber::from(api_response.into_inner().block_num))
+        self.call(v1::SubmitProvenTxBatch {
+            proven_batch,
+            proposed_batch,
+            sealed_transaction_inputs,
+        })
+        .await
     }
 
     async fn get_block_header_by_number(
@@ -567,30 +463,7 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
-        let limits = self.get_rpc_limits().await?;
-        let mut notes = Vec::with_capacity(note_ids.len());
-        for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::node::v1::GetNotesByIdRequest {
-                note_ids: chunk.iter().map(proto::note::NoteId::from).collect(),
-            };
-
-            let api_response = self
-                .call_with_retry(RpcEndpoint::GetNotesById, |mut rpc_api| {
-                    let request = request.clone();
-                    Box::pin(async move { rpc_api.get_notes_by_id(request).await })
-                })
-                .await?;
-
-            let response_notes = api_response
-                .into_inner()
-                .notes
-                .into_iter()
-                .map(FetchedNote::try_from)
-                .collect::<Result<Vec<FetchedNote>, RpcConversionError>>()?;
-
-            notes.extend(response_notes);
-        }
-        Ok(notes)
+        self.call(v1::GetNotesById { note_ids }).await
     }
 
     async fn sync_chain_mmr(
@@ -598,20 +471,7 @@ impl NodeRpcClient for GrpcClient {
         current_block_height: BlockNumber,
         upper_bound: SyncTarget,
     ) -> Result<ChainMmrInfo, RpcError> {
-        let finality_level: proto::node::v1::FinalityLevel = upper_bound.into();
-
-        let request = proto::node::v1::SyncChainMmrRequest {
-            current_client_block_height: current_block_height.as_u32(),
-            finality_level: finality_level.into(),
-        };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::SyncChainMmr, |mut rpc_api| {
-                Box::pin(async move { rpc_api.sync_chain_mmr(request).await })
-            })
-            .await?;
-
-        response.into_inner().try_into()
+        self.call(v1::SyncChainMmr { current_block_height, upper_bound }).await
     }
 
     /// Sends a `GetAccount` request to the Miden node, and extracts the [`AccountProof`] from the
@@ -630,78 +490,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let GetAccountRequest { storage, at, known_code, vault } = request;
-
-        let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
-        let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();
-        if let Some(account_code) = known_code {
-            known_codes_by_commitment.insert(account_code.commitment(), account_code);
-        }
-
-        // We need the requested slots to interpret the node response.
-        let requirements = match storage.clone() {
-            StorageMapFetch::Slots(reqs) => reqs,
-            StorageMapFetch::Skip | StorageMapFetch::All => AccountStorageRequirements::default(),
-        };
-
-        // Only request details for accounts with public state (Public or Network), passing the
-        // known code commitment so the node can skip re-sending code we already hold.
-        let account_details = if account_id.is_public() {
-            Some(AccountDetailRequest {
-                code_commitment: Some(known_code_commitment.into()),
-                asset_vault_commitment: vault_fetch_to_proto(&vault),
-                storage_request: storage_map_fetch_to_proto(storage),
-            })
-        } else {
-            None
-        };
-
-        let block_num = match at {
-            AccountStateAt::Block(number) => Some(number.into()),
-            AccountStateAt::ChainTip => None,
-        };
-
-        let proto_request = ProtoGetAccountRequest {
-            account_id: Some(account_id.into()),
-            block_num,
-            details: account_details,
-        };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
-                let request = proto_request.clone();
-                Box::pin(async move { rpc_api.get_account(request).await })
-            })
-            .await?
-            .into_inner();
-
-        let account_witness: AccountWitness = response
-            .witness
-            .ok_or(RpcError::ExpectedDataMissing("AccountWitness".to_string()))?
-            .decode_and_verify()?;
-
-        let response_block_num: BlockNumber = response
-            .block_num
-            .ok_or(RpcError::ExpectedDataMissing("response block num".to_string()))?
-            .block_num
-            .into();
-
-        // For accounts with public state, details should be present when requested
-        let headers = if account_witness.id().is_public() {
-            let details = response
-                .details
-                .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &requirements)?;
-
-            Some(details)
-        } else {
-            None
-        };
-
-        let proof = AccountProof::new(account_witness, headers)
-            .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
-
-        Ok((response_block_num, proof))
+        self.call(v1::GetAccount { account_id, request }).await
     }
 
     async fn register_account(
@@ -709,47 +498,15 @@ impl NodeRpcClient for GrpcClient {
         invitation_code: &str,
         account_id: AccountId,
     ) -> Result<(), RpcError> {
-        // The invitation code is a secret. Keep it out of logs and out of error messages.
-        let request = proto::node::v1::RegisterAccountRequest {
-            invitation_code: invitation_code.to_string(),
-            account_id: Some(account_id.into()),
-        };
-
-        self.call_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
-            let request = request.clone();
-            Box::pin(async move { rpc_api.register_account(request).await })
-        })
-        .await?;
-
-        Ok(())
+        self.call(v1::RegisterAccount { invitation_code, account_id }).await
     }
 
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
-        let request =
-            proto::node::v1::IsAccountAllowedRequest { account_id: Some(account_id.into()) };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::IsAccountAllowed, |mut rpc_api| {
-                Box::pin(async move { rpc_api.is_account_allowed(request).await })
-            })
-            .await?;
-
-        Ok(response.into_inner().allowed)
+        self.call(v1::IsAccountAllowed { account_id }).await
     }
 
     async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
-        let request = proto::node::v1::IsInvitationCodeValidRequest {
-            invitation_code: invitation_code.into(),
-        };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::IsInvitationCodeValid, |mut rpc_api| {
-                let request = request.clone();
-                Box::pin(async move { rpc_api.is_invitation_code_valid(request).await })
-            })
-            .await?;
-
-        Ok(response.into_inner().valid)
+        self.call(v1::IsInvitationCodeValid { invitation_code }).await
     }
 
     /// Sends one or more `SyncNoteRequest`s to the node and merges the responses into a list of
@@ -883,37 +640,11 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        let request = proto::node::v1::GetBlockByNumberRequest {
-            block_num: block_num.as_u32(),
-            include_proof: Some(include_proof),
-        };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::GetBlockByNumber, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_block_by_number(request).await })
-            })
-            .await?;
-
-        decode_block_response(response.into_inner())
+        self.call(v1::GetBlockByNumber { block_num, include_proof }).await
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::node::v1::GetNoteScriptByRootRequest { root: Some(root.into()) };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
-                let request = request.clone();
-                Box::pin(async move { rpc_api.get_note_script_by_root(request).await })
-            })
-            .await?;
-
-        // The node returns an empty payload when it has no script registered for the root.
-        let Some(script) = response.into_inner().script else {
-            return Ok(None);
-        };
-        let note_script: NoteScript = script.decode_and_verify()?;
-
-        Ok(Some(note_script))
+        self.call(v1::GetNoteScriptByRoot { root }).await
     }
 
     async fn sync_storage_maps(
@@ -1068,14 +799,7 @@ impl NodeRpcClient for GrpcClient {
             return Ok(limits);
         }
 
-        let response = self
-            .call_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| {
-                Box::pin(
-                    async move { rpc_api.get_limits(proto::node::v1::GetLimitsRequest {}).await },
-                )
-            })
-            .await?;
-        let limits = RpcLimits::try_from(response.into_inner()).map_err(RpcError::from)?;
+        let limits = self.call(v1::GetLimits).await?;
 
         // Cache fetched values
         self.limits.write().replace(limits);
@@ -1098,18 +822,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        let request = proto::node::v1::GetNetworkNoteStatusRequest {
-            note_id: Some(proto::note::NoteId::from(&note_id)),
-        };
-
-        let response = self
-            .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
-                let request = request.clone();
-                Box::pin(async move { rpc_api.get_network_note_status(request).await })
-            })
-            .await?;
-
-        response.into_inner().try_into()
+        self.call(v1::GetNetworkNoteStatus { note_id }).await
     }
 }
 
@@ -1120,38 +833,12 @@ fn grpc_error_from_status(status: &Status) -> GrpcError {
     GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))
 }
 
-// HELPERS
-// ================================================================================================
-
-/// Decodes the response of `get_block_by_number`.
-///
-/// The response carries the signed block and its proof in separate fields, so the block bytes
-/// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
-/// not requested, and also when the block is not proven yet, so an absent proof is not an error.
-fn decode_block_response(
-    response: proto::node::v1::GetBlockByNumberResponse,
-) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-    // The response carries the block and its proof in separate fields, so the block message holds a
-    // signed block and never a proven one.
-    let block: SignedBlock = response
-        .block
-        .ok_or(RpcError::ExpectedDataMissing("GetBlockByNumberResponse.block".to_string()))?
-        .decode_and_build_unchecked()?;
-
-    // The node omits the proof when it is not requested, and also when the block is not proven yet,
-    // so an absent proof is not an error.
-    let proof = response.proof.map(ExecutionProof::try_from).transpose()?;
-
-    Ok((block, proof))
-}
-
 #[cfg(test)]
 mod tests {
     use miden_client_core::errors::RpcError;
     use miden_client_core::rpc::NodeRpcClient;
     use miden_protocol::Word;
-    use miden_protocol::block::{BlockNumber, SignedBlock};
-    use miden_testing::MockChain;
+    use miden_protocol::block::BlockNumber;
 
     use super::{
         BlockPagination,
@@ -1159,69 +846,9 @@ mod tests {
         Endpoint,
         GrpcClient,
         PaginationResult,
-        decode_block_response,
-        proto,
     };
 
     fn assert_send_sync<T: Send + Sync>() {}
-
-    /// Returns the signed block and proof messages of the mock chain's genesis block.
-    fn genesis_block_messages()
-    -> (proto::blockchain::SignedBlock, proto::primitives::ExecutionProof) {
-        let chain = MockChain::new();
-        let block = chain.proven_blocks().first().expect("the chain has a genesis block").clone();
-        let (header, body, signatures, proof) = block.into_parts();
-
-        (SignedBlock::new_unchecked(header, body, signatures).into(), proof.into())
-    }
-
-    #[test]
-    fn decode_block_response_reads_a_requested_proof() {
-        let (block, proof_message) = genesis_block_messages();
-        let response = proto::node::v1::GetBlockByNumberResponse {
-            block: Some(block),
-            proof: Some(proof_message.clone()),
-        };
-
-        let (_block, proof) = decode_block_response(response).unwrap();
-
-        let decoded: proto::primitives::ExecutionProof =
-            proof.expect("the response carries a proof").into();
-        assert_eq!(decoded, proof_message);
-    }
-
-    #[test]
-    fn decode_block_response_omits_an_absent_proof() {
-        let (block, _) = genesis_block_messages();
-        let response =
-            proto::node::v1::GetBlockByNumberResponse { block: Some(block), proof: None };
-
-        let (_block, proof) = decode_block_response(response).unwrap();
-
-        assert!(proof.is_none());
-    }
-
-    #[test]
-    fn decode_block_response_rejects_malformed_proof_bytes() {
-        let (block, _) = genesis_block_messages();
-        let response = proto::node::v1::GetBlockByNumberResponse {
-            block: Some(block),
-            proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
-        };
-
-        let res = decode_block_response(response);
-
-        assert!(matches!(res, Err(RpcError::DeserializationError(_))));
-    }
-
-    #[test]
-    fn decode_block_response_rejects_an_absent_block() {
-        let response = proto::node::v1::GetBlockByNumberResponse { block: None, proof: None };
-
-        let res = decode_block_response(response);
-
-        assert!(matches!(res, Err(RpcError::ExpectedDataMissing(_))));
-    }
 
     #[test]
     fn is_send_sync() {

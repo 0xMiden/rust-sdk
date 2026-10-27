@@ -7,6 +7,7 @@ use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
 use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
+use crate::validation::verify_block_num;
 use crate::{GrpcClient, RpcMethod, generated as proto};
 
 /// Fetches a block header.
@@ -90,14 +91,7 @@ impl RpcMethod for GetBlockHeaderByNumber {
     }
 
     fn validate(&self, output: &Self::Output) -> Result<(), RpcError> {
-        let returned = output.block_header.block_num();
-        if let Some(requested) = self.block_num
-            && returned != requested
-        {
-            return Err(RpcError::InvalidResponse(format!(
-                "node returned block {returned} but block {requested} was requested"
-            )));
-        }
+        verify_block_num(self.block_num, output.block_header.block_num())?;
 
         // The store keys a configuration by its own commitment, so a configuration that does not
         // match the header is unusable.

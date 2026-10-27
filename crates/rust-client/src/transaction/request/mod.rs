@@ -10,15 +10,8 @@ use miden_protocol::account::{AccountCodeInterface, AccountCodeUpgrade, AccountI
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
-use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::errors::{
-    AccountError,
-    AssetError,
-    NoteError,
-    StorageMapError,
-    TransactionInputError,
-};
+use miden_protocol::errors::{AccountError, AssetError, NoteError, TransactionInputError};
 use miden_protocol::note::{
     Note,
     NoteDetails,
@@ -662,8 +655,6 @@ pub enum TransactionRequestError {
          caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
-    #[error("merkle proof error")]
-    MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
     NoInputNotesNorAccountChange,
     #[error("failed to create note")]
@@ -694,8 +685,6 @@ pub enum TransactionRequestError {
     StorageSlotNotFound(u8, AccountId),
     #[error("error while building the input notes")]
     TransactionInputError(#[from] TransactionInputError),
-    #[error("account storage map error")]
-    StorageMapError(#[from] StorageMapError),
 }
 
 // TESTS

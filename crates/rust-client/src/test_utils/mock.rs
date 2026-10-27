@@ -38,11 +38,11 @@ use crate::rpc::domain::account::{
     AccountStorageDetails,
     AccountStorageMapDetails,
     AccountVaultDetails,
+    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapEntry,
     StorageMapFetch,
-    VaultFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
@@ -261,23 +261,27 @@ impl MockRpcApi {
     /// Mirrors the node: `Skip` sends no assets, `IfChangedFrom` omits them when the vault root
     /// already equals the sent commitment, and `Assets` sends proofs for the requested assets for
     /// any vault size. The node sends no asset list for a vault above `oversize_threshold`.
-    fn vault_details(&self, vault: &AssetVault, request: &VaultFetch) -> AccountVaultDetails {
+    fn vault_details(
+        &self,
+        vault: &AssetVault,
+        request: &AccountVaultRequirements,
+    ) -> AccountVaultDetails {
         match request {
-            VaultFetch::Skip => AccountVaultDetails::Assets(Vec::new()),
-            VaultFetch::IfChangedFrom(root) if *root == vault.root() => {
+            AccountVaultRequirements::Skip => AccountVaultDetails::Assets(Vec::new()),
+            AccountVaultRequirements::IfChangedFrom(root) if *root == vault.root() => {
                 AccountVaultDetails::Assets(Vec::new())
             },
-            VaultFetch::Always | VaultFetch::IfChangedFrom(_) => {
+            AccountVaultRequirements::Always | AccountVaultRequirements::IfChangedFrom(_) => {
                 if vault.num_assets() > self.oversize_threshold {
                     AccountVaultDetails::TooManyAssets
                 } else {
                     AccountVaultDetails::Assets(vault.assets().collect())
                 }
             },
-            VaultFetch::Assets(asset_ids) if asset_ids.is_empty() => {
+            AccountVaultRequirements::Assets(asset_ids) if asset_ids.is_empty() => {
                 AccountVaultDetails::Partial(PartialVault::new(vault.root()))
             },
-            VaultFetch::Assets(asset_ids) => {
+            AccountVaultRequirements::Assets(asset_ids) => {
                 let witnesses = asset_ids.iter().map(|asset_id| vault.open(*asset_id));
                 let partial_vault = PartialVault::with_witnesses(witnesses)
                     .expect("witnesses from one vault share a root");
@@ -356,7 +360,7 @@ impl MockRpcApi {
 
     /// Retrieves account vault updates in a given block range. This method tries to simulate
     /// pagination by limiting the number of blocks processed per request.
-    fn get_sync_account_vault_request(
+    fn get_sync_account_vault_requirements(
         &self,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1030,7 +1034,7 @@ impl NodeRpcClient for MockRpcApi {
 
         loop {
             let (page_chain_tip, page_block_number, page_patch) =
-                self.get_sync_account_vault_request(current_block_from, block_to, account_id);
+                self.get_sync_account_vault_requirements(current_block_from, block_to, account_id);
             vault_patch.merge(page_patch);
 
             if page_block_number >= target_block {

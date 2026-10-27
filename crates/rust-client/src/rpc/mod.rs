@@ -53,11 +53,11 @@ use domain::account::{
     AccountProof,
     AccountStorageMapDetails,
     AccountVaultDetails,
+    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapEntry,
     StorageMapFetch,
-    VaultFetch,
 };
 use domain::note::{FetchedNote, ResolvedSyncNotesBlock, SyncNotesBlock, SyncedNote};
 use domain::nullifier::NullifierUpdate;
@@ -267,7 +267,7 @@ pub trait NodeRpcClient: Send + Sync {
                 account_id,
                 GetAccountRequest::new()
                     .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_vault(AccountVaultRequirements::Always),
             )
             .await?;
 

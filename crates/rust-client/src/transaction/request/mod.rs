@@ -63,7 +63,6 @@ pub use builder::{
 };
 
 mod foreign;
-pub(crate) use foreign::account_proof_into_inputs;
 pub use foreign::{ForeignAccount, build_fpi_script};
 
 use crate::store::InputNoteRecord;

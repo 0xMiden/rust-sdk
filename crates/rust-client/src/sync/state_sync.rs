@@ -30,9 +30,9 @@ use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
     AccountStorageMapDetails,
+    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapFetch,
-    VaultFetch,
 };
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, ResolvedSyncNotesBlock, SyncedNote};
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
@@ -1186,7 +1186,7 @@ impl StateSync {
                 GetAccountRequest::new()
                     .at(AccountStateAt::Block(target_block_num))
                     .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_vault(AccountVaultRequirements::Always),
             )
             .await
             .map_err(ClientError::RpcError)?;
@@ -2076,7 +2076,7 @@ mod tests {
                 account_id,
                 GetAccountRequest::new()
                     .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_vault(AccountVaultRequirements::Always),
             )
             .await
             .unwrap()

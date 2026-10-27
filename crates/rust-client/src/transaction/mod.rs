@@ -103,9 +103,9 @@ use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
 use crate::rpc::domain::account::{
     AccountStorageRequirements,
+    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapFetch,
-    VaultFetch,
 };
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
@@ -1831,8 +1831,8 @@ pub(crate) async fn fetch_public_account_inputs(
     let vault = store
         .get_account_header(account_id)
         .await?
-        .map_or(VaultFetch::Always, |(header, ..)| {
-            VaultFetch::IfChangedFrom(header.vault_root())
+        .map_or(AccountVaultRequirements::Always, |(header, ..)| {
+            AccountVaultRequirements::IfChangedFrom(header.vault_root())
         });
 
     let (_block_num, account_proof) = rpc_api
@@ -1846,7 +1846,7 @@ pub(crate) async fn fetch_public_account_inputs(
         )
         .await?;
 
-    let account_inputs = request::account_proof_into_inputs(account_proof)?;
+    let account_inputs = account_proof.into_account_inputs()?;
 
     let _ = store
         .upsert_foreign_account_code(account_id, account_inputs.code().clone())

@@ -101,11 +101,7 @@ use tracing::info;
 use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
-use crate::rpc::domain::account::{
-    AccountRequirements,
-    AccountVaultRequirements,
-    GetAccountRequest,
-};
+use crate::rpc::domain::account::{AccountRequirements, GetAccountRequest, VaultFetch};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -1828,8 +1824,8 @@ pub(crate) async fn fetch_public_account_inputs(
         let vault = store
             .get_account_header(account_id)
             .await?
-            .map_or(AccountVaultRequirements::Always, |(header, ..)| {
-                AccountVaultRequirements::IfChangedFrom(header.vault_root())
+            .map_or(VaultFetch::Always, |(header, ..)| {
+                VaultFetch::IfChangedFrom(header.vault_root())
             });
         requirements = requirements.with_vault(vault);
     }

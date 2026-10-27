@@ -30,10 +30,10 @@ use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType}
 use miden_client::rpc::domain::account::{
     AccountRequirements,
     AccountStorageRequirements,
-    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
+    VaultFetch,
 };
 use miden_client::rpc::{AddTransactionError, EndpointError, GrpcClient, NodeRpcClient};
 use miden_client::store::{
@@ -1698,14 +1698,14 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     Ok(())
 }
 
-/// Tests that `get_account` returns vault details based on the [`AccountVaultRequirements`] policy.
+/// Tests that `get_account` returns vault details based on the [`VaultFetch`] policy.
 ///
 /// Creates a public faucet and wallet, mints tokens so the wallet holds assets, then calls
 /// `get_account` three times with different vault policies:
-/// - [`AccountVaultRequirements::Always`]: always fetches vault data.
-/// - [`AccountVaultRequirements::IfChangedFrom`] with the current root: commitment matches the node's state, so
+/// - [`VaultFetch::Always`]: always fetches vault data.
+/// - [`VaultFetch::IfChangedFrom`] with the current root: commitment matches the node's state, so
 ///   assets are empty.
-/// - [`AccountVaultRequirements::Skip`] (default): vault data not requested, so assets are empty.
+/// - [`VaultFetch::Skip`] (default): vault data not requested, so assets are empty.
 pub async fn test_get_account_returns_vault_details(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
     client.wait_for_node().await;
@@ -1718,13 +1718,12 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
 
     let rpc = client.test_rpc_api();
 
-    // Query 1: AccountVaultRequirements::Always — always fetches vault data
+    // Query 1: VaultFetch::Always — always fetches vault data
     let (_, proof) = rpc
         .get_account(
             wallet.id(),
-            GetAccountRequest::new().with_requirements(
-                AccountRequirements::new().with_vault(AccountVaultRequirements::Always),
-            ),
+            GetAccountRequest::new()
+                .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
         )
         .await?;
 
@@ -1740,14 +1739,13 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     };
     assert!(assets.contains(&minted), "expected the minted token in the vault");
 
-    // Query 2: AccountVaultRequirements::IfChangedFrom(actual_root) — commitment matches, node
-    // returns empty assets
+    // Query 2: VaultFetch::IfChangedFrom(actual_root) — commitment matches, node returns empty
+    // assets
     let (_, proof) = rpc
         .get_account(
             wallet.id(),
             GetAccountRequest::new().with_requirements(
-                AccountRequirements::new()
-                    .with_vault(AccountVaultRequirements::IfChangedFrom(vault_root)),
+                AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(vault_root)),
             ),
         )
         .await?;
@@ -1760,7 +1758,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     };
     assert!(assets.is_empty(), "expected empty assets when vault commitment matches");
 
-    // Query 3: AccountVaultRequirements::Skip — vault data not requested, node returns empty assets
+    // Query 3: VaultFetch::Skip — vault data not requested, node returns empty assets
     let (_, proof) = rpc.get_account(wallet.id(), GetAccountRequest::new()).await?;
 
     let (_, details) = proof.into_parts();

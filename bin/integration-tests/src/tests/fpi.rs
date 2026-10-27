@@ -677,8 +677,8 @@ async fn setup_fpi_vault_asset_read(
 }
 
 /// Tests that FPI can read an asset from an untracked foreign account's vault: the client requests
-/// the vault with `AccountVaultRequirements::Always`, so the asset list arrives with the account
-/// proof and is kept (after verifying it hashes to the header's vault root).
+/// the vault with `VaultFetch::Always`, so the asset list arrives with the account proof and is
+/// kept (after verifying it hashes to the header's vault root).
 pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;
@@ -705,9 +705,9 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
 }
 
 /// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the client
-/// requests `AccountVaultRequirements::IfChangedFrom` with a matching root, the node omits the
-/// asset list, the foreign inputs carry a root-only partial vault, and the asset read is served
-/// during execution by a per-asset witness from the local store.
+/// requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset list, the
+/// foreign inputs carry a root-only partial vault, and the asset read is served during execution by
+/// a per-asset witness from the local store.
 pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;

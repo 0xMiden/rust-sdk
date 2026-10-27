@@ -432,13 +432,13 @@ A request normally declares foreign accounts as `ForeignAccount::public` or `For
 
 ```rust
 use miden_client::rpc::domain::account::{
-    AccountRequirements, AccountVaultRequirements, StorageMapFetch,
+    AccountRequirements, StorageMapFetch, VaultFetch,
 };
 use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
 
 let requirements = AccountRequirements::new()
     .with_storage(StorageMapFetch::Slots(storage_requirements))
-    .with_vault(AccountVaultRequirements::Assets(asset_ids));
+    .with_vault(VaultFetch::Assets(asset_ids));
 let declarations = [ForeignAccount::public(foreign_account_id, requirements)?];
 let block_num = client.get_sync_height().await?;
 let inputs = client.get_foreign_account_inputs(declarations, block_num).await?;

@@ -35,10 +35,10 @@ use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
     AccountRequirements,
     AccountStorageRequirements,
-    AccountVaultRequirements,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
@@ -301,9 +301,10 @@ impl ClientDataStore {
                     GetAccountRequest::new()
                         .at(account_state_at)
                         .with_known_code(known_code.clone())
-                        .with_requirements(AccountRequirements::new().with_vault(
-                            AccountVaultRequirements::Assets(chunk.iter().copied().collect()),
-                        )),
+                        .with_requirements(
+                            AccountRequirements::new()
+                                .with_vault(VaultFetch::Assets(chunk.iter().copied().collect())),
+                        ),
                 )
                 .await
                 .map_err(|err| {

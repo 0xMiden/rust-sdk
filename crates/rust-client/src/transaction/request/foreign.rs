@@ -211,11 +211,7 @@ mod foreign_vault_tests {
     use miden_protocol::asset::FungibleAsset;
     use miden_testing::{Auth, MockChainBuilder};
 
-    use crate::rpc::domain::account::{
-        AccountRequirements,
-        AccountVaultRequirements,
-        GetAccountRequest,
-    };
+    use crate::rpc::domain::account::{AccountRequirements, GetAccountRequest, VaultFetch};
     use crate::rpc::{NodeRpcClient, RpcError};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -239,7 +235,7 @@ mod foreign_vault_tests {
                 account.id(),
                 GetAccountRequest::new().with_requirements(
                     AccountRequirements::new()
-                        .with_vault(AccountVaultRequirements::IfChangedFrom(committed_root)),
+                        .with_vault(VaultFetch::IfChangedFrom(committed_root)),
                 ),
             )
             .await
@@ -269,9 +265,8 @@ mod foreign_vault_tests {
         let (_block, proof) = rpc
             .get_account(
                 account.id(),
-                GetAccountRequest::new().with_requirements(
-                    AccountRequirements::new().with_vault(AccountVaultRequirements::Always),
-                ),
+                GetAccountRequest::new()
+                    .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
             )
             .await
             .unwrap();
@@ -291,9 +286,8 @@ mod foreign_vault_tests {
         let (_, proof) = rpc
             .get_account(
                 account.id(),
-                GetAccountRequest::new().with_requirements(
-                    AccountRequirements::new().with_vault(AccountVaultRequirements::Always),
-                ),
+                GetAccountRequest::new()
+                    .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
             )
             .await
             .unwrap();

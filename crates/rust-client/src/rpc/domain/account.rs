@@ -116,7 +116,7 @@ impl proto::rpc::get_account_response::AccountDetails {
         )?
         .validate_against_request(
             header.vault_root(),
-            requirements.vault().unwrap_or(&AccountVaultRequirements::Skip),
+            requirements.vault().unwrap_or(&VaultFetch::Skip),
         )?;
 
         Ok(AccountDetails {
@@ -610,11 +610,11 @@ pub enum AccountVaultDetails {
     /// The assets in the account's vault.
     ///
     /// The list is empty if the request skips the vault, or if the vault root is equal to the
-    /// commitment in [`AccountVaultRequirements::IfChangedFrom`]. Thus, an empty list does not show
-    /// that the vault is empty.
+    /// commitment in [`VaultFetch::IfChangedFrom`]. Thus, an empty list does not show that the
+    /// vault is empty.
     Assets(Vec<Asset>),
-    /// Proofs for the assets requested with [`AccountVaultRequirements::Assets`]. The proofs also
-    /// cover requested assets that are not in the vault.
+    /// Proofs for the assets requested with [`VaultFetch::Assets`]. The proofs also cover requested
+    /// assets that are not in the vault.
     Partial(PartialVault),
 }
 
@@ -644,13 +644,13 @@ impl AccountVaultDetails {
     /// Checks the vault details against the request they answer and against `vault_root`, the vault
     /// root in the account header.
     ///
-    /// The node can answer an [`AccountVaultRequirements::Assets`] request with the full vault
-    /// contents instead of proofs. This function converts that answer into a partial vault. Thus,
-    /// for an asset request, the result is always [`Partial`](Self::Partial).
+    /// The node can answer a [`VaultFetch::Assets`] request with the full vault contents instead of
+    /// proofs. This function converts that answer into a partial vault. Thus, for an asset request,
+    /// the result is always [`Partial`](Self::Partial).
     ///
     /// # Errors
-    /// - If the details hold proofs for a request other than [`AccountVaultRequirements::Assets`]
-    /// - If the vault has too many assets to answer an [`AccountVaultRequirements::Assets`] request
+    /// - If the details hold proofs for a request other tha [`VaultFetch::Assets`]
+    /// - If the vault has too many assets to answer a [`VaultFetch::Assets`] request
     /// - If the proofs or the full vault contents do not verify against `vault_root`
     /// - If the proofs do not cover all requested assets
     /// - If the proofs track an asset that was not requested
@@ -658,9 +658,9 @@ impl AccountVaultDetails {
     pub(crate) fn validate_against_request(
         self,
         vault_root: Word,
-        vault_requirements: &AccountVaultRequirements,
+        vault_request: &VaultFetch,
     ) -> Result<Self, RpcError> {
-        let AccountVaultRequirements::Assets(asset_ids) = vault_requirements else {
+        let VaultFetch::Assets(asset_ids) = vault_request else {
             if matches!(self, Self::Partial(_)) {
                 return Err(RpcError::InvalidResponse(
                     "the response contains vault proofs that were not requested".into(),
@@ -1022,7 +1022,7 @@ impl Deserializable for AccountStorageRequirements {
 
 /// Controls whether vault data is included in a `/GetAccount` response.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub enum AccountVaultRequirements {
+pub enum VaultFetch {
     /// Do not include vault data in the response.
     #[default]
     Skip,
@@ -1042,7 +1042,7 @@ pub enum AccountVaultRequirements {
     Assets(BTreeSet<AssetId>),
 }
 
-impl Serializable for AccountVaultRequirements {
+impl Serializable for VaultFetch {
     fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
         match self {
             Self::Skip => target.write_u8(0),
@@ -1059,7 +1059,7 @@ impl Serializable for AccountVaultRequirements {
     }
 }
 
-impl Deserializable for AccountVaultRequirements {
+impl Deserializable for VaultFetch {
     fn read_from<R: miden_tx::utils::serde::ByteReader>(
         source: &mut R,
     ) -> Result<Self, DeserializationError> {
@@ -1075,16 +1075,16 @@ impl Deserializable for AccountVaultRequirements {
     }
 }
 
-impl From<AccountVaultRequirements> for Option<VaultRequest> {
+impl From<VaultFetch> for Option<VaultRequest> {
     /// Encodes the policy as the request's `vault_request`: `None` skips the vault, the empty word
     /// (which no real vault root equals) always fetches it, a concrete commitment fetches it only
     /// when it differs, and a set of asset IDs requests proofs for those assets.
-    fn from(vault: AccountVaultRequirements) -> Self {
+    fn from(vault: VaultFetch) -> Self {
         let commitment = match vault {
-            AccountVaultRequirements::Skip => return None,
-            AccountVaultRequirements::Always => EMPTY_WORD,
-            AccountVaultRequirements::IfChangedFrom(commitment) => commitment,
-            AccountVaultRequirements::Assets(asset_ids) => {
+            VaultFetch::Skip => return None,
+            VaultFetch::Always => EMPTY_WORD,
+            VaultFetch::IfChangedFrom(commitment) => commitment,
+            VaultFetch::Assets(asset_ids) => {
                 return Some(VaultRequest::AssetIds(VaultAssetIds {
                     asset_ids: asset_ids.into_iter().map(Into::into).collect(),
                 }));
@@ -1162,7 +1162,7 @@ impl From<StorageMapFetch> for Option<StorageRequest> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccountRequirements {
     storage: StorageMapFetch,
-    vault: Option<AccountVaultRequirements>,
+    vault: Option<VaultFetch>,
 }
 
 impl AccountRequirements {
@@ -1181,7 +1181,7 @@ impl AccountRequirements {
 
     /// Sets the vault policy. This overrides the default for account fetching.
     #[must_use]
-    pub fn with_vault(mut self, vault: AccountVaultRequirements) -> Self {
+    pub fn with_vault(mut self, vault: VaultFetch) -> Self {
         self.vault = Some(vault);
         self
     }
@@ -1192,7 +1192,7 @@ impl AccountRequirements {
     }
 
     /// Returns the vault policy, or `None` to use the default for account fetching.
-    pub fn vault(&self) -> Option<&AccountVaultRequirements> {
+    pub fn vault(&self) -> Option<&VaultFetch> {
         self.vault.as_ref()
     }
 }
@@ -1284,8 +1284,8 @@ mod tests {
     use super::{
         AccountRequirements,
         AccountStorageRequirements,
-        AccountVaultRequirements,
         StorageMapFetch,
+        VaultFetch,
         proto,
     };
     use crate::alloc::string::ToString;
@@ -1314,12 +1314,12 @@ mod tests {
             let requirements = AccountRequirements::new().with_storage(storage);
             for requirements in [
                 requirements.clone(),
-                requirements.clone().with_vault(AccountVaultRequirements::Skip),
-                requirements.clone().with_vault(AccountVaultRequirements::Always),
+                requirements.clone().with_vault(VaultFetch::Skip),
+                requirements.clone().with_vault(VaultFetch::Always),
                 requirements
                     .clone()
-                    .with_vault(AccountVaultRequirements::IfChangedFrom(Word::from([2u32; 4]))),
-                requirements.with_vault(AccountVaultRequirements::Assets([asset_id].into())),
+                    .with_vault(VaultFetch::IfChangedFrom(Word::from([2u32; 4]))),
+                requirements.with_vault(VaultFetch::Assets([asset_id].into())),
             ] {
                 let decoded =
                     AccountRequirements::read_from_bytes(&requirements.to_bytes()).unwrap();
@@ -1341,13 +1341,7 @@ mod vault_details_tests {
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1,
     };
 
-    use super::{
-        AccountVaultDetails,
-        AccountVaultRequirements,
-        VaultAssetIds,
-        VaultRequest,
-        proto,
-    };
+    use super::{AccountVaultDetails, VaultAssetIds, VaultFetch, VaultRequest, proto};
 
     /// Returns a vault that holds one asset, that asset, and the ID of an asset that is not in the
     /// vault.
@@ -1370,8 +1364,8 @@ mod vault_details_tests {
         AccountVaultDetails::Partial(partial_vault(vault, asset_ids))
     }
 
-    fn asset_request(asset_ids: &[AssetId]) -> AccountVaultRequirements {
-        AccountVaultRequirements::Assets(asset_ids.iter().copied().collect())
+    fn asset_request(asset_ids: &[AssetId]) -> VaultFetch {
+        VaultFetch::Assets(asset_ids.iter().copied().collect())
     }
 
     #[test]
@@ -1379,8 +1373,7 @@ mod vault_details_tests {
         let (_, asset, absent) = vault_with_one_asset();
         let asset_ids = BTreeSet::from([asset.id(), absent]);
 
-        let request: Option<VaultRequest> =
-            AccountVaultRequirements::Assets(asset_ids.clone()).into();
+        let request: Option<VaultRequest> = VaultFetch::Assets(asset_ids.clone()).into();
 
         let expected = asset_ids.into_iter().map(Into::into).collect();
         assert_eq!(request, Some(VaultRequest::AssetIds(VaultAssetIds { asset_ids: expected })));
@@ -1433,7 +1426,7 @@ mod vault_details_tests {
         let (vault, asset, _) = vault_with_one_asset();
 
         let result = proof_details(&vault, &[asset.id()])
-            .validate_against_request(vault.root(), &AccountVaultRequirements::Always);
+            .validate_against_request(vault.root(), &VaultFetch::Always);
 
         assert!(result.is_err());
     }

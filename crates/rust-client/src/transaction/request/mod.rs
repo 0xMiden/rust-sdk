@@ -744,8 +744,8 @@ mod tests {
     use crate::rpc::domain::account::{
         AccountRequirements,
         AccountStorageRequirements,
-        AccountVaultRequirements,
         StorageMapFetch,
+        VaultFetch,
     };
     use crate::transaction::ForeignAccount;
 
@@ -905,7 +905,7 @@ mod tests {
                             StorageSlotName::new("demo::storage_slot").unwrap(),
                             &[StorageMapKey::new(Word::default())],
                         )])))
-                        .with_vault(AccountVaultRequirements::Assets(
+                        .with_vault(VaultFetch::Assets(
                             [FungibleAsset::new(faucet_id, 100).unwrap().id()].into(),
                         )),
                 )

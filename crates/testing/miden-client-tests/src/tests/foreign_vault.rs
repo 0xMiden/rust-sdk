@@ -9,8 +9,8 @@ use miden_client::rpc::RpcLimits;
 use miden_client::rpc::domain::account::{
     AccountRequirements,
     AccountStorageRequirements,
-    AccountVaultRequirements,
     StorageMapFetch,
+    VaultFetch,
 };
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -199,10 +199,9 @@ async fn fpi_asset_read_respects_vault_requirements() {
 
     for (requirements, expected_calls) in [
         (AccountRequirements::new(), 2),
-        (AccountRequirements::new().with_vault(AccountVaultRequirements::Skip), 2),
+        (AccountRequirements::new().with_vault(VaultFetch::Skip), 2),
         (
-            AccountRequirements::new()
-                .with_vault(AccountVaultRequirements::Assets([fixture.asset.id()].into())),
+            AccountRequirements::new().with_vault(VaultFetch::Assets([fixture.asset.id()].into())),
             1,
         ),
     ] {
@@ -235,7 +234,7 @@ async fn foreign_account_requirements_prefetch_storage_and_vault_proofs() {
             slot_name.clone(),
             &[key],
         )])))
-        .with_vault(AccountVaultRequirements::Assets([fixture.asset.id()].into()));
+        .with_vault(VaultFetch::Assets([fixture.asset.id()].into()));
     let declaration = ForeignAccount::public(fixture.foreign_account.id(), requirements).unwrap();
     let block_num = fixture.client.get_sync_height().await.unwrap();
     let calls_before = fixture.rpc_api.get_account_call_count();

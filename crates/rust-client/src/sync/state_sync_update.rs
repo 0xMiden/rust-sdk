@@ -26,7 +26,8 @@ impl From<&StateSyncUpdate> for SyncSummary {
     fn from(value: &StateSyncUpdate) -> Self {
         let new_public_note_ids = value
             .note_updates()
-            .updated_input_notes()
+            .input_notes()
+            .iter()
             .filter_map(|note_update| {
                 let note = note_update.inner();
                 if let NoteUpdateType::Insert = note_update.update_type() {
@@ -39,7 +40,8 @@ impl From<&StateSyncUpdate> for SyncSummary {
 
         let committed_note_ids: BTreeSet<NoteId> = value
             .note_updates()
-            .updated_input_notes()
+            .input_notes()
+            .iter()
             .filter_map(|note_update| {
                 let note = note_update.inner();
                 // `InsertCommitted` is a previously-tracked expected note that just committed, so
@@ -55,7 +57,7 @@ impl From<&StateSyncUpdate> for SyncSummary {
                     None
                 }
             })
-            .chain(value.note_updates().updated_output_notes().filter_map(|note_update| {
+            .chain(value.note_updates().output_notes().iter().filter_map(|note_update| {
                 let note = note_update.inner();
                 if let NoteUpdateType::Update = note_update.update_type() {
                     note.is_committed().then_some(note.id())

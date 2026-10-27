@@ -101,7 +101,8 @@ impl SqliteStore {
             // during catch-up, or invalidated): their tag no longer drives note sync. Metadata-less
             // records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
-                .updated_input_notes()
+                .input_notes()
+                .iter()
                 .filter_map(|note_update| {
                     let note = note_update.inner();
                     if note.is_inclusion_pending() {

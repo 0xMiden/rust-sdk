@@ -72,13 +72,8 @@ pub use note_record::{
     input_note_states,
 };
 
-mod note_update_tracker;
-pub use note_update_tracker::{
-    InputNoteUpdate,
-    NoteUpdateTracker,
-    NoteUpdateType,
-    OutputNoteUpdate,
-};
+mod note_updates;
+pub use note_updates::{InputNoteUpdate, NoteUpdateType, NoteUpdates, OutputNoteUpdate};
 
 mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};

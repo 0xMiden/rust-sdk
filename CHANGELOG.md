@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.0 (TBD)
+
+### Breaking Changes
+
+* [BREAKING][arch][rust] Updated protocol dependencies to `0.18`, Miden VM to `0.36`, `miden-debug` to `0.19` and `miden-node-proto-build` to `0.18.1`. The client uses the node `0.18` RPC and note transport APIs and requires a node `0.18` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+* [BREAKING][type][rust] Added the `GetAccountError::StorageSlotNotFound` and `GetAccountError::StorageSlotNotMap` variants for the node `0.18` `GetAccount` error codes 6 and 7. These codes previously parsed as `GetAccountError::Unknown` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+
 ## 0.17.5 (2026-10-21)
 
 ### Fixes

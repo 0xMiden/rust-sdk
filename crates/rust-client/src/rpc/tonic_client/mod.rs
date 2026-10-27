@@ -631,7 +631,7 @@ impl NodeRpcClient for GrpcClient {
         let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                asset_vault_commitment: vault.into(),
+                vault_request: vault.into(),
                 storage_request: storage.into(),
             })
         } else {

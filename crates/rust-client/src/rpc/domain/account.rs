@@ -20,7 +20,7 @@ use crate::rpc::{AccountStateAt, RpcError};
 use crate::rpc::domain::MissingFieldHelper;
 use crate::rpc::generated::rpc::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
 use crate::rpc::generated::rpc::get_account_request::account_detail_request::{
-    StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
+    StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest, VaultRequest,
 };
 use crate::rpc::generated::{self as proto};
 
@@ -796,16 +796,17 @@ pub enum VaultFetch {
     IfChangedFrom(Word),
 }
 
-impl From<VaultFetch> for Option<proto::primitives::Word> {
+impl From<VaultFetch> for Option<VaultRequest> {
     /// Encodes the policy as the request's `asset_vault_commitment`: `None` skips the vault, the
     /// empty word (which no real vault root equals) always fetches it, and a concrete commitment
     /// fetches only when it differs.
     fn from(vault: VaultFetch) -> Self {
-        match vault {
-            VaultFetch::Skip => None,
-            VaultFetch::Always => Some(EMPTY_WORD.into()),
-            VaultFetch::IfChangedFrom(commitment) => Some(commitment.into()),
-        }
+        let commitment = match vault {
+            VaultFetch::Skip => return None,
+            VaultFetch::Always => EMPTY_WORD,
+            VaultFetch::IfChangedFrom(commitment) => commitment,
+        };
+        Some(VaultRequest::AssetVaultCommitment(commitment.into()))
     }
 }
 

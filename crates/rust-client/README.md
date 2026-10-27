@@ -7,7 +7,7 @@ Rust library, which can be used by other project to programmatically interact wi
 In order to utilize the `miden-client` library, you can add the dependency to your project's `Cargo.toml` file:
 
 ````toml
-miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
+miden-client = { version = "0.18", features = ["tonic"] }
 ````
 
 Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations.

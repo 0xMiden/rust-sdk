@@ -297,6 +297,7 @@ impl GrpcNoteTransportClient {
         let request = FetchNotesRequest {
             tags: tags_int,
             cursor: cursor.parts().map(|(nonce, sequence)| FetchNotesCursor { nonce, sequence }),
+            sync_to: None,
         };
 
         let mut api = self.api().await?;

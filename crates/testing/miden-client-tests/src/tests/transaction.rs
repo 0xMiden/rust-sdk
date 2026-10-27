@@ -570,9 +570,9 @@ async fn deploy_fpi_fixture(client: &mut TestClient, rpc_api: &MockRpcApi) -> Fp
     }
 }
 
-/// Tests that the `ClientDataStore` lazy-loads foreign account inputs via RPC when the foreign
-/// account is not specified in the `TransactionRequestBuilder`, and that a foreign account declared
-/// as [`ForeignAccount::Prefetched`] is served without any RPC call.
+/// Tests that the `ClientDataStore` lazy-loads foreign account inputs when the foreign account is
+/// not specified in the `TransactionRequestBuilder`, and that a foreign account declared as
+/// [`ForeignAccount::Prefetched`] is served without any RPC call.
 #[tokio::test]
 async fn lazy_foreign_account_loading() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
@@ -582,39 +582,33 @@ async fn lazy_foreign_account_loading() {
     // Setup: Create a local wallet to execute the FPI transaction.
     let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
 
-    // Execute FPI transaction WITHOUT specifying foreign account.
-
-    // Verify no foreign account code is cached before the transaction.
-    let cached = client
-        .test_store()
-        .get_foreign_account_code(vec![foreign_account_id])
-        .await
-        .unwrap();
-    assert!(
-        cached.is_empty(),
-        "foreign account code should not be cached before lazy loading"
-    );
-
     // Build request WITHOUT specifying foreign accounts, lazy loading should handle it.
     let tx_request = TransactionRequestBuilder::new()
         .custom_script(fpi.tx_script.clone())
         .build()
         .unwrap();
 
-    // Execute the transaction. This should succeed because the data store will lazy-load the
-    // foreign account via RPC, and then lazy-load the storage map entries when the procedure reads
-    // from the map.
+    // Execute the transaction. The data store lazy-loads the foreign account: the client tracks it,
+    // so the store serves its state and the node serves only its witness. The storage map entries
+    // come from the store when the procedure reads from the map.
+    let calls_before = rpc_api.get_account_call_count();
     Box::pin(client.submit_new_transaction(local_wallet.id(), tx_request))
         .await
         .unwrap();
+    assert_eq!(
+        rpc_api.get_account_call_count() - calls_before,
+        1,
+        "a tracked foreign account is fetched once, for its witness"
+    );
 
-    // Verify the foreign account code is now cached in the store.
+    // The code of a tracked account lives in the account tables, so the foreign code cache stays
+    // empty.
     let cached = client
         .test_store()
         .get_foreign_account_code(vec![foreign_account_id])
         .await
         .unwrap();
-    assert_eq!(cached.len(), 1, "foreign account code should be cached after lazy loading");
+    assert!(cached.is_empty(), "a tracked account's code is not cached as foreign code");
 
     // A prefetched foreign account is served from the request, so the node is never asked for it:
     // the staged failure would abort the transaction if any account fetch happened.

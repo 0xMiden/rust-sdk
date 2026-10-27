@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
@@ -16,11 +16,11 @@ use miden_client::note::{
     NoteTag,
     NoteType,
 };
-use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
-use miden_client::utils::RwLock;
 use miden_client::store::{NoteFilter, Store};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
+use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
+use miden_client::utils::RwLock;
 use miden_client::{ClientError, async_trait};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::EMPTY_WORD;
@@ -211,7 +211,11 @@ impl NoteAcquisitionGate for CaptureGate {
         files.push(decoded);
         let count = files.len();
         drop(files);
-        if count == 3 { Err(NoteAcquisitionError::Rejected) } else { Ok(()) }
+        if count == 3 {
+            Err(NoteAcquisitionError::Rejected)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -226,7 +230,10 @@ async fn acquisition_preserves_candidates_and_does_not_invent_expected_note_meta
             details: note.details().clone(),
             sync_hint: NoteSyncHint::new(37.into(), NoteTag::new(41)),
         },
-        NoteFile::Committed { note, proof: available[0].inclusion_proof().clone() },
+        NoteFile::Committed {
+            note,
+            proof: available[0].inclusion_proof().clone(),
+        },
     ];
     let lengths: Vec<_> = files.iter().map(|file| file.to_bytes().len()).collect();
     let store = Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap());
@@ -234,18 +241,24 @@ async fn acquisition_preserves_candidates_and_does_not_invent_expected_note_meta
     let mut client = ClientBuilder::<FilesystemKeyStore>::new()
         .rpc(rpc)
         .store(store.clone())
-        .note_acquisition_gate(gate.clone(), NoteAcquisitionLimits {
-            max_notes: files.len(),
-            max_note_file_bytes: *lengths.iter().max().unwrap(),
-            max_total_note_file_bytes: lengths.iter().sum(),
-        })
+        .note_acquisition_gate(
+            gate.clone(),
+            NoteAcquisitionLimits {
+                max_notes: files.len(),
+                max_note_file_bytes: *lengths.iter().max().unwrap(),
+                max_total_note_file_bytes: lengths.iter().sum(),
+            },
+        )
         .build()
         .await
         .unwrap();
 
     let result = client.import_notes(&files).await;
 
-    assert!(matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError::Rejected))));
+    assert!(matches!(
+        result,
+        Err(ClientError::NoteAcquisition(NoteAcquisitionError::Rejected))
+    ));
     assert_eq!(*gate.files.lock().unwrap(), files);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
 }
@@ -257,7 +270,10 @@ async fn acquisition_count_and_item_limits_refuse_before_callback() {
     assert!(encoded_len > 0);
     for configured in [
         NoteAcquisitionLimits { max_notes: 0, ..limits() },
-        NoteAcquisitionLimits { max_note_file_bytes: encoded_len - 1, ..limits() },
+        NoteAcquisitionLimits {
+            max_note_file_bytes: encoded_len - 1,
+            ..limits()
+        },
         NoteAcquisitionLimits { max_total_note_file_bytes: 0, ..limits() },
     ] {
         let store = Arc::new(SqliteStore::new(create_test_store_path()).await.unwrap());
@@ -272,7 +288,10 @@ async fn acquisition_count_and_item_limits_refuse_before_callback() {
 
         let result = client.import_notes(&files).await;
 
-        assert!(matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))));
+        assert!(matches!(
+            result,
+            Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))
+        ));
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
         assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
     }
@@ -295,7 +314,12 @@ impl NoteAcquisitionGate for AcceptGate {
 async fn acquisition_aggregate_limit_preserves_import_state_after_an_earlier_acknowledgement() {
     let files = [
         NoteFile::NoteId(NoteId::from_raw(EMPTY_WORD)),
-        NoteFile::NoteId(NoteId::try_from_hex("0x0000000000000000000000000000000000000000000000000000000000000001").unwrap()),
+        NoteFile::NoteId(
+            NoteId::try_from_hex(
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+            )
+            .unwrap(),
+        ),
     ];
     let lengths: Vec<_> = files.iter().map(|file| file.to_bytes().len()).collect();
     let configured = NoteAcquisitionLimits {
@@ -315,7 +339,10 @@ async fn acquisition_aggregate_limit_preserves_import_state_after_an_earlier_ack
 
     let result = client.import_notes(&files).await;
 
-    assert!(matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))));
+    assert!(matches!(
+        result,
+        Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))
+    ));
     assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
     assert!(store.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
@@ -390,11 +417,14 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
         let mut client = super::mock_client_builder(rpc)
             .await
             .note_transport(Arc::new(MockNoteTransportApi::new(node)))
-            .note_acquisition_gate(gate.clone(), NoteAcquisitionLimits {
-                max_notes: 4,
-                max_note_file_bytes: 1024 * 1024,
-                max_total_note_file_bytes: 2 * 1024 * 1024,
-            })
+            .note_acquisition_gate(
+                gate.clone(),
+                NoteAcquisitionLimits {
+                    max_notes: 4,
+                    max_note_file_bytes: 1024 * 1024,
+                    max_total_note_file_bytes: 2 * 1024 * 1024,
+                },
+            )
             .build()
             .await
             .unwrap();
@@ -409,7 +439,10 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
             client.sync_note_transport().await.map(|_| ())
         };
 
-        assert!(matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError::RetentionFailed))));
+        assert!(matches!(
+            result,
+            Err(ClientError::NoteAcquisition(NoteAcquisitionError::RetentionFailed))
+        ));
         assert_eq!(store.get_note_transport_cursors().await.unwrap(), cursors_before);
         assert_eq!(store.get_input_notes(NoteFilter::All).await.unwrap(), notes_before);
         assert_eq!(*gate.sources.lock().unwrap(), [NoteAcquisitionSource::NoteTransport]);
@@ -422,9 +455,19 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
         }
         assert_ne!(store.get_note_transport_cursors().await.unwrap(), cursors_before);
         assert_eq!(
-            store.get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()])).await.unwrap().len(),
+            store
+                .get_input_notes(NoteFilter::DetailsCommitments(vec![note.details_commitment()]))
+                .await
+                .unwrap()
+                .len(),
             1
         );
-        assert!(gate.sources.lock().unwrap().iter().all(|source| *source == NoteAcquisitionSource::NoteTransport));
+        assert!(
+            gate.sources
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|source| *source == NoteAcquisitionSource::NoteTransport)
+        );
     }
 }

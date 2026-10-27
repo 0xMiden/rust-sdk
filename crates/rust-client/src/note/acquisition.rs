@@ -8,6 +8,8 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteMetadata, NoteTag, Nullifier};
 use thiserror::Error;
 
+use super::NoteFile;
+
 /// Limits on the note files delivered to an acquisition gate during one import.
 ///
 /// These limits bound delivered payloads. They do not bound allocations inside the existing
@@ -62,6 +64,52 @@ pub struct NoteAcquisition {
 }
 
 impl NoteAcquisition {
+    fn from_candidate(
+        file: &NoteFile,
+        note_file_bytes: Vec<u8>,
+        source: NoteAcquisitionSource,
+        batch_index: usize,
+        batch_count: usize,
+    ) -> Self {
+        let (variant, details_commitment, note_id, nullifier, metadata, tag, after_block_num) =
+            match file {
+                NoteFile::NoteId(id) => {
+                    (NoteAcquisitionVariant::NoteId, None, Some(*id), None, None, None, None)
+                },
+                NoteFile::ExpectedNote { details, sync_hint } => (
+                    NoteAcquisitionVariant::ExpectedNote,
+                    Some(details.commitment()),
+                    None,
+                    None,
+                    None,
+                    Some(sync_hint.tag()),
+                    Some(sync_hint.after_block_num()),
+                ),
+                NoteFile::Committed { note, .. } => (
+                    NoteAcquisitionVariant::Committed,
+                    Some(note.details_commitment()),
+                    Some(note.id()),
+                    Some(note.nullifier()),
+                    Some(*note.metadata()),
+                    Some(note.metadata().tag()),
+                    None,
+                ),
+            };
+        Self {
+            note_file_bytes,
+            variant,
+            source,
+            batch_index,
+            batch_count,
+            details_commitment,
+            note_id,
+            nullifier,
+            metadata,
+            tag,
+            after_block_num,
+        }
+    }
+
     /// Returns the canonical encoded note file.
     pub fn note_file_bytes(&self) -> &[u8] {
         &self.note_file_bytes
@@ -149,4 +197,30 @@ pub trait NoteAcquisitionGate: Send + Sync {
 pub(crate) struct NoteAcquisitionConfig {
     pub(crate) gate: Arc<dyn NoteAcquisitionGate>,
     pub(crate) limits: NoteAcquisitionLimits,
+}
+
+impl NoteAcquisitionConfig {
+    pub(crate) async fn acknowledge(
+        &self,
+        files: &[NoteFile],
+        source: NoteAcquisitionSource,
+    ) -> Result<(), NoteAcquisitionError> {
+        if files.len() > self.limits.max_notes {
+            return Err(NoteAcquisitionError::LimitExceeded);
+        }
+        let mut total_bytes = 0usize;
+        for (index, file) in files.iter().enumerate() {
+            let bytes = file.to_bytes();
+            if bytes.len() > self.limits.max_note_file_bytes {
+                return Err(NoteAcquisitionError::LimitExceeded);
+            }
+            total_bytes = total_bytes
+                .checked_add(bytes.len())
+                .filter(|total| *total <= self.limits.max_total_note_file_bytes)
+                .ok_or(NoteAcquisitionError::LimitExceeded)?;
+            let item = NoteAcquisition::from_candidate(file, bytes, source, index, files.len());
+            self.gate.before_import(&item).await?;
+        }
+        Ok(())
+    }
 }

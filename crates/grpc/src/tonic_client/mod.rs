@@ -183,13 +183,20 @@ pub struct GrpcClient {
     max_decoding_message_size: usize,
 }
 
+/// The cached transport and the genesis commitment pinned to it.
+///
+/// Both fields live under one lock, so the transport always carries the stored commitment.
 #[derive(Default)]
 struct ConnectionState {
+    /// The transport, once a connection is established.
     client: Option<ApiClient>,
+    /// The genesis commitment sent with every request, once known.
     genesis_commitment: Option<Word>,
 }
 
 impl ConnectionState {
+    /// Stores the genesis commitment and applies it to the transport, if any. The first stored
+    /// value is final; later calls do nothing.
     fn set_genesis_commitment(&mut self, commitment: Word) {
         if self.genesis_commitment.is_some() {
             return;
@@ -200,6 +207,8 @@ impl ConnectionState {
         }
     }
 
+    /// Replaces the transport with `client`, with the stored genesis commitment applied, and
+    /// returns a clone of it.
     fn install(&mut self, mut client: ApiClient) -> ApiClient {
         // Genesis can be set while the connection handshake is pending.
         if let Some(commitment) = self.genesis_commitment {

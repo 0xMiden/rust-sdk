@@ -20,7 +20,7 @@ pub(crate) mod api_client_wrapper {
     use tonic_web_wasm_client::options::FetchOptions;
 
     use super::{MetadataInterceptor, accept_header_interceptor};
-    use crate::generated::rpc::node_service_client::NodeServiceClient as ProtoClient;
+    use crate::generated::node::v1::node_service_client::NodeServiceClient as ProtoClient;
 
     pub type WasmClient = tonic_web_wasm_client::Client;
     pub type InnerClient = ProtoClient<InterceptedService<WasmClient, MetadataInterceptor>>;
@@ -114,7 +114,7 @@ pub(crate) mod api_client_wrapper {
     use tonic::transport::Channel;
 
     use super::{MetadataInterceptor, accept_header_interceptor};
-    use crate::generated::rpc::node_service_client::NodeServiceClient as ProtoClient;
+    use crate::generated::node::v1::node_service_client::NodeServiceClient as ProtoClient;
 
     pub type InnerClient = ProtoClient<InterceptedService<Channel, MetadataInterceptor>>;
     #[derive(Clone)]

@@ -18,17 +18,17 @@ pub(crate) fn nullifier_from_proto(
     Ok(Nullifier::from_raw(word))
 }
 
-impl TryFrom<&proto::rpc::sync_nullifiers_response::NullifierUpdate> for NullifierUpdate {
+impl TryFrom<&proto::node::v1::sync_nullifiers_response::NullifierUpdate> for NullifierUpdate {
     type Error = RpcConversionError;
 
     fn try_from(
-        value: &proto::rpc::sync_nullifiers_response::NullifierUpdate,
+        value: &proto::node::v1::sync_nullifiers_response::NullifierUpdate,
     ) -> Result<Self, Self::Error> {
         Ok(Self {
             nullifier: nullifier_from_proto(value.nullifier.clone().ok_or(
-                proto::rpc::sync_nullifiers_response::NullifierUpdate::missing_field(stringify!(
-                    nullifier
-                )),
+                proto::node::v1::sync_nullifiers_response::NullifierUpdate::missing_field(
+                    stringify!(nullifier),
+                ),
             )?)?,
             block_num: value.block_num.into(),
         })

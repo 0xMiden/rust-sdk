@@ -4,11 +4,11 @@
 use miden_client_core::errors::RpcConversionError;
 use miden_client_core::rpc::{RpcEndpoint, RpcLimits};
 
-use crate::generated::rpc as proto;
+use crate::generated as proto;
 
 /// Extracts a parameter limit from the proto response for a given endpoint and parameter name.
 fn get_param(
-    proto: &proto::GetLimitsResponse,
+    proto: &proto::node::v1::GetLimitsResponse,
     endpoint: RpcEndpoint,
     param: &'static str,
 ) -> Result<u32, RpcConversionError> {
@@ -35,10 +35,10 @@ fn get_param(
     Ok(*limit)
 }
 
-impl TryFrom<proto::GetLimitsResponse> for RpcLimits {
+impl TryFrom<proto::node::v1::GetLimitsResponse> for RpcLimits {
     type Error = RpcConversionError;
 
-    fn try_from(proto: proto::GetLimitsResponse) -> Result<Self, Self::Error> {
+    fn try_from(proto: proto::node::v1::GetLimitsResponse) -> Result<Self, Self::Error> {
         Ok(Self {
             note_ids_limit: get_param(&proto, RpcEndpoint::GetNotesById, "note_id")?,
             nullifiers_limit: get_param(&proto, RpcEndpoint::SyncNullifiers, "nullifier_prefix")?,
@@ -54,29 +54,29 @@ mod tests {
 
     #[test]
     fn rejects_zero_limits_from_rpc_response() {
-        let mut proto = proto::GetLimitsResponse::default();
+        let mut proto = proto::node::v1::GetLimitsResponse::default();
 
         proto.endpoints.insert(
             RpcEndpoint::GetNotesById.proto_name().into(),
-            proto::EndpointLimits {
+            proto::node::v1::EndpointLimits {
                 parameters: [(String::from("note_id"), 0)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncNullifiers.proto_name().into(),
-            proto::EndpointLimits {
+            proto::node::v1::EndpointLimits {
                 parameters: [(String::from("nullifier_prefix"), 1000)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncTransactions.proto_name().into(),
-            proto::EndpointLimits {
+            proto::node::v1::EndpointLimits {
                 parameters: [(String::from("account_id"), 1000)].into(),
             },
         );
         proto.endpoints.insert(
             RpcEndpoint::SyncNotes.proto_name().into(),
-            proto::EndpointLimits {
+            proto::node::v1::EndpointLimits {
                 parameters: [(String::from("note_tag"), 1000)].into(),
             },
         );

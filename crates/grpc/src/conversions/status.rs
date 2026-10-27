@@ -7,32 +7,32 @@ use miden_client_core::rpc::domain::status::{
     RpcStatusInfo,
 };
 
-use crate::generated::{self as proto};
+use crate::generated as proto;
 
 fn network_note_status_from_proto(value: i32) -> Result<NetworkNoteStatus, RpcError> {
-    let value: proto::rpc::NetworkNoteStatus = value
+    let value: proto::node::v1::NetworkNoteStatus = value
         .try_into()
         .map_err(|_| RpcError::ExpectedDataMissing("NetworkNoteStatus".to_string()))?;
 
     match value {
-        proto::rpc::NetworkNoteStatus::Unspecified => {
+        proto::node::v1::NetworkNoteStatus::Unspecified => {
             Err(RpcError::ExpectedDataMissing("NetworkNoteStatus".to_string()))
         },
-        proto::rpc::NetworkNoteStatus::Pending => Ok(NetworkNoteStatus::Pending),
-        proto::rpc::NetworkNoteStatus::NullifierInflight => {
+        proto::node::v1::NetworkNoteStatus::Pending => Ok(NetworkNoteStatus::Pending),
+        proto::node::v1::NetworkNoteStatus::NullifierInflight => {
             Ok(NetworkNoteStatus::NullifierInflight)
         },
-        proto::rpc::NetworkNoteStatus::Discarded => Ok(NetworkNoteStatus::Discarded),
-        proto::rpc::NetworkNoteStatus::NullifierCommitted => {
+        proto::node::v1::NetworkNoteStatus::Discarded => Ok(NetworkNoteStatus::Discarded),
+        proto::node::v1::NetworkNoteStatus::NullifierCommitted => {
             Ok(NetworkNoteStatus::NullifierCommitted)
         },
     }
 }
 
-impl TryFrom<proto::rpc::GetNetworkNoteStatusResponse> for NetworkNoteStatusInfo {
+impl TryFrom<proto::node::v1::GetNetworkNoteStatusResponse> for NetworkNoteStatusInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::GetNetworkNoteStatusResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::GetNetworkNoteStatusResponse) -> Result<Self, Self::Error> {
         let status = network_note_status_from_proto(value.status)?;
         let last_error = value.last_error;
         let attempt_count = value.attempt_count;
@@ -47,10 +47,10 @@ impl TryFrom<proto::rpc::GetNetworkNoteStatusResponse> for NetworkNoteStatusInfo
     }
 }
 
-impl TryFrom<proto::rpc::StatusResponse> for RpcStatusInfo {
+impl TryFrom<proto::node::v1::StatusResponse> for RpcStatusInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::StatusResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::StatusResponse) -> Result<Self, Self::Error> {
         let genesis_commitment = value.genesis_commitment.map(TryInto::try_into).transpose()?;
         Ok(Self {
             version: value.version,
@@ -61,8 +61,8 @@ impl TryFrom<proto::rpc::StatusResponse> for RpcStatusInfo {
     }
 }
 
-impl From<proto::rpc::BlockProducerStatus> for BlockProducerStatusInfo {
-    fn from(value: proto::rpc::BlockProducerStatus) -> Self {
+impl From<proto::node::v1::BlockProducerStatus> for BlockProducerStatusInfo {
+    fn from(value: proto::node::v1::BlockProducerStatus) -> Self {
         Self {
             version: value.version,
             status: value.status,
@@ -72,8 +72,8 @@ impl From<proto::rpc::BlockProducerStatus> for BlockProducerStatusInfo {
     }
 }
 
-impl From<proto::rpc::MempoolStats> for MempoolStatsInfo {
-    fn from(value: proto::rpc::MempoolStats) -> Self {
+impl From<proto::node::v1::MempoolStats> for MempoolStatsInfo {
+    fn from(value: proto::node::v1::MempoolStats) -> Self {
         Self {
             unbatched_transactions: value.unbatched_transactions,
             proposed_batches: value.proposed_batches,

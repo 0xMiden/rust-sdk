@@ -1,4 +1,7 @@
 //! Default gRPC implementation of the `miden-client-core` `NodeRpcClient` trait.
+//!
+//! [`GrpcClient::call`] calls one endpoint of a specific node RPC API version, such as the types in
+//! [`v1`].
 
 mod conversions;
 mod endpoint;

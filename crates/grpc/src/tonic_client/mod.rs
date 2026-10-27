@@ -51,6 +51,9 @@ const DEFAULT_MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
 
 /// Client for the Node RPC API using gRPC.
 ///
+/// Every call checks the node response against the request, and rejects a mismatch with
+/// [`RpcError::InvalidResponse`]. See [`GrpcClient::call`].
+///
 /// If the `tonic` feature is enabled, this client will use a `tonic::transport::Channel` to
 /// communicate with the node. In this case the connection will be established lazily when the first
 /// request is made. If the `web-tonic` feature is enabled, this client will use a

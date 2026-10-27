@@ -174,7 +174,7 @@ cargo build --release -p test-node-genesis --bin gen-genesis
 echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICATION_BASE_FEE)"
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
-mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
+mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder" "$DATA/funding-service"
 MIDEN_VERIFICATION_BASE_FEE="$VERIFICATION_BASE_FEE" "$GEN_GENESIS" "$DATA/genesis-config"
 # Cleared up front so a fee-free run cannot leave a previous run's funders behind, and re-exposed
 # below once `miden-validator genesis` has generated them.
@@ -217,6 +217,12 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
+    FUNDING_ACCOUNT_ID="$(sed -n 's/^Funding account id: //p' "$LOG_DIR/bootstrap.log")"
+    "$BIN/miden-funding-service" bootstrap --data-directory "$DATA/funding-service" \
+        --account-id "$FUNDING_ACCOUNT_ID" --genesis "$DATA/genesis/genesis.dat" \
+        >>"$LOG_DIR/bootstrap.log" 2>&1
+fi
 NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
 echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
 
@@ -326,7 +332,8 @@ if [ "$ACCOUNT_ALLOWLIST" = "1" ]; then
         --rpc.url "http://$RPC" \
         --tx-prover.url "http://$PROVER" \
         --tx-prover.timeout "$PROVER_TIMEOUT" \
-        --account-file "$DATA/genesis-config/funding_account.mac" \
+        --data-directory "$DATA/funding-service" \
+        --signing-key-file "$DATA/genesis-config/funding_account.key" \
         --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
         --poll-interval 250ms
 fi

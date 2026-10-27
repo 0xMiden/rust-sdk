@@ -529,7 +529,7 @@ where
         // The minimal request: no vault, no storage map entries, only the witness is wanted.
         let (proof_block_num, proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(chain_tip)))
             .await?;
 
         if proof_block_num != chain_tip {

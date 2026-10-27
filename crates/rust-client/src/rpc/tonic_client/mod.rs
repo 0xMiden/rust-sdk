@@ -32,12 +32,7 @@ use miden_tx::utils::sync::RwLock;
 use tonic::Status;
 use tracing::{info, warn};
 
-use super::domain::account::{
-    AccountProof,
-    AccountStorageRequirements,
-    GetAccountRequest,
-    StorageMapFetch,
-};
+use super::domain::account::{AccountProof, GetAccountRequest};
 use super::domain::note::{FetchedNote, SyncNotesBlock};
 use super::domain::nullifier::NullifierUpdate;
 use super::encryption::{
@@ -609,10 +604,9 @@ impl NodeRpcClient for GrpcClient {
     /// - There is an error during storage deserialization.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let GetAccountRequest { storage, at, known_code, vault } = request;
+        let GetAccountRequest { account_id, fetch, at, known_code } = request;
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
         let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();
@@ -620,19 +614,13 @@ impl NodeRpcClient for GrpcClient {
             known_codes_by_commitment.insert(account_code.commitment(), account_code);
         }
 
-        // We need the requested slots to interpret the node response.
-        let requirements = match storage.clone() {
-            StorageMapFetch::Slots(reqs) => reqs,
-            StorageMapFetch::Skip | StorageMapFetch::All => AccountStorageRequirements::default(),
-        };
-
         // Only request details for accounts with public state (Public or Network), passing the
         // known code commitment so the node can skip re-sending code we already hold.
         let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                vault_request: vault.clone().into(),
-                storage_request: storage.into(),
+                vault_request: fetch.vault().clone().into(),
+                storage_request: fetch.storage().clone().into(),
             })
         } else {
             None
@@ -673,7 +661,7 @@ impl NodeRpcClient for GrpcClient {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &requirements, &vault)?;
+                .into_domain(&known_codes_by_commitment, &fetch)?;
 
             Some(details)
         } else {

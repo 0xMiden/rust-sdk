@@ -101,12 +101,7 @@ use tracing::info;
 use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
-use crate::rpc::domain::account::{
-    AccountStorageRequirements,
-    GetAccountRequest,
-    StorageMapFetch,
-    VaultFetch,
-};
+use crate::rpc::domain::account::{AccountFetch, GetAccountRequest};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -1230,12 +1225,12 @@ where
 
         for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
-                ForeignAccount::Public(account_id, storage_requirements) => {
+                ForeignAccount::Public(account_id, fetch) => {
                     fetch_public_account_inputs(
                         &self.store,
                         &self.rpc_api,
                         account_id,
-                        storage_requirements,
+                        fetch,
                         AccountStateAt::Block(block_num),
                     )
                     .await?
@@ -1277,7 +1272,7 @@ where
 
         let (_, account_proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(block_num)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(block_num)))
             .await?;
 
         Ok(account_proof.into_parts().0)
@@ -1771,32 +1766,51 @@ fn validate_basic_account_request(
     Ok(())
 }
 
-/// Builds a foreign account's [`AccountInputs`] entirely from the store, or returns `None` when it
-/// cannot.
+/// Builds a foreign account's [`AccountInputs`] from the state in the store, or returns `None` when
+/// the store does not hold the account at the reference block.
 ///
-/// Storage maps and vault assets are carried root-only, and resolve against the store during
-/// execution. A caller's [`AccountStorageRequirements`] therefore become per-key lookups against
-/// the store rather than one prefetched batch.
+/// The store holds a tracked account at the sync height. The witness comes from the store when
+/// [`Client::track_account_witness`] cached one, and from the node otherwise. Storage maps and
+/// vault assets are carried root-only, and resolve against the store during execution.
 ///
-/// Requires the local header to hash to the commitment the witness proves. Otherwise the local
-/// state is not the one the chain committed at that block, and the kernel would reject it.
+/// Requires the local state to hash to the commitment the witness proves. Otherwise the local state
+/// is not the one the chain committed at that block, and the kernel would reject it.
 async fn local_account_inputs(
     store: &Arc<dyn Store>,
+    rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
     account_state_at: AccountStateAt,
 ) -> Result<Option<AccountInputs>, ClientError> {
-    // The store only holds witnesses at the sync height.
-    if let AccountStateAt::Block(block_num) = account_state_at
-        && block_num == store.get_sync_height().await?
-        && let Some(witness) = store.get_account_witness(account_id).await?
-        && let Some(record) = store.get_minimal_partial_account(account_id).await?
-    {
-        // Derived from the same read that gets handed to the kernel, so what is checked and what is
-        // used cannot drift apart.
-        let account: PartialAccount = record.try_into()?;
-        if account.to_commitment() == witness.state_commitment() {
-            return Ok(Some(AccountInputs::new(account, witness)));
-        }
+    // The store only holds account state and witnesses at the sync height.
+    let AccountStateAt::Block(block_num) = account_state_at else {
+        return Ok(None);
+    };
+    if block_num != store.get_sync_height().await? {
+        return Ok(None);
+    }
+    let Some(record) = store.get_minimal_partial_account(account_id).await? else {
+        return Ok(None);
+    };
+    // Derived from the same read that gets handed to the kernel, so what is checked and what is
+    // used cannot drift apart.
+    let account: PartialAccount = record.try_into()?;
+
+    let witness = if let Some(witness) = store.get_account_witness(account_id).await? {
+        witness
+    } else {
+        // The store already holds the code, so the node omits it from the response.
+        let (_, account_proof) = rpc_api
+            .get_account(
+                GetAccountRequest::new(account_id)
+                    .at(account_state_at)
+                    .with_known_code(Some(account.code().clone())),
+            )
+            .await?;
+        account_proof.into_parts().0
+    };
+
+    if account.to_commitment() == witness.state_commitment() {
+        return Ok(Some(AccountInputs::new(account, witness)));
     }
 
     Ok(None)
@@ -1810,43 +1824,34 @@ async fn local_account_inputs(
 /// inputs; reads from them resolve lazily as per-key witnesses during execution.
 ///
 /// # Errors
-/// Fails if the account is private and has to be fetched: the RPC does not return account details
-/// for them, causing [`TransactionRequestError::ForeignAccountDataMissing`].
+/// Fails if account data cannot be fetched or converted to transaction inputs.
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
-    storage_requirements: AccountStorageRequirements,
+    fetch: AccountFetch,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
-    if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
+    // Boxed because the local inputs hold the account state across the witness request.
+    if let Some(inputs) =
+        Box::pin(local_account_inputs(store, rpc_api, account_id, account_state_at)).await?
+    {
         return Ok(inputs);
     }
 
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
-    // Tracked accounts skip the asset list when unchanged; untracked accounts fetch it in full so
-    // asset reads need no execution-time RPC.
-    let vault = store
-        .get_account_header(account_id)
-        .await?
-        .map_or(VaultFetch::Always, |(header, ..)| {
-            VaultFetch::IfChangedFrom(header.vault_root())
-        });
-
     let (_block_num, account_proof) = rpc_api
         .get_account(
-            account_id,
-            GetAccountRequest::new()
-                .with_storage(StorageMapFetch::Slots(storage_requirements.clone()))
+            GetAccountRequest::new(account_id)
+                .with_fetch(fetch)
                 .at(account_state_at)
-                .with_known_code(known_code)
-                .with_vault(vault),
+                .with_known_code(known_code),
         )
         .await?;
 
-    let account_inputs = request::account_proof_into_inputs(account_proof)?;
+    let account_inputs = account_proof.into_account_inputs()?;
 
     let _ = store
         .upsert_foreign_account_code(account_id, account_inputs.code().clone())

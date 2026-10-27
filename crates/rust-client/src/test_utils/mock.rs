@@ -757,9 +757,9 @@ impl NodeRpcClient for MockRpcApi {
     /// `oversize_threshold` come back with truncation flags set.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        let account_id = request.account_id;
         self.get_account_calls.fetch_add(1, Ordering::Relaxed);
 
         if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {
@@ -790,7 +790,9 @@ impl NodeRpcClient for MockRpcApi {
             // `All` enumerates the account's map slots directly — the mock can introspect the
             // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request. A slot
             // maps to the keys requested for it, empty meaning "every entry".
-            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match &request.storage
+            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match request
+                .fetch
+                .storage()
             {
                 StorageMapFetch::Skip => Vec::new(),
                 StorageMapFetch::Slots(reqs) => {
@@ -848,7 +850,7 @@ impl NodeRpcClient for MockRpcApi {
                 map_details,
             };
 
-            let vault_details = self.vault_details(account.vault(), &request.vault);
+            let vault_details = self.vault_details(account.vault(), request.fetch.vault());
 
             Some(AccountDetails {
                 header: account.into(),

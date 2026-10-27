@@ -50,6 +50,7 @@ use core::fmt;
 
 use domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
     AccountStorageMapDetails,
     AccountVaultDetails,
@@ -264,10 +265,11 @@ pub trait NodeRpcClient: Send + Sync {
         // vault, with the storage layout discovered server-side.
         let (block_number, mut proof) = self
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(VaultFetch::Always),
+                ),
             )
             .await?;
 
@@ -433,7 +435,6 @@ pub trait NodeRpcClient: Send + Sync {
     /// - If the account isn't found in the network
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 

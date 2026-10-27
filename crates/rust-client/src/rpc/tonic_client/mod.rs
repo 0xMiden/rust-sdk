@@ -265,7 +265,7 @@ impl GrpcClient {
     /// genesis commitment.
     async fn connect(&self) -> Result<(), RpcError> {
         let genesis_commitment = *self.genesis_commitment.read();
-        let new_client = ApiClient::new_client(
+        let mut new_client = ApiClient::new_client(
             self.endpoint.clone(),
             self.timeout_ms,
             genesis_commitment,
@@ -273,7 +273,12 @@ impl GrpcClient {
             self.max_decoding_message_size,
         )
         .await?;
+        // Keep this lock until the client is published. The setter uses the same lock order.
+        let genesis_commitment = self.genesis_commitment.read();
         let mut client = self.client.write();
+        if let Some(commitment) = *genesis_commitment {
+            new_client.set_genesis_commitment(commitment);
+        }
         client.replace(new_client);
 
         Ok(())
@@ -357,14 +362,12 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn set_genesis_commitment(&self, commitment: Word) -> Result<(), RpcError> {
-        // Check if already set before doing anything else
-        if self.genesis_commitment.read().is_some() {
-            // Genesis commitment is already set, ignoring the new value.
+        // Pin the first commitment until the cached client has the same metadata.
+        let mut genesis_commitment = self.genesis_commitment.write();
+        if genesis_commitment.is_some() {
             return Ok(());
         }
-
-        // Store the commitment for future connections
-        self.genesis_commitment.write().replace(commitment);
+        genesis_commitment.replace(commitment);
 
         // If a client is already connected, update it to use the new genesis commitment. If not
         // connected, the commitment will be used when connect() is called.

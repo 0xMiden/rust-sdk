@@ -136,7 +136,7 @@ impl NoteAcquisitionGate for RejectSecondGate {
 
 #[tokio::test]
 async fn acquisition_rejection_of_second_item_precedes_all_import_writes() {
-    let rpc = Arc::new(super::prebuilt_rpc_api().await);
+    let rpc = Arc::new(MockRpcApi::new(Box::pin(super::create_prebuilt_mock_chain()).await));
     let files: Vec<_> = rpc
         .get_public_available_notes()
         .iter()
@@ -228,7 +228,7 @@ impl NoteAcquisitionGate for CaptureGate {
 
 #[tokio::test]
 async fn acquisition_preserves_candidates_and_does_not_invent_expected_note_metadata() {
-    let rpc = Arc::new(super::prebuilt_rpc_api().await);
+    let rpc = Arc::new(MockRpcApi::new(Box::pin(super::create_prebuilt_mock_chain()).await));
     let available = rpc.get_public_available_notes();
     let note = available[0].note().unwrap().clone();
     let files = vec![
@@ -358,7 +358,7 @@ async fn acquisition_aggregate_limit_preserves_import_state_after_an_earlier_ack
 
 #[tokio::test]
 async fn acquisition_client_opt_in_imports_after_successful_acknowledgement() {
-    let rpc = Arc::new(super::prebuilt_rpc_api().await);
+    let rpc = Arc::new(MockRpcApi::new(Box::pin(super::create_prebuilt_mock_chain()).await));
     let available = rpc.get_public_available_notes();
     let files = [NoteFile::Committed {
         note: available[0].note().unwrap().clone(),
@@ -407,7 +407,8 @@ impl NoteAcquisitionGate for ToggleGate {
 #[tokio::test]
 async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_sync() {
     for combined_sync in [false, true] {
-        let rpc = Arc::new(super::prebuilt_rpc_api().await);
+        let (builder, rpc_api) = Box::pin(super::create_test_client_builder()).await;
+        let rpc = Arc::new(rpc_api);
         let sender = rpc.get_public_available_notes()[0].note().unwrap().metadata().sender();
         let tag = NoteTag::new(1948);
         let note = NoteBuilder::new(sender, ChaCha20Rng::seed_from_u64(1948))
@@ -421,8 +422,8 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
             allow: AtomicBool::new(false),
             sources: Mutex::new(Vec::new()),
         });
-        let mut client = super::mock_client_builder(rpc)
-            .await
+        let mut client = builder
+            .rpc(rpc)
             .note_transport(Arc::new(MockNoteTransportApi::new(transport_node)))
             .note_acquisition_gate(
                 gate.clone(),

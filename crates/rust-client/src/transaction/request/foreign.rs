@@ -27,6 +27,7 @@ use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
     AccountStorageRequirements,
+    AccountVaultDetails,
     StorageMapEntries,
 };
 
@@ -263,12 +264,17 @@ pub(crate) fn account_proof_into_inputs(
             storage_map_proofs.push(partial_storage);
         }
 
-        // Keep the asset list only if it hashes to the header's vault root; otherwise carry the
+        // Keep the vault data only if it hashes to the header's vault root. Otherwise carry the
         // root alone and let asset reads resolve lazily as per-asset witnesses.
-        let vault = AssetVault::new(&vault_details.assets)
-            .ok()
-            .filter(|vault| vault.root() == account_header.vault_root())
-            .map_or_else(|| PartialVault::new(account_header.vault_root()), PartialVault::new_full);
+        let vault = match vault_details {
+            AccountVaultDetails::Assets(assets) => {
+                AssetVault::new(&assets).ok().map(PartialVault::new_full)
+            },
+            AccountVaultDetails::Partial(partial_vault) => Some(partial_vault),
+            AccountVaultDetails::TooManyAssets => None,
+        }
+        .filter(|vault| vault.root() == account_header.vault_root())
+        .unwrap_or_else(|| PartialVault::new(account_header.vault_root()));
 
         return Ok(AccountInputs::new(
             PartialAccount::new(
@@ -349,7 +355,7 @@ mod foreign_vault_tests {
 
         let details = proof.vault_details().expect("public account must carry vault details");
         assert!(
-            details.assets.is_empty(),
+            details.assets().is_some_and(<[_]>::is_empty),
             "the node omits the asset list when the sent root matches"
         );
 

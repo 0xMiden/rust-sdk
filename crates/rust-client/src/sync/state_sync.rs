@@ -1209,7 +1209,7 @@ impl StateSync {
             Ordering::Greater => {},
         }
 
-        let vault_oversized = details.vault_details.too_many_assets;
+        let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
             .storage_details
             .map_details

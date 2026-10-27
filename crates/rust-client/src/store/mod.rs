@@ -616,30 +616,30 @@ pub trait Store: Send + Sync {
 
     /// Gets the unused aggregate note transport cursor.
     ///
-    /// The client stores a cursor for each tag. If the aggregate cursor does not exist, this
-    /// returns an initial cursor.
-    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    /// The client does not read this value. Returns `None` if the aggregate cursor does not exist
+    /// or holds the initial cursor.
+    #[deprecated(since = "0.17.1", note = "note transport does not read this setting")]
     #[allow(deprecated)]
-    async fn get_note_transport_cursor(&self) -> Result<NoteTransportCursor, StoreError> {
+    async fn get_note_transport_cursor(&self) -> Result<Option<NoteTransportCursor>, StoreError> {
         let Some(cursor_bytes) = self
             .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSOR_STORE_SETTING.into())
             .await?
         else {
-            return Ok(NoteTransportCursor::init());
+            return Ok(None);
         };
-        NoteTransportCursor::read_from_bytes(&cursor_bytes).map_err(Into::into)
+        Option::<NoteTransportCursor>::read_from_bytes(&cursor_bytes).map_err(Into::into)
     }
 
     /// Updates the unused aggregate note transport cursor.
     ///
-    /// The client stores a cursor for each tag and does not read this value.
-    #[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+    /// The client does not read this value.
+    #[deprecated(since = "0.17.1", note = "note transport does not read this setting")]
     #[allow(deprecated)]
     async fn update_note_transport_cursor(
         &self,
         cursor: NoteTransportCursor,
     ) -> Result<(), StoreError> {
-        let cursor_bytes = cursor.to_bytes();
+        let cursor_bytes = Some(cursor).to_bytes();
         self.set_setting(
             SettingScope::Client,
             NOTE_TRANSPORT_CURSOR_STORE_SETTING.into(),

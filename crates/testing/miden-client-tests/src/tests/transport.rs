@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ use miden_client::note::{
     PartialNoteMetadata,
 };
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_CURSORS_KEY,
+    NOTE_TRANSPORT_SYNC_STATE_KEY,
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
@@ -241,7 +241,7 @@ async fn transport_repeated_delivery_repairs_incomplete_records() {
         client.test_store().upsert_input_notes(&[record]).await.unwrap();
         client
             .test_store()
-            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into())
+            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_SYNC_STATE_KEY.into())
             .await
             .unwrap();
 
@@ -301,7 +301,7 @@ async fn transport_cursor_pagination() {
     assert_eq!(notes.len(), 2, "should have 2 notes total after second sync");
 }
 
-/// Fetches all tag sources in bounded requests and resets unreadable cursors.
+/// Fetches all tag sources in bounded requests and resets an unreadable sync state.
 #[tokio::test]
 async fn transport_fetch_chunks_tracked_tags() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -310,7 +310,7 @@ async fn transport_fetch_chunks_tracked_tags() {
     let (first, second) = two_transport_chunks(&mut recipient).await;
     recipient
         .test_store()
-        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), vec![0xff])
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_SYNC_STATE_KEY.into(), vec![0xff])
         .await
         .unwrap();
     for (index, tag) in [first[0], first[1], second[0]].into_iter().enumerate() {
@@ -330,21 +330,21 @@ async fn transport_fetch_chunks_tracked_tags() {
 
     recipient.fetch_private_notes().await.unwrap();
 
+    let head = transport_cursor(3);
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
+    assert_eq!(transport.fetch_bounds(), [None, Some(head)]);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, head);
+    assert_eq!(covered.len(), 129);
 
     recipient.fetch_private_notes().await.unwrap();
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.len(), 129);
-    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 2)));
-    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 3));
-    recipient.fetch_private_notes().await.unwrap();
-    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128, 1, 128, 1]);
+    assert_eq!(transport.fetch_tag_counts(), [128, 1, 128, 1]);
 }
 
-/// Adding a tag starts that tag from the initial cursor without changing existing tag cursors.
+/// Adding a tag starts that tag from the first retained note and keeps the stored cursor.
 #[tokio::test]
-async fn transport_adding_tag_preserves_existing_cursors() {
+async fn transport_adding_tag_preserves_cursor() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let mut recipient = create_test_client_transport(mock_node.clone()).await;
     let existing_tag = NoteTag::new(20_001);
@@ -355,21 +355,22 @@ async fn transport_adding_tag_preserves_existing_cursors() {
     seed_transport_note(&mock_node, existing_tag, 2);
 
     recipient.fetch_private_notes().await.unwrap();
-    let cursor = NoteTransportCursor::from_parts(1, 2);
-    assert_eq!(stored_note_transport_cursors(&mut recipient).await[&existing_tag], cursor);
+    let state = |covered: &[NoteTag]| {
+        Some((transport_cursor(2), covered.iter().copied().collect::<BTreeSet<_>>()))
+    };
+    assert_eq!(stored_note_transport_state(&mut recipient).await, state(&[existing_tag]));
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
 
     recipient.add_note_tag(added_tag).await.unwrap();
     recipient.fetch_private_notes().await.unwrap();
 
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors[&existing_tag], cursor);
-    assert_eq!(cursors[&added_tag], NoteTransportCursor::from_parts(1, 1));
+    let both = state(&[existing_tag, added_tag]);
+    assert_eq!(stored_note_transport_state(&mut recipient).await, both);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
 
     recipient.remove_note_tag(added_tag).await.unwrap();
     recipient.fetch_private_notes().await.unwrap();
-    assert!(stored_note_transport_cursors(&mut recipient).await.contains_key(&added_tag));
+    assert_eq!(stored_note_transport_state(&mut recipient).await, both);
 
     // The imported note still tracks the tag until its note-source record is removed.
     recipient
@@ -382,43 +383,40 @@ async fn transport_adding_tag_preserves_existing_cursors() {
         .unwrap();
     recipient.fetch_private_notes().await.unwrap();
 
-    let cursors_after_removal = stored_note_transport_cursors(&mut recipient).await;
-    assert!(!cursors_after_removal.contains_key(&added_tag));
-    assert_eq!(cursors_after_removal[&existing_tag], cursor);
+    assert_eq!(stored_note_transport_state(&mut recipient).await, state(&[existing_tag]));
 }
 
-/// Merges chunks after tag removal. The merged request starts from the lowest cursor, and the notes
-/// it delivers again do not create duplicate records.
+/// Merges chunks after tag removal. The merged request delivers no note again.
 #[tokio::test]
-async fn transport_removing_tag_merges_requests_and_drops_duplicates() {
+async fn transport_removing_tag_merges_requests() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
     let (first, second) = two_transport_chunks(&mut recipient).await;
-    // Each group stops at its own last note, so the two groups end at different positions.
     seed_transport_note(&mock_node, first[1], 1);
     seed_transport_note(&mock_node, second[0], 2);
 
     recipient.fetch_private_notes().await.unwrap();
 
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.get(&first[1]), Some(&NoteTransportCursor::from_parts(1, 1)));
-    assert_eq!(cursors.get(&second[0]), Some(&NoteTransportCursor::from_parts(1, 2)));
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, transport_cursor(2));
+    assert_eq!(covered.len(), 129);
 
     recipient.remove_note_tag(first[0]).await.unwrap();
-    recipient.fetch_private_notes().await.unwrap();
+    assert!(recipient.sync_note_transport().await.unwrap().is_empty());
 
     assert_eq!(transport.fetch_tag_counts(), [128, 1, 128]);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.len(), 128);
-    assert!(cursors.values().all(|cursor| *cursor == NoteTransportCursor::from_parts(1, 2)));
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, transport_cursor(2));
+    assert_eq!(covered.len(), 128);
+    assert!(!covered.contains(&first[0]));
 }
 
-/// A long history does not stop another group. The next sync resumes the partial history.
+/// Reads a long history in one call, because every chunk reads up to the same bound.
 #[tokio::test]
-async fn transport_page_budget_preserves_progress_and_resumes() {
+async fn transport_fetch_reads_long_history_in_one_call() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
@@ -430,82 +428,125 @@ async fn transport_page_budget_preserves_progress_and_resumes() {
 
     recipient.fetch_private_notes().await.unwrap();
 
-    assert_eq!(transport.fetch_tag_counts(), [vec![128; 32], vec![1]].concat());
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 32)));
-    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
-
-    recipient.fetch_private_notes().await.unwrap();
-
-    assert_eq!(transport.fetch_tag_counts()[33..], [vec![128; 8], vec![1]].concat());
+    assert_eq!(transport.fetch_tag_counts(), [vec![128; 40], vec![1]].concat());
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 41);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert!(first.iter().all(|tag| cursors[tag] == NoteTransportCursor::from_parts(1, 40)));
-    assert_eq!(cursors[&second[0]], NoteTransportCursor::from_parts(1, 41));
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, transport_cursor(41));
+    assert_eq!(covered.len(), 129);
 }
 
-/// Requests different database nonces separately and merges tags after a cursor reset.
+/// A stored cursor from another service database restarts the covered tags from the first retained
+/// note.
 #[tokio::test]
-async fn transport_groups_tags_by_database_nonce() {
+async fn transport_cursor_from_another_database_restarts() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
     let transport = MockNoteTransportApi::new(mock_node.clone());
     let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
-    let first = NoteTag::new(30_000);
-    let second = NoteTag::new(30_001);
+    let tags = [NoteTag::new(30_000), NoteTag::new(30_001)];
+    for (seed, tag) in (1..).zip(tags) {
+        recipient.add_note_tag(tag).await.unwrap();
+        seed_transport_note(&mock_node, tag, seed);
+    }
+    let other_database = NoteTransportCursor { nonce: 2, sequence: 10 };
+    let stored = (other_database, BTreeSet::from(tags));
+    recipient
+        .test_store()
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_SYNC_STATE_KEY.into(), stored.to_bytes())
+        .await
+        .unwrap();
+
+    recipient.fetch_private_notes().await.unwrap();
+
+    assert_eq!(transport.fetch_tag_counts(), [2]);
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
+    let restarted = Some((transport_cursor(2), BTreeSet::from(tags)));
+    assert_eq!(stored_note_transport_state(&mut recipient).await, restarted);
+}
+
+/// Migrates the legacy cursor of each tag to the lowest cursor.
+#[tokio::test]
+#[allow(deprecated)]
+async fn transport_migrates_legacy_tag_cursors() {
+    use miden_client::note_transport::NOTE_TRANSPORT_CURSORS_KEY;
+
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let transport = MockNoteTransportApi::new(mock_node.clone());
+    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
+    let [first, second] = [NoteTag::new(30_000), NoteTag::new(30_001)];
     for tag in [first, second] {
         recipient.add_note_tag(tag).await.unwrap();
     }
     seed_transport_note(&mock_node, first, 1);
     seed_transport_note(&mock_node, second, 2);
-    let stale = NoteTransportCursor::from_parts(2, 10);
-    let current = NoteTransportCursor::from_parts(1, 0);
-    let restarted = NoteTransportCursor::from_parts(1, 1);
-    let latest = NoteTransportCursor::from_parts(1, 2);
-    let cursors = BTreeMap::from([(first, stale), (second, current)]);
+    seed_transport_note(&mock_node, first, 3);
+    // The legacy value holds an optional nonce and sequence for each tag.
+    let legacy = BTreeMap::from([(first, Some((1u64, 2u64))), (second, Some((1u64, 1u64)))]);
     recipient
         .test_store()
-        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), cursors.to_bytes())
+        .set_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.into(), legacy.to_bytes())
         .await
         .unwrap();
+
     recipient.fetch_private_notes().await.unwrap();
 
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors[&first], restarted);
-    assert_eq!(cursors[&second], latest);
+    // Both tags start after the note at sequence 1.
+    assert_eq!(transport.fetch_tag_counts(), [2]);
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
-
-    recipient.fetch_private_notes().await.unwrap();
-    assert_eq!(transport.fetch_tag_counts(), [1, 1, 2]);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert!(cursors.values().all(|cursor| *cursor == latest));
+    let state = Some((transport_cursor(3), BTreeSet::from([first, second])));
+    assert_eq!(stored_note_transport_state(&mut recipient).await, state);
 }
 
-/// A later page failure preserves progress, allows other chunks to finish, and permits retry.
+/// A failed request for a covered tag keeps the stored cursor. The fetch imports the notes of the
+/// other chunks, and the next call reads all covered tags again.
 #[tokio::test]
-async fn transport_chunk_failure_preserves_successful_pages() {
+async fn transport_covered_chunk_failure_keeps_cursor() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let transport = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
+    let mut recipient = create_test_client_with_transport(transport.clone()).await;
+    let (first, second) = two_transport_chunks(&mut recipient).await;
+    recipient.fetch_private_notes().await.unwrap();
+    let initial = stored_note_transport_state(&mut recipient).await;
+    assert_eq!(initial.as_ref().map(|(cursor, _)| *cursor), Some(transport_cursor(0)));
+
+    seed_transport_note(&mock_node, first[0], 1);
+    seed_transport_note(&mock_node, second[0], 2);
+    // The fourth request reads the second chunk.
+    transport.fail_on_fetch_attempt(4);
+    assert!(recipient.fetch_private_notes().await.is_err());
+
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+    assert_eq!(stored_note_transport_state(&mut recipient).await, initial);
+
+    recipient.fetch_private_notes().await.unwrap();
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, transport_cursor(2));
+    assert_eq!(covered.len(), 129);
+}
+
+/// A failed request for an added tag does not hold back the other tags. The next call reads the
+/// failed tags again.
+#[tokio::test]
+async fn transport_added_chunk_failure_does_not_hold_back_other_tags() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
     let transport = Arc::new(FaultyNoteTransportApi::new(mock_node.clone(), 0));
     transport.fail_on_fetch_attempt(2);
     let mut recipient = create_test_client_with_transport(transport.clone()).await;
     let (first, second) = two_transport_chunks(&mut recipient).await;
     seed_transport_note(&mock_node, first[0], 1);
-    seed_transport_note(&mock_node, first[0], 2);
+    let resumed_note = seed_transport_note(&mock_node, first[0], 2);
     seed_transport_note(&mock_node, second[0], 3);
-    let first_cursor = NoteTransportCursor::from_parts(1, 1);
-    let second_cursor = NoteTransportCursor::from_parts(1, 3);
 
     let summary = recipient.sync_state().await.unwrap();
     assert_eq!(summary.new_private_notes.len(), 2);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors.get(&first[0]), Some(&first_cursor));
-    assert_eq!(cursors.get(&second[0]), Some(&second_cursor));
+    let state = Some((transport_cursor(3), BTreeSet::from([second[0]])));
+    assert_eq!(stored_note_transport_state(&mut recipient).await, state);
 
-    recipient.sync_note_transport().await.unwrap();
+    assert!(recipient.sync_note_transport().await.unwrap().contains(&resumed_note.id()));
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
-    let cursors = stored_note_transport_cursors(&mut recipient).await;
-    assert_eq!(cursors[&first[0]], NoteTransportCursor::from_parts(1, 2));
-    assert_eq!(cursors[&second[0]], second_cursor);
+    let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
+    assert_eq!(cursor, transport_cursor(3));
+    assert_eq!(covered.len(), 129);
 }
 
 /// Verifies that an observer whose tracked tags don't match the note's tag receives nothing.
@@ -1033,9 +1074,7 @@ async fn resending_a_delivered_note_is_harmless() {
         .await
         .expect("a second send of the same note must succeed");
 
-    let (stored, _) = mock_node
-        .read()
-        .get_notes(&[note.metadata().tag()], NoteTransportCursor::init());
+    let (stored, _) = mock_node.read().get_notes(&[note.metadata().tag()], None);
     assert_eq!(stored.len(), 1, "the transport must keep one copy of the note");
 
     recipient.sync_state().await.unwrap();
@@ -1084,7 +1123,7 @@ async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_con
         .unwrap();
 
     // Fetch the notes matching the `account_tag` and check the P2ID note was actually committed
-    let (notes_info, _) = mock_node.read().get_notes(&[account_tag], NoteTransportCursor::init());
+    let (notes_info, _) = mock_node.read().get_notes(&[account_tag], None);
     let fetched_note_info = notes_info.first().unwrap();
     assert_eq!(fetched_note_info.header, *note.header());
 
@@ -1183,7 +1222,7 @@ async fn fetch_private_notes_without_floor_falls_back_to_lookback_window() {
     );
 }
 
-/// A delivery of a note being consumed locally is skipped and its tag cursor advances (#2345).
+/// A delivery of a note being consumed locally is skipped and the cursor advances (#2345).
 #[tokio::test]
 async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
     let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
@@ -1219,7 +1258,7 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         "the consumed note should be in a processing state"
     );
 
-    let cursors_before = stored_note_transport_cursors(&mut client).await;
+    let cursor_before = stored_note_transport_state(&mut client).await.map(|(cursor, _)| cursor);
     // The same note arrives via transport while the consume is in flight.
     mock_node
         .write()
@@ -1231,15 +1270,13 @@ async fn transport_delivery_of_processing_note_does_not_wedge_sync_state() {
         "the redundant delivery must not be re-imported"
     );
 
-    let cursors_after = stored_note_transport_cursors(&mut client).await;
-    assert_eq!(cursors_after.len(), cursors_before.len());
-    let mut advanced = false;
-    for (tag, cursor_before) in &cursors_before {
-        let persisted_cursor = cursors_after.get(tag).expect("each tag must keep its cursor");
-        assert!(persisted_cursor >= cursor_before, "a tag cursor must not move backward");
-        advanced |= persisted_cursor > cursor_before;
-    }
-    assert!(advanced, "a tag cursor must advance past the skipped delivery");
+    let (cursor_after, _) = stored_note_transport_state(&mut client)
+        .await
+        .expect("the fetch must save a cursor");
+    assert!(
+        cursor_before.is_none_or(|before| cursor_after.sequence > before.sequence),
+        "the cursor must advance past the skipped delivery"
+    );
     client.sync_state().await.unwrap();
 
     let records = client.get_input_notes(NoteFilter::All).await.unwrap();
@@ -1306,9 +1343,7 @@ async fn transport_send_with_proof() {
         .unwrap();
 
     assert_eq!(mock_node.read().proven_block(&note.id()), Some(BlockNumber::GENESIS));
-    let (delivered, _) = mock_node
-        .read()
-        .get_notes(&[note.metadata().tag()], NoteTransportCursor::init());
+    let (delivered, _) = mock_node.read().get_notes(&[note.metadata().tag()], None);
     assert_eq!(delivered.len(), 1);
     assert_eq!(delivered[0].block_hint, Some(BlockNumber::GENESIS));
 
@@ -1477,10 +1512,10 @@ fn dummy_asset() -> Asset {
     FungibleAsset::new(faucet_id, 100).unwrap().into()
 }
 
-/// Asserts that an invalid delivery on the transport is not imported, that it keeps the stored tag
-/// cursors on their pages, and that it does not stop the chain sync.
+/// Asserts that an invalid delivery on the transport is not imported, that it keeps the stored
+/// cursor, and that it does not stop the chain sync.
 async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
-    let cursors_before = stored_note_transport_cursors(client).await;
+    let state_before = stored_note_transport_state(client).await;
 
     assert!(
         client.sync_note_transport().await.is_err(),
@@ -1494,25 +1529,28 @@ async fn assert_invalid_delivery_is_not_imported(client: &mut TestClient) {
 
     assert!(summary.new_private_notes.is_empty(), "invalid delivery must not import");
     assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 0);
-    let cursors_after = stored_note_transport_cursors(client).await;
     assert_eq!(
-        cursors_after, cursors_before,
-        "tag cursors must not advance past the invalid delivery"
+        stored_note_transport_state(client).await,
+        state_before,
+        "the cursor must not advance past the invalid delivery"
     );
 }
 
-async fn stored_note_transport_cursors(
+/// Returns the stored cursor and the tags that it covers.
+async fn stored_note_transport_state(
     client: &mut TestClient,
-) -> BTreeMap<NoteTag, NoteTransportCursor> {
+) -> Option<(NoteTransportCursor, BTreeSet<NoteTag>)> {
     let bytes = client
         .test_store()
-        .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_CURSORS_KEY))
+        .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_SYNC_STATE_KEY))
         .await
-        .unwrap();
+        .unwrap()?;
+    Some(<(NoteTransportCursor, BTreeSet<NoteTag>)>::read_from_bytes(&bytes).unwrap())
+}
 
-    bytes
-        .map(|bytes| BTreeMap::<NoteTag, NoteTransportCursor>::read_from_bytes(&bytes).unwrap())
-        .unwrap_or_default()
+/// Returns a cursor in the database of the mock transport.
+fn transport_cursor(sequence: u64) -> NoteTransportCursor {
+    NoteTransportCursor { nonce: 1, sequence }
 }
 
 pub async fn create_test_client_transport(

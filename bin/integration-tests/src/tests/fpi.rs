@@ -26,7 +26,11 @@ use miden_client::auth::{
 };
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteType;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::{
+    AccountFetch,
+    AccountStorageRequirements,
+    StorageMapFetch,
+};
 use miden_client::testing::common::*;
 use miden_client::transaction::{AdviceInputs, ForeignAccount, TransactionRequestBuilder};
 use miden_client::{Felt, Word};
@@ -139,7 +143,10 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
             AdviceInputs::default(),
             BTreeMap::from([(
                 foreign_account_id,
-                ForeignAccount::public(foreign_account_id, storage_requirements)?,
+                ForeignAccount::public(
+                    foreign_account_id,
+                    AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+                )?,
             )]),
         )
         .await?;
@@ -266,8 +273,14 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
         AccountStorageRequirements::new([(map_slot_name, &[StorageMapKey::new(MAP_KEY.into())])]);
 
     let foreign_accounts = [
-        ForeignAccount::public(inner_foreign_account_id, storage_requirements.clone())?,
-        ForeignAccount::public(outer_foreign_account_id, storage_requirements)?,
+        ForeignAccount::public(
+            inner_foreign_account_id,
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements.clone())),
+        )?,
+        ForeignAccount::public(
+            outer_foreign_account_id,
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+        )?,
     ];
 
     let tx_request = builder.foreign_accounts(foreign_accounts).build()?;
@@ -518,7 +531,10 @@ async fn standard_fpi(
         AccountStorageRequirements::new([(map_slot_name, &[StorageMapKey::new(MAP_KEY.into())])]);
 
     let foreign_account = if account_type == AccountType::Public {
-        ForeignAccount::public(foreign_account_id, storage_requirements)
+        ForeignAccount::public(
+            foreign_account_id,
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+        )
     } else {
         // Get current foreign account current state from the store (after 1st deployment tx)
         let foreign_account: Account = client
@@ -658,9 +674,9 @@ async fn setup_fpi_vault_asset_read(
     Ok((foreign_account_id, tx_script_code, expected_stack))
 }
 
-/// Tests that FPI can read an asset from an untracked foreign account's vault: the client requests
-/// the vault with `VaultFetch::Always`, so the asset list arrives with the account proof and is
-/// kept (after verifying it hashes to the header's vault root).
+/// Tests that FPI can read an asset from an untracked foreign account's vault: the default fetch
+/// policy skips the vault, so the foreign inputs carry a root-only partial vault, and the asset
+/// read is served during execution by a per-asset witness fetched from the node.
 pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;
@@ -672,7 +688,7 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountFetch::default())?,
     )]);
 
     let output_stack = client
@@ -686,10 +702,9 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
     Ok(())
 }
 
-/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the client
-/// requests `VaultFetch::IfChangedFrom` with a matching root, the node omits the asset list, the
-/// foreign inputs carry a root-only partial vault, and the asset read is served during execution by
-/// a per-asset witness from the local store.
+/// Tests that FPI can read an asset from a tracked and synced foreign account's vault: the local
+/// state serves the foreign inputs with a root-only partial vault, and the asset read is served
+/// during execution by a per-asset witness from the local store.
 pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> Result<()> {
     let (foreign_account_id, tx_script_code, expected_stack) =
         setup_fpi_vault_asset_read(&client_config).await?;
@@ -705,7 +720,7 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountFetch::default())?,
     )]);
 
     let output_stack = client

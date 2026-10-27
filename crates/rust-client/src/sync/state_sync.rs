@@ -28,6 +28,7 @@ use crate::ClientError;
 use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
     AccountStorageMapDetails,
     GetAccountRequest,
@@ -1063,7 +1064,7 @@ impl StateSync {
         let chain_tip = chain_tip_header.block_num();
         let (proof_block_num, proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(chain_tip)))
             .await?;
 
         if proof_block_num != chain_tip {
@@ -1182,11 +1183,13 @@ impl StateSync {
         let (proof_block_num, proof) = self
             .rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
+                GetAccountRequest::new(account_id)
                     .at(AccountStateAt::Block(target_block_num))
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_fetch(
+                        AccountFetch::new()
+                            .with_storage(StorageMapFetch::All)
+                            .with_vault(VaultFetch::Always),
+                    ),
             )
             .await
             .map_err(ClientError::RpcError)?;
@@ -1209,7 +1212,7 @@ impl StateSync {
             Ordering::Greater => {},
         }
 
-        let vault_oversized = details.vault_details.too_many_assets;
+        let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
             .storage_details
             .map_details
@@ -2073,10 +2076,11 @@ mod tests {
     ) -> (BlockNumber, AccountProof) {
         rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(VaultFetch::Always),
+                ),
             )
             .await
             .unwrap()

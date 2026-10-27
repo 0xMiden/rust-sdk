@@ -304,7 +304,6 @@ impl NodeRpcClient for CannedTransport {
 
     async fn get_account(
         &self,
-        _account_id: AccountId,
         _request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
         self.canned(self.account.as_ref(), "test must set a canned get_account response")
@@ -559,23 +558,23 @@ async fn get_account_verifies_block_num_only_for_pinned_requests() {
     });
 
     let (block_num, _) = client
-        .get_account(test_account_id(), GetAccountRequest::new().at(AccountStateAt::ChainTip))
+        .get_account(GetAccountRequest::new(test_account_id()).at(AccountStateAt::ChainTip))
         .await
         .expect("a chain tip request must accept state at any block");
     assert_eq!(block_num, BlockNumber::from(5u32));
 
     client
         .get_account(
-            test_account_id(),
-            GetAccountRequest::new().at(AccountStateAt::Block(BlockNumber::from(5u32))),
+            GetAccountRequest::new(test_account_id())
+                .at(AccountStateAt::Block(BlockNumber::from(5u32))),
         )
         .await
         .expect("state at the requested block must be accepted");
 
     let err = client
         .get_account(
-            test_account_id(),
-            GetAccountRequest::new().at(AccountStateAt::Block(BlockNumber::from(6u32))),
+            GetAccountRequest::new(test_account_id())
+                .at(AccountStateAt::Block(BlockNumber::from(6u32))),
         )
         .await
         .expect_err("state at another block must be rejected");
@@ -593,7 +592,7 @@ async fn get_account_rejects_proof_for_wrong_account_id() {
     let other = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE)
         .expect("test account ID is well formed");
     let err = client
-        .get_account(other, GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(other))
         .await
         .expect_err("proof for a different account must be rejected");
     assert!(matches!(err, RpcError::InvalidResponse(_)));

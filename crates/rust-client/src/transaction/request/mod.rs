@@ -10,15 +10,8 @@ use miden_protocol::account::{AccountCodeInterface, AccountCodeUpgrade, AccountI
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
-use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::errors::{
-    AccountError,
-    AssetError,
-    NoteError,
-    StorageMapError,
-    TransactionInputError,
-};
+use miden_protocol::errors::{AccountError, AssetError, NoteError, TransactionInputError};
 use miden_protocol::note::{
     Note,
     NoteDetails,
@@ -63,7 +56,6 @@ pub use builder::{
 };
 
 mod foreign;
-pub(crate) use foreign::account_proof_into_inputs;
 pub use foreign::{ForeignAccount, build_fpi_script};
 
 use crate::store::InputNoteRecord;
@@ -624,10 +616,6 @@ pub enum TransactionRequestError {
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error(
-        "the account proof does not contain the required foreign account data; re-fetch the proof and retry"
-    )]
-    ForeignAccountDataMissing,
-    #[error(
         "foreign account {0} has incompatible visibility; use `ForeignAccount::public()` for public accounts and `ForeignAccount::private()` for private accounts"
     )]
     InvalidForeignAccountId(AccountId),
@@ -667,8 +655,6 @@ pub enum TransactionRequestError {
          caller must declare a fresh one with `TransactionRequestBuilder::fee_conversion_salt`"
     )]
     FeeConversionInfoRequired(String),
-    #[error("merkle proof error")]
-    MerkleError(#[from] MerkleError),
     #[error("empty transaction: the request has no input notes and no account state changes")]
     NoInputNotesNorAccountChange,
     #[error("failed to create note")]
@@ -699,8 +685,6 @@ pub enum TransactionRequestError {
     StorageSlotNotFound(u8, AccountId),
     #[error("error while building the input notes")]
     TransactionInputError(#[from] TransactionInputError),
-    #[error("account storage map error")]
-    StorageMapError(#[from] StorageMapError),
 }
 
 // TESTS
@@ -746,7 +730,12 @@ mod tests {
         TransactionScript,
     };
     use crate::rng::draw_word;
-    use crate::rpc::domain::account::AccountStorageRequirements;
+    use crate::rpc::domain::account::{
+        AccountFetch,
+        AccountStorageRequirements,
+        StorageMapFetch,
+        VaultFetch,
+    };
     use crate::transaction::ForeignAccount;
 
     #[test]
@@ -900,10 +889,14 @@ mod tests {
             .foreign_accounts([
                 ForeignAccount::public(
                     target_id,
-                    AccountStorageRequirements::new([(
-                        StorageSlotName::new("demo::storage_slot").unwrap(),
-                        &[StorageMapKey::new(Word::default())],
-                    )]),
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
+                            StorageSlotName::new("demo::storage_slot").unwrap(),
+                            &[StorageMapKey::new(Word::default())],
+                        )])))
+                        .with_vault(VaultFetch::Assets(
+                            [FungibleAsset::new(faucet_id, 100).unwrap().id()].into(),
+                        )),
                 )
                 .unwrap(),
                 ForeignAccount::private(&account).unwrap(),

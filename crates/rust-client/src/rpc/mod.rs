@@ -50,8 +50,10 @@ use core::fmt;
 
 use domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
     AccountStorageMapDetails,
+    AccountVaultDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapEntry,
@@ -263,10 +265,11 @@ pub trait NodeRpcClient: Send + Sync {
         // vault, with the storage layout discovered server-side.
         let (block_number, mut proof) = self
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(VaultFetch::Always),
+                ),
             )
             .await?;
 
@@ -432,7 +435,6 @@ pub trait NodeRpcClient: Send + Sync {
     /// - If the account isn't found in the network
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 
@@ -482,24 +484,24 @@ pub trait NodeRpcClient: Send + Sync {
     /// consume the code or identify the account that holds it.
     async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError>;
 
-    /// Fills in the asset list when the vault came back flagged `too_many_assets`, by querying
-    /// [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op when the flag isn't
-    /// set.
+    /// Fills in the asset list when the vault came back as [`AccountVaultDetails::TooManyAssets`],
+    /// by querying [`NodeRpcClient::sync_account_vault`] over `[GENESIS, block_to]`. No-op for the
+    /// other variants.
     async fn resolve_oversize_vault(
         &self,
         account_id: AccountId,
         block_to: BlockNumber,
         details: &mut AccountDetails,
     ) -> Result<(), RpcError> {
-        if !details.vault_details.too_many_assets {
+        if !details.vault_details.is_too_many_assets() {
             return Ok(());
         }
         let vault_info =
             self.sync_account_vault(BlockNumber::GENESIS, block_to, account_id).await?;
         // Syncing from genesis merges the full vault history into an absolute patch, so its updated
         // (non-removed) assets are the account's current vault contents.
-        details.vault_details.assets = vault_info.vault_patch.updated_assets().collect();
-        details.vault_details.too_many_assets = false;
+        details.vault_details =
+            AccountVaultDetails::Assets(vault_info.vault_patch.updated_assets().collect());
         Ok(())
     }
 

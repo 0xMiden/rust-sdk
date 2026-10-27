@@ -24,7 +24,6 @@
 ### Fixes
 
 * [FIX][rust] Preserved the genesis commitment in RPC headers when it is set during a native connection handshake ([#2748](https://github.com/0xMiden/rust-sdk/pull/2748)).
-* 
 ## 0.17.5 (2026-10-21)
 
 ### Fixes

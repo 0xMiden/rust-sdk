@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][rust] Added opt-in note acquisition gate configuration for retention before note import writes ([#2750](https://github.com/0xMiden/rust-sdk/pull/2750)).
+
 ## 0.17.5 (2026-10-21)
 
 ### Fixes

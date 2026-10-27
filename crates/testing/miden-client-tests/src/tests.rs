@@ -135,6 +135,7 @@ use rstest::rstest;
 mod batch;
 mod code_upgrade;
 mod fees;
+mod note_acquisition;
 mod rpc;
 pub mod store;
 mod transaction;

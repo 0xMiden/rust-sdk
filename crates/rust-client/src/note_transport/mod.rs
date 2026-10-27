@@ -31,7 +31,7 @@ use miden_tx::utils::serde::{
 };
 
 pub use self::errors::NoteTransportError;
-use crate::note::{NoteFile, NoteSyncHint};
+use crate::note::{NoteAcquisitionSource, NoteFile, NoteSyncHint};
 use crate::store::{NoteFilter, SettingScope};
 use crate::sync::NoteTagSource;
 use crate::{Client, ClientError};
@@ -358,7 +358,9 @@ where
             fetch_error,
         } = update;
 
-        let written = self.import_notes(&note_files).await?;
+        let written = self
+            .import_notes_with_source(&note_files, NoteAcquisitionSource::NoteTransport)
+            .await?;
         let mut imported_ids: Vec<NoteId> = written
             .iter()
             .filter_map(|commitment| id_by_commitment.get(commitment).copied())

@@ -484,7 +484,7 @@ impl<AUTH> Client<AUTH> {
                     // the one in the network
                     let network_account_commitment = self
                         .rpc_api
-                        .get_account(account.id(), GetAccountRequest::new())
+                        .get_account(GetAccountRequest::new(account.id()))
                         .await?
                         .1
                         .account_commitment();
@@ -617,7 +617,7 @@ impl<AUTH> Client<AUTH> {
         &self,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, ClientError> {
-        let proof = match self.rpc_api.get_account(faucet_id, GetAccountRequest::new()).await {
+        let proof = match self.rpc_api.get_account(GetAccountRequest::new(faucet_id)).await {
             Ok((_, proof)) => proof,
             Err(err) => match err.endpoint_error() {
                 Some(EndpointError::GetAccount(

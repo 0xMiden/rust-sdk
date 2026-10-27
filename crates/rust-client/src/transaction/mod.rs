@@ -1272,7 +1272,7 @@ where
 
         let (_, account_proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(block_num)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(block_num)))
             .await?;
 
         Ok(account_proof.into_parts().0)
@@ -1832,8 +1832,7 @@ pub(crate) async fn fetch_public_account_inputs(
 
     let (_block_num, account_proof) = rpc_api
         .get_account(
-            account_id,
-            GetAccountRequest::new()
+            GetAccountRequest::new(account_id)
                 .with_requirements(requirements)
                 .at(account_state_at)
                 .with_known_code(known_code),

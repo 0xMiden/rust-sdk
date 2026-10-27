@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][param][rust] Moved the account ID into `GetAccountRequest::new(account_id)`. `NodeRpcClient::get_account` takes only the request. Removed `Default` from `GetAccountRequest` ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
 * [BREAKING][type][rust] Added `AccountRequirements` with builder methods for storage and vault policies. `GetAccountRequest::with_requirements` replaces its storage and vault fields and builder methods. `ForeignAccount::Public` and `ForeignAccount::public` now take `AccountRequirements`, and `ForeignAccount::requirements` replaces `storage_slot_requirements`. Public foreign account declarations use a new binary encoding. The gRPC account details conversion takes the shared requirements.
 * [BREAKING][removal][rust] Removed the unused `TransactionRequestError::ForeignAccountDataMissing` variant. Missing account details return `RpcError::ExpectedDataMissing` ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.18`, Miden VM to `0.36`, `miden-debug` to `0.19` and `miden-node-proto-build` to `0.18.1`. The client uses the node `0.18` RPC and note transport APIs and requires a node `0.18` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).

@@ -757,9 +757,9 @@ impl NodeRpcClient for MockRpcApi {
     /// `oversize_threshold` come back with truncation flags set.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        let account_id = request.account_id;
         self.get_account_calls.fetch_add(1, Ordering::Relaxed);
 
         if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {

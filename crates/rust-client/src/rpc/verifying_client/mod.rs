@@ -274,14 +274,14 @@ impl<T: NodeRpcClient> NodeRpcClient for VerifyingRpcClient<T> {
 
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        let account_id = request.account_id;
         let requested = match request.at {
             AccountStateAt::Block(number) => Some(number),
             AccountStateAt::ChainTip => None,
         };
-        let (block_num, proof) = self.0.get_account(account_id, request).await?;
+        let (block_num, proof) = self.0.get_account(request).await?;
         verify_block_num(requested, block_num)?;
         if proof.account_id() != account_id {
             return Err(RpcError::InvalidResponse(format!(

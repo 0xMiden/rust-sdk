@@ -231,13 +231,9 @@ mod foreign_vault_tests {
         let committed_root = account.vault().root();
 
         let (_block, proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_requirements(
-                    AccountRequirements::new()
-                        .with_vault(VaultFetch::IfChangedFrom(committed_root)),
-                ),
-            )
+            .get_account(GetAccountRequest::new(account.id()).with_requirements(
+                AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
+            ))
             .await
             .unwrap();
 
@@ -264,8 +260,7 @@ mod foreign_vault_tests {
 
         let (_block, proof) = rpc
             .get_account(
-                account.id(),
-                GetAccountRequest::new()
+                GetAccountRequest::new(account.id())
                     .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
             )
             .await
@@ -285,8 +280,7 @@ mod foreign_vault_tests {
         let (account, rpc) = chain_with_funded_account();
         let (_, proof) = rpc
             .get_account(
-                account.id(),
-                GetAccountRequest::new()
+                GetAccountRequest::new(account.id())
                     .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
             )
             .await
@@ -302,7 +296,7 @@ mod foreign_vault_tests {
     #[tokio::test]
     async fn account_details_reject_a_mismatched_storage_header() {
         let (account, rpc) = chain_with_funded_account();
-        let (_, proof) = rpc.get_account(account.id(), GetAccountRequest::new()).await.unwrap();
+        let (_, proof) = rpc.get_account(GetAccountRequest::new(account.id())).await.unwrap();
         let mut details = proof.into_details().unwrap();
         details.storage_details.header = AccountStorageHeader::new(vec![StorageSlotHeader::new(
             StorageSlotName::new("miden::testing::wrong_storage").unwrap(),
@@ -379,12 +373,9 @@ mod foreign_storage_map_tests {
     ) -> AccountInputs {
         let requirements = AccountStorageRequirements::new([(slot_name.clone(), keys.iter())]);
         let (_block, proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_requirements(
-                    AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
-                ),
-            )
+            .get_account(GetAccountRequest::new(account.id()).with_requirements(
+                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+            ))
             .await
             .unwrap();
 
@@ -454,12 +445,9 @@ mod foreign_storage_map_tests {
         let requirements =
             AccountStorageRequirements::all_entries(core::slice::from_ref(&slot_name));
         let (_block, mut proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_requirements(
-                    AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
-                ),
-            )
+            .get_account(GetAccountRequest::new(account.id()).with_requirements(
+                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+            ))
             .await
             .unwrap();
 

@@ -649,7 +649,7 @@ impl AccountVaultDetails {
     /// the result is always [`Partial`](Self::Partial).
     ///
     /// # Errors
-    /// - If the details hold proofs for a request other tha [`VaultFetch::Assets`]
+    /// - If the details hold proofs for a request other than [`VaultFetch::Assets`]
     /// - If the vault has too many assets to answer a [`VaultFetch::Assets`] request
     /// - If the proofs or the full vault contents do not verify against `vault_root`
     /// - If the proofs do not cover all requested assets
@@ -1216,8 +1216,10 @@ impl Deserializable for AccountRequirements {
 }
 
 /// Parameters for [`crate::rpc::NodeRpcClient::get_account`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GetAccountRequest {
+    /// Account to fetch.
+    pub account_id: AccountId,
     /// Storage map entries and vault data to include in the response.
     pub requirements: AccountRequirements,
     /// Block at which to retrieve the proof.
@@ -1229,8 +1231,13 @@ pub struct GetAccountRequest {
 impl GetAccountRequest {
     /// Creates a request at the chain tip with no map entries, known code, or vault data.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(account_id: AccountId) -> Self {
+        Self {
+            account_id,
+            requirements: AccountRequirements::default(),
+            at: AccountStateAt::ChainTip,
+            known_code: None,
+        }
     }
 
     /// Sets the storage and vault requirements.

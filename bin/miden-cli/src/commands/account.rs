@@ -538,7 +538,7 @@ async fn resolve_account_code<AUTH>(
     ));
 
     let (_, account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(account_id))
         .await
         .map_err(|err| {
             CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))

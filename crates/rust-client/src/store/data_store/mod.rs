@@ -211,8 +211,7 @@ impl ClientDataStore {
         let (_, account_proof): (BlockNumber, _) = self
             .rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
+                GetAccountRequest::new(account_id)
                     .with_requirements(
                         AccountRequirements::new()
                             .with_storage(StorageMapFetch::Slots(storage_requirements)),
@@ -297,8 +296,7 @@ impl ClientDataStore {
             let (_, account_proof) = self
                 .rpc_api
                 .get_account(
-                    account_id,
-                    GetAccountRequest::new()
+                    GetAccountRequest::new(account_id)
                         .at(account_state_at)
                         .with_known_code(known_code.clone())
                         .with_requirements(

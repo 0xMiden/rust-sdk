@@ -1308,7 +1308,7 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
     // Test get_account retrieval (account must be deployed on-chain first)
     let (proof_block_num, account_proof) = client
         .test_rpc_api()
-        .get_account(first_basic_account.id(), GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(first_basic_account.id()))
         .await?;
     assert!(proof_block_num >= first_block_num);
     assert_eq!(account_proof.account_id(), first_basic_account.id());
@@ -1612,12 +1612,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     // Request all entries (empty keys)
     let requirements_all = AccountStorageRequirements::new([(map_slot_name.clone(), [].iter())]);
     let (_, proof_all) = rpc
-        .get_account(
-            account_id,
-            GetAccountRequest::new().with_requirements(
-                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_all)),
-            ),
-        )
+        .get_account(GetAccountRequest::new(account_id).with_requirements(
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_all)),
+        ))
         .await?;
     let map_all = proof_all
         .find_map_details(&map_slot_name)
@@ -1632,12 +1629,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     // Request one specific key
     let requirements_one = AccountStorageRequirements::new([(map_slot_name.clone(), [&map_key_1])]);
     let (_, proof_one) = rpc
-        .get_account(
-            account_id,
-            GetAccountRequest::new().with_requirements(
-                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_one)),
-            ),
-        )
+        .get_account(GetAccountRequest::new(account_id).with_requirements(
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_one)),
+        ))
         .await?;
     let map_one = proof_one
         .find_map_details(&map_slot_name)
@@ -1662,12 +1656,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         [&map_key_1, &map_key_2, &absent_key],
     )]);
     let (_, proof_batch) = rpc
-        .get_account(
-            account_id,
-            GetAccountRequest::new().with_requirements(
-                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_batch)),
-            ),
-        )
+        .get_account(GetAccountRequest::new(account_id).with_requirements(
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_batch)),
+        ))
         .await?;
     let map_batch = proof_batch
         .find_map_details(&map_slot_name)
@@ -1721,8 +1712,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     // Query 1: VaultFetch::Always — always fetches vault data
     let (_, proof) = rpc
         .get_account(
-            wallet.id(),
-            GetAccountRequest::new()
+            GetAccountRequest::new(wallet.id())
                 .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
         )
         .await?;
@@ -1742,12 +1732,9 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     // Query 2: VaultFetch::IfChangedFrom(actual_root) — commitment matches, node returns empty
     // assets
     let (_, proof) = rpc
-        .get_account(
-            wallet.id(),
-            GetAccountRequest::new().with_requirements(
-                AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(vault_root)),
-            ),
-        )
+        .get_account(GetAccountRequest::new(wallet.id()).with_requirements(
+            AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(vault_root)),
+        ))
         .await?;
 
     let (_, details) = proof.into_parts();
@@ -1759,7 +1746,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     assert!(assets.is_empty(), "expected empty assets when vault commitment matches");
 
     // Query 3: VaultFetch::Skip — vault data not requested, node returns empty assets
-    let (_, proof) = rpc.get_account(wallet.id(), GetAccountRequest::new()).await?;
+    let (_, proof) = rpc.get_account(GetAccountRequest::new(wallet.id())).await?;
 
     let (_, details) = proof.into_parts();
     let details = details.context("expected account details for public account")?;

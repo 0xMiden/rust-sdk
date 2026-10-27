@@ -265,8 +265,7 @@ pub trait NodeRpcClient: Send + Sync {
         // vault, with the storage layout discovered server-side.
         let (block_number, mut proof) = self
             .get_account(
-                account_id,
-                GetAccountRequest::new().with_requirements(
+                GetAccountRequest::new(account_id).with_requirements(
                     AccountRequirements::new()
                         .with_storage(StorageMapFetch::All)
                         .with_vault(VaultFetch::Always),
@@ -436,7 +435,6 @@ pub trait NodeRpcClient: Send + Sync {
     /// - If the account isn't found in the network
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError>;
 

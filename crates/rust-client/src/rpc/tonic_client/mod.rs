@@ -604,10 +604,9 @@ impl NodeRpcClient for GrpcClient {
     /// - There is an error during storage deserialization.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let GetAccountRequest { requirements, at, known_code } = request;
+        let GetAccountRequest { account_id, requirements, at, known_code } = request;
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
         let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();

@@ -1064,7 +1064,7 @@ impl StateSync {
         let chain_tip = chain_tip_header.block_num();
         let (proof_block_num, proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(chain_tip)))
             .await?;
 
         if proof_block_num != chain_tip {
@@ -1183,8 +1183,7 @@ impl StateSync {
         let (proof_block_num, proof) = self
             .rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
+                GetAccountRequest::new(account_id)
                     .at(AccountStateAt::Block(target_block_num))
                     .with_requirements(
                         AccountRequirements::new()
@@ -2077,8 +2076,7 @@ mod tests {
     ) -> (BlockNumber, AccountProof) {
         rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new().with_requirements(
+                GetAccountRequest::new(account_id).with_requirements(
                     AccountRequirements::new()
                         .with_storage(StorageMapFetch::All)
                         .with_vault(VaultFetch::Always),

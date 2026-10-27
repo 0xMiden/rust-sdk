@@ -45,8 +45,7 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
-use miden_protocol::crypto::merkle::MerklePath;
-use miden_protocol::crypto::merkle::mmr::{Forest, MmrPath, MmrProof};
+use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::ProvenTransaction;
@@ -54,14 +53,14 @@ use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use miden_protocol::{EMPTY_WORD, Word};
 use tonic::Status;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::Endpoint;
 use crate::conversions::{storage_map_fetch_to_proto, vault_fetch_to_proto};
 use crate::generated::node::v1::get_account_request::AccountDetailRequest;
 use crate::generated::node::v1::{BlockRange, GetAccountRequest as ProtoGetAccountRequest};
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
+use crate::{Endpoint, RpcMethod, v1};
 
 mod api_client;
 mod retry;
@@ -291,37 +290,11 @@ impl GrpcClient {
         self
     }
 
-    /// Calls the `/GetBlockHeaderByNumber` endpoint and decodes the block header. Returns the raw
-    /// response so that the caller can decode the optional fields that it requested.
-    async fn fetch_block_header(
-        &self,
-        block_num: Option<BlockNumber>,
-        include_mmr_proof: bool,
-        include_protocol_config: bool,
-    ) -> Result<(BlockHeader, proto::node::v1::GetBlockHeaderByNumberResponse), RpcError> {
-        let request = proto::node::v1::GetBlockHeaderByNumberRequest {
-            block_num: block_num.as_ref().map(BlockNumber::as_u32),
-            include_mmr_proof: Some(include_mmr_proof),
-            include_protocol_config: Some(include_protocol_config),
-        };
-
-        info!("Calling GetBlockHeaderByNumber: {:?}", request);
-
-        let api_response = self
-            .call_with_retry(RpcEndpoint::GetBlockHeaderByNumber, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_block_header_by_number(request).await })
-            })
-            .await?;
-
-        let mut response = api_response.into_inner();
-
-        let block_header: BlockHeader = response
-            .block_header
-            .take()
-            .ok_or(RpcError::ExpectedDataMissing("BlockHeader".into()))?
-            .decode_and_build_unchecked()?;
-
-        Ok((block_header, response))
+    /// Calls a node endpoint and validates the response against the request.
+    pub async fn call<M: RpcMethod>(&self, method: M) -> Result<M::Output, RpcError> {
+        let output = method.execute(self).await?;
+        method.validate(&output)?;
+        Ok(output)
     }
 
     /// Returns the cached transport or establishes a connection.
@@ -391,7 +364,7 @@ impl GrpcClient {
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`] for
     /// the provided [`RpcEndpoint`].
-    async fn call_with_retry<T: Send + 'static>(
+    pub(crate) async fn call_with_retry<T: Send + 'static>(
         &self,
         endpoint: RpcEndpoint,
         mut call: impl FnMut(ApiClient) -> RpcFuture<Result<tonic::Response<T>, Status>>,
@@ -566,53 +539,31 @@ impl NodeRpcClient for GrpcClient {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
-        let (block_header, response) =
-            self.fetch_block_header(block_num, include_mmr_proof, false).await?;
+        let response = self
+            .call(v1::GetBlockHeaderByNumber {
+                block_num,
+                include_mmr_proof,
+                include_protocol_config: false,
+            })
+            .await?;
 
-        let mmr_proof = if include_mmr_proof {
-            let forest = response
-                .chain_length
-                .ok_or(RpcError::ExpectedDataMissing("ChainLength".into()))?;
-            let merkle_path: MerklePath = response
-                .mmr_path
-                .ok_or(RpcError::ExpectedDataMissing("MmrPath".into()))?
-                .decode_and_verify()?;
-
-            let forest_size = usize::try_from(forest).expect("u64 should fit in usize");
-            let forest = Forest::new(forest_size).map_err(|_| {
-                RpcError::InvalidResponse(format!("invalid forest size: {forest_size}"))
-            })?;
-            Some(MmrProof::new(
-                MmrPath::new(forest, block_header.block_num().as_usize(), merkle_path),
-                block_header.commitment(),
-            ))
-        } else {
-            None
-        };
-
-        Ok((block_header, mmr_proof))
+        Ok((response.block_header, response.mmr_proof))
     }
 
     async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError> {
-        let (block_header, response) =
-            self.fetch_block_header(Some(BlockNumber::GENESIS), false, true).await?;
+        let response = self
+            .call(v1::GetBlockHeaderByNumber {
+                block_num: Some(BlockNumber::GENESIS),
+                include_mmr_proof: false,
+                include_protocol_config: true,
+            })
+            .await?;
 
-        let protocol_config: ProtocolConfig = response
+        let protocol_config = response
             .protocol_config
-            .ok_or(RpcError::ExpectedDataMissing("ProtocolConfig".into()))?
-            .decode_and_verify()?;
+            .ok_or(RpcError::ExpectedDataMissing("ProtocolConfig".into()))?;
 
-        // The store keys a configuration by its own commitment, so a configuration that does not
-        // match this header is unusable.
-        let returned = protocol_config.to_commitment();
-        let expected = block_header.protocol_config_commitment();
-        if returned != expected {
-            return Err(RpcError::InvalidResponse(format!(
-                "node returned a protocol configuration with commitment {returned} for a block header that commits to {expected}"
-            )));
-        }
-
-        Ok((block_header, protocol_config))
+        Ok((response.block_header, protocol_config))
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {

@@ -431,9 +431,15 @@ A request normally declares foreign accounts as `ForeignAccount::public` or `For
 `Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 
 ```rust
+use miden_client::rpc::domain::account::{
+    AccountRequirements, AccountVaultRequirements, StorageMapFetch,
+};
 use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
 
-let declarations = [ForeignAccount::public(foreign_account_id, storage_requirements)?];
+let requirements = AccountRequirements::new()
+    .with_storage(StorageMapFetch::Slots(storage_requirements))
+    .with_vault(AccountVaultRequirements::Assets(asset_ids));
+let declarations = [ForeignAccount::public(foreign_account_id, requirements)?];
 let block_num = client.get_sync_height().await?;
 let inputs = client.get_foreign_account_inputs(declarations, block_num).await?;
 
@@ -444,5 +450,7 @@ let request = TransactionRequestBuilder::new()
 ```
 
 Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+
+`GetAccountRequest::with_requirements` accepts the same `AccountRequirements`. If you omit the vault policy, an RPC request skips vault data. Foreign account fetching instead uses the stored vault root or requests the full vault. An explicit vault policy overrides this default.
 
 Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

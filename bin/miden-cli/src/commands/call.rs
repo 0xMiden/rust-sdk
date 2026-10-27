@@ -7,7 +7,7 @@ use clap::Parser;
 use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::AccountRequirements;
 use miden_client::transaction::{
     AdviceInputs,
     ForeignAccount,
@@ -387,7 +387,7 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
         return Ok(CallTarget::Local(target_id));
     }
 
-    let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
+    let foreign_account = ForeignAccount::public(target_id, AccountRequirements::default())
         .map_err(|err| match err {
             TransactionRequestError::InvalidForeignAccountId(_) => {
                 CliError::InvalidArgument(format!(

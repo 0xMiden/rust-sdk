@@ -26,7 +26,11 @@ use miden_client::auth::{
 };
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteType;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::{
+    AccountRequirements,
+    AccountStorageRequirements,
+    StorageMapFetch,
+};
 use miden_client::testing::common::*;
 use miden_client::transaction::{AdviceInputs, ForeignAccount, TransactionRequestBuilder};
 use miden_client::{Felt, Word};
@@ -139,7 +143,11 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
             AdviceInputs::default(),
             BTreeMap::from([(
                 foreign_account_id,
-                ForeignAccount::public(foreign_account_id, storage_requirements)?,
+                ForeignAccount::public(
+                    foreign_account_id,
+                    AccountRequirements::new()
+                        .with_storage(StorageMapFetch::Slots(storage_requirements)),
+                )?,
             )]),
         )
         .await?;
@@ -266,8 +274,15 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
         AccountStorageRequirements::new([(map_slot_name, &[StorageMapKey::new(MAP_KEY.into())])]);
 
     let foreign_accounts = [
-        ForeignAccount::public(inner_foreign_account_id, storage_requirements.clone())?,
-        ForeignAccount::public(outer_foreign_account_id, storage_requirements)?,
+        ForeignAccount::public(
+            inner_foreign_account_id,
+            AccountRequirements::new()
+                .with_storage(StorageMapFetch::Slots(storage_requirements.clone())),
+        )?,
+        ForeignAccount::public(
+            outer_foreign_account_id,
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+        )?,
     ];
 
     let tx_request = builder.foreign_accounts(foreign_accounts).build()?;
@@ -518,7 +533,10 @@ async fn standard_fpi(
         AccountStorageRequirements::new([(map_slot_name, &[StorageMapKey::new(MAP_KEY.into())])]);
 
     let foreign_account = if account_type == AccountType::Public {
-        ForeignAccount::public(foreign_account_id, storage_requirements)
+        ForeignAccount::public(
+            foreign_account_id,
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+        )
     } else {
         // Get current foreign account current state from the store (after 1st deployment tx)
         let foreign_account: Account = client
@@ -672,7 +690,7 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountRequirements::default())?,
     )]);
 
     let output_stack = client
@@ -705,7 +723,7 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountRequirements::default())?,
     )]);
 
     let output_stack = client

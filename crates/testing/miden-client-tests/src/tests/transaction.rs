@@ -8,7 +8,11 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::{
+    AccountRequirements,
+    AccountStorageRequirements,
+    StorageMapFetch,
+};
 use miden_client::rpc::{GrpcError, RpcEndpoint, RpcError};
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::TestClient;
@@ -618,7 +622,12 @@ async fn lazy_foreign_account_loading() {
     client.sync_state().await.unwrap();
     let inputs = client
         .get_foreign_account_inputs(
-            [ForeignAccount::public(foreign_account_id, fpi.storage_requirements()).unwrap()],
+            [ForeignAccount::public(
+                foreign_account_id,
+                AccountRequirements::new()
+                    .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
+            )
+            .unwrap()],
             client.get_sync_height().await.unwrap(),
         )
         .await
@@ -673,7 +682,12 @@ async fn chain_anchor_execution_with_prefetched_foreign_account() {
     let anchor_block = anchor.block_num();
     let inputs = client
         .get_foreign_account_inputs(
-            [ForeignAccount::public(fpi.account_id, fpi.storage_requirements()).unwrap()],
+            [ForeignAccount::public(
+                fpi.account_id,
+                AccountRequirements::new()
+                    .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
+            )
+            .unwrap()],
             anchor_block,
         )
         .await
@@ -844,7 +858,11 @@ fn fpi_request(setup: &FpiSetup) -> TransactionRequest {
             setup.map_slot_name.clone(),
             core::slice::from_ref(&setup.map_key),
         )]);
-        ForeignAccount::public(setup.foreign_account.id(), requirements).unwrap()
+        ForeignAccount::public(
+            setup.foreign_account.id(),
+            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+        )
+        .unwrap()
     } else {
         let (id, _vault, storage, code, nonce, seed) = setup.foreign_account.clone().into_parts();
         let partial_account = PartialAccount::new(

@@ -29,6 +29,7 @@ use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
     AccountDetails,
     AccountProof,
+    AccountRequirements,
     AccountStorageMapDetails,
     AccountVaultRequirements,
     GetAccountRequest,
@@ -1185,8 +1186,11 @@ impl StateSync {
                 account_id,
                 GetAccountRequest::new()
                     .at(AccountStateAt::Block(target_block_num))
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(AccountVaultRequirements::Always),
+                    .with_requirements(
+                        AccountRequirements::new()
+                            .with_storage(StorageMapFetch::All)
+                            .with_vault(AccountVaultRequirements::Always),
+                    ),
             )
             .await
             .map_err(ClientError::RpcError)?;
@@ -2074,9 +2078,11 @@ mod tests {
         rpc_api
             .get_account(
                 account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(AccountVaultRequirements::Always),
+                GetAccountRequest::new().with_requirements(
+                    AccountRequirements::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(AccountVaultRequirements::Always),
+                ),
             )
             .await
             .unwrap()

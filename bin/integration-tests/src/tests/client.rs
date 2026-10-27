@@ -28,6 +28,7 @@ use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType};
 use miden_client::rpc::domain::account::{
+    AccountRequirements,
     AccountStorageRequirements,
     AccountVaultRequirements,
     GetAccountRequest,
@@ -1613,10 +1614,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     let (_, proof_all) = rpc
         .get_account(
             account_id,
-            GetAccountRequest {
-                storage: StorageMapFetch::Slots(requirements_all),
-                ..Default::default()
-            },
+            GetAccountRequest::new().with_requirements(
+                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_all)),
+            ),
         )
         .await?;
     let map_all = proof_all
@@ -1634,10 +1634,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     let (_, proof_one) = rpc
         .get_account(
             account_id,
-            GetAccountRequest {
-                storage: StorageMapFetch::Slots(requirements_one),
-                ..Default::default()
-            },
+            GetAccountRequest::new().with_requirements(
+                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_one)),
+            ),
         )
         .await?;
     let map_one = proof_one
@@ -1665,10 +1664,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     let (_, proof_batch) = rpc
         .get_account(
             account_id,
-            GetAccountRequest {
-                storage: StorageMapFetch::Slots(requirements_batch),
-                ..Default::default()
-            },
+            GetAccountRequest::new().with_requirements(
+                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_batch)),
+            ),
         )
         .await?;
     let map_batch = proof_batch
@@ -1724,10 +1722,9 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let (_, proof) = rpc
         .get_account(
             wallet.id(),
-            GetAccountRequest {
-                vault: AccountVaultRequirements::Always,
-                ..Default::default()
-            },
+            GetAccountRequest::new().with_requirements(
+                AccountRequirements::new().with_vault(AccountVaultRequirements::Always),
+            ),
         )
         .await?;
 
@@ -1748,10 +1745,10 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let (_, proof) = rpc
         .get_account(
             wallet.id(),
-            GetAccountRequest {
-                vault: AccountVaultRequirements::IfChangedFrom(vault_root),
-                ..Default::default()
-            },
+            GetAccountRequest::new().with_requirements(
+                AccountRequirements::new()
+                    .with_vault(AccountVaultRequirements::IfChangedFrom(vault_root)),
+            ),
         )
         .await?;
 

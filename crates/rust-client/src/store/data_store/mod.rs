@@ -33,6 +33,7 @@ use miden_tx::{
 
 use super::{AccountStorageFilter, PartialBlockchainFilter, Store};
 use crate::rpc::domain::account::{
+    AccountRequirements,
     AccountStorageRequirements,
     AccountVaultRequirements,
     GetAccountRequest,
@@ -177,7 +178,7 @@ impl ClientDataStore {
             &self.store,
             &self.rpc_api,
             account_id,
-            AccountStorageRequirements::default(),
+            AccountRequirements::default(),
             account_state_at,
         )
         .await
@@ -212,7 +213,10 @@ impl ClientDataStore {
             .get_account(
                 account_id,
                 GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::Slots(storage_requirements))
+                    .with_requirements(
+                        AccountRequirements::new()
+                            .with_storage(StorageMapFetch::Slots(storage_requirements)),
+                    )
                     .with_known_code(Some(known_code))
                     .at(account_state_at),
             )
@@ -297,8 +301,8 @@ impl ClientDataStore {
                     GetAccountRequest::new()
                         .at(account_state_at)
                         .with_known_code(known_code.clone())
-                        .with_vault(AccountVaultRequirements::Assets(
-                            chunk.iter().copied().collect(),
+                        .with_requirements(AccountRequirements::new().with_vault(
+                            AccountVaultRequirements::Assets(chunk.iter().copied().collect()),
                         )),
                 )
                 .await

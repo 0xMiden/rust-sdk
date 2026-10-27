@@ -14,7 +14,7 @@ use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::transaction::AccountInputs;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::{EMPTY_WORD, Word};
-use miden_tx::utils::serde::{Deserializable, Serializable};
+use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 use thiserror::Error;
 
 use crate::alloc::string::ToString;
@@ -56,22 +56,18 @@ impl proto::rpc::get_account_response::AccountDetails {
     /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
     /// response or `known_account_codes`, an error is returned.
     ///
-    /// `storage_requirements` is the request this response answers, used to check that each partial
-    /// map covers exactly the keys that were asked for.
-    ///
-    /// `vault_requirements` is the vault request this response answers, used to check that the
-    /// vault proofs cover the requested assets and verify against the account's vault root.
+    /// `requirements` specifies the requested storage keys and vault assets. The proofs must cover
+    /// these keys and assets and verify against the account's roots.
     ///
     /// # Errors
     /// - If account code is missing both on `self` and `known_account_codes`
     /// - If data cannot be correctly deserialized
     /// - If a partial map does not cover exactly the keys requested for its slot
-    /// - If the vault details do not answer `vault_requirements` for the account's vault root
+    /// - If the vault details do not answer `requirements` for the account's vault root
     pub fn into_domain(
         self,
         known_account_codes: &BTreeMap<Word, AccountCode>,
-        storage_requirements: &AccountStorageRequirements,
-        vault_requirements: &AccountVaultRequirements,
+        requirements: &AccountRequirements,
     ) -> Result<AccountDetails, crate::rpc::RpcError> {
         use crate::rpc::RpcError;
         use crate::rpc::domain::MissingFieldHelper;
@@ -94,7 +90,7 @@ impl proto::rpc::get_account_response::AccountDetails {
             )))?
             .try_into()?;
 
-        storage_details.validate_against_request(storage_requirements)?;
+        storage_details.validate_against_request(requirements.storage())?;
 
         // If an account code was received, it means the previously known account code is no longer
         // valid. If it was not, it means we sent a code commitment that matched and so our code is
@@ -118,7 +114,10 @@ impl proto::rpc::get_account_response::AccountDetails {
             vault_details
                 .ok_or(proto::rpc::AccountVaultDetails::missing_field(stringify!(vault_details)))?,
         )?
-        .validate_against_request(header.vault_root(), vault_requirements)?;
+        .validate_against_request(
+            header.vault_root(),
+            requirements.vault().unwrap_or(&AccountVaultRequirements::Skip),
+        )?;
 
         Ok(AccountDetails {
             header,
@@ -333,16 +332,18 @@ impl AccountStorageDetails {
     /// # Errors
     /// - If a partial map does not cover a key that was requested for its slot.
     /// - If a partial map covers a key that was not requested.
-    pub fn validate_against_request(
-        &self,
-        storage_requirements: &AccountStorageRequirements,
-    ) -> Result<(), RpcError> {
+    pub fn validate_against_request(&self, storage: &StorageMapFetch) -> Result<(), RpcError> {
         for map_detail in &self.map_details {
             let StorageMapEntries::PartialMap { map_keys, .. } = &map_detail.entries else {
                 continue;
             };
 
-            let requested_keys = storage_requirements.keys_for_slot(&map_detail.slot_name);
+            let requested_keys = match storage {
+                StorageMapFetch::Slots(requirements) => {
+                    requirements.keys_for_slot(&map_detail.slot_name)
+                },
+                StorageMapFetch::Skip | StorageMapFetch::All => &[],
+            };
             if let Some(key) = requested_keys.iter().find(|key| !map_keys.contains(key)) {
                 return Err(RpcError::InvalidResponse(format!(
                     "partial storage map for slot '{}' does not cover requested key {}",
@@ -916,11 +917,9 @@ impl TryFrom<proto::rpc::GetAccountResponse> for AccountProof {
         let details: Option<AccountDetails> = {
             match account_proof.details {
                 None => None,
-                Some(details) => Some(details.into_domain(
-                    &BTreeMap::new(),
-                    &AccountStorageRequirements::default(),
-                    &AccountVaultRequirements::Skip,
-                )?),
+                Some(details) => {
+                    Some(details.into_domain(&BTreeMap::new(), &AccountRequirements::default())?)
+                },
             }
         };
         AccountProof::new(witness.decode_and_verify()?, details)
@@ -940,7 +939,7 @@ impl TryFrom<proto::rpc::GetAccountResponse> for AccountProof {
 pub struct AccountStorageRequirements(BTreeMap<StorageSlotName, Vec<StorageMapKey>>);
 
 impl AccountStorageRequirements {
-    /// Requests the specified ke ys per slot, covered by one partial SMT per slot. An empty key
+    /// Requests the specified keys per slot, covered by one partial SMT per slot. An empty key
     /// iterator for a slot behaves like [`Self::all_entries`].
     ///
     /// Repeated keys within a slot are collapsed, since the node rejects a request that names the
@@ -1022,7 +1021,7 @@ impl Deserializable for AccountStorageRequirements {
 // ================================================================================================
 
 /// Controls whether vault data is included in a `/GetAccount` response.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum AccountVaultRequirements {
     /// Do not include vault data in the response.
     #[default]
@@ -1041,6 +1040,39 @@ pub enum AccountVaultRequirements {
     /// [`RpcLimits::vault_assets_limit`](crate::rpc::RpcLimits::vault_assets_limit) assets in a
     /// single request.
     Assets(BTreeSet<AssetId>),
+}
+
+impl Serializable for AccountVaultRequirements {
+    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+        match self {
+            Self::Skip => target.write_u8(0),
+            Self::Always => target.write_u8(1),
+            Self::IfChangedFrom(root) => {
+                target.write_u8(2);
+                target.write(root);
+            },
+            Self::Assets(asset_ids) => {
+                target.write_u8(3);
+                target.write(asset_ids);
+            },
+        }
+    }
+}
+
+impl Deserializable for AccountVaultRequirements {
+    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+        source: &mut R,
+    ) -> Result<Self, DeserializationError> {
+        match source.read_u8()? {
+            0 => Ok(Self::Skip),
+            1 => Ok(Self::Always),
+            2 => Ok(Self::IfChangedFrom(source.read()?)),
+            3 => Ok(Self::Assets(source.read()?)),
+            tag => Err(DeserializationError::InvalidValue(format!(
+                "invalid vault requirements tag: {tag}"
+            ))),
+        }
+    }
 }
 
 impl From<AccountVaultRequirements> for Option<VaultRequest> {
@@ -1067,7 +1099,7 @@ impl From<AccountVaultRequirements> for Option<VaultRequest> {
 /// Mirrors the node's `AccountDetailRequest` storage request: the storage header (slot roots) is
 /// always returned; this only controls which map *entries* come with it. The variants are mutually
 /// exclusive.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum StorageMapFetch {
     /// Don't request any map entries; only the storage header is returned.
     #[default]
@@ -1079,6 +1111,34 @@ pub enum StorageMapFetch {
     /// Request entries only for the explicitly named slots. See [`AccountStorageRequirements`] for
     /// the per-slot semantics.
     Slots(AccountStorageRequirements),
+}
+
+impl Serializable for StorageMapFetch {
+    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+        match self {
+            Self::Skip => target.write_u8(0),
+            Self::All => target.write_u8(1),
+            Self::Slots(requirements) => {
+                target.write_u8(2);
+                target.write(requirements);
+            },
+        }
+    }
+}
+
+impl Deserializable for StorageMapFetch {
+    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+        source: &mut R,
+    ) -> Result<Self, DeserializationError> {
+        match source.read_u8()? {
+            0 => Ok(Self::Skip),
+            1 => Ok(Self::All),
+            2 => Ok(Self::Slots(source.read()?)),
+            tag => Err(DeserializationError::InvalidValue(format!(
+                "invalid storage map fetch tag: {tag}"
+            ))),
+        }
+    }
 }
 
 impl From<StorageMapFetch> for Option<StorageRequest> {
@@ -1095,38 +1155,88 @@ impl From<StorageMapFetch> for Option<StorageRequest> {
     }
 }
 
-/// Parameters for [`crate::rpc::NodeRpcClient::get_account`].
-#[derive(Clone, Debug, Default)]
-pub struct GetAccountRequest {
-    /// Which storage map entries to include in the response.
-    pub storage: StorageMapFetch,
-    /// Block at which to retrieve the proof.
-    pub at: AccountStateAt,
-    /// Code commitment the client already has. When the on-chain commitment matches, the node skips
-    /// re-sending the code.
-    pub known_code: Option<AccountCode>,
-    /// Vault data retrieval policy.
-    pub vault: AccountVaultRequirements,
+/// Storage map entries and vault data to fetch for an account.
+///
+/// Storage maps are skipped by default. An unset vault policy skips vault data in RPC requests.
+/// Foreign account fetching instead uses the stored vault root or requests the full vault.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountRequirements {
+    storage: StorageMapFetch,
+    vault: Option<AccountVaultRequirements>,
 }
 
-impl GetAccountRequest {
-    /// Creates a request for the minimal account data: the account commitment and storage header at
-    /// the chain tip, with no map entries, no known code, and no vault data. Opt into additional
-    /// data with the builder methods.
+impl AccountRequirements {
+    /// Creates requirements with no storage map entries and no explicit vault policy.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            storage: StorageMapFetch::Skip,
-            at: AccountStateAt::ChainTip,
-            known_code: None,
-            vault: AccountVaultRequirements::Skip,
-        }
+        Self::default()
     }
 
-    /// Sets which storage map entries to include in the response.
+    /// Sets which storage map entries to fetch.
     #[must_use]
     pub fn with_storage(mut self, storage: StorageMapFetch) -> Self {
         self.storage = storage;
+        self
+    }
+
+    /// Sets the vault policy. This overrides the default for account fetching.
+    #[must_use]
+    pub fn with_vault(mut self, vault: AccountVaultRequirements) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
+    /// Returns the storage map fetch policy.
+    pub fn storage(&self) -> &StorageMapFetch {
+        &self.storage
+    }
+
+    /// Returns the vault policy, or `None` to use the default for account fetching.
+    pub fn vault(&self) -> Option<&AccountVaultRequirements> {
+        self.vault.as_ref()
+    }
+}
+
+impl Serializable for AccountRequirements {
+    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
+        target.write(&self.storage);
+        target.write(&self.vault);
+    }
+}
+
+impl Deserializable for AccountRequirements {
+    fn read_from<R: miden_tx::utils::serde::ByteReader>(
+        source: &mut R,
+    ) -> Result<Self, DeserializationError> {
+        Ok(Self {
+            storage: source.read()?,
+            vault: source.read()?,
+        })
+    }
+}
+
+/// Parameters for [`crate::rpc::NodeRpcClient::get_account`].
+#[derive(Clone, Debug, Default)]
+pub struct GetAccountRequest {
+    /// Storage map entries and vault data to include in the response.
+    pub requirements: AccountRequirements,
+    /// Block at which to retrieve the proof.
+    pub at: AccountStateAt,
+    /// Code the client already has. The node omits code with the same commitment.
+    pub known_code: Option<AccountCode>,
+}
+
+impl GetAccountRequest {
+    /// Creates a request at the chain tip with no map entries, known code, or vault data.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the storage and vault requirements.
+    #[must_use]
+    pub fn with_requirements(mut self, requirements: AccountRequirements) -> Self {
+        self.requirements = requirements;
         self
     }
 
@@ -1142,13 +1252,6 @@ impl GetAccountRequest {
     #[must_use]
     pub fn with_known_code(mut self, known_code: Option<AccountCode>) -> Self {
         self.known_code = known_code;
-        self
-    }
-
-    /// Sets the vault data retrieval policy.
-    #[must_use]
-    pub fn with_vault(mut self, vault: AccountVaultRequirements) -> Self {
-        self.vault = vault;
         self
     }
 }
@@ -1172,7 +1275,19 @@ pub enum AccountProofError {
 
 #[cfg(test)]
 mod tests {
-    use super::proto;
+    use miden_protocol::Word;
+    use miden_protocol::account::{StorageMapKey, StorageSlotName};
+    use miden_protocol::asset::AssetId;
+    use miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
+    use miden_tx::utils::serde::{Deserializable, Serializable};
+
+    use super::{
+        AccountRequirements,
+        AccountStorageRequirements,
+        AccountVaultRequirements,
+        StorageMapFetch,
+        proto,
+    };
     use crate::alloc::string::ToString;
 
     #[test]
@@ -1184,6 +1299,33 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(debug.contains("IsInvitationCodeValidRequest"));
         assert!(!debug.contains(code));
+    }
+
+    #[test]
+    fn account_requirements_roundtrip() {
+        let slot = StorageSlotName::new("miden::testing::map").unwrap();
+        let key = StorageMapKey::new(Word::from([1u32; 4]));
+        let storage = AccountStorageRequirements::new([(slot, &[key])]);
+        let asset_id = AssetId::new_fungible(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap());
+
+        for storage in
+            [StorageMapFetch::Skip, StorageMapFetch::All, StorageMapFetch::Slots(storage)]
+        {
+            let requirements = AccountRequirements::new().with_storage(storage);
+            for requirements in [
+                requirements.clone(),
+                requirements.clone().with_vault(AccountVaultRequirements::Skip),
+                requirements.clone().with_vault(AccountVaultRequirements::Always),
+                requirements
+                    .clone()
+                    .with_vault(AccountVaultRequirements::IfChangedFrom(Word::from([2u32; 4]))),
+                requirements.with_vault(AccountVaultRequirements::Assets([asset_id].into())),
+            ] {
+                let decoded =
+                    AccountRequirements::read_from_bytes(&requirements.to_bytes()).unwrap();
+                assert_eq!(decoded, requirements);
+            }
+        }
     }
 }
 

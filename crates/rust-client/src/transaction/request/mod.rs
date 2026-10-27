@@ -745,7 +745,12 @@ mod tests {
         TransactionScript,
     };
     use crate::rng::draw_word;
-    use crate::rpc::domain::account::AccountStorageRequirements;
+    use crate::rpc::domain::account::{
+        AccountRequirements,
+        AccountStorageRequirements,
+        AccountVaultRequirements,
+        StorageMapFetch,
+    };
     use crate::transaction::ForeignAccount;
 
     #[test]
@@ -899,10 +904,14 @@ mod tests {
             .foreign_accounts([
                 ForeignAccount::public(
                     target_id,
-                    AccountStorageRequirements::new([(
-                        StorageSlotName::new("demo::storage_slot").unwrap(),
-                        &[StorageMapKey::new(Word::default())],
-                    )]),
+                    AccountRequirements::new()
+                        .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
+                            StorageSlotName::new("demo::storage_slot").unwrap(),
+                            &[StorageMapKey::new(Word::default())],
+                        )])))
+                        .with_vault(AccountVaultRequirements::Assets(
+                            [FungibleAsset::new(faucet_id, 100).unwrap().id()].into(),
+                        )),
                 )
                 .unwrap(),
                 ForeignAccount::private(&account).unwrap(),

@@ -51,6 +51,7 @@ use core::fmt;
 use domain::account::{
     AccountDetails,
     AccountProof,
+    AccountRequirements,
     AccountStorageMapDetails,
     AccountVaultDetails,
     AccountVaultRequirements,
@@ -265,9 +266,11 @@ pub trait NodeRpcClient: Send + Sync {
         let (block_number, mut proof) = self
             .get_account(
                 account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(AccountVaultRequirements::Always),
+                GetAccountRequest::new().with_requirements(
+                    AccountRequirements::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(AccountVaultRequirements::Always),
+                ),
             )
             .await?;
 

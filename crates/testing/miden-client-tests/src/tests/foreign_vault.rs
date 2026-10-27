@@ -6,11 +6,17 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::RpcLimits;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::{
+    AccountRequirements,
+    AccountStorageRequirements,
+    AccountVaultRequirements,
+    StorageMapFetch,
+};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
 use miden_client::testing::{ClientDataStore, DataStore};
 use miden_client::transaction::{AdviceInputs, ForeignAccount};
+use miden_client::{Deserializable, Serializable};
 use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{
     Account,
@@ -19,6 +25,10 @@ use miden_protocol::account::{
     AccountComponentMetadata,
     AccountId,
     AccountType,
+    StorageMap,
+    StorageMapKey,
+    StorageSlot,
+    StorageSlotName,
 };
 use miden_protocol::asset::{Asset, AssetId, FungibleAsset};
 use miden_protocol::testing::account_id::{ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, AccountIdBuilder};
@@ -55,9 +65,13 @@ async fn oversized_vault_fixture() -> OversizedVaultFixture {
             end",
         )
         .unwrap();
+    let slot_name = StorageSlotName::new("miden::testing::map").unwrap();
+    let mut map = StorageMap::new();
+    map.insert(StorageMapKey::new(Word::from([1u32; 4])), Word::from([10u32; 4]))
+        .unwrap();
     let component = AccountComponent::new(
         component_code,
-        vec![],
+        vec![StorageSlot::with_map(slot_name, map)],
         AccountComponentMetadata::new("miden::testing::foreign_vault"),
     )
     .unwrap();
@@ -150,11 +164,9 @@ async fn vault_witness_fallback_fetches_proofs_for_the_requested_assets() {
     assert_eq!(fixture.rpc_api.sync_account_vault_call_count(), 0);
 }
 
-/// An FPI read from the vault of an untracked foreign account gets a proof for the read asset only.
-/// The node does not send the asset list of the oversized vault, so the foreign inputs carry only
-/// the vault root, and the read reaches the RPC fallback of the data store during execution.
+/// Declared asset proofs avoid a second RPC call during FPI execution.
 #[tokio::test]
-async fn fpi_asset_read_from_an_oversized_vault_fetches_one_proof() {
+async fn fpi_asset_read_respects_vault_requirements() {
     let fixture = Box::pin(oversized_vault_fixture()).await;
     let foreign_account_id = fixture.foreign_account.id();
 
@@ -182,28 +194,65 @@ async fn fpi_asset_read_from_an_oversized_vault_fetches_one_proof() {
             suffix = foreign_account_id.suffix(),
         ))
         .unwrap();
-    let foreign_accounts = BTreeMap::from([(
-        foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountStorageRequirements::default()).unwrap(),
-    )]);
-
-    let calls_before = fixture.rpc_api.get_account_call_count();
-    let output_stack = Box::pin(fixture.client.execute_program(
-        fixture.wallet_id,
-        tx_script,
-        AdviceInputs::default(),
-        foreign_accounts,
-    ))
-    .await
-    .unwrap();
-
     let mut expected_stack = [Felt::ZERO; 16];
     expected_stack[..4].copy_from_slice(fixture.asset.to_value_word().as_elements());
-    assert_eq!(output_stack, expected_stack);
+
+    for (requirements, expected_calls) in [
+        (AccountRequirements::new(), 2),
+        (AccountRequirements::new().with_vault(AccountVaultRequirements::Skip), 2),
+        (
+            AccountRequirements::new()
+                .with_vault(AccountVaultRequirements::Assets([fixture.asset.id()].into())),
+            1,
+        ),
+    ] {
+        let declaration = ForeignAccount::public(foreign_account_id, requirements).unwrap();
+        let declaration = ForeignAccount::read_from_bytes(&declaration.to_bytes()).unwrap();
+        let foreign_accounts = BTreeMap::from([(foreign_account_id, declaration)]);
+        let calls_before = fixture.rpc_api.get_account_call_count();
+        let output_stack = Box::pin(fixture.client.execute_program(
+            fixture.wallet_id,
+            tx_script.clone(),
+            AdviceInputs::default(),
+            foreign_accounts,
+        ))
+        .await
+        .unwrap();
+
+        assert_eq!(output_stack, expected_stack);
+        assert_eq!(fixture.rpc_api.get_account_call_count() - calls_before, expected_calls);
+        assert_eq!(fixture.rpc_api.sync_account_vault_call_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn foreign_account_requirements_prefetch_storage_and_vault_proofs() {
+    let fixture = Box::pin(oversized_vault_fixture()).await;
+    let slot_name = StorageSlotName::new("miden::testing::map").unwrap();
+    let key = StorageMapKey::new(Word::from([1u32; 4]));
+    let requirements = AccountRequirements::new()
+        .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
+            slot_name.clone(),
+            &[key],
+        )])))
+        .with_vault(AccountVaultRequirements::Assets([fixture.asset.id()].into()));
+    let declaration = ForeignAccount::public(fixture.foreign_account.id(), requirements).unwrap();
+    let block_num = fixture.client.get_sync_height().await.unwrap();
+    let calls_before = fixture.rpc_api.get_account_call_count();
+    let inputs = fixture
+        .client
+        .get_foreign_account_inputs([declaration], block_num)
+        .await
+        .unwrap();
+
+    assert_eq!(fixture.rpc_api.get_account_call_count() - calls_before, 1);
+    assert_eq!(inputs[0].account().to_commitment(), fixture.foreign_account.to_commitment());
     assert_eq!(
-        fixture.rpc_api.get_account_call_count() - calls_before,
-        2,
-        "one request loads the foreign account and one request proves the asset"
+        inputs[0].storage().maps().next().unwrap().get(&key),
+        Some(Word::from([10u32; 4]))
     );
-    assert_eq!(fixture.rpc_api.sync_account_vault_call_count(), 0);
+    assert_eq!(
+        inputs[0].vault().open(fixture.asset.id()).unwrap(),
+        fixture.foreign_account.vault().open(fixture.asset.id())
+    );
 }

@@ -10,7 +10,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionHeader, TransactionId};
 use miden_protocol::{Felt, Word};
 
-use crate::store::NoteUpdateTracker;
+use crate::store::NoteUpdates;
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 
 // STATE SYNC UPDATE
@@ -27,7 +27,7 @@ pub struct StateSyncUpdate {
     /// New blocks, authentication nodes and MMR peaks.
     partial_blockchain_updates: PartialBlockchainUpdates,
     /// New and updated notes to be upserted in the store.
-    note_updates: NoteUpdateTracker,
+    note_updates: NoteUpdates,
     /// Committed and discarded transactions after the sync.
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
@@ -44,7 +44,7 @@ impl StateSyncUpdate {
     pub fn from_parts(
         block_num: BlockNumber,
         partial_blockchain_updates: PartialBlockchainUpdates,
-        note_updates: NoteUpdateTracker,
+        note_updates: NoteUpdates,
         transaction_updates: TransactionUpdateTracker,
         account_updates: AccountUpdates,
         protocol_config: Option<ProtocolConfig>,
@@ -70,7 +70,7 @@ impl StateSyncUpdate {
     }
 
     /// Returns the note updates.
-    pub fn note_updates(&self) -> &NoteUpdateTracker {
+    pub fn note_updates(&self) -> &NoteUpdates {
         &self.note_updates
     }
 
@@ -95,7 +95,7 @@ impl StateSyncUpdate {
     ) -> (
         BlockNumber,
         PartialBlockchainUpdates,
-        NoteUpdateTracker,
+        NoteUpdates,
         TransactionUpdateTracker,
         AccountUpdates,
         Option<ProtocolConfig>,

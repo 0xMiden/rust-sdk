@@ -334,6 +334,13 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn prune_chain_anchors(&self, up_to_block: BlockNumber) -> Result<usize, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::prune_chain_anchors(conn, up_to_block)
+        })
+        .await
+    }
+
     async fn get_block_headers(
         &self,
         block_numbers: &BTreeSet<BlockNumber>,
@@ -366,6 +373,16 @@ impl Store for SqliteStore {
 
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError> {
         self.interact_with_connection(SqliteStore::get_current_blockchain_peaks).await
+    }
+
+    async fn get_blockchain_peaks_by_block_num(
+        &self,
+        block_num: BlockNumber,
+    ) -> Result<Option<MmrPeaks>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_blockchain_peaks_by_block_num(conn, block_num)
+        })
+        .await
     }
 
     async fn insert_account(

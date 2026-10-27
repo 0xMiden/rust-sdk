@@ -1,4 +1,3 @@
-use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -6,13 +5,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{RawOutputNotes, TransactionId, TransactionScript};
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_protocol::utils::serde::DeserializationError;
 
 // TRANSACTION RECORD
 // ================================================================================================
@@ -100,46 +93,6 @@ pub struct TransactionDetails {
     pub creation_timestamp: u64,
 }
 
-impl Serializable for TransactionDetails {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.account_id.write_into(target);
-        self.init_account_state.write_into(target);
-        self.final_account_state.write_into(target);
-        self.input_note_nullifiers.write_into(target);
-        self.output_notes.write_into(target);
-        self.block_num.write_into(target);
-        self.submission_height.write_into(target);
-        self.expiration_block_num.write_into(target);
-        self.creation_timestamp.write_into(target);
-    }
-}
-
-impl Deserializable for TransactionDetails {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let account_id = AccountId::read_from(source)?;
-        let init_account_state = Word::read_from(source)?;
-        let final_account_state = Word::read_from(source)?;
-        let input_note_nullifiers = Vec::<Word>::read_from(source)?;
-        let output_notes = RawOutputNotes::read_from(source)?;
-        let block_num = BlockNumber::read_from(source)?;
-        let submission_height = BlockNumber::read_from(source)?;
-        let expiration_block_num = BlockNumber::read_from(source)?;
-        let creation_timestamp = source.read_u64()?;
-
-        Ok(Self {
-            account_id,
-            init_account_state,
-            final_account_state,
-            input_note_nullifiers,
-            output_notes,
-            block_num,
-            submission_height,
-            expiration_block_num,
-            creation_timestamp,
-        })
-    }
-}
-
 /// Represents the cause of the discarded transaction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DiscardCause {
@@ -172,31 +125,6 @@ impl fmt::Display for DiscardCause {
             DiscardCause::DiscardedInitialState => write!(f, "DiscardedInitialState"),
             DiscardCause::Stale => write!(f, "Stale"),
             DiscardCause::Superseded => write!(f, "Superseded"),
-        }
-    }
-}
-
-impl Serializable for DiscardCause {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        match self {
-            DiscardCause::Expired => target.write_u8(0),
-            DiscardCause::InputConsumed => target.write_u8(1),
-            DiscardCause::DiscardedInitialState => target.write_u8(2),
-            DiscardCause::Stale => target.write_u8(3),
-            DiscardCause::Superseded => target.write_u8(4),
-        }
-    }
-}
-
-impl Deserializable for DiscardCause {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        match source.read_u8()? {
-            0 => Ok(DiscardCause::Expired),
-            1 => Ok(DiscardCause::InputConsumed),
-            2 => Ok(DiscardCause::DiscardedInitialState),
-            3 => Ok(DiscardCause::Stale),
-            4 => Ok(DiscardCause::Superseded),
-            _ => Err(DeserializationError::InvalidValue("Invalid discard cause".to_string())),
         }
     }
 }
@@ -243,85 +171,5 @@ impl fmt::Display for TransactionStatus {
             },
             TransactionStatus::Discarded(cause) => write!(f, "Discarded ({cause})"),
         }
-    }
-}
-
-impl Serializable for TransactionStatus {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        match self {
-            TransactionStatus::Pending => target.write_u8(self.variant() as u8),
-            TransactionStatus::Committed { block_number, commit_timestamp } => {
-                target.write_u8(self.variant() as u8);
-                block_number.write_into(target);
-                commit_timestamp.write_into(target);
-            },
-            TransactionStatus::Discarded(cause) => {
-                target.write_u8(self.variant() as u8);
-                cause.write_into(target);
-            },
-        }
-    }
-}
-
-impl Deserializable for TransactionStatus {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        match source.read_u8()? {
-            variant if variant == TransactionStatusVariant::Pending as u8 => {
-                Ok(TransactionStatus::Pending)
-            },
-            variant if variant == TransactionStatusVariant::Committed as u8 => {
-                let block_number = BlockNumber::read_from(source)?;
-                let commit_timestamp = source.read_u64()?;
-                Ok(TransactionStatus::Committed { block_number, commit_timestamp })
-            },
-            variant if variant == TransactionStatusVariant::Discarded as u8 => {
-                let cause = DiscardCause::read_from(source)?;
-                Ok(TransactionStatus::Discarded(cause))
-            },
-            _ => Err(DeserializationError::InvalidValue("Invalid transaction status".to_string())),
-        }
-    }
-}
-
-// TESTS
-// ================================================================================================
-
-#[cfg(test)]
-mod tests {
-    use miden_protocol::Word;
-    use miden_protocol::account::AccountId;
-    use miden_protocol::block::BlockNumber;
-    use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
-    use miden_protocol::transaction::RawOutputNotes;
-    use miden_protocol::utils::serde::Serializable;
-
-    use super::TransactionDetails;
-
-    /// The SQLite store filters and orders transactions with `substr` over this blob: it reads the
-    /// account ID from the first `AccountId::SERIALIZED_SIZE` bytes and the creation timestamp from
-    /// the last 8 bytes, as a little-endian `u64`. Both positions are fixed only because the two
-    /// fields are written first and last. A change to the order of the fields in `write_into`
-    /// breaks those queries, so this test fails first.
-    #[test]
-    fn serialized_details_start_with_the_account_id_and_end_with_the_creation_timestamp() {
-        let details = TransactionDetails {
-            account_id: AccountId::try_from(ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE)
-                .unwrap(),
-            init_account_state: Word::default(),
-            final_account_state: Word::default(),
-            input_note_nullifiers: vec![Word::default()],
-            output_notes: RawOutputNotes::new(vec![]).unwrap(),
-            block_num: BlockNumber::from(5u32),
-            submission_height: BlockNumber::from(6u32),
-            expiration_block_num: BlockNumber::from(7u32),
-            creation_timestamp: 1_790_000_000,
-        };
-
-        let bytes = details.to_bytes();
-        let (head, _) = bytes.split_at(AccountId::SERIALIZED_SIZE);
-        let (_, tail) = bytes.split_at(bytes.len() - size_of::<u64>());
-
-        assert_eq!(head, details.account_id.to_bytes().as_slice());
-        assert_eq!(tail, details.creation_timestamp.to_le_bytes().as_slice());
     }
 }

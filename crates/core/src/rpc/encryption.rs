@@ -35,13 +35,7 @@ use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
 };
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::PublicKey;
 use miden_protocol::crypto::ies::SealingKey;
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Hasher, Word};
 
 use crate::errors::TransactionEncryptionError;
@@ -74,7 +68,7 @@ const MAX_KEY_ID_LEN: usize = 64;
 /// never leaves the validators.
 ///
 /// RPC responses can only construct one through [`AttestedTransactionEncryptionKey::verify`].
-/// Deserialization revalidates the scheme and key ID of cached keys.
+/// [`Self::from_parts`] revalidates the scheme and key ID of cached keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransactionEncryptionKey {
     scheme: u32,
@@ -87,8 +81,7 @@ impl TransactionEncryptionKey {
     /// Builds a cached key from its parts. A store uses this to rebuild a key that it persisted in
     /// its own format.
     ///
-    /// The parts are not attested. The constructor checks the scheme and the key ID length, as
-    /// deserialization does.
+    /// The parts are not attested. The constructor checks the scheme and the key ID length.
     pub fn from_parts(
         scheme: u32,
         key_id: Vec<u8>,
@@ -149,35 +142,6 @@ impl TransactionEncryptionKey {
             public_key,
             genesis_commitment,
         }
-    }
-}
-
-impl Serializable for TransactionEncryptionKey {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        target.write_u32(self.scheme);
-        target.write_usize(self.key_id.len());
-        target.write_bytes(&self.key_id);
-        self.public_key.write_into(target);
-        self.genesis_commitment.write_into(target);
-    }
-}
-
-impl Deserializable for TransactionEncryptionKey {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let scheme = source.read_u32()?;
-        let key_id_len = source.read_usize()?;
-        validate_key_metadata(scheme, key_id_len).map_err(DeserializationError::InvalidValue)?;
-
-        let key_id = source.read_vec(key_id_len)?;
-        let public_key = PublicKey::read_from(source)?;
-        let genesis_commitment = Word::read_from(source)?;
-
-        Ok(Self {
-            scheme,
-            key_id,
-            public_key,
-            genesis_commitment,
-        })
     }
 }
 
@@ -402,9 +366,17 @@ mod tests {
     const TEST_KEY_ID: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
     #[test]
-    fn transaction_encryption_key_deserialization_validates_metadata() {
+    fn transaction_encryption_key_from_parts_validates_metadata() {
         let key = test_key();
-        assert_eq!(TransactionEncryptionKey::read_from_bytes(&key.to_bytes()).unwrap(), key);
+        let from_parts = |key: TransactionEncryptionKey| {
+            TransactionEncryptionKey::from_parts(
+                key.scheme,
+                key.key_id,
+                key.public_key,
+                key.genesis_commitment,
+            )
+        };
+        assert_eq!(from_parts(key.clone()).unwrap(), key);
 
         let invalid_keys = [
             TransactionEncryptionKey {
@@ -418,10 +390,7 @@ mod tests {
             },
         ];
         for key in invalid_keys {
-            assert!(matches!(
-                TransactionEncryptionKey::read_from_bytes(&key.to_bytes()),
-                Err(DeserializationError::InvalidValue(_))
-            ));
+            assert!(from_parts(key).is_err());
         }
     }
 

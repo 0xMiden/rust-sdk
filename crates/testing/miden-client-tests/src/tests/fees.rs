@@ -18,11 +18,9 @@ use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     TransactionExecutorError,
-    TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
 };
-use miden_client::utils::{Deserializable, Serializable};
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
@@ -506,12 +504,11 @@ async fn serialized_multisig_request_uses_native_auth_args(
         .serial_number(Word::from([5u32, 6, 7, 8]))
         .build()
         .unwrap();
-    let request = TransactionRequestBuilder::new()
+    let mut request = TransactionRequestBuilder::new()
         .fee_conversion_salt(Word::from([1u32, 2, 3, 4]))
         .own_output_notes(vec![own_note.into()])
         .build()
         .unwrap();
-    let mut request = TransactionRequest::read_from_bytes(&request.to_bytes()).unwrap();
     let anchor = client.chain_anchor_for_request(&request).await.unwrap();
 
     rpc_api.prove_block();
@@ -560,12 +557,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([21u32, 22, 23, 24]))
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
-    // The executing party sets the auth args on a request that it received serialized. The request
-    // does not declare the bound block, so the client must track it.
-    let request = TransactionRequestBuilder::new().build().unwrap();
-    let request = TransactionRequest::read_from_bytes(&request.to_bytes())
-        .unwrap()
-        .with_auth_args(&auth_args);
+    // The executing party sets the auth args on a request that it received. The request does not
+    // declare the bound block, so the client must track it.
+    let request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
     let original_summary = unauthorized_summary(
         Box::pin(client.execute_transaction(account.id(), request.clone()))

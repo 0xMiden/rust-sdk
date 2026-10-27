@@ -600,23 +600,6 @@ impl NoteInfo {
 // SERIALIZATION
 // ================================================================================================
 
-impl Serializable for TransportNote {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.header.write_into(target);
-        self.details.to_bytes().write_into(target);
-    }
-}
-
-impl Deserializable for TransportNote {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let header = NoteHeader::read_from(source)?;
-        let details_bytes = Vec::<u8>::read_from(source)?;
-        let details = NoteDetails::read_from_bytes(&details_bytes)?;
-        Self::new(header, details)
-            .map_err(|error| DeserializationError::InvalidValue(format!("{error}")))
-    }
-}
-
 impl Serializable for NoteInfo {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.header.write_into(target);

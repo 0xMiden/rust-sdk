@@ -11,7 +11,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use rusqlite::{Connection, Transaction, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
 use crate::settings::protocol_config_key;
@@ -110,18 +110,34 @@ impl SqliteStore {
         conn: &mut Connection,
     ) -> Result<MmrPeaks, StoreError> {
         const QUERY: &str =
-            "SELECT block_num, partial_blockchain_peaks FROM blockchain_checkpoint LIMIT 1";
+            "SELECT block_num, peaks FROM chain_anchors ORDER BY block_num DESC LIMIT 1";
 
         let (block_num, peaks_bytes): (u32, Vec<u8>) = conn
             .prepare(QUERY)
             .into_store_error()?
-            .query_row(params![], |row| {
-                Ok((row.get("block_num")?, row.get("partial_blockchain_peaks")?))
-            })
+            .query_row(params![], |row| Ok((row.get("block_num")?, row.get("peaks")?)))
             .into_store_error()?;
 
         // The seed row holds an empty blob, which decodes as an MMR without peaks.
         parse_partial_blockchain_peaks(block_num, &peaks_bytes)
+    }
+
+    pub(crate) fn get_blockchain_peaks_by_block_num(
+        conn: &mut Connection,
+        block_num: BlockNumber,
+    ) -> Result<Option<MmrPeaks>, StoreError> {
+        const QUERY: &str = "SELECT peaks FROM chain_anchors WHERE block_num = ?";
+
+        let peaks_bytes: Option<Vec<u8>> = conn
+            .prepare(QUERY)
+            .into_store_error()?
+            .query_row(params![block_num.as_u32()], |row| row.get("peaks"))
+            .optional()
+            .into_store_error()?;
+
+        peaks_bytes
+            .map(|bytes| parse_partial_blockchain_peaks(block_num.as_u32(), &bytes))
+            .transpose()
     }
 
     pub(crate) fn insert_block_header(
@@ -238,6 +254,23 @@ impl SqliteStore {
             .into_store_error()?;
 
             Ok(())
+        })
+    }
+
+    /// Deletes the chain anchors with a block number `<= up_to_block`, except the genesis and
+    /// sync-height anchors.
+    pub(crate) fn prune_chain_anchors(
+        conn: &mut Connection,
+        up_to_block: BlockNumber,
+    ) -> Result<usize, StoreError> {
+        with_write_tx(conn, |tx| {
+            let sync_height = query_sync_height(tx)?.as_u32();
+
+            tx.execute(
+                "DELETE FROM chain_anchors WHERE block_num > ?1 AND block_num < ?2 AND block_num <= ?3",
+                params![BlockNumber::GENESIS.as_u32(), sync_height, up_to_block.as_u32()],
+            )
+            .into_store_error()
         })
     }
 }
@@ -515,11 +548,11 @@ mod test {
             let height_i64 = i64::try_from(height).expect("fits in i64");
             let peaks_bytes = proto::encode_mmr_peaks(&peaks_by_block[height]);
 
-            // Update sync height (and the matching MMR peaks) to simulate having synced further
+            // Insert a chain anchor at a higher block to simulate having synced further
             store
                 .interact_with_connection(move |conn| {
                     conn.execute(
-                        "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ?",
+                        "INSERT INTO chain_anchors (block_num, peaks) VALUES (?, ?)",
                         params![height_i64, peaks_bytes],
                     )
                     .unwrap();
@@ -617,7 +650,7 @@ mod test {
                 }
                 SqliteStore::insert_partial_blockchain_nodes_tx(&tx, &auth_nodes).unwrap();
                 tx.execute(
-                    "UPDATE blockchain_checkpoint SET block_num = ?, partial_blockchain_peaks = ?",
+                    "INSERT INTO chain_anchors (block_num, peaks) VALUES (?, ?)",
                     params![i64::try_from(TOTAL_BLOCKS - 1).unwrap(), tip_peaks_bytes],
                 )
                 .unwrap();
@@ -647,5 +680,102 @@ mod test {
 
         let proof_3 = rebuilt.open(3).expect("open succeeds");
         assert!(proof_3.is_none(), "block 3 should no longer be provable");
+    }
+
+    /// Tests that the store keeps the peaks at each past sync height after the irrelevant block
+    /// headers are pruned, and that `prune_chain_anchors` keeps the genesis peaks and the current
+    /// sync height peaks.
+    #[tokio::test]
+    async fn chain_anchors_are_kept_until_pruned() {
+        let store = create_test_store().await;
+        const TOTAL_BLOCKS: usize = 16;
+        const SYNC_HEIGHT: usize = TOTAL_BLOCKS - 1;
+
+        let headers: Vec<BlockHeader> = (0..TOTAL_BLOCKS)
+            .map(|n| BlockHeader::mock(u32::try_from(n).unwrap(), None, None, &[]))
+            .collect();
+        let mut mmr = Mmr::default();
+        for h in &headers {
+            mmr.add(h.commitment()).expect("valid MMR append");
+        }
+        let peaks_at =
+            |block_num: usize| mmr.peaks_at(Forest::new(block_num).expect("valid forest")).unwrap();
+
+        // Blocks 3 and 10 are relevant. Block 7 is an irrelevant past sync height.
+        let tracked: BTreeSet<usize> = [3, 10].into();
+        let anchors: Vec<(i64, Vec<u8>)> = [3, 7, 10, SYNC_HEIGHT]
+            .into_iter()
+            .map(|n| (i64::try_from(n).unwrap(), proto::encode_mmr_peaks(&peaks_at(n))))
+            .collect();
+
+        let headers_clone = headers.clone();
+        store
+            .interact_with_connection(move |conn| {
+                let tx = conn.transaction().unwrap();
+                for (i, header) in headers_clone.iter().enumerate() {
+                    SqliteStore::insert_block_header_tx(&tx, header, tracked.contains(&i)).unwrap();
+                }
+                for (block_num, peaks) in anchors {
+                    tx.execute(
+                        "INSERT INTO chain_anchors (block_num, peaks) VALUES (?, ?)",
+                        params![block_num, peaks],
+                    )
+                    .unwrap();
+                }
+                tx.commit().unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        for block_num in [3, 7, 10, SYNC_HEIGHT] {
+            let stored = store
+                .get_blockchain_peaks_by_block_num(BlockNumber::from(
+                    u32::try_from(block_num).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(stored, Some(peaks_at(block_num)));
+        }
+        assert_eq!(store.get_current_blockchain_peaks().await.unwrap(), peaks_at(SYNC_HEIGHT));
+
+        // Pruning irrelevant block headers keeps the peaks at each past sync height.
+        store.untrack_and_prune_irrelevant_blocks(&[], &[]).await.unwrap();
+        assert!(store.get_block_header_by_num(BlockNumber::from(7u32)).await.unwrap().is_none());
+        for block_num in [0, 3, 7, 10, SYNC_HEIGHT] {
+            let stored = store
+                .get_blockchain_peaks_by_block_num(BlockNumber::from(
+                    u32::try_from(block_num).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(stored, Some(peaks_at(block_num)));
+        }
+
+        // The bound is inclusive.
+        assert_eq!(store.prune_chain_anchors(BlockNumber::from(7u32)).await.unwrap(), 2);
+        // The genesis peaks and the current sync height peaks are kept, even if the bound is above
+        // the current sync height.
+        assert_eq!(store.prune_chain_anchors(BlockNumber::from(100u32)).await.unwrap(), 1);
+
+        for block_num in [3, 7, 10] {
+            let stored = store
+                .get_blockchain_peaks_by_block_num(BlockNumber::from(
+                    u32::try_from(block_num).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(stored, None);
+        }
+        for block_num in [0, SYNC_HEIGHT] {
+            let stored = store
+                .get_blockchain_peaks_by_block_num(BlockNumber::from(
+                    u32::try_from(block_num).unwrap(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(stored, Some(peaks_at(block_num)));
+        }
+        assert_eq!(store.get_sync_height().await.unwrap().as_usize(), SYNC_HEIGHT);
     }
 }

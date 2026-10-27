@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_client::keystore::FilesystemKeyStore;
+use miden_client::builder::ClientBuilder;
 use miden_client::note::{
     NoteAcquisition, NoteAcquisitionError, NoteAcquisitionGate, NoteAcquisitionLimits, NoteFile,
     NoteId,
@@ -9,7 +10,7 @@ use miden_client::note::{
 use miden_client::store::{NoteFilter, Store};
 use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
-use miden_client::{ClientBuilder, ClientError, async_trait};
+use miden_client::{ClientError, async_trait};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::EMPTY_WORD;
 use miden_protocol::block::BlockNumber;

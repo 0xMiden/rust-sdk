@@ -4,6 +4,8 @@
 
 ### Features
 
+* [FEATURE][rust] Added opt-in note acquisition gate configuration for retention before note import writes ([#2750](https://github.com/0xMiden/rust-sdk/pull/2750)).
+
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 

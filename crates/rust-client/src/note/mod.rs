@@ -77,12 +77,15 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
-pub use acquisition::{
-    NoteAcquisition, NoteAcquisitionError, NoteAcquisitionGate, NoteAcquisitionLimits,
-    NoteAcquisitionSource, NoteAcquisitionVariant,
-};
 pub(crate) use acquisition::NoteAcquisitionConfig;
-
+pub use acquisition::{
+    NoteAcquisition,
+    NoteAcquisitionError,
+    NoteAcquisitionGate,
+    NoteAcquisitionLimits,
+    NoteAcquisitionSource,
+    NoteAcquisitionVariant,
+};
 pub use miden_client_core::store::{
     InputNoteUpdate,
     NoteUpdateTracker,

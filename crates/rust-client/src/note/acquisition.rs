@@ -140,7 +140,10 @@ pub enum NoteAcquisitionError {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NoteAcquisitionGate: Send + Sync {
     /// Retains or refuses one candidate. Errors abort the import.
-    async fn before_import(&self, acquisition: &NoteAcquisition) -> Result<(), NoteAcquisitionError>;
+    async fn before_import(
+        &self,
+        acquisition: &NoteAcquisition,
+    ) -> Result<(), NoteAcquisitionError>;
 }
 
 pub(crate) struct NoteAcquisitionConfig {

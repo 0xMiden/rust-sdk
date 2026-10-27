@@ -109,7 +109,7 @@ tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
 tokio        = { features = ["sync", "time"], optional = true, workspace = true }
 tonic        = { features = ["codegen"], optional = true, workspace = true }
-tonic-health = { optional = true, version = "0.14" }
+tonic-health = { optional = true, workspace = true }
 tonic-prost  = { optional = true, workspace = true }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }

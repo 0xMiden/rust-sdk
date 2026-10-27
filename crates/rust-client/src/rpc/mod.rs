@@ -10,14 +10,13 @@
 //! ## Example
 //!
 //! ```no_run
-//! # use miden_client::rpc::{Endpoint, NodeRpcClient, GrpcClient, VerifyingRpcClient};
+//! # use miden_client::rpc::{Endpoint, NodeRpcClient, GrpcClient};
 //! # use miden_protocol::block::BlockNumber;
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create a gRPC client instance (assumes default endpoint configuration), wrapped so that
-//! // node responses are verified against the requests.
+//! // Create a gRPC client instance (assumes default endpoint configuration).
 //! let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
-//! let rpc_client = VerifyingRpcClient::new(GrpcClient::new(&endpoint, 1000));
+//! let rpc_client = GrpcClient::new(&endpoint, 1000);
 //!
 //! // Fetch the latest block header (by passing None).
 //! let (block_header, mmr_proof) = rpc_client.get_block_header_by_number(None, true).await?;
@@ -56,7 +55,6 @@ pub use miden_client_core::rpc::{
     NoteContentFetch,
     RpcEndpoint,
     RpcLimits,
-    VerifyingRpcClient,
     domain,
 };
 #[cfg(feature = "tonic")]

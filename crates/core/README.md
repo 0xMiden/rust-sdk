@@ -3,7 +3,7 @@
 Core traits and types shared by the miden-client crates. This crate holds the contract between the client and its backends.
 
 - The `Store` trait, which a storage backend implements
-- The `NodeRpcClient` trait, which a client for the Miden node RPC API implements, and `VerifyingRpcClient`, which wraps any implementation and rejects responses that do not match the request
+- The `NodeRpcClient` trait, which a client for the Miden node RPC API implements
 - The types in the `Store` signatures: note, account and transaction records, filters, settings, and state sync and transaction updates
 - The types in the `NodeRpcClient` signatures: the RPC request and response types in `rpc::domain`, `RpcEndpoint`, `AccountStateAt` and the transaction encryption types
 - The errors of these types, in the `errors` module

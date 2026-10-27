@@ -492,7 +492,7 @@ pub trait NodeRpcClient: Send + Sync {
         block_to: BlockNumber,
         details: &mut AccountDetails,
     ) -> Result<(), RpcError> {
-        if !matches!(details.vault_details, AccountVaultDetails::TooManyAssets) {
+        if !details.vault_details.is_too_many_assets() {
             return Ok(());
         }
         let vault_info =

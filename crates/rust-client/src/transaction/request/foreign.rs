@@ -327,7 +327,7 @@ mod foreign_vault_tests {
 
     use super::account_proof_into_inputs;
     use crate::rpc::NodeRpcClient;
-    use crate::rpc::domain::account::{AccountVaultDetails, GetAccountRequest, VaultFetch};
+    use crate::rpc::domain::account::{GetAccountRequest, VaultFetch};
     use crate::test_utils::mock::MockRpcApi;
 
     fn chain_with_funded_account() -> (Account, Arc<dyn NodeRpcClient>) {
@@ -355,7 +355,7 @@ mod foreign_vault_tests {
 
         let details = proof.vault_details().expect("public account must carry vault details");
         assert!(
-            matches!(details, AccountVaultDetails::Assets(assets) if assets.is_empty()),
+            details.assets().is_some_and(<[_]>::is_empty),
             "the node omits the asset list when the sent root matches"
         );
 

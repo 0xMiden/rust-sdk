@@ -551,6 +551,28 @@ pub enum AccountVaultDetails {
 }
 
 impl AccountVaultDetails {
+    /// Returns `true` if the vault has more assets than the node returns in a single response.
+    pub fn is_too_many_assets(&self) -> bool {
+        matches!(self, Self::TooManyAssets)
+    }
+
+    /// Returns the asset list, or `None` for every variant other than [`Assets`](Self::Assets).
+    pub fn assets(&self) -> Option<&[Asset]> {
+        match self {
+            Self::Assets(assets) => Some(assets),
+            Self::TooManyAssets | Self::Partial(_) => None,
+        }
+    }
+
+    /// Converts the details into the vault proofs, or returns `None` for every variant other than
+    /// [`Partial`](Self::Partial).
+    pub fn into_partial_vault(self) -> Option<PartialVault> {
+        match self {
+            Self::Partial(partial_vault) => Some(partial_vault),
+            Self::TooManyAssets | Self::Assets(_) => None,
+        }
+    }
+
     /// Checks the vault details against the request they answer and against `vault_root`, the vault
     /// root in the account header.
     ///
@@ -1122,17 +1144,6 @@ mod vault_details_tests {
         AccountVaultDetails::Partial(partial_vault(vault, asset_ids))
     }
 
-    /// Returns the proofs in `details`.
-    ///
-    /// # Panics
-    /// Panics if `details` does not hold proofs.
-    fn into_partial_vault(details: AccountVaultDetails) -> PartialVault {
-        let AccountVaultDetails::Partial(partial_vault) = details else {
-            panic!("expected vault proofs, got {details:?}");
-        };
-        partial_vault
-    }
-
     fn asset_request(asset_ids: &[AssetId]) -> VaultFetch {
         VaultFetch::Assets(asset_ids.iter().copied().collect())
     }
@@ -1157,7 +1168,7 @@ mod vault_details_tests {
             .validate_against_request(vault.root(), &request)
             .unwrap();
 
-        let partial_vault = into_partial_vault(details);
+        let partial_vault = details.into_partial_vault().expect("expected vault proofs");
         assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
         assert_eq!(partial_vault.get(absent).unwrap(), None);
     }
@@ -1209,7 +1220,7 @@ mod vault_details_tests {
             .validate_against_request(vault.root(), &asset_request(&[asset.id(), absent]))
             .unwrap();
 
-        let partial_vault = into_partial_vault(details);
+        let partial_vault = details.into_partial_vault().expect("expected vault proofs");
         assert_eq!(partial_vault.get(asset.id()).unwrap(), Some(asset));
         assert_eq!(partial_vault.get(absent).unwrap(), None);
     }
@@ -1238,7 +1249,7 @@ mod vault_details_tests {
 
         let details = AccountVaultDetails::try_from(response).unwrap();
 
-        assert_eq!(into_partial_vault(details), expected);
+        assert_eq!(details.into_partial_vault(), Some(expected));
     }
 
     #[test]
@@ -1267,7 +1278,7 @@ mod vault_details_tests {
 
         let details = AccountVaultDetails::try_from(response).unwrap();
 
-        assert!(matches!(details, AccountVaultDetails::TooManyAssets));
+        assert!(details.is_too_many_assets());
     }
 
     #[test]

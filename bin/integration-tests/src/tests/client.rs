@@ -29,7 +29,6 @@ use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType};
 use miden_client::rpc::domain::account::{
     AccountStorageRequirements,
-    AccountVaultDetails,
     GetAccountRequest,
     StorageMapEntries,
     StorageMapFetch,
@@ -1739,7 +1738,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     // The vault also holds the native fee asset where the chain charges one, so this checks for the
     // minted token rather than for it alone.
     let minted = Asset::from(FungibleAsset::new(faucet.id(), MINT_AMOUNT).unwrap());
-    let AccountVaultDetails::Assets(assets) = &details.vault_details else {
+    let Some(assets) = details.vault_details.assets() else {
         anyhow::bail!("expected the vault asset list, got {:?}", details.vault_details);
     };
     assert!(assets.contains(&minted), "expected the minted token in the vault");
@@ -1759,7 +1758,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let (_, details) = proof.into_parts();
     let details = details.context("expected account details for public account")?;
 
-    let AccountVaultDetails::Assets(assets) = &details.vault_details else {
+    let Some(assets) = details.vault_details.assets() else {
         anyhow::bail!("expected the vault asset list, got {:?}", details.vault_details);
     };
     assert!(assets.is_empty(), "expected empty assets when vault commitment matches");
@@ -1770,7 +1769,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let (_, details) = proof.into_parts();
     let details = details.context("expected account details for public account")?;
 
-    let AccountVaultDetails::Assets(assets) = &details.vault_details else {
+    let Some(assets) = details.vault_details.assets() else {
         anyhow::bail!("expected the vault asset list, got {:?}", details.vault_details);
     };
     assert!(

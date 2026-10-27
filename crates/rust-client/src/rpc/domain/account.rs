@@ -1179,17 +1179,16 @@ impl From<StorageMapFetch> for Option<StorageRequest> {
 
 /// Storage map entries and vault data to fetch for an account.
 ///
-/// Storage maps and the vault are skipped by default. Foreign account fetching checks
-/// [`Self::has_vault_policy`]: without a policy, it fetches the full vault, or only a changed
-/// vault for an account that the store holds.
+/// Both policies default to `Skip`. A transaction reads skipped entries and assets during
+/// execution, one lookup at a time, from the store or from the node.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccountFetch {
     storage: StorageMapFetch,
-    vault: Option<VaultFetch>,
+    vault: VaultFetch,
 }
 
 impl AccountFetch {
-    /// Creates a fetch policy with no storage map entries and no vault policy.
+    /// Creates a fetch policy that skips storage map entries and vault data.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -1202,10 +1201,10 @@ impl AccountFetch {
         self
     }
 
-    /// Sets the vault policy.
+    /// Sets which vault data to fetch.
     #[must_use]
     pub fn with_vault(mut self, vault: VaultFetch) -> Self {
-        self.vault = Some(vault);
+        self.vault = vault;
         self
     }
 
@@ -1214,14 +1213,9 @@ impl AccountFetch {
         &self.storage
     }
 
-    /// Returns the vault policy. An unset policy is [`VaultFetch::Skip`].
+    /// Returns the vault fetch policy.
     pub fn vault(&self) -> &VaultFetch {
-        self.vault.as_ref().unwrap_or(&VaultFetch::Skip)
-    }
-
-    /// Returns `true` if [`Self::with_vault`] set the vault policy.
-    pub fn has_vault_policy(&self) -> bool {
-        self.vault.is_some()
+        &self.vault
     }
 }
 

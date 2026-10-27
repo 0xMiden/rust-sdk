@@ -101,7 +101,7 @@ use tracing::info;
 use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
-use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
+use crate::rpc::domain::account::{AccountFetch, GetAccountRequest};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -1809,7 +1809,7 @@ pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
-    mut fetch: AccountFetch,
+    fetch: AccountFetch,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
     if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
@@ -1818,16 +1818,6 @@ pub(crate) async fn fetch_public_account_inputs(
 
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
-
-    if !fetch.has_vault_policy() {
-        let vault = store
-            .get_account_header(account_id)
-            .await?
-            .map_or(VaultFetch::Always, |(header, ..)| {
-                VaultFetch::IfChangedFrom(header.vault_root())
-            });
-        fetch = fetch.with_vault(vault);
-    }
 
     let (_block_num, account_proof) = rpc_api
         .get_account(

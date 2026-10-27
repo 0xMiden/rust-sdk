@@ -58,7 +58,7 @@ miden-protocol  = { default-features = false, features = ["testing"], workspace 
 miden-standards = { workspace = true }
 miden-testing   = { default-features = false, workspace = true }
 tokio           = { workspace = true }
-tonic-health    = { version = "0.14" }
+tonic-health    = { workspace = true }
 
 [lints]
 workspace = true

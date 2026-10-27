@@ -57,9 +57,9 @@ where
     ///   inclusion proof and metadata. The block header data is only fetched from the node if the
     ///   note is committed in the past relative to the client.
     ///
-    /// A configured acquisition gate must acknowledge all candidates before this import writes
-    /// to the store. The gate receives typed candidates, not authenticated inclusion proofs.
-    /// Earlier host retention acknowledgements are not rolled back if a later candidate fails.
+    /// A configured acquisition gate must acknowledge all candidates before this import writes to
+    /// the store. The gate receives typed candidates, not authenticated inclusion proofs. Earlier
+    /// host retention acknowledgements are not rolled back if a later candidate fails.
     ///
     /// # Errors
     ///

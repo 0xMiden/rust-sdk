@@ -12,8 +12,8 @@ use super::NoteFile;
 
 /// Limits on the note files delivered to an acquisition gate during one import.
 ///
-/// These limits bound delivered payloads. They do not bound allocations inside the existing
-/// native note-file encoder. A zero limit refuses a nonempty acquisition.
+/// These limits bound delivered payloads. They do not bound allocations inside the existing native
+/// note-file encoder. A zero limit refuses a nonempty acquisition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoteAcquisitionLimits {
     /// Maximum number of input files in one import.

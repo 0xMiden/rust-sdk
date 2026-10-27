@@ -408,15 +408,15 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
             .tag(tag.into())
             .build()
             .unwrap();
-        let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-        node.write().add_note(*note.header(), note.details().to_bytes());
+        let transport_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+        transport_node.write().add_note(*note.header(), note.details().to_bytes());
         let gate = Arc::new(ToggleGate {
             allow: AtomicBool::new(false),
             sources: Mutex::new(Vec::new()),
         });
         let mut client = super::mock_client_builder(rpc)
             .await
-            .note_transport(Arc::new(MockNoteTransportApi::new(node)))
+            .note_transport(Arc::new(MockNoteTransportApi::new(transport_node)))
             .note_acquisition_gate(
                 gate.clone(),
                 NoteAcquisitionLimits {

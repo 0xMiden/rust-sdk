@@ -268,6 +268,16 @@ pub trait Store: Send + Sync {
     /// Before the first sync, returns an empty [`MmrPeaks`].
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError>;
 
+    /// Returns the chain MMR peaks committed by the header of `block_num` (peaks at `forest =
+    /// block_num`).
+    ///
+    /// The store keeps peaks for each past sync height until [`Store::prune_chain_anchors`] removes
+    /// them. Returns `None` if the store has no peaks for `block_num`.
+    async fn get_blockchain_peaks_by_block_num(
+        &self,
+        block_num: BlockNumber,
+    ) -> Result<Option<MmrPeaks>, StoreError>;
+
     /// Inserts a block header together with its MMR authentication nodes in a single transaction,
     /// so the header and the nodes that rebuild its `PartialMmr` are committed together.
     ///
@@ -329,6 +339,14 @@ pub trait Store: Send + Sync {
         account_id: AccountId,
         up_to_nonce: Felt,
     ) -> Result<usize, StoreError>;
+
+    /// Prunes the chain MMR peaks at the past sync heights up to the given block number.
+    ///
+    /// Deletes the peaks at each past sync height `<= up_to_block`. The genesis peaks and the
+    /// current sync height peaks are always kept.
+    ///
+    /// Returns the number of deleted entries.
+    async fn prune_chain_anchors(&self, up_to_block: BlockNumber) -> Result<usize, StoreError>;
 
     // ACCOUNT
     // --------------------------------------------------------------------------------------------

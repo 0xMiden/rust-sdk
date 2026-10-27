@@ -623,10 +623,6 @@ pub enum TransactionRequestError {
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error(
-        "the account proof does not contain the required foreign account data; re-fetch the proof and retry"
-    )]
-    ForeignAccountDataMissing,
-    #[error(
         "foreign account {0} has incompatible visibility; use `ForeignAccount::public()` for public accounts and `ForeignAccount::private()` for private accounts"
     )]
     InvalidForeignAccountId(AccountId),

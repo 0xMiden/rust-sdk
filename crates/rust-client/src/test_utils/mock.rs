@@ -360,7 +360,7 @@ impl MockRpcApi {
 
     /// Retrieves account vault updates in a given block range. This method tries to simulate
     /// pagination by limiting the number of blocks processed per request.
-    fn get_sync_account_vault_requirements(
+    fn get_sync_account_vault_request(
         &self,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1039,7 +1039,7 @@ impl NodeRpcClient for MockRpcApi {
 
         loop {
             let (page_chain_tip, page_block_number, page_patch) =
-                self.get_sync_account_vault_requirements(current_block_from, block_to, account_id);
+                self.get_sync_account_vault_request(current_block_from, block_to, account_id);
             vault_patch.merge(page_patch);
 
             if page_block_number >= target_block {

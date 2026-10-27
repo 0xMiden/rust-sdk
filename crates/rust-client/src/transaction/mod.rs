@@ -1809,8 +1809,7 @@ async fn local_account_inputs(
 /// inputs; reads from them resolve lazily as per-key witnesses during execution.
 ///
 /// # Errors
-/// Fails if the account is private and has to be fetched: the RPC does not return account details
-/// for them, causing [`TransactionRequestError::ForeignAccountDataMissing`].
+/// Fails if account data cannot be fetched or converted to transaction inputs.
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,

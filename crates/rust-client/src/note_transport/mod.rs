@@ -40,15 +40,20 @@ pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.mid
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
 /// Settings key for the unused aggregate transport cursor.
-#[deprecated(since = "0.17.1", note = "note transport stores a cursor for each tag")]
+#[deprecated(since = "0.17.1", note = "note transport does not read this setting")]
 pub const NOTE_TRANSPORT_CURSOR_STORE_SETTING: &str = "note_transport_cursor";
+/// Legacy settings key for the cursor of each tag. The client migrates this value to
+/// [`NOTE_TRANSPORT_SYNC_STATE_KEY`].
+#[deprecated(
+    since = "0.18.0",
+    note = "note transport stores one cursor under NOTE_TRANSPORT_SYNC_STATE_KEY"
+)]
 pub const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
+/// Settings key for the note transport cursor and the tags that it covers.
+pub const NOTE_TRANSPORT_SYNC_STATE_KEY: &str = "note_transport_sync_state";
 
-type NoteTransportCursors = BTreeMap<NoteTag, NoteTransportCursor>;
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
-/// Limits the pages for each request group so other groups can progress in the same sync.
-const MAX_NOTE_TRANSPORT_PAGES_PER_GROUP: usize = 32;
 
 /// Legacy settings key for note transport backfill state.
 #[deprecated(since = "0.17.1", note = "note transport no longer keeps per-tag backfill state")]
@@ -117,41 +122,26 @@ impl<AUTH> Client<AUTH> {
         Ok(())
     }
 
-    /// Loads the cursor for each tag used by the transport fetch.
+    /// Loads the note transport sync state.
     ///
-    /// A missing or unreadable value resets all tags so the next fetch safely reads their retained
-    /// history.
-    async fn load_note_transport_cursors(&self) -> Result<NoteTransportCursors, ClientError> {
-        let bytes = self
-            .store
-            .get_setting(SettingScope::Client, String::from(NOTE_TRANSPORT_CURSORS_KEY))
-            .await
-            .map_err(ClientError::StoreError)?;
-        let Some(bytes) = bytes else {
-            return Ok(BTreeMap::new());
-        };
-
-        match NoteTransportCursors::read_from_bytes(&bytes) {
-            Ok(cursors) => Ok(cursors),
-            Err(err) => {
-                tracing::warn!(?err, "resetting unreadable note transport cursors");
-                Ok(BTreeMap::new())
-            },
-        }
-    }
-
-    /// Saves the cursor for each tag used by the transport fetch.
-    async fn save_note_transport_cursors(
+    /// A store without the state migrates the legacy cursor of each tag. A missing or unreadable
+    /// value returns `None`, so the next fetch reads the retained history of all tags.
+    #[allow(deprecated)]
+    async fn load_note_transport_sync_state(
         &self,
-        cursors: &NoteTransportCursors,
-    ) -> Result<(), ClientError> {
-        let key = String::from(NOTE_TRANSPORT_CURSORS_KEY);
-        if cursors.is_empty() {
-            self.store.remove_setting(SettingScope::Client, key).await?;
+    ) -> Result<Option<NoteTransportSyncState>, ClientError> {
+        let get = |key: &str| self.store.get_setting(SettingScope::Client, key.into());
+        let state = if let Some(bytes) = get(NOTE_TRANSPORT_SYNC_STATE_KEY).await? {
+            NoteTransportSyncState::read_from_bytes(&bytes).map(Some)
+        } else if let Some(bytes) = get(NOTE_TRANSPORT_CURSORS_KEY).await? {
+            BTreeMap::<NoteTag, Option<NoteTransportCursor>>::read_from_bytes(&bytes)
+                .map(migrate_tag_cursors)
         } else {
-            self.store.set_setting(SettingScope::Client, key, cursors.to_bytes()).await?;
-        }
-        Ok(())
+            Ok(None)
+        };
+        Ok(state
+            .inspect_err(|err| tracing::warn!(?err, "resetting unreadable note transport state"))
+            .unwrap_or_default())
     }
 }
 
@@ -169,12 +159,8 @@ where
     /// tags, use [`Client::get_note_tags`]. To add a user-source tag, use [`Client::add_note_tag`].
     /// Fetched notes are stored in the client store.
     ///
-    /// An internal pagination mechanism starts each request from the lowest cursor of its tags.
-    /// Tags without a stored cursor start from the first retained note. The service can deliver a
-    /// note again after a tag is added or removed; the import drops these duplicates.
-    ///
-    /// A failed request returns an error after successful pages are imported and their cursors are
-    /// saved. Histories that exceed the page budget continue on the next call.
+    /// A failed request returns an error after the fetched notes are imported, and the next call
+    /// fetches the failed tags again.
     pub async fn fetch_private_notes(&mut self) -> Result<(), ClientError> {
         self.ensure_genesis_in_place().await?;
 
@@ -225,57 +211,47 @@ where
         Ok(tags)
     }
 
-    /// Fetches bounded pages for request groups of at most
-    /// [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`] tags.
-    ///
-    /// Each group starts from its lowest cursor. The import drops notes delivered again. Each tag
-    /// keeps the higher of its stored cursor and the page cursor when their database nonces match.
-    ///
-    /// A failed page keeps the pages fetched before it and leaves the other groups to proceed.
+    /// Fetches the notes of all tracked tags up to the bound of the first page, with covered tags
+    /// from the stored cursor and the other tags from the first retained note.
     async fn fetch_transport_notes_in_chunks(
         &self,
     ) -> Result<NoteTransportLayerUpdate, ClientError> {
         let api = self.get_note_transport_api()?;
-        let tags: Vec<_> = self.store.get_unique_note_tags().await?.into_iter().collect();
-        let stored = self.load_note_transport_cursors().await?;
-        let mut cursors: NoteTransportCursors = tags
-            .iter()
-            .filter_map(|tag| stored.get(tag).map(|cursor| (*tag, *cursor)))
-            .collect();
+        let (start, stored_tags) = self.load_note_transport_sync_state().await?.unzip();
+        let (covered, added): (Vec<_>, Vec<_>) = self
+            .store
+            .get_unique_note_tags()
+            .await?
+            .into_iter()
+            .partition(|tag| stored_tags.as_ref().is_some_and(|tags| tags.contains(tag)));
 
         let mut update = NoteTransportLayerUpdate::default();
         let mut notes = Vec::new();
-        for (start, group) in transport_request_groups(&tags, &cursors) {
-            let mut cursor = start;
-            for _ in 0..MAX_NOTE_TRANSPORT_PAGES_PER_GROUP {
-                let page = match api
-                    .fetch_notes_page(&group, cursor)
-                    .await
-                    .and_then(|page| validate_transport_page(page, &group, cursor))
-                {
-                    Ok(page) => page,
-                    Err(error) => {
-                        update.fetch_error.get_or_insert(error.into());
-                        break;
-                    },
-                };
-                for (id, note, block_hint) in page.notes {
-                    update.id_by_commitment.insert(note.details_commitment(), id);
-                    notes.push((id, note, block_hint));
-                }
-                cursor = page.cursor;
-                for tag in &group {
-                    let position = cursors.entry(*tag).or_insert(cursor);
-                    *position = advance_transport_cursor(*position, cursor);
-                }
-                if !page.has_more {
-                    break;
-                }
+        let mut sync_to = None;
+        let mut reached = BTreeSet::new();
+        let chunks = covered
+            .chunks(MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST)
+            .map(|chunk| (start, chunk))
+            .chain(added.chunks(MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST).map(|chunk| (None, chunk)));
+        for (start, chunk) in chunks {
+            match fetch_transport_chunk(api.as_ref(), chunk, start, &mut sync_to, &mut notes).await
+            {
+                Ok(()) => reached.extend(chunk),
+                Err(error) => {
+                    update.fetch_error.get_or_insert(error.into());
+                },
             }
         }
 
+        // A covered tag that did not reach the bound would skip notes if the cursor moved.
+        if let Some(cursor) = sync_to
+            && covered.iter().all(|tag| reached.contains(tag))
+        {
+            update.sync_state = Some((cursor, reached));
+        }
+        update.id_by_commitment =
+            notes.iter().map(|(id, note, _)| (note.details_commitment(), *id)).collect();
         update.note_files = self.prepare_transport_notes(notes).await?;
-        update.cursors = Some(cursors);
         Ok(update)
     }
 
@@ -322,10 +298,10 @@ where
 
     /// Fetches the notes the Note Transport Layer holds for the tracked tags.
     ///
-    /// Fetches bounded pages for each group of tracked tags. This performs no node call and writes
+    /// Fetches the notes of all tracked tags up to one bound. This performs no node call and writes
     /// nothing, so it can run concurrently with the chain fetch. The caller imports the returned
-    /// files and then persists all tag cursors. A failed request preserves successful pages in the
-    /// returned update.
+    /// files and then saves the sync state. A failed request keeps the notes of earlier pages in
+    /// the returned update.
     ///
     /// Returns empty data when note transport is not configured.
     pub(crate) async fn fetch_note_transport_updates(
@@ -341,9 +317,9 @@ where
     /// Writes everything [`Client::fetch_note_transport_updates`] returned, in two steps:
     ///
     /// 1. Imports the fetched notes, which resolves their on-chain state and stores the records.
-    /// 2. Saves the cursor for each tag.
+    /// 2. Saves the sync state.
     ///
-    /// The notes are written before the cursors, so a crash between them re-fetches instead of
+    /// The notes are written before the sync state, so a crash between them re-fetches instead of
     /// skipping notes that were never written.
     ///
     /// Returns the ids of the imported notes and the details commitments of the records written.
@@ -354,7 +330,7 @@ where
         let NoteTransportLayerUpdate {
             note_files,
             id_by_commitment,
-            cursors,
+            sync_state,
             fetch_error,
         } = update;
 
@@ -364,11 +340,15 @@ where
             .filter_map(|commitment| id_by_commitment.get(commitment).copied())
             .collect();
 
-        if let Some(cursors) = cursors {
-            self.save_note_transport_cursors(&cursors).await?;
+        if let Some(state) = sync_state {
+            let key = String::from(NOTE_TRANSPORT_SYNC_STATE_KEY);
+            self.store.set_setting(SettingScope::Client, key, state.to_bytes()).await?;
         }
         if let Some(error) = fetch_error {
-            tracing::warn!(?error, "note transport fetch failed; saved successful pages for retry");
+            tracing::warn!(
+                ?error,
+                "note transport fetch failed; the next fetch reads the tags again"
+            );
         }
 
         imported_ids.sort_unstable();
@@ -381,9 +361,10 @@ where
     ///
     /// A note that a local transaction is consuming cannot be overwritten, so its import would
     /// fail. A note that is already committed or consumed gains nothing from a second import and
-    /// would cost a node request. A request from a group's lowest cursor can deliver such notes
-    /// again. Expected, unverified, and invalid notes pass through because their records can need a
-    /// new inclusion proof. A resolved record must match the ID in the transport header.
+    /// would cost a node request. A tag that starts from the first retained note, or a fetch after
+    /// a failed fetch, can deliver such notes again. Expected, unverified, and invalid notes pass
+    /// through because their records can need a new inclusion proof. A resolved record must match
+    /// the ID in the transport header.
     async fn drop_notes_resolved_locally(
         &self,
         notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
@@ -423,77 +404,75 @@ pub(crate) struct NoteTransportLayerUpdate {
     /// Note ids by details commitment, taken from the note headers the transport returned. Used to
     /// resolve the written records back to ids.
     id_by_commitment: BTreeMap<NoteDetailsCommitment, NoteId>,
-    /// Cursor for each tag used by the steady-state fetch.
-    cursors: Option<NoteTransportCursors>,
+    /// New sync state. `None` keeps the stored state.
+    sync_state: Option<NoteTransportSyncState>,
     /// First request error. Successful pages remain available for import.
     pub(crate) fetch_error: Option<ClientError>,
 }
 
-/// Splits the tracked tags into request groups and returns the cursor each group starts from.
-///
-/// Tags without a cursor start from the first retained note. Tags with a cursor are grouped by
-/// database nonce, because sequences from different databases do not compare. Each nonce group is
-/// sorted by sequence before it is split, so the tags in one request sit close together and the
-/// lowest cursor limits repeated deliveries.
-fn transport_request_groups(
-    tags: &[NoteTag],
-    cursors: &NoteTransportCursors,
-) -> Vec<(NoteTransportCursor, Vec<NoteTag>)> {
-    let mut by_nonce = BTreeMap::<Option<u64>, Vec<(NoteTransportCursor, NoteTag)>>::new();
-    for tag in tags {
-        let cursor = cursors.get(tag).copied().unwrap_or_else(NoteTransportCursor::init);
-        by_nonce
-            .entry(cursor.parts().map(|(nonce, _)| nonce))
-            .or_default()
-            .push((cursor, *tag));
-    }
+/// Stored cursor and the tags that received all notes up to it.
+type NoteTransportSyncState = (NoteTransportCursor, BTreeSet<NoteTag>);
 
-    let mut groups = Vec::new();
-    for mut entries in by_nonce.into_values() {
-        entries.sort_unstable();
-        for chunk in entries.chunks(MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST) {
-            let start = chunk[0].0;
-            groups.push((start, chunk.iter().map(|(_, tag)| *tag).collect()));
+/// Migrates the legacy cursor of each tag to the lowest cursor.
+///
+/// Sequences from different service databases do not compare, so cursors with different nonces
+/// migrate to no state. A tag without a cursor is not covered.
+fn migrate_tag_cursors(
+    cursors: BTreeMap<NoteTag, Option<NoteTransportCursor>>,
+) -> Option<NoteTransportSyncState> {
+    let cursors: BTreeMap<_, _> =
+        cursors.into_iter().filter_map(|(tag, cursor)| Some((tag, cursor?))).collect();
+    let cursor = *cursors.values().min_by_key(|cursor| cursor.sequence)?;
+    cursors
+        .values()
+        .all(|other| other.nonce == cursor.nonce)
+        .then(|| (cursor, cursors.into_keys().collect()))
+}
+
+/// Fetches the pages of one chunk of tags after `start` and up to the bound.
+///
+/// The first successful page sets the bound when `sync_to` has none.
+async fn fetch_transport_chunk(
+    api: &dyn NoteTransportClient,
+    tags: &[NoteTag],
+    start: Option<NoteTransportCursor>,
+    sync_to: &mut Option<NoteTransportCursor>,
+    notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
+) -> Result<(), NoteTransportError> {
+    let mut cursor = start;
+    // Validation requires each page to move the cursor toward the fixed bound, so the loop ends.
+    loop {
+        let page = api.fetch_notes_page(tags, cursor, *sync_to).await?;
+        notes.extend(validate_transport_page(&page, tags, cursor, *sync_to)?);
+        sync_to.get_or_insert(page.sync_to);
+        if !page.has_more {
+            return Ok(());
         }
-    }
-    groups
-}
-
-/// Returns the position of a tag after a page that ends at `page_cursor`.
-///
-/// A page from the same database never moves a tag backwards. A page from a different database
-/// replaces a position that database does not recognize.
-fn advance_transport_cursor(
-    current: NoteTransportCursor,
-    page_cursor: NoteTransportCursor,
-) -> NoteTransportCursor {
-    match (current.parts(), page_cursor.parts()) {
-        (Some((nonce, sequence)), Some((page_nonce, page_sequence))) if nonce == page_nonce => {
-            NoteTransportCursor::from_parts(nonce, sequence.max(page_sequence))
-        },
-        _ => page_cursor,
+        cursor = Some(page.cursor);
     }
 }
 
-struct ValidatedTransportPage {
-    notes: Vec<(NoteId, Note, Option<BlockNumber>)>,
-    cursor: NoteTransportCursor,
-    has_more: bool,
-}
-
-/// Validates a complete page before its notes or cursor can advance local progress.
+/// Validates a complete page before its notes or cursor can advance local progress, and returns its
+/// notes.
 fn validate_transport_page(
-    page: NoteTransportPage,
+    page: &NoteTransportPage,
     tags: &[NoteTag],
-    request_cursor: NoteTransportCursor,
-) -> Result<ValidatedTransportPage, NoteTransportError> {
-    let Some((nonce, sequence)) = page.cursor.parts() else {
-        return Err(NoteTransportError::Network(String::from("fetch response has no cursor")));
-    };
-    if request_cursor.parts().is_some_and(|(request_nonce, request_sequence)| {
-        nonce == request_nonce
-            && (sequence < request_sequence
-                || (!page.notes.is_empty() && sequence == request_sequence))
+    request_cursor: Option<NoteTransportCursor>,
+    request_sync_to: Option<NoteTransportCursor>,
+) -> Result<Vec<(NoteId, Note, Option<BlockNumber>)>, NoteTransportError> {
+    let NoteTransportCursor { nonce, sequence } = page.cursor;
+    if request_sync_to.is_some_and(|bound| bound != page.sync_to)
+        || nonce != page.sync_to.nonce
+        || sequence > page.sync_to.sequence
+    {
+        return Err(NoteTransportError::Network(String::from(
+            "fetch response does not match the sync bound",
+        )));
+    }
+    if request_cursor.is_some_and(|request| {
+        nonce == request.nonce
+            && (sequence < request.sequence
+                || (!page.notes.is_empty() && sequence == request.sequence))
     }) || (!page.notes.is_empty() && sequence == 0)
         || (page.has_more && page.notes.is_empty())
     {
@@ -502,7 +481,7 @@ fn validate_transport_page(
         )));
     }
     let mut notes = Vec::with_capacity(page.notes.len());
-    for info in page.notes {
+    for info in &page.notes {
         let note = rejoin_note(&info.header, &info.details_bytes)?;
         if !tags.contains(&note.metadata().tag()) {
             return Err(NoteTransportError::UnrequestedTag(note.metadata().tag()));
@@ -510,11 +489,7 @@ fn validate_transport_page(
         // The header ID includes attachments that the transport does not send.
         notes.push((info.header.id(), note, info.block_hint));
     }
-    Ok(ValidatedTransportPage {
-        notes,
-        cursor: page.cursor,
-        has_more: page.has_more,
-    })
+    Ok(notes)
 }
 
 /// Note transport cursor
@@ -523,24 +498,12 @@ fn validate_transport_page(
 ///
 /// The sequence is global across tags in one service database. Compare sequences only when their
 /// nonces match.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-pub struct NoteTransportCursor(Option<(u64, u64)>);
-
-impl NoteTransportCursor {
-    /// Returns the cursor that starts from the first retained note.
-    pub fn init() -> Self {
-        Self(None)
-    }
-
-    /// Builds a cursor from the nonce and sequence returned by the transport service.
-    pub fn from_parts(nonce: u64, sequence: u64) -> Self {
-        Self(Some((nonce, sequence)))
-    }
-
-    /// Returns the nonce and sequence, or `None` for the initial cursor.
-    pub fn parts(&self) -> Option<(u64, u64)> {
-        self.0
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteTransportCursor {
+    /// Identifies the service database.
+    pub nonce: u64,
+    /// Position in the stored-note sequence of the service database.
+    pub sequence: u64,
 }
 
 /// The part of a note that the note transport network sends to a recipient.
@@ -598,28 +561,17 @@ pub trait NoteTransportClient: Send + Sync {
         inclusion_proof: NoteInclusionProof,
     ) -> Result<(), NoteTransportError>;
 
-    /// Fetches notes for the given tags.
+    /// Fetches a page of notes after `cursor` and up to `sync_to` for the given tags.
     ///
-    /// Downloads notes for the given tags. Returns notes after the provided cursor (pagination),
-    /// and an updated cursor.
-    async fn fetch_notes(
-        &self,
-        tag: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError>;
-
-    /// Fetches a page and reports whether another page is available.
-    ///
-    /// Transports without a continuation flag use an empty page to confirm the end of the history.
+    /// Without `cursor`, the page starts from the first retained note. Without `sync_to`, the
+    /// service uses its current head as the bound. The page returns the bound that the service
+    /// used. A cursor from another service database restarts from the first retained note.
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<NoteTransportPage, NoteTransportError> {
-        let (notes, cursor) = self.fetch_notes(tags, cursor).await?;
-        let has_more = !notes.is_empty();
-        Ok(NoteTransportPage { notes, cursor, has_more })
-    }
+        cursor: Option<NoteTransportCursor>,
+        sync_to: Option<NoteTransportCursor>,
+    ) -> Result<NoteTransportPage, NoteTransportError>;
 }
 
 /// A page of notes from the transport service.
@@ -628,8 +580,11 @@ pub struct NoteTransportPage {
     pub notes: Vec<NoteInfo>,
     /// Position of the last returned note. An empty page keeps the request position.
     pub cursor: NoteTransportCursor,
-    /// Indicates that the requested tags have another page.
+    /// Indicates that the requested tags have another page up to `sync_to`.
     pub has_more: bool,
+    /// Inclusive upper bound of the request. When `has_more` is `false`, the page completes the
+    /// requested tags up to this bound.
+    pub sync_to: NoteTransportCursor,
 }
 
 /// Information about a note fetched from the note transport network
@@ -693,13 +648,14 @@ impl Deserializable for NoteInfo {
 
 impl Serializable for NoteTransportCursor {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.0.write_into(target);
+        (self.nonce, self.sequence).write_into(target);
     }
 }
 
 impl Deserializable for NoteTransportCursor {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        Ok(Self(Option::<(u64, u64)>::read_from(source)?))
+        let (nonce, sequence) = <(u64, u64)>::read_from(source)?;
+        Ok(Self { nonce, sequence })
     }
 }
 
@@ -739,20 +695,85 @@ pub(crate) fn validate_note_parts(
 mod tests {
     use super::*;
 
+    fn cursor(sequence: u64) -> NoteTransportCursor {
+        NoteTransportCursor { nonce: 1, sequence }
+    }
+
+    fn empty_page(cursor: NoteTransportCursor, has_more: bool) -> NoteTransportPage {
+        NoteTransportPage {
+            notes: Vec::new(),
+            cursor,
+            has_more,
+            sync_to: self::cursor(20),
+        }
+    }
+
     #[test]
     fn transport_rejects_invalid_pagination() {
-        let cursor = NoteTransportCursor::from_parts(1, 10);
-        for (returned, has_more) in [
-            (NoteTransportCursor::init(), false),
-            (NoteTransportCursor::from_parts(1, 9), false),
-            (cursor, true),
-        ] {
-            let page = NoteTransportPage {
-                notes: Vec::new(),
-                cursor: returned,
-                has_more,
-            };
-            assert!(validate_transport_page(page, &[], cursor).is_err());
+        for page in [empty_page(cursor(9), false), empty_page(cursor(10), true)] {
+            assert!(validate_transport_page(&page, &[], Some(cursor(10)), None).is_err());
         }
+    }
+
+    #[test]
+    fn transport_rejects_page_outside_sync_bound() {
+        let other_database = NoteTransportCursor { nonce: 2, sequence: 5 };
+        for (page, request_sync_to) in [
+            // The page changes the requested bound.
+            (empty_page(cursor(10), false), Some(cursor(21))),
+            // The page cursor passes the bound.
+            (empty_page(cursor(21), false), None),
+            // The page cursor and the bound come from different service databases.
+            (empty_page(other_database, false), None),
+        ] {
+            assert!(
+                validate_transport_page(&page, &[], Some(cursor(10)), request_sync_to).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn transport_accepts_pages_within_sync_bound() {
+        let page = empty_page(cursor(10), false);
+        assert!(validate_transport_page(&page, &[], Some(cursor(10)), Some(cursor(20))).is_ok());
+
+        // A cursor from another service database restarts from the first retained note.
+        let other_database = NoteTransportCursor { nonce: 2, sequence: 50 };
+        let page = empty_page(cursor(3), false);
+        assert!(validate_transport_page(&page, &[], Some(other_database), None).is_ok());
+    }
+
+    #[test]
+    fn transport_reads_legacy_tag_cursors() {
+        let tag = NoteTag::new(1);
+        let legacy = BTreeMap::from([(tag, Some((1u64, 4u64)))]).to_bytes();
+
+        let cursors =
+            BTreeMap::<NoteTag, Option<NoteTransportCursor>>::read_from_bytes(&legacy).unwrap();
+
+        assert_eq!(cursors, BTreeMap::from([(tag, Some(cursor(4)))]));
+    }
+
+    #[test]
+    fn transport_migrates_tag_cursors_to_lowest_cursor() {
+        let [first, second, third] = [1, 2, 3].map(NoteTag::new);
+        let cursors =
+            BTreeMap::from([(first, Some(cursor(7))), (second, Some(cursor(4))), (third, None)]);
+
+        let state = migrate_tag_cursors(cursors);
+
+        assert_eq!(state, Some((cursor(4), BTreeSet::from([first, second]))));
+    }
+
+    #[test]
+    fn transport_migration_drops_cursors_from_different_databases() {
+        let other_database = NoteTransportCursor { nonce: 2, sequence: 4 };
+        let cursors = BTreeMap::from([
+            (NoteTag::new(1), Some(cursor(7))),
+            (NoteTag::new(2), Some(other_database)),
+        ]);
+
+        assert_eq!(migrate_tag_cursors(cursors), None);
+        assert_eq!(migrate_tag_cursors(BTreeMap::new()), None);
     }
 }

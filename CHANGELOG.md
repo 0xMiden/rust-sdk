@@ -6,6 +6,10 @@
 
 * [BREAKING][arch][rust] Updated protocol dependencies to `0.18`, Miden VM to `0.36`, `miden-debug` to `0.19` and `miden-node-proto-build` to `0.18.1`. The client uses the node `0.18` RPC and note transport APIs and requires a node `0.18` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
 * [BREAKING][type][rust] Added the `GetAccountError::StorageSlotNotFound` and `GetAccountError::StorageSlotNotMap` variants for the node `0.18` `GetAccount` error codes 6 and 7. These codes previously parsed as `GetAccountError::Unknown` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+* [BREAKING][behavior][rust] Note transport stores one cursor and the tags that it covers under `NOTE_TRANSPORT_SYNC_STATE_KEY`. A fetch reads all tags up to the `sync_to` bound that the service returns for the first request, and saves the bound when all covered tags reach it. Added tags start from the first retained note, so adding or removing a tag no longer delivers notes again to the other tags. The client migrates the per-tag cursors under the deprecated `NOTE_TRANSPORT_CURSORS_KEY` to their lowest cursor ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][param][rust] `NoteTransportClient::fetch_notes_page` and `GrpcNoteTransportClient::fetch_notes_page` take an optional cursor and a `sync_to` bound, and the trait method has no default implementation. `NoteTransportPage` has a `sync_to` field with the bound that the service used ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][type][rust] `NoteTransportCursor` has public `nonce` and `sequence` fields. Removed `NoteTransportCursor::init`, `from_parts`, and `parts`. Use `None` where the initial cursor was used. `Store::get_note_transport_cursor` returns `Option<NoteTransportCursor>`, and `MockNoteTransportNode::get_notes` takes an optional cursor ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][removal][rust] Removed `NoteTransportClient::fetch_notes`, `GrpcNoteTransportClient::fetch_notes`, and `MockNoteTransportApi::fetch_notes`. Use `fetch_notes_page` ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
 
 ## 0.17.5 (2026-10-21)
 

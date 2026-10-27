@@ -115,6 +115,14 @@ impl Verify for DecodedFetchedNote {
     }
 }
 
+/// Builds the wire representation of a cursor.
+fn proto_cursor(cursor: NoteTransportCursor) -> FetchNotesCursor {
+    FetchNotesCursor {
+        nonce: cursor.nonce,
+        sequence: cursor.sequence,
+    }
+}
+
 /// Builds the wire representation of a transport note.
 fn proto_transport_note(note: TransportNote) -> ProtoTransportNote {
     let (header, details) = note.into_parts();
@@ -275,29 +283,18 @@ impl GrpcNoteTransportClient {
         .await
     }
 
-    /// Downloads notes for given tags from the note transport network.
-    ///
-    /// Returns notes labeled after the provided cursor (pagination), and an updated cursor.
-    pub async fn fetch_notes(
-        &self,
-        tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        let page = self.fetch_notes_page(tags, cursor).await?;
-        Ok((page.notes, page.cursor))
-    }
-
-    /// Fetches one page with the service's continuation flag.
+    /// Fetches one page up to `sync_to` with the service's continuation flag.
     pub async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
+        sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
         let tags_int = tags.iter().map(NoteTag::as_u32).collect();
         let request = FetchNotesRequest {
             tags: tags_int,
-            cursor: cursor.parts().map(|(nonce, sequence)| FetchNotesCursor { nonce, sequence }),
-            sync_to: None,
+            cursor: cursor.map(proto_cursor),
+            sync_to: sync_to.map(proto_cursor),
         };
 
         let mut api = self.api().await?;
@@ -330,10 +327,20 @@ impl GrpcNoteTransportClient {
         let cursor = response
             .cursor
             .ok_or_else(|| NoteTransportError::Network("fetch response has no cursor".into()))?;
+        let sync_to = response
+            .sync_to
+            .ok_or_else(|| NoteTransportError::Network("fetch response has no sync_to".into()))?;
         Ok(NoteTransportPage {
             notes,
-            cursor: NoteTransportCursor::from_parts(cursor.nonce, cursor.sequence),
+            cursor: NoteTransportCursor {
+                nonce: cursor.nonce,
+                sequence: cursor.sequence,
+            },
             has_more: response.has_more,
+            sync_to: NoteTransportCursor {
+                nonce: sync_to.nonce,
+                sequence: sync_to.sequence,
+            },
         })
     }
 
@@ -375,20 +382,13 @@ impl super::NoteTransportClient for GrpcNoteTransportClient {
         self.send_note_with_proof(note, inclusion_proof).await
     }
 
-    async fn fetch_notes(
-        &self,
-        tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        self.fetch_notes(tags, cursor).await
-    }
-
     async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
+        sync_to: Option<NoteTransportCursor>,
     ) -> Result<NoteTransportPage, NoteTransportError> {
-        self.fetch_notes_page(tags, cursor).await
+        self.fetch_notes_page(tags, cursor, sync_to).await
     }
 }
 

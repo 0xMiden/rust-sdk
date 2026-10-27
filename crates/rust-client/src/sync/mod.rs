@@ -241,8 +241,8 @@ where
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note
-    /// transport is disabled. A failed request returns an error after successful pages and their
-    /// cursors are saved.
+    /// transport is disabled. A failed request returns an error after the fetched notes are
+    /// imported.
     pub async fn sync_note_transport(&mut self) -> Result<Vec<NoteId>, ClientError> {
         if !self.is_note_transport_enabled() {
             return Ok(Vec::new());
@@ -277,9 +277,9 @@ where
     /// 5. The chain update, written last: a nullified transport-delivered note is saved as an
     ///    update to the row step 2 inserts.
     ///
-    /// A transport failure is logged and the chain sync continues. Successful transport pages are
-    /// imported and their cursors are saved. Failed requests keep their previous positions for
-    /// retry. The sync sends no notes to the transport.
+    /// A transport failure is logged and the chain sync continues. The notes of successful
+    /// transport pages are imported, and the next sync reads the failed tags again. The sync sends
+    /// no notes to the transport.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

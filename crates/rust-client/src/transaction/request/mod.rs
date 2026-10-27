@@ -742,7 +742,7 @@ mod tests {
     };
     use crate::rng::draw_word;
     use crate::rpc::domain::account::{
-        AccountRequirements,
+        AccountFetch,
         AccountStorageRequirements,
         StorageMapFetch,
         VaultFetch,
@@ -900,7 +900,7 @@ mod tests {
             .foreign_accounts([
                 ForeignAccount::public(
                     target_id,
-                    AccountRequirements::new()
+                    AccountFetch::new()
                         .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
                             StorageSlotName::new("demo::storage_slot").unwrap(),
                             &[StorageMapKey::new(Word::default())],

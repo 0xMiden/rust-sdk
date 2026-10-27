@@ -606,7 +606,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        let GetAccountRequest { account_id, requirements, at, known_code } = request;
+        let GetAccountRequest { account_id, fetch, at, known_code } = request;
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
         let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();
@@ -619,8 +619,8 @@ impl NodeRpcClient for GrpcClient {
         let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                vault_request: requirements.vault().cloned().unwrap_or_default().into(),
-                storage_request: requirements.storage().clone().into(),
+                vault_request: fetch.vault().clone().into(),
+                storage_request: fetch.storage().clone().into(),
             })
         } else {
             None
@@ -661,7 +661,7 @@ impl NodeRpcClient for GrpcClient {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &requirements)?;
+                .into_domain(&known_codes_by_commitment, &fetch)?;
 
             Some(details)
         } else {

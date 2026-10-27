@@ -9,7 +9,7 @@ use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
 use miden_client::rpc::domain::account::{
-    AccountRequirements,
+    AccountFetch,
     AccountStorageRequirements,
     StorageMapFetch,
 };
@@ -624,7 +624,7 @@ async fn lazy_foreign_account_loading() {
         .get_foreign_account_inputs(
             [ForeignAccount::public(
                 foreign_account_id,
-                AccountRequirements::new()
+                AccountFetch::new()
                     .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
             )
             .unwrap()],
@@ -684,7 +684,7 @@ async fn chain_anchor_execution_with_prefetched_foreign_account() {
         .get_foreign_account_inputs(
             [ForeignAccount::public(
                 fpi.account_id,
-                AccountRequirements::new()
+                AccountFetch::new()
                     .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
             )
             .unwrap()],
@@ -860,7 +860,7 @@ fn fpi_request(setup: &FpiSetup) -> TransactionRequest {
         )]);
         ForeignAccount::public(
             setup.foreign_account.id(),
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
         )
         .unwrap()
     } else {

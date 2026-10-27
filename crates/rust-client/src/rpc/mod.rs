@@ -50,8 +50,8 @@ use core::fmt;
 
 use domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
-    AccountRequirements,
     AccountStorageMapDetails,
     AccountVaultDetails,
     GetAccountRequest,
@@ -265,8 +265,8 @@ pub trait NodeRpcClient: Send + Sync {
         // vault, with the storage layout discovered server-side.
         let (block_number, mut proof) = self
             .get_account(
-                GetAccountRequest::new(account_id).with_requirements(
-                    AccountRequirements::new()
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
                         .with_storage(StorageMapFetch::All)
                         .with_vault(VaultFetch::Always),
                 ),

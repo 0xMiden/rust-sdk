@@ -7,7 +7,7 @@ use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::RpcLimits;
 use miden_client::rpc::domain::account::{
-    AccountRequirements,
+    AccountFetch,
     AccountStorageRequirements,
     StorageMapFetch,
     VaultFetch,
@@ -198,10 +198,10 @@ async fn fpi_asset_read_respects_vault_requirements() {
     expected_stack[..4].copy_from_slice(fixture.asset.to_value_word().as_elements());
 
     for (requirements, expected_calls) in [
-        (AccountRequirements::new(), 2),
-        (AccountRequirements::new().with_vault(VaultFetch::Skip), 2),
+        (AccountFetch::new(), 2),
+        (AccountFetch::new().with_vault(VaultFetch::Skip), 2),
         (
-            AccountRequirements::new().with_vault(VaultFetch::Assets([fixture.asset.id()].into())),
+            AccountFetch::new().with_vault(VaultFetch::Assets([fixture.asset.id()].into())),
             1,
         ),
     ] {
@@ -229,7 +229,7 @@ async fn foreign_account_requirements_prefetch_storage_and_vault_proofs() {
     let fixture = Box::pin(oversized_vault_fixture()).await;
     let slot_name = StorageSlotName::new("miden::testing::map").unwrap();
     let key = StorageMapKey::new(Word::from([1u32; 4]));
-    let requirements = AccountRequirements::new()
+    let requirements = AccountFetch::new()
         .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
             slot_name.clone(),
             &[key],

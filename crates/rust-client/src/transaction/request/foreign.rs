@@ -11,7 +11,7 @@ use miden_standards::code_builder::CodeBuilder;
 use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
 use super::TransactionRequestError;
-use crate::rpc::domain::account::AccountRequirements;
+use crate::rpc::domain::account::AccountFetch;
 
 // FPI SCRIPT
 // ================================================================================================
@@ -73,9 +73,9 @@ pub fn build_fpi_script(
 #[allow(clippy::large_enum_variant)]
 pub enum ForeignAccount {
     /// Account with public visibility whose state and code will be retrieved from the network at
-    /// execution time. [`AccountRequirements`] selects storage map entries and vault assets to
-    /// fetch in one RPC call. Missing entries and assets are loaded during execution.
-    Public(AccountId, AccountRequirements),
+    /// execution time. [`AccountFetch`] selects storage map entries and vault assets to fetch in
+    /// one RPC call. Missing entries and assets are loaded during execution.
+    Public(AccountId, AccountFetch),
     /// Private account that requires a [`PartialAccount`] to be provided by the caller. An account
     /// witness will be retrieved from the network at execution time so that it can be used as
     /// inputs to the transaction kernel.
@@ -92,16 +92,16 @@ pub enum ForeignAccount {
 }
 
 impl ForeignAccount {
-    /// Creates a public foreign account declaration with storage and vault requirements.
+    /// Creates a public foreign account declaration with a storage and vault fetch policy.
     pub fn public(
         account_id: AccountId,
-        requirements: AccountRequirements,
+        fetch: AccountFetch,
     ) -> Result<Self, TransactionRequestError> {
         if !account_id.is_public() {
             return Err(TransactionRequestError::InvalidForeignAccountId(account_id));
         }
 
-        Ok(Self::Public(account_id, requirements))
+        Ok(Self::Public(account_id, fetch))
     }
 
     /// Creates a new [`ForeignAccount::Private`]. A proof of the account's inclusion will be
@@ -115,10 +115,10 @@ impl ForeignAccount {
         Ok(Self::Private(partial_account))
     }
 
-    /// Returns the fetch requirements for a public foreign account.
-    pub fn requirements(&self) -> Option<&AccountRequirements> {
+    /// Returns the fetch policy of a public foreign account.
+    pub fn fetch(&self) -> Option<&AccountFetch> {
         match self {
-            ForeignAccount::Public(_, requirements) => Some(requirements),
+            ForeignAccount::Public(_, fetch) => Some(fetch),
             ForeignAccount::Private(_) | ForeignAccount::Prefetched(_) => None,
         }
     }
@@ -154,10 +154,10 @@ impl PartialOrd for ForeignAccount {
 impl Serializable for ForeignAccount {
     fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
         match self {
-            ForeignAccount::Public(account_id, requirements) => {
+            ForeignAccount::Public(account_id, fetch) => {
                 target.write(0u8);
                 account_id.write_into(target);
-                requirements.write_into(target);
+                fetch.write_into(target);
             },
             ForeignAccount::Private(partial_account) => {
                 target.write(1u8);
@@ -179,8 +179,8 @@ impl Deserializable for ForeignAccount {
         match account_type {
             0 => {
                 let account_id = AccountId::read_from(source)?;
-                let requirements = AccountRequirements::read_from(source)?;
-                Ok(ForeignAccount::Public(account_id, requirements))
+                let fetch = AccountFetch::read_from(source)?;
+                Ok(ForeignAccount::Public(account_id, fetch))
             },
             1 => {
                 let foreign_inputs = PartialAccount::read_from(source)?;
@@ -211,7 +211,7 @@ mod foreign_vault_tests {
     use miden_protocol::asset::FungibleAsset;
     use miden_testing::{Auth, MockChainBuilder};
 
-    use crate::rpc::domain::account::{AccountRequirements, GetAccountRequest, VaultFetch};
+    use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
     use crate::rpc::{NodeRpcClient, RpcError};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -231,8 +231,8 @@ mod foreign_vault_tests {
         let committed_root = account.vault().root();
 
         let (_block, proof) = rpc
-            .get_account(GetAccountRequest::new(account.id()).with_requirements(
-                AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
+            .get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
             ))
             .await
             .unwrap();
@@ -261,7 +261,7 @@ mod foreign_vault_tests {
         let (_block, proof) = rpc
             .get_account(
                 GetAccountRequest::new(account.id())
-                    .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
+                    .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
             )
             .await
             .unwrap();
@@ -281,7 +281,7 @@ mod foreign_vault_tests {
         let (_, proof) = rpc
             .get_account(
                 GetAccountRequest::new(account.id())
-                    .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
+                    .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
             )
             .await
             .unwrap();
@@ -325,7 +325,7 @@ mod foreign_storage_map_tests {
 
     use crate::rpc::NodeRpcClient;
     use crate::rpc::domain::account::{
-        AccountRequirements,
+        AccountFetch,
         AccountStorageRequirements,
         GetAccountRequest,
         StorageMapEntries,
@@ -372,9 +372,9 @@ mod foreign_storage_map_tests {
         keys: &[StorageMapKey],
     ) -> AccountInputs {
         let requirements = AccountStorageRequirements::new([(slot_name.clone(), keys.iter())]);
-        let (_block, proof) = rpc
-            .get_account(GetAccountRequest::new(account.id()).with_requirements(
-                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+        let (_block, proof) =
+            rpc.get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
             ))
             .await
             .unwrap();
@@ -436,17 +436,17 @@ mod foreign_storage_map_tests {
         );
     }
 
-    /// An entry list that does not hash to the slot's root in the storage header must likewise
-    /// degrade to a root-only map instead of being carried at a root the account never committed.
+    /// An entry list that does not hash to the slot's root in the storage header is rejected,
+    /// because only an inconsistent response produces it.
     #[tokio::test]
-    async fn mismatched_map_entries_degrade_to_a_root_only_map() {
+    async fn mismatched_map_entries_are_rejected() {
         let (account, slot_name, _map_root, rpc) = chain_with_map_account();
 
         let requirements =
             AccountStorageRequirements::all_entries(core::slice::from_ref(&slot_name));
-        let (_block, mut proof) = rpc
-            .get_account(GetAccountRequest::new(account.id()).with_requirements(
-                AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements)),
+        let (_block, mut proof) =
+            rpc.get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
             ))
             .await
             .unwrap();
@@ -461,12 +461,10 @@ mod foreign_storage_map_tests {
         };
         entries.pop();
 
-        let inputs = proof.into_account_inputs().unwrap();
-
-        assert!(
-            inputs.storage().maps().next().is_none(),
-            "an entry list that disagrees with the slot root must not be carried"
-        );
+        assert!(matches!(
+            proof.into_account_inputs(),
+            Err(crate::rpc::RpcError::InvalidResponse(_))
+        ));
     }
 }
 

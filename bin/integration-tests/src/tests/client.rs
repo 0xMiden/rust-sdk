@@ -28,7 +28,7 @@ use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{BlockNumber, NoteFile, NoteSyncHint, NoteTag, NoteType};
 use miden_client::rpc::domain::account::{
-    AccountRequirements,
+    AccountFetch,
     AccountStorageRequirements,
     GetAccountRequest,
     StorageMapEntries,
@@ -1611,9 +1611,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
 
     // Request all entries (empty keys)
     let requirements_all = AccountStorageRequirements::new([(map_slot_name.clone(), [].iter())]);
-    let (_, proof_all) = rpc
-        .get_account(GetAccountRequest::new(account_id).with_requirements(
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_all)),
+    let (_, proof_all) =
+        rpc.get_account(GetAccountRequest::new(account_id).with_fetch(
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements_all)),
         ))
         .await?;
     let map_all = proof_all
@@ -1628,9 +1628,9 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
 
     // Request one specific key
     let requirements_one = AccountStorageRequirements::new([(map_slot_name.clone(), [&map_key_1])]);
-    let (_, proof_one) = rpc
-        .get_account(GetAccountRequest::new(account_id).with_requirements(
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_one)),
+    let (_, proof_one) =
+        rpc.get_account(GetAccountRequest::new(account_id).with_fetch(
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements_one)),
         ))
         .await?;
     let map_one = proof_one
@@ -1656,8 +1656,8 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
         [&map_key_1, &map_key_2, &absent_key],
     )]);
     let (_, proof_batch) = rpc
-        .get_account(GetAccountRequest::new(account_id).with_requirements(
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(requirements_batch)),
+        .get_account(GetAccountRequest::new(account_id).with_fetch(
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements_batch)),
         ))
         .await?;
     let map_batch = proof_batch
@@ -1713,7 +1713,7 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     let (_, proof) = rpc
         .get_account(
             GetAccountRequest::new(wallet.id())
-                .with_requirements(AccountRequirements::new().with_vault(VaultFetch::Always)),
+                .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
         )
         .await?;
 
@@ -1732,9 +1732,10 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
     // Query 2: VaultFetch::IfChangedFrom(actual_root) — commitment matches, node returns empty
     // assets
     let (_, proof) = rpc
-        .get_account(GetAccountRequest::new(wallet.id()).with_requirements(
-            AccountRequirements::new().with_vault(VaultFetch::IfChangedFrom(vault_root)),
-        ))
+        .get_account(
+            GetAccountRequest::new(wallet.id())
+                .with_fetch(AccountFetch::new().with_vault(VaultFetch::IfChangedFrom(vault_root))),
+        )
         .await?;
 
     let (_, details) = proof.into_parts();

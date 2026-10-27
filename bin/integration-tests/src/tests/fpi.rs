@@ -27,7 +27,7 @@ use miden_client::auth::{
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteType;
 use miden_client::rpc::domain::account::{
-    AccountRequirements,
+    AccountFetch,
     AccountStorageRequirements,
     StorageMapFetch,
 };
@@ -145,8 +145,7 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
                 foreign_account_id,
                 ForeignAccount::public(
                     foreign_account_id,
-                    AccountRequirements::new()
-                        .with_storage(StorageMapFetch::Slots(storage_requirements)),
+                    AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
                 )?,
             )]),
         )
@@ -276,12 +275,11 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
     let foreign_accounts = [
         ForeignAccount::public(
             inner_foreign_account_id,
-            AccountRequirements::new()
-                .with_storage(StorageMapFetch::Slots(storage_requirements.clone())),
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements.clone())),
         )?,
         ForeignAccount::public(
             outer_foreign_account_id,
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
         )?,
     ];
 
@@ -535,7 +533,7 @@ async fn standard_fpi(
     let foreign_account = if account_type == AccountType::Public {
         ForeignAccount::public(
             foreign_account_id,
-            AccountRequirements::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(storage_requirements)),
         )
     } else {
         // Get current foreign account current state from the store (after 1st deployment tx)
@@ -690,7 +688,7 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountFetch::default())?,
     )]);
 
     let output_stack = client
@@ -723,7 +721,7 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
-        ForeignAccount::public(foreign_account_id, AccountRequirements::default())?,
+        ForeignAccount::public(foreign_account_id, AccountFetch::default())?,
     )]);
 
     let output_stack = client

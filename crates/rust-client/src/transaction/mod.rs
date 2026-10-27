@@ -101,7 +101,7 @@ use tracing::info;
 use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
-use crate::rpc::domain::account::{AccountRequirements, GetAccountRequest, VaultFetch};
+use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -1225,12 +1225,12 @@ where
 
         for foreign_account in foreign_accounts {
             let foreign_account_inputs = match foreign_account {
-                ForeignAccount::Public(account_id, requirements) => {
+                ForeignAccount::Public(account_id, fetch) => {
                     fetch_public_account_inputs(
                         &self.store,
                         &self.rpc_api,
                         account_id,
-                        requirements,
+                        fetch,
                         AccountStateAt::Block(block_num),
                     )
                     .await?
@@ -1770,8 +1770,7 @@ fn validate_basic_account_request(
 /// cannot.
 ///
 /// Storage maps and vault assets are carried root-only, and resolve against the store during
-/// execution. The store serves entries and assets from [`AccountRequirements`] as individual
-/// lookups.
+/// execution. The store serves entries and assets from [`AccountFetch`] as individual lookups.
 ///
 /// Requires the local header to hash to the commitment the witness proves. Otherwise the local
 /// state is not the one the chain committed at that block, and the kernel would reject it.
@@ -1810,7 +1809,7 @@ pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
-    mut requirements: AccountRequirements,
+    mut fetch: AccountFetch,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
     if let Some(inputs) = local_account_inputs(store, account_id, account_state_at).await? {
@@ -1820,20 +1819,20 @@ pub(crate) async fn fetch_public_account_inputs(
     let known_code: Option<AccountCode> =
         store.get_foreign_account_code(vec![account_id]).await?.into_values().next();
 
-    if requirements.vault().is_none() {
+    if !fetch.has_vault_policy() {
         let vault = store
             .get_account_header(account_id)
             .await?
             .map_or(VaultFetch::Always, |(header, ..)| {
                 VaultFetch::IfChangedFrom(header.vault_root())
             });
-        requirements = requirements.with_vault(vault);
+        fetch = fetch.with_vault(vault);
     }
 
     let (_block_num, account_proof) = rpc_api
         .get_account(
             GetAccountRequest::new(account_id)
-                .with_requirements(requirements)
+                .with_fetch(fetch)
                 .at(account_state_at)
                 .with_known_code(known_code),
         )

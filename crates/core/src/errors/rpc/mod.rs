@@ -234,7 +234,7 @@ impl GrpcError {
 /// Errors that can occur during accept header validation.
 #[derive(Debug, Error)]
 pub enum AcceptHeaderError {
-    #[error("server rejected request - please check your version and network settings ({0})")]
+    #[error("server rejected request - please check your network settings ({0})")]
     NoSupportedMediaRange(AcceptHeaderContext),
     #[error("server rejected request - parsing error: {0}")]
     ParsingError(String),
@@ -243,17 +243,12 @@ pub enum AcceptHeaderError {
 /// Extra context attached to Accept header negotiation failures.
 #[derive(Debug, Clone)]
 pub struct AcceptHeaderContext {
-    pub client_version: String,
     pub genesis_commitment: String,
 }
 
 impl fmt::Display for AcceptHeaderContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "client version: {}, genesis commitment: {}",
-            self.client_version, self.genesis_commitment
-        )
+        write!(f, "genesis commitment: {}", self.genesis_commitment)
     }
 }
 
@@ -269,9 +264,7 @@ impl AcceptHeaderError {
         ) {
             return Some(Self::NoSupportedMediaRange(context));
         }
-        if message.contains("genesis value failed to parse")
-            || message.contains("version value failed to parse")
-        {
+        if message.contains("genesis value failed to parse") {
             return Some(Self::ParsingError(message.to_string()));
         }
         None

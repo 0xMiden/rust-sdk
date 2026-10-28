@@ -276,15 +276,14 @@ impl Interceptor for MetadataInterceptor {
 
 /// Returns the HTTP header [`MetadataInterceptor`] that is expected by Miden RPC.
 ///
-/// The interceptor sets the `accept` header to the Miden API version and optionally includes the
+/// The interceptor sets the `accept` header to the Miden media type and optionally includes the
 /// genesis commitment. When `bearer_token` is `Some`, an `authorization: Bearer <token>` header is
 /// also attached.
 fn accept_header_interceptor(
     genesis_digest: Option<Word>,
     bearer_token: Option<&str>,
 ) -> Result<MetadataInterceptor, miden_client_core::errors::RpcError> {
-    let version = env!("CARGO_PKG_VERSION");
-    let mut accept_value = format!("application/vnd.miden; version={version}");
+    let mut accept_value = String::from("application/vnd.miden");
     if let Some(commitment) = genesis_digest {
         write!(accept_value, "; genesis={}", commitment.to_hex())
             .expect("valid hex representation of Word");

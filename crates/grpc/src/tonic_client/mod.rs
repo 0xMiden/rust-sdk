@@ -355,10 +355,7 @@ impl GrpcClient {
             .genesis_commitment
             .as_ref()
             .map_or_else(|| "none".to_string(), Word::to_hex);
-        let context = AcceptHeaderContext {
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            genesis_commitment,
-        };
+        let context = AcceptHeaderContext { genesis_commitment };
 
         if let Some(accept_error) =
             AcceptHeaderError::try_from_message_with_context(status.message(), context)
@@ -1432,11 +1429,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             headers.get("accept").unwrap().to_str().unwrap(),
-            format!(
-                "application/vnd.miden; version={}; genesis={}",
-                env!("CARGO_PKG_VERSION"),
-                commitment.to_hex(),
-            ),
+            format!("application/vnd.miden; genesis={}", commitment.to_hex()),
         );
         assert_eq!(headers.get("authorization").unwrap(), "Bearer token");
         server.abort();

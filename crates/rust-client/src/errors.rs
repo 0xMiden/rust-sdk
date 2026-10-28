@@ -501,8 +501,9 @@ fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),
         RpcError::AcceptHeaderError(_) => Some(ErrorHint {
-            message: "The node rejected the request due to a version mismatch. \
-                      Ensure your client version is compatible with the node version."
+            message: "The node rejected the request because the client's genesis commitment does \
+                      not match the node's. Ensure the client is configured for the node's \
+                      network."
                 .to_string(),
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),

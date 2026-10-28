@@ -800,8 +800,8 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the RPC status without requiring Accept header validation.
     ///
-    /// This is useful for diagnostics when version negotiation fails, as it allows retrieving node
-    /// information even when there's a version mismatch.
+    /// This is useful for diagnostics when Accept header negotiation fails, as it allows retrieving
+    /// node information even when the client's genesis commitment does not match the node's.
     async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError>;
 
     /// Fetches the status of a specific network note ID.

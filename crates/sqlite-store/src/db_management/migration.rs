@@ -3,7 +3,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::vec::Vec;
 
 use rusqlite::{Connection, Transaction};
-use rusqlite_migration::{HookError, HookResult, M, Migrations, SchemaVersion};
+use rusqlite_migration::{HookError, HookResult, M, Migrations};
 
 use super::errors::SqliteStoreError;
 use super::schema::SchemaHash;
@@ -133,6 +133,8 @@ impl SqliteMigrator {
     /// Returns whether `conn` holds a schema that is behind the latest version.
     #[cfg(test)]
     pub(crate) fn has_pending(&self, conn: &Connection) -> Result<bool, SqliteStoreError> {
+        use rusqlite_migration::SchemaVersion;
+
         match Self::library_migrations(&self.migrations).current_version(conn)? {
             SchemaVersion::Inside(ver) => Ok(ver.get() < self.latest_version()),
             SchemaVersion::NoneSet | SchemaVersion::Outside(_) => Ok(false),
@@ -141,35 +143,43 @@ impl SqliteMigrator {
 
     /// Brings `conn` up to the latest schema version, creating the schema if it is empty.
     pub(crate) fn apply(&self, conn: &mut Connection) -> Result<(), SqliteStoreError> {
+        self.checked_version(conn)?;
+
         let rejection = RejectionReport::default();
-        let migrations = self.verified_library_migrations(&rejection);
-
-        match migrations.current_version(conn)? {
-            SchemaVersion::NoneSet => {
-                if !Self::is_empty_database(conn)? {
-                    return Err(SqliteStoreError::NotAClientStore);
-                }
-            },
-            SchemaVersion::Inside(ver) => {
-                if let Some((expected, actual)) = self.schema_mismatch_at(conn, ver.get())? {
-                    return Err(SqliteStoreError::SchemaDrift {
-                        version: ver.get(),
-                        expected,
-                        actual,
-                    });
-                }
-            },
-            SchemaVersion::Outside(ver) => {
-                return Err(SqliteStoreError::SchemaTooNew {
-                    found: ver.get(),
-                    supported: self.latest_version(),
-                });
-            },
-        }
-
-        migrations.to_latest(conn).map_err(|err| {
+        self.verified_library_migrations(&rejection).to_latest(conn).map_err(|err| {
             take_rejection(&rejection).unwrap_or_else(|| SqliteStoreError::from(err))
         })
+    }
+
+    /// Checks that `conn` holds the latest schema version. Does not change the database.
+    pub(crate) fn verify(&self, conn: &Connection) -> Result<(), SqliteStoreError> {
+        let found = self.checked_version(conn)?;
+        let latest = self.latest_version();
+        if found < latest {
+            return Err(SqliteStoreError::SchemaBehind { found, latest });
+        }
+        Ok(())
+    }
+
+    /// Returns the schema version of `conn`, where 0 is an empty database.
+    ///
+    /// Rejects a database this migrator cannot handle: a non-empty database without a client
+    /// schema, a schema from a newer client, and a schema that differs from the one its version
+    /// defines.
+    fn checked_version(&self, conn: &Connection) -> Result<usize, SqliteStoreError> {
+        let found: usize = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let latest = self.latest_version();
+
+        if found == 0 {
+            if !Self::is_empty_database(conn)? {
+                return Err(SqliteStoreError::NotAClientStore);
+            }
+        } else if found > latest {
+            return Err(SqliteStoreError::SchemaTooNew { found, supported: latest });
+        } else if let Some((expected, actual)) = self.schema_mismatch_at(conn, found)? {
+            return Err(SqliteStoreError::SchemaDrift { version: found, expected, actual });
+        }
+        Ok(found)
     }
 
     /// Applies the migrations up to `version`, to build a database that is behind the latest

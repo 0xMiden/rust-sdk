@@ -39,3 +39,6 @@ pub use sync_chain_mmr::SyncChainMmr;
 pub use sync_notes::SyncNotes;
 pub use sync_nullifiers::SyncNullifiers;
 pub use sync_transactions::SyncTransactions;
+
+#[cfg(test)]
+mod tests;

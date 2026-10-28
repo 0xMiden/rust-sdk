@@ -591,10 +591,6 @@ fn transaction_executor_hint(err: &TransactionExecutorError) -> Option<ErrorHint
                 docs_url: Some(TROUBLESHOOTING_DOC),
             })
         },
-        TransactionExecutorError::TransactionProgramExecutionFailed(_) => Some(ErrorHint {
-            message: "Re-run the transaction with debug mode enabled, capture VM diagnostics, and inspect the source manager output to understand why execution failed.".to_string(),
-            docs_url: Some(TROUBLESHOOTING_DOC),
-        }),
         _ => None,
     }
 }

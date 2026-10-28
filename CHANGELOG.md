@@ -77,6 +77,7 @@
 
 ### Fixes
 
+* [FIX][rust,cli] Removed the outdated debug-mode hint for `TransactionProgramExecutionFailed` from `ClientError::error_hint()`. `exec` and `consume-notes` now hint to re-run with `--start-debug-adapter`, or to build with the `dap` feature first ([#2752](https://github.com/0xMiden/rust-sdk/pull/2752)).
 * [FIX][rust] Preserved the pinned genesis commitment in RPC headers when it is set during a native connection handshake.
 * [FIX][store] Read complete and minimal partial SQLite accounts, account storage, and account code from one database snapshot per call. Concurrent updates cannot mix account states, and history pruning cannot hide code selected by an earlier query ([#2729](https://github.com/0xMiden/rust-sdk/pull/2729)).
 * [FIX][rust] `GetAccount` responses are now checked against the authenticated account header: the account rebuilt from the returned details must match the header's commitment, and the storage header must match its storage commitment ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).

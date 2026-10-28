@@ -866,6 +866,49 @@ pub(crate) fn print_empty_transaction_report() {
     println!("\n{EMPTY_TRANSACTION_REPORT}");
 }
 
+// DEBUG ADAPTER HINT
+// ================================================================================================
+
+/// The help text for a transaction program that failed in `exec` or `consume-notes`.
+const DEBUG_ADAPTER_HINT: &str = "Re-run the command with `--start-debug-adapter <ADDR>` and \
+     connect a DAP client, such as `miden-debug`, to step through the transaction and find the \
+     instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// The help text for the same failure when the CLI is built without the `dap` feature.
+const DEBUG_ADAPTER_BUILD_HINT: &str = "Build the CLI with `--features dap`, re-run the command \
+     with `--start-debug-adapter <ADDR>` and connect a DAP client, such as `miden-debug`, to step \
+     through the transaction and find the instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// Returns the debug adapter hint when the transaction program failed during execution.
+pub(crate) fn debug_adapter_hint(error: &ClientError) -> Option<String> {
+    match error {
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(_),
+        ) => {
+            let hint = if cfg!(feature = "dap") {
+                DEBUG_ADAPTER_HINT
+            } else {
+                DEBUG_ADAPTER_BUILD_HINT
+            };
+            Some(hint.to_string())
+        },
+        _ => None,
+    }
+}
+
+/// Sets the debug adapter hint on a client error when the transaction program failed.
+pub(crate) fn with_debug_adapter_hint(error: CliError) -> CliError {
+    match error {
+        CliError::Client { error, help } => {
+            let help = debug_adapter_hint(&error).or(help);
+            CliError::Client { error, help }
+        },
+        other => other,
+    }
+}
+
 // ECDSA PUBLIC KEY PARSING
 // ================================================================================================
 
@@ -943,6 +986,7 @@ mod tests {
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
     use miden_client::utils::Serializable;
+    use miden_client::{ClientError, ErrorHint};
 
     use super::{
         FaucetMetadataResolver,
@@ -953,6 +997,7 @@ mod tests {
         parse_ecdsa_public_key,
         tokens_to_base_units,
     };
+    use crate::errors::CliError;
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()
@@ -1121,5 +1166,35 @@ mod tests {
         let error = super::assertion_error("some other assertion");
 
         assert!(!super::is_empty_transaction_error(&error));
+    }
+
+    #[test]
+    fn a_failed_program_gets_the_debug_adapter_hint() {
+        let error = super::with_debug_adapter_hint(super::assertion_error("any assertion").into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        let expected = if cfg!(feature = "dap") {
+            super::DEBUG_ADAPTER_HINT
+        } else {
+            super::DEBUG_ADAPTER_BUILD_HINT
+        };
+        assert_eq!(help.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn another_client_error_keeps_its_hint() {
+        let client_error = ClientError::AccountNonceTooLow;
+        let library_help =
+            Option::<ErrorHint>::from(&client_error).map(ErrorHint::into_help_message);
+
+        let error = super::with_debug_adapter_hint(client_error.into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        assert!(library_help.is_some());
+        assert_eq!(help, library_help);
     }
 }

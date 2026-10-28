@@ -224,11 +224,14 @@ CREATE TABLE notes_scripts (
     PRIMARY KEY (script_root)
 ) STRICT;
 
--- ── Blockchain checkpoint & tags ─────────────────────────────────────────
+-- ── Chain anchors & tags ─────────────────────────────────────────────────
 
-CREATE TABLE blockchain_checkpoint (
-    block_num INTEGER NOT NULL,             -- the block number of the most recent state sync
-    partial_blockchain_peaks BLOB NOT NULL, -- serialized MMR peaks at the current sync height
+-- One row for each block number that a state sync reached. The row with the highest block number
+-- is the current sync height.
+-- The INTEGER primary key is the rowid alias, so a MAX or ORDER BY DESC query is a direct seek.
+CREATE TABLE chain_anchors (
+    block_num INTEGER NOT NULL, -- the block number of a state sync
+    peaks BLOB NOT NULL,        -- serialized MMR peaks committed by the header of the block
     PRIMARY KEY (block_num)
 ) STRICT;
 
@@ -241,11 +244,11 @@ CREATE TABLE tags (
     PRIMARY KEY (tag, source)
 ) STRICT, WITHOUT ROWID;
 
--- insert initial row into blockchain_checkpoint table
-INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)
+-- insert initial row into chain_anchors table
+INSERT OR IGNORE INTO chain_anchors (block_num, peaks)
 SELECT 0, X''
 WHERE (
-    SELECT COUNT(*) FROM blockchain_checkpoint
+    SELECT COUNT(*) FROM chain_anchors
 ) = 0;
 
 -- ── Block headers & partial blockchain ───────────────────────────────────

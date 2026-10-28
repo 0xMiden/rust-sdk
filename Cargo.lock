@@ -2909,6 +2909,7 @@ name = "miden-client-grpc"
 version = "0.17.4"
 dependencies = [
  "async-trait",
+ "futures",
  "gloo-timers",
  "miden-client-core",
  "miden-node-proto-build",
@@ -2920,6 +2921,7 @@ dependencies = [
  "prost",
  "tokio",
  "tonic",
+ "tonic-health",
  "tonic-prost",
  "tonic-prost-build",
  "tonic-web-wasm-client",

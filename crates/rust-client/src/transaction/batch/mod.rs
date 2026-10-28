@@ -98,7 +98,7 @@ use miden_protocol::transaction::{
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx_batch::{BatchExecutor, LocalBatchProver};
 
-use crate::note::NoteUpdateTracker;
+use crate::note::NoteUpdates;
 use crate::rpc::RpcError;
 use crate::rpc::encryption::seal_transaction_inputs;
 use crate::store::data_store::ClientDataStore;
@@ -293,7 +293,7 @@ where
         tx_results: &[TransactionResult],
         submission_height: BlockNumber,
     ) -> Result<BatchStoreUpdate, TransactionStoreUpdateError> {
-        let mut note_updates = NoteUpdateTracker::default();
+        let mut note_updates = NoteUpdates::default();
         let mut new_tags = Vec::new();
         for tx_result in tx_results {
             let tx_update = self.get_transaction_store_update(tx_result, submission_height).await?;

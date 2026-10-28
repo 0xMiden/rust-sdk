@@ -8,8 +8,8 @@ use miden_client_core::store::{
     InputNoteCursor,
     InputNoteRecord,
     NoteFilter,
-    NoteUpdateTracker,
     NoteUpdateType,
+    NoteUpdates,
     OutputNoteRecord,
 };
 use miden_protocol::Word;
@@ -417,14 +417,14 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
 
 pub(crate) fn apply_note_updates_tx(
     tx: &Transaction,
-    note_updates: &NoteUpdateTracker,
+    note_updates: &NoteUpdates,
 ) -> Result<(), StoreError> {
     // Split input notes into inserts and updates, collecting scripts from new notes.
     let mut input_inserts = Vec::new();
     let mut input_updates = Vec::new();
     let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
 
-    for input_note in note_updates.updated_input_notes() {
+    for input_note in note_updates.input_notes() {
         match input_note.update_type() {
             // `InsertCommitted` is a previously-expected note that just gained its metadata, so it
             // needs a full-row insert (to write `note_id`/`nullifier`), same as `Insert`.
@@ -436,7 +436,6 @@ pub(crate) fn apply_note_updates_tx(
             NoteUpdateType::Update => {
                 input_updates.push(serialize_input_note_state(input_note.inner()));
             },
-            NoteUpdateType::None => {},
         }
     }
 
@@ -445,7 +444,7 @@ pub(crate) fn apply_note_updates_tx(
     let mut output_inserts = Vec::new();
     let mut output_updates = Vec::new();
 
-    for output_note in note_updates.updated_output_notes() {
+    for output_note in note_updates.output_notes() {
         match output_note.update_type() {
             // Output notes are never assigned `InsertCommitted`, but it is insert-like for
             // exhaustiveness.
@@ -459,7 +458,6 @@ pub(crate) fn apply_note_updates_tx(
             NoteUpdateType::Update => {
                 output_updates.push(serialize_output_note_state(output_note.inner()));
             },
-            NoteUpdateType::None => {},
         }
     }
 

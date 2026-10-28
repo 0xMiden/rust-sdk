@@ -23,7 +23,11 @@ use miden_client::{
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
-use crate::commands::account::{DEFAULT_ACCOUNT_ID_KEY, get_non_fungible_faucet_symbol};
+use crate::commands::account::{
+    DEFAULT_ACCOUNT_ID_KEY,
+    get_faucet_token_info,
+    get_non_fungible_faucet_symbol,
+};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
 
@@ -433,11 +437,12 @@ struct FaucetTomlEntry {
 
 /// Resolves faucet display metadata (symbol + decimals) for a given faucet `AccountId`.
 ///
-/// Lookup walks three sources in priority order:
+/// Lookup walks four sources in priority order:
 ///
 /// 1. The user's TOML symbol map (bech32 `address`).
 /// 2. The client's settings store, populated from previous RPC fetches.
-/// 3. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
+/// 3. The tracked faucet account's storage.
+/// 4. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
 ///    store.
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
@@ -598,8 +603,8 @@ impl FaucetMetadataResolver {
         &self.network_id
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
-    /// settings store. Returns `None` without performing any network request.
+    /// Looks up faucet metadata in the TOML map, settings store, and tracked account, in that
+    /// order. Does not make a network request.
     pub async fn resolve_local<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -611,11 +616,16 @@ impl FaucetMetadataResolver {
         }
         // 2) settings store
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
+        if let Some(metadata) = client.get_setting::<FaucetMetadata>(setting_key).await? {
+            return Ok(Some(metadata));
+        }
+        Ok(get_faucet_token_info(client, faucet_id)
+            .await
+            .ok()
+            .map(|(symbol, decimals)| FaucetMetadata { symbol: symbol.to_string(), decimals }))
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
-    /// RPC success, the result is persisted to the settings store.
+    /// Looks up faucet metadata locally, then through RPC. Persists successful RPC results.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -647,19 +657,16 @@ impl FaucetMetadataResolver {
         Ok(resolved)
     }
 
-    /// Runs the full lookup without consulting the in-memory cache: TOML → settings store → RPC
-    /// fetch. On RPC success, the result is persisted to the settings store. A failed RPC fetch
-    /// returns an error, so the caller does not cache it as a miss.
+    /// Runs the lookup without the in-memory cache. Returns RPC errors so they are not cached as
+    /// misses.
     async fn resolve_uncached<AUTH>(
         &self,
         client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
-        // 1) & 2) local sources (TOML + settings store)
         if let Some(meta) = self.resolve_local(client, faucet_id).await? {
             return Ok(Some(meta));
         }
-        // 3) RPC fetch
         let setting_key = faucet_metadata_setting_key(faucet_id);
         let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
             return Ok(None);
@@ -937,12 +944,24 @@ pub(crate) fn parse_ecdsa_public_key(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
-    use miden_client::account::AccountId;
+    use miden_client::account::standards::auth::NoAuth;
+    use miden_client::account::{
+        AccountBuilder,
+        AccountBuilderSchemaCommitmentExt,
+        AccountId,
+        AccountType,
+    };
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
+    use miden_client::builder::ClientBuilder;
+    use miden_client::keystore::FilesystemKeyStore;
+    use miden_client::rpc::Endpoint;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+    use miden_client::testing::common::{create_test_store_path, fungible_faucet_component};
     use miden_client::utils::Serializable;
+    use miden_client_sqlite_store::SqliteStore;
 
     use super::{
         FaucetMetadataResolver,
@@ -1023,6 +1042,39 @@ mod tests {
             source.contains("does not match configured network"),
             "unexpected error: {source}"
         );
+    }
+
+    #[tokio::test]
+    async fn tracked_private_faucet_metadata_resolves_without_rpc() -> anyhow::Result<()> {
+        let path = create_test_store_path();
+        let endpoint = Endpoint::new("http".into(), "127.0.0.1".into(), Some(0));
+        let resolver =
+            FaucetMetadataResolver::new(path.with_extension("toml"), &endpoint.to_network_id())?;
+        let mut client = ClientBuilder::<FilesystemKeyStore>::new()
+            .grpc_client(&endpoint, Some(10))
+            .store(Arc::new(SqliteStore::new(path).await?))
+            .build()
+            .await?;
+        let (faucet_component, policies) = fungible_faucet_component()?;
+        let faucet = AccountBuilder::new([42; 32])
+            .account_type(AccountType::Private)
+            .with_component(NoAuth)
+            .with_component(faucet_component)
+            .with_components(policies)
+            .build_with_schema_commitment()?;
+        client.add_account(&faucet, false).await?;
+
+        let local = resolver
+            .resolve_local(&client, faucet.id())
+            .await?
+            .expect("tracked faucet metadata");
+        assert_eq!(local.symbol, "TEST");
+        assert_eq!(local.decimals, 10);
+        let metadata =
+            resolver.resolve(&client, faucet.id()).await?.expect("offline faucet metadata");
+        assert_eq!(metadata.symbol, local.symbol);
+        assert_eq!(metadata.decimals, local.decimals);
+        Ok(())
     }
 
     #[test]

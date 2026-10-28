@@ -24,7 +24,12 @@ use miden_client::{Client, PrettyPrint, Word, ZERO};
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
 use crate::packages::{load_packages, load_packages_from_directory};
-use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
+use crate::utils::{
+    FormattedAsset,
+    load_faucet_metadata_resolver,
+    parse_account_id,
+    split_procedure_target,
+};
 use crate::{client_binary_name, create_dynamic_table};
 
 pub const DEFAULT_ACCOUNT_ID_KEY: &str = "default_account_id";
@@ -241,19 +246,18 @@ async fn show_account<AUTH>(
 
     // Vault Tables
     {
+        let resolver = load_faucet_metadata_resolver()?;
         let mut fungible_table = create_dynamic_table(&["Faucet", "Amount"]);
         let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID"]);
         for asset in account.vault().assets() {
             match asset.as_fungible() {
                 Some(fungible_asset) => {
-                    let faucet_id = fungible_asset.faucet_id();
-                    let asset_amount = fungible_asset.amount();
-                    let (faucet, amount) = match get_faucet_token_info(client, faucet_id).await {
-                        Ok((symbol, decimals)) => {
-                            (symbol.to_string(), base_units_to_tokens(asset_amount, decimals))
-                        },
-                        Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
-                    };
+                    let metadata = resolver.resolve(client, fungible_asset.faucet_id()).await?;
+                    let (faucet, amount) = FormattedAsset::fungible_parts(
+                        &fungible_asset,
+                        metadata.as_ref(),
+                        resolver.network_id(),
+                    );
                     fungible_table.add_row(vec![faucet, amount]);
                 },
                 None => {
@@ -613,7 +617,7 @@ fn print_summary_table(account: &PartialAccount, network_id: NetworkId, kind: &A
 /// # Errors
 /// Returns an error if the account is not tracked by the client, has no token config slot (i.e.
 /// is not a fungible faucet), or the token config can't be decoded.
-async fn get_faucet_token_info<AUTH>(
+pub(crate) async fn get_faucet_token_info<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
 ) -> Result<(TokenSymbol, u8), CliError> {

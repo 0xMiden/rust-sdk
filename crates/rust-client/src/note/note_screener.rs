@@ -4,20 +4,18 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use async_trait::async_trait;
-use miden_processor::ExecutionError;
-use miden_processor::mast::error_code_from_msg;
-use miden_processor::operation::OperationError;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId};
+use miden_protocol::transaction::{ExecutedTransaction, TransactionId};
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
+    DataStoreError,
     NoteCheckerError,
     NoteConsumptionChecker,
     NoteConsumptionInfo,
     TransactionExecutor,
-    TransactionExecutorError,
     TransactionMastStore,
 };
 use thiserror::Error;
@@ -28,6 +26,7 @@ use crate::rpc::domain::note::CommittedNote;
 use crate::store::data_store::ClientDataStore;
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
+use crate::transaction::batch::InMemoryBatchDataStore;
 use crate::transaction::{
     AdviceMap,
     AuthArgsLayout,
@@ -131,7 +130,8 @@ impl NoteScreener {
         notes: &[Note],
     ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
         let account_ids = self.store.get_account_ids().await?;
-        self.screen_notes(notes, account_ids).await
+        let data_store = InMemoryBatchDataStore::new(self.data_store());
+        self.screen_notes(&data_store, notes, account_ids).await
     }
 
     /// Checks whether the provided notes could be consumed by `account_id`, by executing a
@@ -146,13 +146,44 @@ impl NoteScreener {
         account_id: AccountId,
         notes: &[Note],
     ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
-        self.screen_notes(notes, vec![account_id]).await
+        let data_store = InMemoryBatchDataStore::new(self.data_store());
+        self.screen_notes(&data_store, notes, vec![account_id]).await
+    }
+
+    /// Checks whether the provided notes could be consumed by any tracked account, against the
+    /// account states that `executed_txs` produce in order.
+    ///
+    /// The first transaction of each account must start from the account state in the store.
+    pub(crate) async fn get_output_note_consumability(
+        &self,
+        executed_txs: &[&ExecutedTransaction],
+        notes: &[Note],
+    ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
+        if notes.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut data_store = InMemoryBatchDataStore::new(self.data_store());
+        for executed_tx in executed_txs {
+            if data_store.cached_account(executed_tx.account_id()).is_none() {
+                self.ensure_initial_state_is_stored(executed_tx).await?;
+            }
+
+            data_store.apply_executed_transaction(executed_tx).await.map_err(|source| {
+                NoteScreenerError::FinalAccountState { transaction_id: executed_tx.id(), source }
+            })?;
+        }
+
+        let account_ids = self.store.get_account_ids().await?;
+        self.screen_notes(&data_store, notes, account_ids).await
     }
 
     /// Screens `notes` against `account_ids`, executing a transaction for each note-account pair
-    /// and collecting the accounts that could consume each note.
+    /// and collecting the accounts that could consume each note. An account that `data_store` holds
+    /// in memory is screened with that state.
     async fn screen_notes(
         &self,
+        data_store: &InMemoryBatchDataStore,
         notes: &[Note],
         account_ids: Vec<AccountId>,
     ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, NoteScreenerError> {
@@ -164,18 +195,22 @@ impl NoteScreener {
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
 
-        let data_store = self.data_store();
         // Don't attach the real authenticator for consumability checks. The NoteConsumptionChecker
         // gracefully handles a missing authenticator by returning `ConsumableWithAuthorization`
         // instead of calling `get_signature()`. Attaching the real authenticator here causes the
         // external signer (e.g. wallet extension) to be invoked during sync_state, producing
         // unwanted confirmation popups on every sync.
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
-            TransactionExecutor::new(&data_store);
+            TransactionExecutor::new(data_store);
         let consumption_checker = NoteConsumptionChecker::new(&transaction_executor);
 
         for account_id in account_ids {
-            let account_code = self.get_account_code(account_id).await?;
+            // A transaction can replace the account code, so the code of an in-memory state can
+            // differ from the code in the store.
+            let account_code = match data_store.cached_account(account_id) {
+                Some(account) => account.code().clone(),
+                None => self.get_account_code(account_id).await?,
+            };
             data_store.mast_store().load_account_code(&account_code);
 
             let account_tx_args = self
@@ -193,7 +228,6 @@ impl NoteScreener {
                     .await
                 {
                     Ok(status) => status,
-                    Err(err) if adds_existing_non_fungible_asset(&err) => continue,
                     Err(err) => return Err(err.into()),
                 };
 
@@ -311,6 +345,29 @@ impl NoteScreener {
             .await?
             .ok_or(NoteScreenerError::AccountDataNotFound(account_id))
     }
+
+    /// Returns an error if the store does not hold the account state that `executed_tx` starts
+    /// from.
+    async fn ensure_initial_state_is_stored(
+        &self,
+        executed_tx: &ExecutedTransaction,
+    ) -> Result<(), NoteScreenerError> {
+        let account_id = executed_tx.account_id();
+        let (stored_header, _) = self
+            .store
+            .get_account_header(account_id)
+            .await?
+            .ok_or(NoteScreenerError::AccountDataNotFound(account_id))?;
+
+        if stored_header.to_commitment() != executed_tx.initial_account().to_commitment() {
+            return Err(NoteScreenerError::InitialAccountStateNotStored {
+                transaction_id: executed_tx.id(),
+                account_id,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 // DEFAULT CALLBACK IMPLEMENTATIONS
@@ -405,27 +462,17 @@ pub enum NoteScreenerError {
     StoreError(#[from] StoreError),
     #[error("note consumption check failed")]
     NoteCheckerError(#[from] NoteCheckerError),
-}
-
-/// The message of the transaction kernel error that the prologue returns when an input note holds a
-/// non-fungible asset that is already in the account vault.
-const NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS: &str =
-    "failed to add non-fungible asset that already exists in the vault";
-
-/// Returns `true` if the consumption check failed in the prologue because an input note holds a
-/// non-fungible asset that is already in the account vault.
-fn adds_existing_non_fungible_asset(err: &NoteCheckerError) -> bool {
-    let NoteCheckerError::PrologueExecution(
-        TransactionExecutorError::TransactionProgramExecutionFailed(
-            ExecutionError::OperationError {
-                err: OperationError::FailedAssertion { err_code, .. },
-                ..
-            },
-        ),
-    ) = err
-    else {
-        return false;
-    };
-
-    *err_code == error_code_from_msg(NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS)
+    #[error(
+        "the store does not hold the state of account {account_id} that transaction {transaction_id} starts from"
+    )]
+    InitialAccountStateNotStored {
+        transaction_id: TransactionId,
+        account_id: AccountId,
+    },
+    #[error("failed to build the account state that transaction {transaction_id} produces")]
+    FinalAccountState {
+        transaction_id: TransactionId,
+        #[source]
+        source: DataStoreError,
+    },
 }

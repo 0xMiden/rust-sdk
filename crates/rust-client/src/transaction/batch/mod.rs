@@ -288,15 +288,26 @@ where
     ///
     /// The note updates of the transactions are merged in batch order, so a note that one
     /// transaction creates and a later transaction consumes is stored once, in its consumed state.
+    ///
+    /// The output notes are screened against the account states after the last transaction, so the
+    /// store must still hold the state that the first transaction of each account starts from.
     pub async fn get_batch_store_update(
         &self,
         tx_results: &[TransactionResult],
         submission_height: BlockNumber,
     ) -> Result<BatchStoreUpdate, TransactionStoreUpdateError> {
+        let output_note_relevances = self.screen_output_notes(tx_results).await?;
+
         let mut note_updates = NoteUpdates::default();
         let mut new_tags = Vec::new();
         for tx_result in tx_results {
-            let tx_update = self.get_transaction_store_update(tx_result, submission_height).await?;
+            let tx_update = self
+                .build_transaction_store_update(
+                    tx_result,
+                    submission_height,
+                    &output_note_relevances,
+                )
+                .await?;
             note_updates.merge(tx_update.note_updates().clone());
             new_tags.extend_from_slice(tx_update.new_tags());
         }

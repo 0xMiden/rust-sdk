@@ -101,7 +101,7 @@ use tracing::info;
 
 use super::Client;
 use crate::ClientError;
-use crate::note::{NoteScreenerError, NoteUpdates, StandardNote};
+use crate::note::{NoteConsumability, NoteScreenerError, NoteUpdates, StandardNote};
 use crate::rpc::domain::account::{
     AccountStorageRequirements,
     GetAccountRequest,
@@ -910,12 +910,54 @@ where
 
     /// Builds a [`TransactionStoreUpdate`] for the provided transaction result at the specified
     /// submission height.
+    ///
+    /// The output notes are screened against the account state after the transaction, so the store
+    /// must still hold the state that the transaction starts from.
     pub async fn get_transaction_store_update(
         &self,
         tx_result: &TransactionResult,
         submission_height: BlockNumber,
     ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
-        let note_updates = self.get_note_updates(submission_height, tx_result).await?;
+        let output_note_relevances =
+            self.screen_output_notes(core::slice::from_ref(tx_result)).await?;
+
+        self.build_transaction_store_update(tx_result, submission_height, &output_note_relevances)
+            .await
+    }
+
+    /// Screens the output notes of the provided transactions against the account states that the
+    /// transactions produce, in order.
+    async fn screen_output_notes(
+        &self,
+        tx_results: &[TransactionResult],
+    ) -> Result<BTreeMap<NoteId, Vec<NoteConsumability>>, TransactionStoreUpdateError> {
+        let executed_txs: Vec<&ExecutedTransaction> =
+            tx_results.iter().map(TransactionResult::executed_transaction).collect();
+        let output_notes: Vec<Note> = executed_txs
+            .iter()
+            .flat_map(|executed_tx| notes_from_output(executed_tx.output_notes()))
+            .cloned()
+            .collect();
+
+        // Screening holds the in-memory account states across awaits. It is boxed so it does not
+        // inflate the futures of the submit paths (triggers clippy::large_futures).
+        let note_screener = self.note_screener();
+        Ok(
+            Box::pin(note_screener.get_output_note_consumability(&executed_txs, &output_notes))
+                .await?,
+        )
+    }
+
+    /// Builds a [`TransactionStoreUpdate`] from output note relevances that are already screened.
+    async fn build_transaction_store_update(
+        &self,
+        tx_result: &TransactionResult,
+        submission_height: BlockNumber,
+        output_note_relevances: &BTreeMap<NoteId, Vec<NoteConsumability>>,
+    ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
+        let note_updates = self
+            .get_note_updates(submission_height, tx_result, output_note_relevances)
+            .await?;
 
         // Only expected input notes need tags; output notes are committed (with proofs) via
         // account-matched transaction sync.
@@ -1372,6 +1414,7 @@ where
         &self,
         submission_height: BlockNumber,
         tx_result: &TransactionResult,
+        output_note_relevances: &BTreeMap<NoteId, Vec<NoteConsumability>>,
     ) -> Result<NoteUpdates, TransactionStoreUpdateError> {
         let executed_tx = tx_result.executed_transaction();
         let current_timestamp = self.store.get_current_timestamp();
@@ -1406,8 +1449,6 @@ where
         let mut new_input_notes = vec![];
         let output_notes: Vec<Note> =
             notes_from_output(executed_tx.output_notes()).cloned().collect();
-        let note_screener = self.note_screener().clone();
-        let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
         for note in output_notes {
             // The fee note is a bearer note meant for whoever builds the batch, so the screener

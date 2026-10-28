@@ -22,6 +22,7 @@ use miden_client::note::{
     NetworkAccountTarget,
     NoteExecutionHint,
     NoteFile,
+    NoteScreenerError,
     NoteSyncHint,
 };
 use miden_client::pswap::PswapLineageState;
@@ -63,6 +64,7 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionRequestError,
     TransactionStatus,
+    TransactionStoreUpdateError,
 };
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client_core::store::{AccountStorageFilter, ClientAccountType};
@@ -993,6 +995,133 @@ async fn mint_and_burn_non_fungible_transaction() {
         NonFungibleFaucet::get_asset_status(faucet_account.storage(), commitment).unwrap(),
         AssetStatus::Burned
     );
+}
+
+/// Mints a non-fungible asset made from `user_data` to `wallet_id` and consumes the mint note with
+/// the wallet.
+async fn mint_non_fungible_asset_to_wallet(
+    client: &mut TestClient,
+    mock_rpc_api: &MockRpcApi,
+    faucet_id: AccountId,
+    wallet_id: AccountId,
+    user_data: &[u8],
+) -> NonFungibleAsset {
+    let commitment =
+        NonFungibleFaucet::compute_asset_commitment(user_data, Word::from([1, 2, 3, 4u32]));
+    let asset = NonFungibleAsset::from_parts(faucet_id, commitment);
+
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, wallet_id, NoteType::Private, client.rng())
+        .unwrap();
+    client
+        .execute_tx_and_consume_output_notes(mint_request, faucet_id, wallet_id)
+        .await
+        .unwrap();
+    mock_rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    asset
+}
+
+/// A batch that burns two non-fungible assets from the same wallet screens both BURN notes against
+/// the wallet state after the batch. The wallet state in the store still holds both assets, and a
+/// prologue that adds them again fails.
+#[tokio::test]
+async fn burn_non_fungible_assets_in_batch() {
+    let (mut client, mock_rpc_api) = Box::pin(create_test_client()).await;
+
+    let faucet = client.insert_non_fungible_faucet(AccountType::Private).await.unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let first_asset = mint_non_fungible_asset_to_wallet(
+        &mut client,
+        &mock_rpc_api,
+        faucet.id(),
+        wallet.id(),
+        b"token #1",
+    )
+    .await;
+    let second_asset = mint_non_fungible_asset_to_wallet(
+        &mut client,
+        &mock_rpc_api,
+        faucet.id(),
+        wallet.id(),
+        b"token #2",
+    )
+    .await;
+
+    let mut burn_note_ids = Vec::new();
+    let mut burn_requests = Vec::new();
+    for asset in [first_asset, second_asset] {
+        let burn_request = TransactionRequestBuilder::new()
+            .build_burn_non_fungible_asset(asset, wallet.id(), client.rng())
+            .unwrap();
+        burn_note_ids.extend(burn_request.expected_output_own_notes().iter().map(Note::id));
+        burn_requests.push(burn_request);
+    }
+    assert_eq!(burn_note_ids.len(), 2);
+
+    Box::pin(async {
+        let mut batch = client.new_transaction_batch();
+        for burn_request in burn_requests {
+            client.push_to_batch(&mut batch, wallet.id(), burn_request).await?;
+        }
+        client.submit_transaction_batch(batch).await
+    })
+    .await
+    .expect("the batch must screen its BURN notes against the wallet state after the batch");
+
+    let wallet_account = client.get_account(wallet.id()).await.unwrap().unwrap();
+    assert!(wallet_account.vault().assets().all(|vault_asset| {
+        vault_asset != first_asset.into() && vault_asset != second_asset.into()
+    }));
+
+    // The faucet can consume the BURN notes, so the client tracks them as input notes.
+    for note_id in burn_note_ids {
+        assert!(client.get_input_note(note_id).await.unwrap().is_some());
+    }
+}
+
+/// Building a store update for a transaction that the store already applied fails, because the
+/// output notes cannot be screened against the account state that the transaction produces.
+#[tokio::test]
+async fn transaction_store_update_requires_the_initial_account_state_in_store() {
+    let (mut client, _mock_rpc_api) = Box::pin(create_test_client()).await;
+
+    let faucet = client.insert_non_fungible_faucet(AccountType::Private).await.unwrap();
+    let wallet = client.insert_wallet(AccountType::Private).await.unwrap();
+    client.sync_state().await.unwrap();
+
+    let commitment =
+        NonFungibleFaucet::compute_asset_commitment(b"token #1", Word::from([1, 2, 3, 4u32]));
+    let asset = NonFungibleAsset::from_parts(faucet.id(), commitment);
+    let mint_request = TransactionRequestBuilder::new()
+        .build_mint_non_fungible_asset(asset, wallet.id(), NoteType::Private, client.rng())
+        .unwrap();
+
+    let tx_result = Box::pin(client.execute_transaction(faucet.id(), mint_request)).await.unwrap();
+    let submission_height = client.get_sync_height().await.unwrap();
+
+    // The update builds while the store holds the state that the transaction starts from.
+    Box::pin(client.get_transaction_store_update(&tx_result, submission_height))
+        .await
+        .unwrap();
+
+    Box::pin(client.apply_transaction(&tx_result, submission_height)).await.unwrap();
+
+    let err = Box::pin(client.get_transaction_store_update(&tx_result, submission_height))
+        .await
+        .unwrap_err();
+    match err {
+        TransactionStoreUpdateError::NoteScreener(
+            NoteScreenerError::InitialAccountStateNotStored { transaction_id, account_id },
+        ) => {
+            assert_eq!(transaction_id, tx_result.id());
+            assert_eq!(account_id, faucet.id());
+        },
+        other => panic!("expected InitialAccountStateNotStored, got {other:?}"),
+    }
 }
 
 #[tokio::test]

@@ -78,6 +78,8 @@ pub enum StoreError {
     QueryError(String),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
+    #[error("store {0} is locked by another store instance")]
+    StoreLocked(String),
     #[error("vault key {0:?} (hashed to {1}) is not tracked in the vault")]
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]

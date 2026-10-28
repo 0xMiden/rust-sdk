@@ -279,7 +279,7 @@ pub mod config;
 #[allow(hidden_glob_reexports)]
 mod errors;
 mod info;
-mod note_decoding;
+mod notes;
 mod package_registry;
 mod packages;
 #[allow(hidden_glob_reexports)]

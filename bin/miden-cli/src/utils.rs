@@ -8,7 +8,8 @@ use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
-use miden_client::transaction::{ExecutedTransaction, InputNote};
+use miden_client::keystore::Keystore;
+use miden_client::transaction::ExecutedTransaction;
 use miden_client::utils::{Deserializable, hex_to_bytes};
 use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
 use miden_client::{
@@ -26,6 +27,7 @@ use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_p
 use crate::commands::account::{DEFAULT_ACCOUNT_ID_KEY, get_non_fungible_faucet_symbol};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+use crate::notes::display::{print_consumed_notes, print_output_notes};
 
 /// Placeholder for a value that is not available or not set.
 pub(crate) const NO_VALUE: &str = "-";
@@ -158,35 +160,30 @@ pub(crate) fn configured_network_id() -> Result<NetworkId, CliError> {
 
 /// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
 /// storage map changes, vault changes, and the nonce change.
-pub async fn print_executed_transaction<AUTH>(
+pub async fn print_executed_transaction<AUTH: Keystore + Sync>(
     client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
 ) -> Result<(), CliError> {
     println!("The transaction will have the following effects:\n");
 
     let patch = executed_tx.account_patch();
+    let resolver = load_faucet_metadata_resolver()?;
 
     // INPUT NOTES
-    let input_note_ids = executed_tx.input_notes().iter().map(InputNote::id).collect::<Vec<_>>();
-    if input_note_ids.is_empty() {
+    let input_notes = executed_tx.input_notes();
+    if input_notes.is_empty() {
         println!("No notes will be consumed.");
     } else {
-        println!("The following notes will be consumed:");
-        for input_note_id in input_note_ids {
-            println!("\t- {}", input_note_id.to_hex());
-        }
+        print_consumed_notes(client, &resolver, input_notes).await?;
     }
-    println!();
 
     // OUTPUT NOTES
-    let output_notes: Vec<_> = executed_tx.output_notes().iter().collect();
+    let output_notes = executed_tx.output_notes();
     if output_notes.is_empty() {
-        println!("No notes will be created as a result of this transaction.");
+        // The table of output notes starts with a blank line. This message does the same.
+        println!("\nNo notes will be created as a result of this transaction.");
     } else {
-        println!("{} notes will be created as a result of this transaction:", output_notes.len());
-        for note in &output_notes {
-            println!("\t- {}", note.id().to_hex());
-        }
+        print_output_notes(client, &resolver, output_notes, false).await?;
     }
     println!();
 
@@ -223,7 +220,6 @@ pub async fn print_executed_transaction<AUTH>(
     if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
-        let resolver = load_faucet_metadata_resolver()?;
         let mut fungible_table = create_dynamic_table(&["Faucet ID", "New Amount"]);
         let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 

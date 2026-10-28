@@ -564,7 +564,7 @@ impl<AUTH> Client<AUTH> {
     ) -> Result<Word, ClientError> {
         let (header, at) = self.sync_height_anchor().await?;
         let (_, proof) =
-            self.rpc_api.get_account(account_id, GetAccountRequest::new().at(at)).await?;
+            self.rpc_api.get_account(GetAccountRequest::new(account_id).at(at)).await?;
         validate_account_witness(proof.account_witness(), account_id, &header)?;
 
         Ok(proof.account_commitment())
@@ -607,7 +607,7 @@ impl<AUTH> Client<AUTH> {
         account_id: AccountId,
         sync_height: BlockNumber,
     ) -> ClientError {
-        match self.rpc_api.get_account(account_id, GetAccountRequest::new()).await {
+        match self.rpc_api.get_account(GetAccountRequest::new(account_id)).await {
             Ok(_) => ClientError::AccountNotFoundAtSyncHeight { account_id, sync_height },
             Err(_) => ClientError::AccountNotFoundOnChain(account_id),
         }
@@ -672,16 +672,16 @@ impl<AUTH> Client<AUTH> {
         slot_name: &StorageSlotName,
     ) -> Result<Option<Word>, ClientError> {
         let (header, at) = self.sync_height_anchor().await?;
-        let proof =
-            match self.rpc_api.get_account(account_id, GetAccountRequest::new().at(at)).await {
-                Ok((_, proof)) => proof,
-                Err(err) => match err.endpoint_error() {
-                    Some(EndpointError::GetAccount(
-                        GetAccountError::AccountNotFound | GetAccountError::AccountNotPublic,
-                    )) => return Ok(None),
-                    _ => return Err(ClientError::RpcError(err)),
-                },
-            };
+        let proof = match self.rpc_api.get_account(GetAccountRequest::new(account_id).at(at)).await
+        {
+            Ok((_, proof)) => proof,
+            Err(err) => match err.endpoint_error() {
+                Some(EndpointError::GetAccount(
+                    GetAccountError::AccountNotFound | GetAccountError::AccountNotPublic,
+                )) => return Ok(None),
+                _ => return Err(ClientError::RpcError(err)),
+            },
+        };
 
         validate_account_witness(proof.account_witness(), account_id, &header)?;
 

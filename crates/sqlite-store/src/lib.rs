@@ -17,7 +17,7 @@ use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Access, Pool, SqlitePoolManager};
 use deadpool::Runtime;
 use miden_client_core::errors::StoreError;
-use miden_client_core::note_transport::NoteTransportCursor;
+use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
 use miden_client_core::pswap::{PswapLineageFilter, PswapLineageRecord};
 use miden_client_core::rpc::RpcLimits;
 use miden_client_core::rpc::encryption::TransactionEncryptionKey;
@@ -64,6 +64,7 @@ use sql_error::SqlResultExt;
 use crate::account::rows::query_vault_assets;
 use crate::settings::{
     NOTE_TRANSPORT_CURSORS_KEY,
+    NOTE_TRANSPORT_SYNC_STATE_KEY,
     RPC_LIMITS_KEY,
     TRANSACTION_ENCRYPTION_KEY_KEY,
     protocol_config_key,
@@ -600,7 +601,7 @@ impl Store for SqliteStore {
 
     async fn get_note_transport_cursors(
         &self,
-    ) -> Result<BTreeMap<NoteTag, NoteTransportCursor>, StoreError> {
+    ) -> Result<BTreeMap<NoteTag, Option<NoteTransportCursor>>, StoreError> {
         self.interact_with_connection(|conn| {
             SqliteStore::get_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY)
         })
@@ -610,7 +611,7 @@ impl Store for SqliteStore {
 
     async fn set_note_transport_cursors(
         &self,
-        cursors: &BTreeMap<NoteTag, NoteTransportCursor>,
+        cursors: &BTreeMap<NoteTag, Option<NoteTransportCursor>>,
     ) -> Result<(), StoreError> {
         let cursors = cursors.clone();
         self.interact_with_connection(move |conn| {
@@ -618,6 +619,26 @@ impl Store for SqliteStore {
                 return SqliteStore::remove_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY);
             }
             SqliteStore::set_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY, &cursors)
+        })
+        .await
+    }
+
+    async fn get_note_transport_sync_state(
+        &self,
+    ) -> Result<Option<NoteTransportSyncState>, StoreError> {
+        self.interact_with_connection(|conn| {
+            SqliteStore::get_client_config(conn, NOTE_TRANSPORT_SYNC_STATE_KEY)
+        })
+        .await
+    }
+
+    async fn set_note_transport_sync_state(
+        &self,
+        state: &NoteTransportSyncState,
+    ) -> Result<(), StoreError> {
+        let state = state.clone();
+        self.interact_with_connection(move |conn| {
+            SqliteStore::set_client_config(conn, NOTE_TRANSPORT_SYNC_STATE_KEY, &state)
         })
         .await
     }

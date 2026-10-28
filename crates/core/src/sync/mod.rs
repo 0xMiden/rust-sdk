@@ -2,7 +2,7 @@
 
 mod state_sync_update;
 pub use state_sync_update::{
-    AccountUpdates,
+    AccountUpdateTracker,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,

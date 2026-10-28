@@ -18,7 +18,7 @@ use tracing::info;
 
 use super::state_sync_update::build_account_patch;
 use super::{
-    AccountUpdates,
+    AccountUpdateTracker,
     NoteObserver,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
@@ -339,7 +339,7 @@ impl StateSync {
 
         let note_updates = NoteUpdateTracker::new(input_notes, output_notes);
         let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
         else {
@@ -392,9 +392,9 @@ impl StateSync {
 
     /// Turns the node's raw response into note and transaction updates.
     ///
-    /// Discards the local transactions the node superseded, screens the received notes for
-    /// relevance, applies the transaction inclusions, and recovers the public notes the tracked
-    /// accounts consumed, fetching those by id.
+    /// Screens the received notes for relevance, applies the transaction inclusions, discards the
+    /// local transactions the node superseded, and recovers the public notes the tracked accounts
+    /// consumed, fetching those by id.
     pub async fn derive_state_updates(
         &self,
         chain_sync_data: &mut ChainSyncData,
@@ -411,11 +411,6 @@ impl StateSync {
             return Ok(());
         };
 
-        // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in core::mem::take(superseded_states) {
-            transaction_updates.apply_superseded_account_state(superseded_state);
-        }
-
         advance.relevant_note_blocks = self
             .screen_note_blocks(
                 core::mem::take(&mut advance.note_blocks_awaiting_screening),
@@ -429,6 +424,13 @@ impl StateSync {
             note_updates,
             transaction_updates,
         )?;
+
+        // A discard is terminal. The inclusions above commit the local transactions the node
+        // included before the superseded states discard the ones that lost a same-nonce race
+        // against the network.
+        for superseded_state in core::mem::take(superseded_states) {
+            transaction_updates.apply_superseded_account_state(superseded_state);
+        }
 
         self.recover_consumed_public_notes(note_updates, &advance.transactions).await?;
 
@@ -996,7 +998,7 @@ impl StateSync {
     /// caller must discard the transactions that produced them.
     async fn account_state_sync(
         &self,
-        account_updates: &mut AccountUpdates,
+        account_updates: &mut AccountUpdateTracker,
         accounts: &[AccountHeader],
         account_commitment_updates: &[(AccountId, Word)],
         block_from: BlockNumber,
@@ -1049,7 +1051,7 @@ impl StateSync {
             })
             .collect();
 
-        account_updates.extend(AccountUpdates::new(Vec::new(), mismatched_private_accounts));
+        account_updates.extend(AccountUpdateTracker::new(Vec::new(), mismatched_private_accounts));
 
         Ok(superseded_states)
     }
@@ -1115,7 +1117,7 @@ impl StateSync {
     /// over the synced block range.
     async fn sync_public_accounts(
         &self,
-        account_updates: &mut AccountUpdates,
+        account_updates: &mut AccountUpdateTracker,
         commitment_updates: &[(AccountId, Word)],
         current_public_accounts: &[&AccountHeader],
         block_from: BlockNumber,
@@ -1154,7 +1156,8 @@ impl StateSync {
 
             match synced_account {
                 PublicAccountSync::Apply(public_update) => {
-                    account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
+                    account_updates
+                        .extend(AccountUpdateTracker::new(vec![*public_update], Vec::new()));
                 },
                 PublicAccountSync::Superseded => {
                     superseded_states.push(local_header.to_commitment());
@@ -1163,7 +1166,8 @@ impl StateSync {
             }
         }
 
-        account_updates.extend(AccountUpdates::default().with_account_witnesses(account_witnesses));
+        account_updates
+            .extend(AccountUpdateTracker::default().with_account_witnesses(account_witnesses));
 
         Ok(superseded_states)
     }
@@ -1498,7 +1502,7 @@ pub struct ChainSyncData {
     transaction_updates: TransactionUpdateTracker,
     /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
     /// keeps fresh, which the sync only queries when their state changed.
-    pub(crate) account_updates: AccountUpdates,
+    pub(crate) account_updates: AccountUpdateTracker,
 }
 
 impl ChainSyncData {
@@ -1835,7 +1839,7 @@ mod tests {
             AccountHeader::new(account.id(), Felt::from(2u32), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(
@@ -1874,7 +1878,7 @@ mod tests {
             AccountHeader::new(account.id(), account.nonce(), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(
@@ -2065,7 +2069,7 @@ mod tests {
 
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(

@@ -6,23 +6,8 @@ package client.note_transport;
 
 // Position in the stored-note sequence of the note transport service.
 message NoteTransportCursor {
-  message Position {
-    uint64 nonce = 1;
-    uint64 sequence = 2;
-  }
-
-  // An absent position is the cursor that starts from the first retained note.
-  Position position = 1;
-}
-
-// The note transport cursor of each note tag.
-message NoteTransportCursors {
-  message Entry {
-    fixed32 tag = 1;
-    NoteTransportCursor cursor = 2;
-  }
-
-  repeated Entry entries = 1;
+  uint64 nonce = 1;
+  uint64 sequence = 2;
 }
 
 // Cursor of the note transport fetch and the note tags that received all notes up to it.

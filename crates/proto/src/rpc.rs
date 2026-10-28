@@ -17,18 +17,21 @@ impl ProtobufValue for RpcLimits {
             nullifiers_limit: self.nullifiers_limit,
             account_ids_limit: self.account_ids_limit,
             note_tags_limit: self.note_tags_limit,
-            vault_assets_limit: self.vault_assets_limit,
+            vault_assets_limit: Some(self.vault_assets_limit),
         }
     }
 
     fn from_proto(limits: Self::Message) -> Result<Self, ProtoDecodeError> {
+        let vault_assets_limit =
+            limits.vault_assets_limit.unwrap_or(RpcLimits::default().vault_assets_limit);
+
         // Proto3 decodes an absent field as zero, and a zero limit makes request chunking panic.
         for (name, limit) in [
             ("note IDs", limits.note_ids_limit),
             ("nullifiers", limits.nullifiers_limit),
             ("account IDs", limits.account_ids_limit),
             ("note tags", limits.note_tags_limit),
-            ("vault assets", limits.vault_assets_limit),
+            ("vault assets", vault_assets_limit),
         ] {
             if limit == 0 {
                 return Err(ProtoDecodeError::InvalidValue(format!(
@@ -42,7 +45,7 @@ impl ProtobufValue for RpcLimits {
             nullifiers_limit: limits.nullifiers_limit,
             account_ids_limit: limits.account_ids_limit,
             note_tags_limit: limits.note_tags_limit,
-            vault_assets_limit: limits.vault_assets_limit,
+            vault_assets_limit,
         })
     }
 }
@@ -90,5 +93,35 @@ mod tests {
 
         assert!(matches!(error, ProtoDecodeError::InvalidValue(_)), "{error}");
         assert!(error.to_string().contains("note tags"), "{error}");
+    }
+
+    #[test]
+    fn rpc_limits_without_a_vault_assets_limit_use_the_default() {
+        let message = proto::RpcLimits {
+            note_ids_limit: 100,
+            nullifiers_limit: 100,
+            account_ids_limit: 100,
+            note_tags_limit: 100,
+            vault_assets_limit: None,
+        };
+
+        let limits = RpcLimits::from_proto(message).unwrap();
+
+        assert_eq!(limits.vault_assets_limit, RpcLimits::default().vault_assets_limit);
+    }
+
+    #[test]
+    fn rpc_limits_with_a_zero_vault_assets_limit_are_rejected() {
+        let message = proto::RpcLimits {
+            note_ids_limit: 100,
+            nullifiers_limit: 100,
+            account_ids_limit: 100,
+            note_tags_limit: 100,
+            vault_assets_limit: Some(0),
+        };
+
+        let error = RpcLimits::from_proto(message).unwrap_err();
+
+        assert!(error.to_string().contains("vault assets"), "{error}");
     }
 }

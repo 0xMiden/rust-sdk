@@ -1,14 +1,45 @@
-//! Protobuf conversion of output note states.
+//! Protobuf conversion of output note records and states.
 
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client_core::store::OutputNoteState;
+use miden_client_core::store::{OutputNoteRecord, OutputNoteState};
 use miden_objects::DecodeMessageExt;
-use miden_protocol::note::{NoteRecipient, NoteScript};
+use miden_protocol::Word;
+use miden_protocol::note::{NoteAssets, NoteAttachments, NoteMetadata, NoteRecipient, NoteScript};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
+
+impl From<&OutputNoteRecord> for proto::OutputNoteRecord {
+    fn from(record: &OutputNoteRecord) -> Self {
+        Self {
+            assets: Some(record.assets().to_proto()),
+            metadata: Some(record.metadata().to_proto()),
+            recipient_digest: Some(record.recipient_digest().into()),
+            state: Some(record.state().to_proto()),
+            expected_height: Some(record.expected_height().into()),
+            attachments: Some(record.attachments().to_proto()),
+        }
+    }
+}
+
+impl TryFrom<proto::OutputNoteRecord> for OutputNoteRecord {
+    type Error = ProtoDecodeError;
+
+    fn try_from(record: proto::OutputNoteRecord) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "output note record";
+
+        Ok(OutputNoteRecord::new(
+            Word::try_from(required(record.recipient_digest, MESSAGE, "recipient digest")?)?,
+            NoteAssets::from_proto(required(record.assets, MESSAGE, "assets")?)?,
+            NoteMetadata::from_proto(required(record.metadata, MESSAGE, "metadata")?)?,
+            OutputNoteState::from_proto(required(record.state, MESSAGE, "state")?)?,
+            required(record.expected_height, MESSAGE, "expected height")?.decode_and_verify()?,
+            NoteAttachments::from_proto(required(record.attachments, MESSAGE, "attachments")?)?,
+        ))
+    }
+}
 
 impl ProtobufValue for OutputNoteState {
     type Message = proto::OutputNoteState;

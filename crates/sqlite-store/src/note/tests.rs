@@ -25,7 +25,7 @@ use miden_client_core::store::{
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
-    NoteUpdateTracker,
+    NoteUpdates,
     OutputNoteRecord,
     OutputNoteState,
     Store,
@@ -782,11 +782,7 @@ async fn output_notes_filtered_by_script_root() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates(
-            [],
-            [],
-            [swap_note.clone(), partial_note.clone()],
-        ),
+        NoteUpdates::from_records([], [], [swap_note.clone(), partial_note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -840,7 +836,7 @@ async fn output_note_state_blob_does_not_embed_script() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -875,7 +871,7 @@ async fn consumed_output_note_round_trips() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -907,7 +903,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
         let state_sync_update = StateSyncUpdate::from_parts(
             BlockNumber::from(0u32),
             PartialBlockchainUpdates::default(),
-            NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
+            NoteUpdates::from_records(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
             AccountUpdates::default(),
             None,
@@ -1042,7 +1038,7 @@ async fn input_note_state_update_persists_attachments() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [updated], []),
+        NoteUpdates::from_records([], [updated], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,

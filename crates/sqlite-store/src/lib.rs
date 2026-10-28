@@ -12,8 +12,9 @@ use std::string::{String, ToString};
 use std::time::Duration;
 use std::vec::Vec;
 
+use db_management::lock::WriterLock;
 use db_management::migration::SqliteMigrator;
-use db_management::pool_manager::{Pool, SqlitePoolManager};
+use db_management::pool_manager::{Access, Pool, SqlitePoolManager};
 use deadpool::Runtime;
 use miden_client_core::errors::StoreError;
 use miden_client_core::note_transport::NoteTransportCursor;
@@ -86,17 +87,59 @@ mod transaction;
 ///
 /// Current table definitions are the result of applying every migration under `migrations/` in
 /// order.
+///
+/// A database has at most one read-write store at a time, across processes. [`Self::new`] takes an
+/// advisory lock on an adjacent `.lock` file and holds it while the store exists.
+/// [`Self::open_read_only`] opens any number of read-only stores next to it.
+///
+/// Do not share a read-write store between clients. Do not delete its `.lock` file while it is in
+/// use. The lock file follows the given path, so a symlink to the database file bypasses the lock.
 pub struct SqliteStore {
     pub(crate) pool: Pool,
     database_filepath: PathBuf,
+    /// Held by a read-write store. Released when the store is dropped.
+    _writer_lock: Option<WriterLock>,
 }
 
 impl SqliteStore {
     // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns a new instance of [Store] instantiated with the specified configuration options.
+    /// Opens or creates a read-write store and applies schema migrations.
+    ///
+    /// Returns [`StoreError::StoreLocked`] without waiting if another writer holds the lock.
+    /// Returns [`StoreError::DatabaseError`] if the path is invalid or the store cannot be opened
+    /// or migrated.
     pub async fn new(database_filepath: PathBuf) -> Result<Self, StoreError> {
+        let store = Self::connect(database_filepath, Access::ReadWrite)?;
+        store
+            .interact_with_connection(|conn| {
+                SqliteMigrator::client().apply(conn).map_err(database_error)
+            })
+            .await?;
+
+        // Account SMT data is persisted in the forest tables and read on demand, so no state needs
+        // to be rebuilt here.
+        Ok(store)
+    }
+
+    /// Opens an existing store for reading, without the writer lock and without migrations.
+    ///
+    /// Returns [`StoreError::DatabaseError`] if the path is invalid, the database cannot be opened,
+    /// or the schema is not current. Writes through this store also return this error.
+    pub async fn open_read_only(database_filepath: PathBuf) -> Result<Self, StoreError> {
+        let store = Self::connect(database_filepath, Access::ReadOnly)?;
+        store
+            .interact_with_connection(|conn| {
+                SqliteMigrator::client().verify(conn).map_err(database_error)
+            })
+            .await?;
+        Ok(store)
+    }
+
+    /// Builds the connection pool for the database, after taking the writer lock for read-write
+    /// access.
+    fn connect(database_filepath: PathBuf, access: Access) -> Result<Self, StoreError> {
         if database_filepath.to_str().is_none() {
             return Err(database_error(format!(
                 "database path is not valid UTF-8: {}",
@@ -104,36 +147,26 @@ impl SqliteStore {
             )));
         }
 
-        let sqlite_pool_manager = SqlitePoolManager::new(database_filepath.clone());
-        let pool = Pool::builder(sqlite_pool_manager)
+        let writer_lock = match access {
+            Access::ReadWrite => Some(WriterLock::acquire(&database_filepath)?),
+            Access::ReadOnly => None,
+        };
+        let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone(), access))
             .wait_timeout(Some(Duration::from_secs(30)))
             .runtime(Runtime::Tokio1)
             .build()
             .map_err(database_error)?;
 
-        Self::migrate(&pool, SqliteMigrator::client()).await?;
-
-        // Account SMT data is persisted in the forest tables and read on demand, so no state needs
-        // to be rebuilt here.
-        Ok(SqliteStore { pool, database_filepath })
+        Ok(SqliteStore {
+            pool,
+            database_filepath,
+            _writer_lock: writer_lock,
+        })
     }
 
     /// Returns the path of the database file backing this store.
     pub fn database_filepath(&self) -> &Path {
         &self.database_filepath
-    }
-
-    /// Brings the database in `pool` up to the latest version of the schema `migration` builds.
-    ///
-    /// The upgrade is verified before it is committed, so a failure is rolled back by `SQLite` and
-    /// leaves the store exactly as it was.
-    async fn migrate(pool: &Pool, migration: &'static SqliteMigrator) -> Result<(), StoreError> {
-        let conn = pool.get().await.map_err(database_error)?;
-
-        conn.interact(move |conn| migration.apply(conn))
-            .await
-            .map_err(database_error)?
-            .map_err(database_error)
     }
 
     /// Interacts with the database by executing the provided function on a connection from the
@@ -334,6 +367,13 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn prune_chain_anchors(&self, up_to_block: BlockNumber) -> Result<usize, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::prune_chain_anchors(conn, up_to_block)
+        })
+        .await
+    }
+
     async fn get_block_headers(
         &self,
         block_numbers: &BTreeSet<BlockNumber>,
@@ -366,6 +406,16 @@ impl Store for SqliteStore {
 
     async fn get_current_blockchain_peaks(&self) -> Result<MmrPeaks, StoreError> {
         self.interact_with_connection(SqliteStore::get_current_blockchain_peaks).await
+    }
+
+    async fn get_blockchain_peaks_by_block_num(
+        &self,
+        block_num: BlockNumber,
+    ) -> Result<Option<MmrPeaks>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_blockchain_peaks_by_block_num(conn, block_num)
+        })
+        .await
     }
 
     async fn insert_account(
@@ -823,8 +873,7 @@ pub mod tests {
 
     use super::db_management::migration::SqliteMigrator;
     use super::db_management::migration::tests::damaging_migration;
-    use super::db_management::pool_manager::SqlitePoolManager;
-    use super::{Pool, SqliteStore, StoreError, column_value_as_u64, u64_to_value, with_write_tx};
+    use super::{SqliteStore, StoreError, column_value_as_u64, u64_to_value, with_write_tx};
 
     /// A migration set that changes the store and is then rejected, which is the failure the
     /// rollback has to undo.
@@ -833,19 +882,42 @@ pub mod tests {
     #[tokio::test]
     async fn failed_migration_leaves_the_store_as_it_was() {
         let database_filepath = create_test_store_path();
-        drop(SqliteStore::new(database_filepath.clone()).await.unwrap());
-
-        let pool = Pool::builder(SqlitePoolManager::new(database_filepath.clone()))
-            .build()
-            .unwrap();
-        let err = SqliteStore::migrate(&pool, &DAMAGING_MIGRATION).await.unwrap_err();
+        let store = SqliteStore::new(database_filepath.clone()).await.unwrap();
+        let err = store
+            .interact_with_connection(|conn| {
+                DAMAGING_MIGRATION.apply(conn).map_err(super::database_error)
+            })
+            .await
+            .unwrap_err();
 
         assert!(
             err.to_string().contains("produced a schema this client does not expect"),
             "the migration should have been rejected, got {err}"
         );
         // Reopening verifies the schema, so it only succeeds if the dropped table is still there.
+        drop(store);
         SqliteStore::new(database_filepath).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn one_read_write_store_and_many_read_only_stores() -> anyhow::Result<()> {
+        let path = create_test_store_path();
+        assert!(SqliteStore::open_read_only(path.clone()).await.is_err());
+
+        let writer = SqliteStore::new(path.clone()).await?;
+        assert!(matches!(SqliteStore::new(path.clone()).await, Err(StoreError::StoreLocked(_))));
+
+        let reader = SqliteStore::open_read_only(path.clone()).await?;
+        let _second_reader = SqliteStore::open_read_only(path.clone()).await?;
+        writer.set_setting("key".to_string(), b"value".to_vec()).await?;
+        assert_eq!(reader.get_setting("key".to_string()).await?, Some(b"value".to_vec()));
+        assert!(reader.set_setting("key".to_string(), b"other".to_vec()).await.is_err());
+
+        drop(writer);
+        SqliteStore::open_read_only(path.clone()).await?;
+        SqliteStore::new(path).await?;
+
+        Ok(())
     }
 
     fn assert_send_sync<T: Send + Sync>() {}

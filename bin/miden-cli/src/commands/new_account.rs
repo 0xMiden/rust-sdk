@@ -211,6 +211,9 @@ pub struct NewWalletCmd {
     pub account_type: CliAccountType,
     /// Optional list of paths specifying additional components in the form of packages to add to
     /// the account.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long)]
     pub extra_packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -328,6 +331,9 @@ pub struct NewAccountCmd {
     /// any package contributes a `FungibleFaucet` component, the resulting account is treated as a
     /// fungible faucet (and an implicit `TokenPolicyManager` is installed when not already
     /// provided).
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing

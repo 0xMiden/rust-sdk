@@ -30,6 +30,7 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
 use miden_client::rpc::Endpoint;
+use miden_client::store::{NoteFilter, Store};
 use miden_client::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PRIVATE_SENDER,
@@ -800,10 +801,11 @@ async fn tx_show_decodes_p2ide_note_storage() -> Result<()> {
     let (transaction_id, note_id) = (id_after("Transaction"), id_after("Output"));
 
     // The store is the ground truth for the note's expected height.
-    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let record = client
-        .get_output_note(NoteId::try_from_hex(&note_id)?)
+    let store = SqliteStore::open_read_only(store_path.clone()).await?;
+    let record = store
+        .get_output_notes(NoteFilter::Unique(NoteId::try_from_hex(&note_id)?))
         .await?
+        .pop()
         .expect("the transfer should store its output note");
 
     let mut show_cmd = cargo_bin_cmd!("miden-client");
@@ -942,11 +944,11 @@ async fn notes_show_prints_decoded_storage_and_consumer_transaction() -> Result<
         .unwrap_or_else(|| panic!("the transfer should report an output note ID:\n{stdout}"))
         .to_string();
 
-    // Get the consuming transaction from the store.
-    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
-    let consumer_tx = client
-        .get_input_note(NoteId::try_from_hex(&minted_note_id)?)
+    let store = SqliteStore::open_read_only(store_path.clone()).await?;
+    let consumer_tx = store
+        .get_input_notes(NoteFilter::Unique(NoteId::try_from_hex(&minted_note_id)?))
         .await?
+        .pop()
         .expect("the mint note should be stored")
         .consumer_transaction_id()
         .expect("the consumed mint note should record its consuming transaction")
@@ -1032,7 +1034,7 @@ async fn notes_show_decodes_swap_note_storage() -> Result<()> {
     sync_until_committed_note(&temp_dir);
     consume_note_cli(&temp_dir, &sender_account_id, &[&minted_note_id]);
 
-    let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+    let store = SqliteStore::open_read_only(store_path.clone()).await?;
     // Runs `swap` and returns the ID and serial number of the SWAP note.
     let swap_note = async |payback_note_type: &str| -> Result<(String, Word)> {
         let mut swap_cmd = cargo_bin_cmd!("miden-client");
@@ -1056,9 +1058,10 @@ async fn notes_show_decodes_swap_note_storage() -> Result<()> {
 
         // On a chain that charges fees, the transaction also creates a TX_FEE note.
         for note_id in stdout.lines().filter_map(|line| line.trim().strip_prefix("- ")) {
-            let record = client
-                .get_output_note(NoteId::try_from_hex(note_id)?)
+            let record = store
+                .get_output_notes(NoteFilter::Unique(NoteId::try_from_hex(note_id)?))
                 .await?
+                .pop()
                 .expect("the swap should store its output notes");
             let recipient = record.recipient().expect("a local output note has a recipient");
             if recipient.script().root() == SwapNote::script_root() {
@@ -1210,7 +1213,7 @@ fn account_inspect_without_packages_prints_roots() {
         .stdout(contains("0x"));
 }
 
-/// `account --inspect <ID> --package <FILE>` resolves procedure names and signatures from the
+/// `account --inspect <ID> --package <PACKAGE>` resolves procedure names and signatures from the
 /// explicitly passed `.masp` package. The default packages directory is removed first so a
 /// successful resolution can only come from the `--package` flag.
 #[test]
@@ -1257,6 +1260,133 @@ fn account_inspect_flags_require_inspect() {
     let mut package_cmd = cargo_bin_cmd!("miden-client");
     package_cmd.args(["account", "--package", "some.masp"]);
     package_cmd.current_dir(&temp_dir).assert().failure();
+}
+
+// PACKAGE REGISTRY TESTS
+// ================================================================================================
+
+/// Writes a fake `miden` command to `<cli_path>/fake-bin` and returns that directory.
+///
+/// For `miden registry show <package_name> --json`, the command writes a registry summary that
+/// points to `artifact_path`. For the `no-registry` package name, it writes the error of a
+/// toolchain without the registry component and exits with code 1. For other package names, it
+/// writes the error of the registry to stderr and exits with code 2, as `miden registry` does.
+#[cfg(unix)]
+fn write_fake_miden_command(cli_path: &Path, package_name: &str, artifact_path: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = cli_path.join("fake-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let summary = format!(
+        r#"{{"name":"{package_name}","version":"1.0.0#0x00","description":null,"dependencies":{{}},"artifact_path":"{}"}}"#,
+        artifact_path.display()
+    );
+    let script = format!(
+        "#!/bin/sh\n\
+         echo 'info: current toolchain is test and is installed' >&2\n\
+         if [ \"$1 $2 $3\" = 'registry show {package_name}' ]; then\n\
+         \x20   printf '%s\\n' '{summary}'\n\
+         \x20   exit 0\n\
+         fi\n\
+         if [ \"$3\" = 'no-registry' ]; then\n\
+         \x20   echo \"Error: invalid command 'registry': not a known alias or executable component\" >&2\n\
+         \x20   exit 1\n\
+         fi\n\
+         echo \"'$3' is not a registered package\" >&2\n\
+         exit 2\n"
+    );
+
+    let command_path = bin_dir.join("miden");
+    fs::write(&command_path, script).unwrap();
+    fs::set_permissions(&command_path, fs::Permissions::from_mode(0o755)).unwrap();
+    bin_dir
+}
+
+/// `--package <NAME>@<VERSION>` resolves the package file through `miden registry`. A fake `miden`
+/// command stands in for the toolchain, so the test does not need midenup.
+#[cfg(unix)]
+#[test]
+fn account_inspect_resolves_package_from_registry() {
+    let temp_dir = init_cli().1;
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    // Move the auth package out of the package directory, so that resolution can only come from the
+    // registry.
+    let packages_dir = temp_dir.join(MIDEN_DIR).join("packages");
+    let auth_package = temp_dir.join("registry-basic-auth.masp");
+    fs::copy(packages_dir.join("auth/basic-auth.masp"), &auth_package).unwrap();
+    fs::remove_dir_all(&packages_dir).unwrap();
+
+    let package_name = Package::read_from_bytes(&fs::read(&auth_package).unwrap())
+        .unwrap()
+        .name
+        .to_string();
+    let bin_dir = write_fake_miden_command(&temp_dir, &package_name, &auth_package);
+    let path = format!("{}:{}", bin_dir.display(), env::var("PATH").unwrap_or_default());
+
+    for version in ["1.0.0", "latest", ""] {
+        let mut inspect_cmd = cargo_bin_cmd!("miden-client");
+        inspect_cmd.args([
+            "account",
+            "--inspect",
+            &account_id,
+            "--package",
+            &format!("{package_name}@{version}"),
+        ]);
+        inspect_cmd
+            .env("PATH", &path)
+            .current_dir(&temp_dir)
+            .assert()
+            .success()
+            .stdout(contains("auth_tx"))
+            .stdout(contains("fn([felt; 4])"));
+    }
+
+    let mut unknown_cmd = cargo_bin_cmd!("miden-client");
+    unknown_cmd.args(["account", "--inspect", &account_id, "--package", "unknown@1.0.0"]);
+    unknown_cmd
+        .env("PATH", &path)
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        // The error output wraps long lines, so the test matches short parts of the message.
+        .stderr(contains("unknown@1.0.0"))
+        .stderr(contains("'unknown' is"))
+        .stderr(contains("current toolchain").not());
+
+    let mut no_registry_cmd = cargo_bin_cmd!("miden-client");
+    no_registry_cmd.args(["account", "--inspect", &account_id, "--package", "no-registry@1.0.0"]);
+    no_registry_cmd
+        .env("PATH", &path)
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("no-registry@1.0.0"))
+        .stderr(contains("local-registry"));
+}
+
+/// A `<NAME>@<VERSION>` package fails with an installation hint when the `miden` command is not on
+/// `PATH`.
+#[cfg(unix)]
+#[test]
+fn registry_package_without_miden_command_reports_install_hint() {
+    let temp_dir = init_cli().1;
+    let account_id = new_wallet_cli(&temp_dir, AccountType::Private);
+
+    let empty_bin_dir = temp_dir.join("empty-bin");
+    fs::create_dir_all(&empty_bin_dir).unwrap();
+
+    let mut inspect_cmd = cargo_bin_cmd!("miden-client");
+    inspect_cmd.args(["account", "--inspect", &account_id, "--package", "basic-auth@1.0.0"]);
+    inspect_cmd
+        .env("PATH", &empty_bin_dir)
+        .current_dir(&temp_dir)
+        .assert()
+        .failure()
+        .stderr(contains("command was not found"))
+        .stderr(contains("midenup"))
+        .stderr(contains("local-registry"));
 }
 
 // IMPORT TESTS
@@ -1479,6 +1609,8 @@ async fn cli_export_import_account() -> Result<()> {
 
     assert!(client_2.get_account(AccountId::from_hex(&faucet_id)?).await.is_ok());
     assert!(client_2.get_account(AccountId::from_hex(&wallet_id)?).await.is_ok());
+    // Release the writer lock before the CLI opens the store.
+    drop(client_2);
     sync_cli(&temp_dir_2);
 
     let (_, note_id) = mint_cli(&temp_dir_2, &wallet_id, &faucet_id);

@@ -11,7 +11,7 @@ use miden_protocol::utils::serde::{
     Serializable,
 };
 
-use crate::store::NoteUpdateTracker;
+use crate::store::NoteUpdates;
 use crate::sync::NoteTagRecord;
 
 // TRANSACTION STORE UPDATE
@@ -28,7 +28,7 @@ pub struct TransactionStoreUpdate {
     /// Future notes that are expected to be created as a result of the transaction.
     future_notes: Vec<(NoteDetails, NoteTag)>,
     /// Information about note changes after the transaction execution.
-    note_updates: NoteUpdateTracker,
+    note_updates: NoteUpdates,
     /// New note tags to be tracked.
     new_tags: Vec<NoteTagRecord>,
 }
@@ -50,7 +50,7 @@ impl TransactionStoreUpdate {
     pub fn new(
         executed_transaction: ExecutedTransaction,
         submission_height: BlockNumber,
-        note_updates: NoteUpdateTracker,
+        note_updates: NoteUpdates,
         future_notes: Vec<(NoteDetails, NoteTag)>,
         new_tags: Vec<NoteTagRecord>,
     ) -> Self {
@@ -78,7 +78,7 @@ impl TransactionStoreUpdate {
     }
 
     /// Returns the note updates that need to be applied after the transaction execution.
-    pub fn note_updates(&self) -> &NoteUpdateTracker {
+    pub fn note_updates(&self) -> &NoteUpdates {
         &self.note_updates
     }
 
@@ -103,7 +103,7 @@ impl Deserializable for TransactionStoreUpdate {
         let executed_transaction = ExecutedTransaction::read_from(source)?;
         let submission_height = BlockNumber::read_from(source)?;
         let future_notes = Vec::<(NoteDetails, NoteTag)>::read_from(source)?;
-        let note_updates = NoteUpdateTracker::read_from(source)?;
+        let note_updates = NoteUpdates::read_from(source)?;
         let new_tags = Vec::<NoteTagRecord>::read_from(source)?;
 
         Ok(Self {
@@ -132,7 +132,7 @@ pub struct BatchStoreUpdate {
     /// Block number at which the batch was submitted.
     submission_height: BlockNumber,
     /// Merged information about note changes after the execution of the transactions.
-    note_updates: NoteUpdateTracker,
+    note_updates: NoteUpdates,
     /// New note tags to be tracked.
     new_tags: Vec<NoteTagRecord>,
 }
@@ -142,7 +142,7 @@ impl BatchStoreUpdate {
     pub fn new(
         executed_transactions: Vec<ExecutedTransaction>,
         submission_height: BlockNumber,
-        note_updates: NoteUpdateTracker,
+        note_updates: NoteUpdates,
         new_tags: Vec<NoteTagRecord>,
     ) -> Self {
         Self {
@@ -164,7 +164,7 @@ impl BatchStoreUpdate {
     }
 
     /// Returns the merged note updates of the batch.
-    pub fn note_updates(&self) -> &NoteUpdateTracker {
+    pub fn note_updates(&self) -> &NoteUpdates {
         &self.note_updates
     }
 
@@ -190,7 +190,7 @@ mod tests {
     use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
-    use crate::store::{InputNoteRecord, NoteUpdateTracker};
+    use crate::store::{InputNoteRecord, NoteUpdates};
     use crate::sync::NoteTagRecord;
 
     #[tokio::test]
@@ -223,7 +223,7 @@ mod tests {
         // Build non-trivial `note_updates` and `new_tags` so that the round-trip covers every
         // field.
         let input_note = InputNoteRecord::from(note.clone());
-        let note_updates = NoteUpdateTracker::for_transaction_updates([input_note], [], []);
+        let note_updates = NoteUpdates::from_records([input_note], [], []);
 
         let tag = NoteTag::with_account_target(account.id());
         let new_tags = vec![NoteTagRecord::with_note_source(tag, note.details_commitment())];

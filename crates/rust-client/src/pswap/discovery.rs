@@ -1,5 +1,5 @@
 //! Post-sync correlator: joins tracked-note consumption events from
-//! `NoteUpdateTracker::consumed_note_ids()` with the PSWAP-attachment notes collected by
+//! `NoteUpdates::consumed_note_ids()` with the PSWAP-attachment notes collected by
 //! [`super::observer::PswapChainObserver`], emitting one `PswapLineageRoundUpdate` per round
 //! transition.
 //!

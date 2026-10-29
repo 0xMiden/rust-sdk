@@ -35,12 +35,13 @@ use crate::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use crate::rpc::domain::note::{CommittedNote, FetchedNote, ResolvedSyncNotesBlock, SyncedNote};
+use crate::rpc::domain::note::{CommittedNote, FetchedNote};
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
-use crate::rpc::{AccountStateAt, NodeRpcClient, NoteContentFetch, RpcError};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
+use crate::sync::{NoteContentFetch, ResolvedSyncNotesBlock, SyncedNote, sync_notes_with_content};
 use crate::transaction::TransactionRecord;
 
 /// Maximum number of `get_account` requests kept in flight while syncing the state.
@@ -700,15 +701,15 @@ impl StateSync {
             return Ok(Vec::new());
         }
 
-        self.rpc_api
-            .sync_notes_with_content(
-                block_from,
-                block_to,
-                note_tags,
-                NoteContentFetch::PublicDetailsAndAttachments,
-            )
-            .await
-            .map_err(ClientError::RpcError)
+        sync_notes_with_content(
+            self.rpc_api.as_ref(),
+            block_from,
+            block_to,
+            note_tags,
+            NoteContentFetch::PublicDetailsAndAttachments,
+        )
+        .await
+        .map_err(ClientError::RpcError)
     }
 
     /// Syncs the transaction records of `account_ids` over `[block_from, block_to]`.
@@ -2875,15 +2876,15 @@ mod tests {
         let (chain, note_tags) = build_chain_with_mint_notes(10).await;
         let mock_rpc = MockRpcApi::new(chain);
 
-        let blocks = mock_rpc
-            .sync_notes_with_content(
-                4_u32.into(),
-                10_u32.into(),
-                &note_tags,
-                NoteContentFetch::PublicDetailsAndAttachments,
-            )
-            .await
-            .expect("sync notes should succeed");
+        let blocks = sync_notes_with_content(
+            &mock_rpc,
+            4_u32.into(),
+            10_u32.into(),
+            &note_tags,
+            NoteContentFetch::PublicDetailsAndAttachments,
+        )
+        .await
+        .expect("sync notes should succeed");
 
         assert_eq!(blocks.last().unwrap().block_header.block_num(), BlockNumber::from(10u32));
         assert!(

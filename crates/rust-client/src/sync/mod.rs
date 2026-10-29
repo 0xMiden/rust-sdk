@@ -83,6 +83,10 @@ mod block_header;
 pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 mod tag;
 
+mod note_sync;
+pub use note_sync::SyncedNote;
+pub(crate) use note_sync::{NoteContentFetch, ResolvedSyncNotesBlock, sync_notes_with_content};
+
 mod note_observer;
 pub use note_observer::NoteObserver;
 

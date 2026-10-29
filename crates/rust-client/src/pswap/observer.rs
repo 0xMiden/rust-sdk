@@ -14,9 +14,8 @@ use tracing::warn;
 use crate::ClientError;
 use crate::pswap::discovery::discover_pswap_rounds;
 use crate::pswap::lineage::ObservedPswapNote;
-use crate::rpc::domain::note::SyncedNote;
 use crate::store::Store;
-use crate::sync::NoteObserver;
+use crate::sync::{NoteObserver, SyncedNote};
 use crate::utils::RwLock;
 
 // PSWAP CHAIN OBSERVER

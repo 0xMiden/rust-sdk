@@ -53,7 +53,6 @@ pub use miden_client_core::errors::{
 pub use miden_client_core::rpc::{
     AccountStateAt,
     NodeRpcClient,
-    NoteContentFetch,
     RpcEndpoint,
     RpcLimits,
     VerifyingRpcClient,

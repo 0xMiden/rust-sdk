@@ -314,12 +314,10 @@ impl TryFrom<proto::rpc::CommittedNote> for FetchedNote {
 
 #[cfg(test)]
 mod tests {
-    use miden_client_core::rpc::domain::note::SyncedNote;
     use miden_protocol::account::{AccountId, AccountIdVersion, AccountType, AssetCallbackFlag};
     use miden_protocol::block::BlockNumber;
     use miden_protocol::crypto::merkle::SparseMerklePath;
-    use miden_protocol::note::{NoteAssets, NoteDetails, NoteRecipient, NoteStorage, NoteTag};
-    use miden_standards::code_builder::CodeBuilder;
+    use miden_protocol::note::NoteTag;
 
     use super::*;
 
@@ -574,34 +572,5 @@ mod tests {
 
             assert!(matches!(err, RpcConversionError::CanonicalConversion(_)), "got {err:?}");
         }
-    }
-
-    #[test]
-    fn synced_note_rejects_a_body_for_a_private_note() {
-        let decoded: SyncNoteMetadata = sync_metadata(Vec::new()).try_into().unwrap();
-        let committed = committed_note(decoded);
-
-        let note_script = CodeBuilder::new()
-            .compile_note_script("@note_script\npub proc main\n    nop\nend")
-            .unwrap();
-        let recipient =
-            NoteRecipient::new(Word::empty(), note_script, NoteStorage::new(vec![]).unwrap());
-        let details = NoteDetails::new(NoteAssets::new(vec![]).unwrap(), recipient);
-
-        let err = SyncedNote::new(committed, Some(details), NoteAttachments::empty()).unwrap_err();
-
-        assert!(matches!(err, RpcError::InvalidResponse(_)), "got {err:?}");
-    }
-
-    /// A note advertising attachments whose content never arrived is rejected: empty attachments
-    /// hash to a different commitment than the note's.
-    #[test]
-    fn synced_note_rejects_unresolved_attachments() {
-        let attachments = NoteAttachments::new(vec![multi_word_attachment(100)]).unwrap();
-        let committed = committed_note(decode_sync_metadata(&attachments));
-
-        let err = SyncedNote::new(committed, None, NoteAttachments::empty()).unwrap_err();
-
-        assert!(matches!(err, RpcError::InvalidResponse(_)), "got {err:?}");
     }
 }

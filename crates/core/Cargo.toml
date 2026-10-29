@@ -28,7 +28,6 @@ miden-standards = { workspace = true }
 async-trait = { workspace = true }
 chrono      = { workspace = true }
 thiserror   = { workspace = true }
-tracing     = { workspace = true }
 
 [dev-dependencies]
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }

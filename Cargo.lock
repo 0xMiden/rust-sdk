@@ -2901,7 +2901,6 @@ dependencies = [
  "rand_chacha 0.10.0",
  "thiserror",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2915,7 +2914,6 @@ dependencies = [
  "miden-node-proto-build",
  "miden-objects",
  "miden-protocol",
- "miden-standards",
  "miden-testing",
  "miette",
  "prost",

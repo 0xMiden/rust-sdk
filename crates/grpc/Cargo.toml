@@ -53,12 +53,11 @@ miette                 = { workspace = true }
 tonic-prost-build      = { workspace = true }
 
 [dev-dependencies]
-futures         = { workspace = true }
-miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
-miden-standards = { workspace = true }
-miden-testing   = { default-features = false, workspace = true }
-tokio           = { workspace = true }
-tonic-health    = { workspace = true }
+futures        = { workspace = true }
+miden-protocol = { default-features = false, features = ["testing"], workspace = true }
+miden-testing  = { default-features = false, workspace = true }
+tokio          = { workspace = true }
+tonic-health   = { workspace = true }
 
 [lints]
 workspace = true

@@ -5,8 +5,7 @@ use alloc::boxed::Box;
 use async_trait::async_trait;
 
 use crate::ClientError;
-use crate::rpc::domain::note::SyncedNote;
-use crate::sync::StateSyncUpdate;
+use crate::sync::{StateSyncUpdate, SyncedNote};
 
 /// Per-note + post-sync side-channel into [`crate::sync::StateSync`]. Attach via
 /// `StateSync::with_note_observer(...)`. Multiple observers run independently; errors are logged,

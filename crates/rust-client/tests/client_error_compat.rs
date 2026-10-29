@@ -3,7 +3,8 @@
 use miden_client::ClientError;
 use miden_client::note::NoteAcquisitionError;
 
-fn match_released_client_error(error: ClientError) {
+#[allow(clippy::match_same_arms)]
+fn match_released_client_error(error: &ClientError) {
     match error {
         ClientError::AddressAlreadyTracked(..) => (),
         ClientError::AccountAlreadyTracked(..) => (),
@@ -63,7 +64,7 @@ fn match_released_client_error(error: ClientError) {
 
 #[test]
 fn released_client_error_remains_exhaustively_matchable() {
-    match_released_client_error(ClientError::AccountNonceTooLow);
+    match_released_client_error(&ClientError::AccountNonceTooLow);
 }
 
 #[test]

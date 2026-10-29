@@ -84,32 +84,6 @@ impl NoteStateHandler for ConsumedExternalNoteState {
     }
 }
 
-impl miden_protocol::utils::serde::Serializable for ConsumedExternalNoteState {
-    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.nullifier_block_height.write_into(target);
-        self.consumer_account.write_into(target);
-        self.consumed_tx_order.write_into(target);
-        self.metadata.write_into(target);
-    }
-}
-
-impl miden_protocol::utils::serde::Deserializable for ConsumedExternalNoteState {
-    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
-        let nullifier_block_height = BlockNumber::read_from(source)?;
-        let consumer_account = Option::<AccountId>::read_from(source)?;
-        let consumed_tx_order = Option::<u32>::read_from(source)?;
-        let metadata = Option::<NoteMetadata>::read_from(source)?;
-        Ok(ConsumedExternalNoteState {
-            nullifier_block_height,
-            consumer_account,
-            consumed_tx_order,
-            metadata,
-        })
-    }
-}
-
 impl From<ConsumedExternalNoteState> for InputNoteState {
     fn from(state: ConsumedExternalNoteState) -> Self {
         InputNoteState::ConsumedExternal(state)

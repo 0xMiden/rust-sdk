@@ -80,32 +80,6 @@ impl NoteStateHandler for ConsumedUnauthenticatedLocalNoteState {
     }
 }
 
-impl miden_protocol::utils::serde::Serializable for ConsumedUnauthenticatedLocalNoteState {
-    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.nullifier_block_height.write_into(target);
-        self.submission_data.write_into(target);
-        self.consumed_tx_order.write_into(target);
-    }
-}
-
-impl miden_protocol::utils::serde::Deserializable for ConsumedUnauthenticatedLocalNoteState {
-    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let nullifier_block_height = BlockNumber::read_from(source)?;
-        let submission_data = NoteSubmissionData::read_from(source)?;
-        let consumed_tx_order = Option::<u32>::read_from(source)?;
-        Ok(ConsumedUnauthenticatedLocalNoteState {
-            metadata,
-            nullifier_block_height,
-            submission_data,
-            consumed_tx_order,
-        })
-    }
-}
-
 impl From<ConsumedUnauthenticatedLocalNoteState> for InputNoteState {
     fn from(state: ConsumedUnauthenticatedLocalNoteState) -> Self {
         InputNoteState::ConsumedUnauthenticatedLocal(state)

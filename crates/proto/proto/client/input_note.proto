@@ -102,3 +102,13 @@ message NoteSubmissionData {
   account.AccountId consumer_account = 2;
   .transaction.TransactionId consumer_transaction = 3;
 }
+
+// A note the client consumes or expects to consume, and its state.
+message InputNoteRecord {
+  note.NoteDetails details = 1;
+  note.NoteAttachments attachments = 2;
+  // Time at which the note was created, in seconds since the Unix epoch. Absent when it is not
+  // known.
+  optional uint64 created_at = 3;
+  InputNoteState state = 4;
+}

@@ -6,6 +6,8 @@
 
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
+* [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
+* [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, with messages for its input and output note records and its note tag records ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 
 ### Enhancements
 
@@ -59,6 +61,8 @@
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `PswapLineageRecord`, `RpcLimits`, `TransactionEncryptionKey`, `TransactionDetails`, `TransactionStatus`, `DiscardCause`, `TransportNote`, `TransactionRequest` and `ForeignAccount`. Use the protobuf encodings in `miden-client-proto`. Removed `PswapLineageState::try_from_u8` ([#2738](https://github.com/0xMiden/rust-sdk/pull/2738)).
 * [BREAKING][type][rust] Added `NodeRpcClient::get_genesis_block_header`, which returns the genesis block header and the `ProtocolConfig` that it commits to. `Client::ensure_genesis_in_place` stores the genesis protocol configuration, so note screening works on the first sync ([#2724](https://github.com/0xMiden/rust-sdk/pull/2724)).
 * [BREAKING][removal][rust] Removed `NodeRpcClient::has_genesis_commitment`. `Client::ensure_genesis_in_place` checks the store for the genesis block header and its protocol configuration instead ([#2724](https://github.com/0xMiden/rust-sdk/pull/2724)).
+* [BREAKING][param][rust,store] `Store::get_note_transport_sync_state` and `Store::set_note_transport_sync_state` replace `get_note_transport_cursors` and `set_note_transport_cursors`. They read and write the new `NoteTransportSyncState`, which holds the note transport cursor and the tags that it covers. The SQLite store keeps the state under a new key and does not read per-tag cursors ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
+* [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `TransactionStoreUpdate`, `NoteUpdates`, `InputNoteUpdate`, `OutputNoteUpdate`, `NoteUpdateType`, `InputNoteRecord`, `InputNoteState` and its states, `NoteSubmissionData`, `OutputNoteRecord`, `OutputNoteState`, `NoteTagRecord` and `AccountStorageRequirements`. Use the `TransactionStoreUpdate` protobuf encoding in `miden-client-proto` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 
 ### Features
 
@@ -78,7 +82,6 @@
 ### Fixes
 
 * [FIX][rust,cli] Removed the outdated debug-mode hint for `TransactionProgramExecutionFailed` from `ClientError::error_hint()`. `exec` and `consume-notes` now hint to re-run with `--start-debug-adapter`, or to build with the `dap` feature first ([#2752](https://github.com/0xMiden/rust-sdk/pull/2752)).
-* [FIX][rust] Preserved the pinned genesis commitment in RPC headers when it is set during a native connection handshake.
 * [FIX][store] Read complete and minimal partial SQLite accounts, account storage, and account code from one database snapshot per call. Concurrent updates cannot mix account states, and history pruning cannot hide code selected by an earlier query ([#2729](https://github.com/0xMiden/rust-sdk/pull/2729)).
 * [FIX][rust] `GetAccount` responses are now checked against the authenticated account header: the account rebuilt from the returned details must match the header's commitment, and the storage header must match its storage commitment ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [FIX][rust] Transaction requests from a non-fungible faucet skip the vault balance check, as requests from a fungible faucet do, so minting a non-fungible asset no longer fails with `MissingNonFungibleAsset` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).

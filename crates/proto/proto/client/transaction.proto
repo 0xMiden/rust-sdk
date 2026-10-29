@@ -11,6 +11,8 @@ import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
+import "client/input_note.proto";
+import "client/output_note.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -133,8 +135,10 @@ message ExpectedFutureNote {
 // An account that is not the executing account and that the transaction reads.
 message ForeignAccount {
   message Public {
+    reserved 2;
+
     account.AccountId account_id = 1;
-    AccountFetch fetch = 2;
+    AccountFetch fetch = 3;
   }
 
   // An account whose state and inclusion witness the request carries.
@@ -188,4 +192,58 @@ message AccountStorageRequirements {
   }
 
   repeated SlotKeys slots = 1;
+}
+
+// Store changes that an executed transaction makes.
+message TransactionStoreUpdate {
+  // Executed transaction in its protocol encoding.
+  bytes executed_transaction = 1;
+  // Block at which the transaction was submitted.
+  blockchain.BlockNumber submission_height = 2;
+  repeated ExpectedFutureNote future_notes = 3;
+  repeated InputNoteUpdate input_notes = 4;
+  repeated OutputNoteUpdate output_notes = 5;
+  repeated NoteTagRecord new_tags = 6;
+}
+
+// How the store writes a note record.
+enum NoteUpdateType {
+  // The type is absent. Decoding rejects a value with this type.
+  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
+  // The note is new.
+  NOTE_UPDATE_TYPE_INSERT = 1;
+  // The note is tracked already.
+  NOTE_UPDATE_TYPE_UPDATE = 2;
+  // A tracked expected note is committed now.
+  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 3;
+}
+
+// An input note record to write, and how to write it.
+message InputNoteUpdate {
+  input_note.InputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+// An output note record to write, and how to write it.
+message OutputNoteUpdate {
+  output_note.OutputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+// A note tag that the client tracks, and the reason that it tracks the tag.
+message NoteTagRecord {
+  // The user added the tag.
+  message User {}
+
+  fixed32 tag = 1;
+
+  oneof source {
+    // Account whose address has the tag.
+    account.AccountId account = 2;
+    // Details commitment of the expected note that has the tag.
+    primitives.Word note = 3;
+    User user = 4;
+    // Key of the subscription that has the tag.
+    primitives.Word subscription = 5;
+  }
 }

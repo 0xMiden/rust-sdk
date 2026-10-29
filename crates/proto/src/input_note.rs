@@ -1,3 +1,4 @@
+use miden_client_core::store::InputNoteRecord;
 use miden_client_core::store::input_note_states::{
     CommittedNoteState,
     ConsumedAuthenticatedLocalNoteState,
@@ -12,7 +13,7 @@ use miden_client_core::store::input_note_states::{
     UnverifiedNoteState,
 };
 use miden_objects::DecodeMessageExt;
-use miden_protocol::note::NoteTag;
+use miden_protocol::note::{NoteAttachments, NoteTag};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -70,6 +71,35 @@ impl ProtobufValue for InputNoteState {
             },
             State::ConsumedExternal(inner) => ConsumedExternalNoteState::try_from(inner)?.into(),
         })
+    }
+}
+
+// RECORD
+// ================================================================================================
+
+impl From<&InputNoteRecord> for proto::InputNoteRecord {
+    fn from(record: &InputNoteRecord) -> Self {
+        Self {
+            details: Some(record.details().into()),
+            attachments: Some(record.attachments().to_proto()),
+            created_at: record.created_at(),
+            state: Some(record.state().to_proto()),
+        }
+    }
+}
+
+impl TryFrom<proto::InputNoteRecord> for InputNoteRecord {
+    type Error = ProtoDecodeError;
+
+    fn try_from(record: proto::InputNoteRecord) -> Result<Self, Self::Error> {
+        const MESSAGE: &str = "input note record";
+
+        Ok(InputNoteRecord::new(
+            required(record.details, MESSAGE, "details")?.decode_and_verify()?,
+            NoteAttachments::from_proto(required(record.attachments, MESSAGE, "attachments")?)?,
+            record.created_at,
+            InputNoteState::from_proto(required(record.state, MESSAGE, "state")?)?,
+        ))
     }
 }
 

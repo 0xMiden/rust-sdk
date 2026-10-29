@@ -2896,7 +2896,6 @@ dependencies = [
  "miden-objects",
  "miden-protocol",
  "miden-standards",
- "miden-testing",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "thiserror",
@@ -2961,10 +2960,12 @@ dependencies = [
  "miden-objects",
  "miden-protocol",
  "miden-standards",
+ "miden-testing",
  "prost",
  "prost-build",
  "protox",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

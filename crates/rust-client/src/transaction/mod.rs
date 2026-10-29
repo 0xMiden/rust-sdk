@@ -102,7 +102,7 @@ use tracing::info;
 use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdates, StandardNote};
-use crate::rpc::domain::account::{AccountFetch, GetAccountRequest};
+use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -1824,13 +1824,18 @@ async fn local_account_inputs(
 /// Storage maps the node caps as oversized (returned truncated) are carried root-only in the
 /// inputs; reads from them resolve lazily as per-key witnesses during execution.
 ///
+/// The request gets proofs for at most
+/// [`RpcLimits::vault_assets_limit`](crate::rpc::RpcLimits::vault_assets_limit) of the assets in
+/// [`VaultFetch::Assets`], because the node rejects a larger request. Reads of the other assets
+/// resolve during execution.
+///
 /// # Errors
 /// Fails if account data cannot be fetched or converted to transaction inputs.
 pub(crate) async fn fetch_public_account_inputs(
     store: &Arc<dyn Store>,
     rpc_api: &Arc<dyn NodeRpcClient>,
     account_id: AccountId,
-    fetch: AccountFetch,
+    mut fetch: AccountFetch,
     account_state_at: AccountStateAt,
 ) -> Result<AccountInputs, ClientError> {
     // Boxed because the local inputs hold the account state across the witness request.
@@ -1838,6 +1843,14 @@ pub(crate) async fn fetch_public_account_inputs(
         Box::pin(local_account_inputs(store, rpc_api, account_id, account_state_at)).await?
     {
         return Ok(inputs);
+    }
+
+    if let VaultFetch::Assets(asset_ids) = fetch.vault() {
+        let limit = rpc_api.get_rpc_limits().await?.vault_assets_limit as usize;
+        if asset_ids.len() > limit {
+            let prefetched = asset_ids.iter().copied().take(limit).collect();
+            fetch = fetch.with_vault(VaultFetch::Assets(prefetched));
+        }
     }
 
     let known_code: Option<AccountCode> =

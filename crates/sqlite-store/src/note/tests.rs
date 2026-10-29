@@ -11,7 +11,7 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::utils::{Deserializable, DeserializationError, Serializable};
+use miden_client::utils::Serializable;
 use miden_client::{Felt, ZERO};
 use miden_client_core::errors::StoreError;
 use miden_client_core::store::input_note_states::{
@@ -984,18 +984,9 @@ fn unspent_states_classify_every_note_state() {
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    for discriminant in 0..=u8::MAX {
-        // The deserializer decides which bytes are real discriminants: an unused one hits the
-        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
-        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
-        // payload also reports `InvalidValue` would be skipped here instead of checked.
-        if matches!(
-            InputNoteState::read_from_bytes(&[discriminant]),
-            Err(DeserializationError::InvalidValue(_))
-        ) {
-            continue;
-        }
-
+    // The state discriminants are consecutive, from the expected state to the consumed external
+    // state. A new state must extend this range.
+    for discriminant in InputNoteState::STATE_EXPECTED..=InputNoteState::STATE_CONSUMED_EXTERNAL {
         assert!(
             InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),

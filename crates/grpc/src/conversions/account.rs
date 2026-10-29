@@ -16,8 +16,8 @@ use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::{EMPTY_WORD, Word};
 
 use super::MissingFieldHelper;
-use crate::generated::rpc::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
-use crate::generated::rpc::get_account_request::account_detail_request::{
+use crate::generated::node::v1::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
+use crate::generated::node::v1::get_account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
 };
 use crate::generated::{self as proto};
@@ -26,7 +26,7 @@ use crate::generated::{self as proto};
 // ================================================================================================
 
 /// Hides the invitation code, which is a secret that must not reach logs or error messages.
-impl Debug for proto::rpc::RegisterAccountRequest {
+impl Debug for proto::node::v1::RegisterAccountRequest {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RegisterAccountRequest")
             .field("account_id", &self.account_id)
@@ -35,7 +35,7 @@ impl Debug for proto::rpc::RegisterAccountRequest {
 }
 
 /// Hides the invitation code, which is a secret that must not reach logs or error messages.
-impl Debug for proto::rpc::IsInvitationCodeValidRequest {
+impl Debug for proto::node::v1::IsInvitationCodeValidRequest {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("IsInvitationCodeValidRequest").finish_non_exhaustive()
     }
@@ -44,7 +44,7 @@ impl Debug for proto::rpc::IsInvitationCodeValidRequest {
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================
 
-impl proto::rpc::get_account_response::AccountDetails {
+impl proto::node::v1::get_account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
     /// The RPC response may omit unchanged account codes. If so, this function uses
@@ -67,22 +67,22 @@ impl proto::rpc::get_account_response::AccountDetails {
 
         use super::MissingFieldHelper;
 
-        let proto::rpc::get_account_response::AccountDetails {
+        let proto::node::v1::get_account_response::AccountDetails {
             header,
             storage_details,
             code,
             vault_details,
         } = self;
         let header: AccountHeader = header
-            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
-                header
-            )))?
+            .ok_or(proto::node::v1::get_account_response::AccountDetails::missing_field(
+                stringify!(header),
+            ))?
             .decode_and_verify()?;
 
         let storage_details: AccountStorageDetails = storage_details
-            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
-                storage_details
-            )))?
+            .ok_or(proto::node::v1::get_account_response::AccountDetails::missing_field(
+                stringify!(storage_details),
+            ))?
             .try_into()?;
 
         storage_details.validate_against_request(storage_requirements)?;
@@ -106,7 +106,7 @@ impl proto::rpc::get_account_response::AccountDetails {
         };
 
         let vault_details = vault_details
-            .ok_or(proto::rpc::AccountVaultDetails::missing_field(stringify!(vault_details)))?
+            .ok_or(proto::node::v1::AccountVaultDetails::missing_field(stringify!(vault_details)))?
             .try_into()?;
 
         Ok(AccountDetails {
@@ -121,10 +121,10 @@ impl proto::rpc::get_account_response::AccountDetails {
 // ACCOUNT STORAGE DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
+impl TryFrom<proto::node::v1::AccountStorageDetails> for AccountStorageDetails {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::AccountStorageDetails) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::AccountStorageDetails) -> Result<Self, Self::Error> {
         let header: AccountStorageHeader = value
             .header
             .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
@@ -177,15 +177,15 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
 // ACCOUNT MAP DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
+impl TryFrom<proto::node::v1::account_storage_details::AccountStorageMapDetails>
     for AccountStorageMapDetails
 {
     type Error = RpcError;
 
     fn try_from(
-        value: proto::rpc::account_storage_details::AccountStorageMapDetails,
+        value: proto::node::v1::account_storage_details::AccountStorageMapDetails,
     ) -> Result<Self, Self::Error> {
-        use proto::rpc::account_storage_details::account_storage_map_details::Result as ProtoResult;
+        use proto::node::v1::account_storage_details::account_storage_map_details::Result as ProtoResult;
 
         let slot_name = StorageSlotName::new(value.slot_name)
             .map_err(|err| RpcError::ExpectedDataMissing(err.to_string()))?;
@@ -229,7 +229,7 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
 
                 let partial_smt: PartialSmt = partial_map
                         .partial_smt
-                        .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
+                        .ok_or(proto::node::v1::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
                             stringify!(partial_smt),
                         ))?
                         .decode_and_verify()?;
@@ -271,12 +271,12 @@ fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
 // STORAGE MAP ENTRY
 // ================================================================================================
 
-impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry>
+impl TryFrom<proto::node::v1::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry>
     for StorageMapEntry
 {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry) -> Result<Self, Self::Error> {
         let key = Word::try_from(value.key.ok_or(RpcError::ExpectedDataMissing("key".into()))?)
             .map(StorageMapKey::new)?;
         let value = value.value.ok_or(RpcError::ExpectedDataMissing("value".into()))?.try_into()?;
@@ -287,10 +287,10 @@ impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::a
 // ACCOUNT VAULT DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
+impl TryFrom<proto::node::v1::AccountVaultDetails> for AccountVaultDetails {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::AccountVaultDetails) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::AccountVaultDetails) -> Result<Self, Self::Error> {
         let too_many_assets = value.too_many_assets;
         let assets = value
             .assets
@@ -357,7 +357,7 @@ mod tests {
     fn invitation_code_validation_request_debug_hides_code() {
         let code = "secret-invitation-code";
         let request =
-            proto::rpc::IsInvitationCodeValidRequest { invitation_code: code.to_string() };
+            proto::node::v1::IsInvitationCodeValidRequest { invitation_code: code.to_string() };
 
         let debug = format!("{request:?}");
         assert!(debug.contains("IsInvitationCodeValidRequest"));

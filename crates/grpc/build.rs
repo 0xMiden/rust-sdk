@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -88,11 +90,15 @@ fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
 /// Scans `out_dir/subdir/` for generated `.rs` files and produces a single wrapper file at
 /// `out_dir/wrapper_name` that re-exports each file as a module via `include!`.
 ///
-/// The wrapper converts each file name into a nested module declaration:
+/// The wrapper converts the file names into nested module declarations. Files that share a prefix
+/// share the parent modules:
 ///
 /// ```ignore
 /// #[allow(clippy::doc_markdown, ...)]
-/// pub mod foo { pub mod bar { include!(concat!(env!("OUT_DIR"), "/subdir/foo.bar.rs")); } }
+/// pub mod foo {
+///     pub mod bar { include!(concat!(env!("OUT_DIR"), "/subdir/foo.bar.rs")); }
+///     pub mod baz { include!(concat!(env!("OUT_DIR"), "/subdir/foo.baz.rs")); }
+/// }
 /// ```
 fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette::Result<()> {
     let dir = out_dir.join(subdir);
@@ -108,21 +114,50 @@ fn generate_wrapper(out_dir: &Path, subdir: &str, wrapper_name: &str) -> miette:
         .collect();
     mod_names.sort();
 
+    let mut tree = ModuleTree::default();
+    for mod_name in &mod_names {
+        tree.insert(mod_name);
+    }
+
     let allow_attr = "#[allow(clippy::doc_markdown, clippy::struct_field_names, \
                       clippy::trivially_copy_pass_by_ref, clippy::large_enum_variant)]";
 
     let mut wrapper = String::new();
-    for mod_name in &mod_names {
-        let include = format!("include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{mod_name}.rs\"));");
-        let nested_modules = mod_name
-            .split('.')
-            .rev()
-            .fold(include, |body, name| format!("pub mod {name} {{ {body} }}"));
-        let mod_declaration = format!("{allow_attr}\n{nested_modules}\n");
-        wrapper.push_str(&mod_declaration);
+    for (name, module) in &tree.children {
+        writeln!(wrapper, "{allow_attr}\npub mod {name} {{ {} }}", module.render(subdir))
+            .into_diagnostic()?;
     }
 
     fs::write(out_dir.join(wrapper_name), wrapper).into_diagnostic()?;
 
     Ok(())
+}
+
+/// Module tree built from the generated file names. Packages that share a prefix, such as
+/// `miden.node.v1` and `miden.node.v2`, share their parent modules.
+#[derive(Default)]
+struct ModuleTree {
+    file: Option<String>,
+    children: BTreeMap<String, ModuleTree>,
+}
+
+impl ModuleTree {
+    fn insert(&mut self, mod_name: &str) {
+        let module = mod_name
+            .split('.')
+            .fold(self, |module, name| module.children.entry(name.to_owned()).or_default());
+        module.file = Some(mod_name.to_owned());
+    }
+
+    fn render(&self, subdir: &str) -> String {
+        let include = self
+            .file
+            .iter()
+            .map(|file| format!("include!(concat!(env!(\"OUT_DIR\"), \"/{subdir}/{file}.rs\"));"));
+        let children = self
+            .children
+            .iter()
+            .map(|(name, child)| format!("pub mod {name} {{ {} }}", child.render(subdir)));
+        include.chain(children).collect::<Vec<_>>().join(" ")
+    }
 }

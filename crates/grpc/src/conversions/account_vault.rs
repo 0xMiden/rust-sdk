@@ -12,16 +12,13 @@ use crate::generated as proto;
 // ACCOUNT VAULT CONVERSION
 // ================================================================================================
 
-impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
+impl TryFrom<proto::node::v1::SyncAccountVaultResponse> for AccountVaultInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::SyncAccountVaultResponse) -> Result<Self, Self::Error> {
-        let pagination_info =
-            value
-                .pagination_info
-                .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(
-                    pagination_info
-                )))?;
+    fn try_from(value: proto::node::v1::SyncAccountVaultResponse) -> Result<Self, Self::Error> {
+        let pagination_info = value.pagination_info.ok_or(
+            proto::node::v1::SyncAccountVaultResponse::missing_field(stringify!(pagination_info)),
+        )?;
 
         let mut updates = value
             .updates
@@ -55,13 +52,13 @@ impl TryFrom<proto::rpc::SyncAccountVaultResponse> for AccountVaultInfo {
 /// Converts a single proto vault update into its block number, asset ID, and new asset (`None` if
 /// the asset was removed at that block), validating that a present asset matches the reported key.
 fn vault_update_from_proto(
-    value: proto::rpc::AccountVaultUpdate,
+    value: proto::node::v1::AccountVaultUpdate,
 ) -> Result<(BlockNumber, AssetId, Option<Asset>), RpcError> {
     let block_num = BlockNumber::from(value.block_num);
 
     let asset_id: Word = value
         .vault_key
-        .ok_or(proto::rpc::SyncAccountVaultResponse::missing_field(stringify!(asset_id)))?
+        .ok_or(proto::node::v1::SyncAccountVaultResponse::missing_field(stringify!(asset_id)))?
         .try_into()?;
     let asset_id =
         AssetId::try_from(asset_id).map_err(|e| RpcError::InvalidResponse(e.to_string()))?;

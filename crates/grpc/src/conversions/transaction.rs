@@ -13,10 +13,10 @@ use crate::generated as proto;
 // TRANSACTION RECORD
 // ================================================================================================
 
-impl TryFrom<proto::rpc::TransactionRecord> for TransactionRecord {
+impl TryFrom<proto::node::v1::TransactionRecord> for TransactionRecord {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::TransactionRecord) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::TransactionRecord) -> Result<Self, Self::Error> {
         let block_num = value.block_num.into();
         let proto_header =
             value.header.ok_or(RpcConversionError::MissingFieldInProtobufRepresentation {

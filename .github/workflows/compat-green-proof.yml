@@ -1,0 +1,26 @@
+name: Client error compatibility green proof
+on:
+  push:
+    branches: [ci/2751-error-compat-green]
+permissions:
+  contents: read
+jobs:
+  proof:
+    runs-on: warp-ubuntu-latest-x64-8x
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Cleanup large tools for build space
+        uses: ./.github/actions/cleanup-runner
+      - name: Install Rust
+        run: rustup update --no-self-update
+      - uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1
+        with:
+          shared-key: rust-release-X64
+          prefix-key: rust-cache-2026.02.18
+          save-if: false
+      - name: Test downstream exhaustive match and acquisition classifications
+        run: cargo test -p miden-client --test client_error_compat
+      - name: Test acquisition import and transport paths
+        run: cargo test -p miden-client-unit-tests note_acquisition

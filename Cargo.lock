@@ -2851,7 +2851,9 @@ dependencies = [
  "miden-client-core",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
+ "miden-objects",
  "predicates",
+ "prost",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "tokio",
@@ -2873,6 +2875,7 @@ dependencies = [
  "miden-client-sqlite-store",
  "miden-debug",
  "miden-mast-package",
+ "miden-protocol",
  "midenc-hir-type",
  "miette",
  "predicates",
@@ -2897,7 +2900,6 @@ dependencies = [
  "miden-objects",
  "miden-protocol",
  "miden-standards",
- "miden-testing",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "thiserror",
@@ -2958,6 +2960,7 @@ dependencies = [
 name = "miden-client-proto"
 version = "0.17.4"
 dependencies = [
+ "miden-client",
  "miden-client-core",
  "miden-objects",
  "miden-protocol",

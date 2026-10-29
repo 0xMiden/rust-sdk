@@ -1,15 +1,15 @@
 use std::time::{Duration, Instant};
 
+use miden_client::Client;
 use miden_client::account::{AccountId, StorageMapKey, StorageSlotContent};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::testing::common::TestClient;
-use miden_client::{Client, Serializable};
 
 use crate::config::{self, BenchConfig};
 use crate::deploy::wait_for_block_advancement;
 use crate::masm::build_chunk_tx_request;
 use crate::metrics::{BenchmarkResult, measure_time_async};
-use crate::report::format_size;
+use crate::report::{format_size, proven_transaction_size};
 
 // DATA MODEL
 // ================================================================================================
@@ -114,7 +114,7 @@ pub async fn run_transaction_benchmarks(
         let tx_request = build_chunk_tx_request(&client, &chunks[0], &slot_infos)?;
         let tx_result = client.execute_transaction(account_id, tx_request).await?;
         if let Ok(proven_tx) = client.prove_transaction(&tx_result).await {
-            let tx_size = proven_tx.to_bytes().len();
+            let tx_size = proven_transaction_size(&proven_tx);
             println!("Proven transaction size: {}", format_size(tx_size));
             true
         } else {

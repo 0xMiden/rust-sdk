@@ -2,11 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, ValueEnum};
+use miden_client::Word;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
 use miden_client::crypto::rpo_falcon512;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
-use miden_client::{SliceReader, Word};
+use miden_client::utils::hex_to_bytes;
+use miden_protocol::utils::serde::{ByteReader, Deserializable, SliceReader};
 
 use crate::codecs::parse_account_id_token;
 use crate::errors::CliError;

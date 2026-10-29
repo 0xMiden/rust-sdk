@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use miden_client::account::component::MIDEN_PACKAGE_EXTENSION;
-use miden_client::utils::Deserializable;
 use miden_client::vm::Package;
+use miden_protocol::utils::serde::Deserializable;
 
 use crate::config::CliConfig;
 use crate::errors::CliError;

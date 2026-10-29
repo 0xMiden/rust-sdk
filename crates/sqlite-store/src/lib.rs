@@ -55,7 +55,6 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -822,14 +821,18 @@ pub(crate) fn u64_to_value(v: u64) -> Value {
     Value::Integer(v as i64)
 }
 
-/// Builds the value list for a `rarray(?)` parameter from serializable items, each stored as a BLOB
-/// of its canonical byte encoding.
+/// Decodes a [`Word`] from a BLOB column that holds its 32 bytes.
+pub(crate) fn word_from_blob(blob: &[u8]) -> Result<Word, StoreError> {
+    Ok(Word::try_from(blob)?)
+}
+
+/// Builds the value list for a `rarray(?)` parameter from byte strings, each stored as a BLOB.
 ///
 /// Binding the list as a single table-valued parameter keeps the SQL text constant, so the prepared
 /// statement stays cacheable regardless of the list length (and the list is not subject to
 /// `SQLite`'s bound-parameter limit).
-pub(crate) fn blob_array<T: Serializable>(items: impl IntoIterator<Item = T>) -> Rc<Vec<Value>> {
-    Rc::new(items.into_iter().map(|item| Value::Blob(item.to_bytes())).collect())
+pub(crate) fn blob_array(items: impl IntoIterator<Item = impl Into<Vec<u8>>>) -> Rc<Vec<Value>> {
+    Rc::new(items.into_iter().map(|item| Value::Blob(item.into())).collect())
 }
 
 /// Builds the value list for a `rarray(?)` parameter from `u64` values, stored as SQL INTEGERs

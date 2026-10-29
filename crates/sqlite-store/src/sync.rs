@@ -8,7 +8,6 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteTag;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
@@ -29,11 +28,15 @@ impl SqliteStore {
             .expect("no binding parameters used in query")
             .map(|result| {
                 let (tag, source): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+                let tag = <[u8; 4]>::try_from(tag.as_slice()).map_err(|_| {
+                    StoreError::ParsingError(format!(
+                        "stored note tag has {} bytes, not 4",
+                        tag.len()
+                    ))
+                })?;
                 Ok(NoteTagRecord {
-                    tag: NoteTag::read_from_bytes(&tag)
-                        .map_err(StoreError::DataDeserializationError)?,
-                    source: NoteTagSource::read_from_bytes(&source)
-                        .map_err(StoreError::DataDeserializationError)?,
+                    tag: NoteTag::from(u32::from_le_bytes(tag)),
+                    source: proto::decode_unchecked(&source)?,
                 })
             })
             .collect::<Result<Vec<NoteTagRecord>, _>>()
@@ -186,7 +189,7 @@ pub(super) fn add_note_tag_tx(
 
     const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
     let inserted = tx
-        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+        .execute(QUERY, params![tag.tag.as_u32().to_le_bytes(), proto::encode(&tag.source)])
         .into_store_error()?;
 
     Ok(inserted > 0)
@@ -198,7 +201,7 @@ pub(super) fn remove_note_tag_tx(
 ) -> Result<usize, StoreError> {
     const QUERY: &str = "DELETE FROM tags WHERE tag = ? AND source = ?";
     let removed_tags = tx
-        .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
+        .execute(QUERY, params![tag.tag.as_u32().to_le_bytes(), proto::encode(&tag.source)])
         .into_store_error()?;
 
     Ok(removed_tags)

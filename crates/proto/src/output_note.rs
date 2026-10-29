@@ -3,9 +3,9 @@
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client_core::store::OutputNoteState;
+use miden_client_core::store::{OutputNoteRecord, OutputNoteState};
 use miden_objects::DecodeMessageExt;
-use miden_protocol::note::{NoteRecipient, NoteScript};
+use miden_protocol::note::{NoteAssets, NoteAttachments, NoteMetadata, NoteRecipient, NoteScript};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -163,6 +163,34 @@ fn output_note_recipient_from_proto(
     };
 
     Ok(NoteRecipient::new(serial_num, script, storage))
+}
+
+impl ProtobufValue for OutputNoteRecord {
+    type Message = proto::OutputNoteRecord;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            recipient_digest: Some(self.recipient_digest().into()),
+            assets: Some(self.assets().to_proto()),
+            metadata: Some(self.metadata().to_proto()),
+            state: Some(self.state().to_proto()),
+            expected_height: Some(self.expected_height().into()),
+            attachments: Some(self.attachments().to_proto()),
+        }
+    }
+
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "output note record";
+
+        Ok(OutputNoteRecord::new(
+            required(record.recipient_digest, MESSAGE, "recipient digest")?.try_into()?,
+            NoteAssets::from_proto(required(record.assets, MESSAGE, "assets")?)?,
+            NoteMetadata::from_proto(required(record.metadata, MESSAGE, "metadata")?)?,
+            OutputNoteState::from_proto(required(record.state, MESSAGE, "state")?)?,
+            required(record.expected_height, MESSAGE, "expected height")?.decode_and_verify()?,
+            NoteAttachments::from_proto(required(record.attachments, MESSAGE, "attachments")?)?,
+        ))
+    }
 }
 
 #[cfg(test)]

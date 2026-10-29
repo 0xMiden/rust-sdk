@@ -11,8 +11,8 @@ use miden_client::account::standards::auth::{
 };
 use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_client::account::standards::wallets::BasicWallet;
-use miden_client::utils::Serializable;
 use miden_client::vm::{Package, Section, SectionId, TargetType};
+use miden_protocol::utils::serde::Serializable;
 
 const PACKAGE_DIR: &str = "packages";
 

@@ -3,13 +3,6 @@ use alloc::vec::Vec;
 use core::mem;
 
 use miden_protocol::note::{NoteDetailsCommitment, NoteId};
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::store::{InputNoteRecord, OutputNoteRecord};
 
@@ -237,68 +230,6 @@ fn merged_update_type(earlier: NoteUpdateType, later: NoteUpdateType) -> NoteUpd
         earlier
     } else {
         later
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for NoteUpdateType {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        target.write_u8(*self as u8);
-    }
-}
-
-impl Deserializable for NoteUpdateType {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        NoteUpdateType::try_from(source.read_u8()?).map_err(|val| {
-            DeserializationError::InvalidValue(format!("invalid note update type: {val}"))
-        })
-    }
-}
-
-impl Serializable for InputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for InputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = InputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for OutputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for OutputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = OutputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for NoteUpdates {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.input_notes.write_into(target);
-        self.output_notes.write_into(target);
-    }
-}
-
-impl Deserializable for NoteUpdates {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let input_notes = Vec::<InputNoteUpdate>::read_from(source)?;
-        let output_notes = Vec::<OutputNoteUpdate>::read_from(source)?;
-        Ok(Self { input_notes, output_notes })
     }
 }
 

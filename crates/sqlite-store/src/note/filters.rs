@@ -6,7 +6,7 @@ use std::rc::Rc;
 use miden_client_core::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::NoteId;
+use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteScriptRoot, Nullifier};
 use miden_protocol::utils::serde::Serializable;
 use rusqlite::types::{ToSqlOutput, Value};
 
@@ -73,22 +73,30 @@ fn note_filter_output_notes_condition(filter: &NoteFilter) -> (String, NoteQuery
         NoteFilter::Processing | NoteFilter::Unverified => "(1 = 0)".to_string(),
         NoteFilter::ScriptRoots(script_roots) => {
             // Notes without known details have a NULL script root and never match.
-            in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
+            in_rarray_condition(
+                "note.script_root",
+                blob_array(script_roots.iter().map(NoteScriptRoot::as_bytes)),
+                &mut params,
+            )
         },
         NoteFilter::Unique(note_id) => {
-            in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
+            in_rarray_condition("note.note_id", blob_array([note_id.as_bytes()]), &mut params)
         },
         NoteFilter::List(note_ids) => in_rarray_condition(
             "note.note_id",
-            blob_array(note_ids.iter().map(NoteId::as_word)),
+            blob_array(note_ids.iter().map(NoteId::as_bytes)),
             &mut params,
         ),
-        NoteFilter::DetailsCommitments(commitments) => {
-            in_rarray_condition("note.details_commitment", blob_array(commitments), &mut params)
-        },
-        NoteFilter::Nullifiers(nullifiers) => {
-            in_rarray_condition("note.nullifier", blob_array(nullifiers), &mut params)
-        },
+        NoteFilter::DetailsCommitments(commitments) => in_rarray_condition(
+            "note.details_commitment",
+            blob_array(commitments.iter().map(NoteDetailsCommitment::as_bytes)),
+            &mut params,
+        ),
+        NoteFilter::Nullifiers(nullifiers) => in_rarray_condition(
+            "note.nullifier",
+            blob_array(nullifiers.iter().map(Nullifier::as_bytes)),
+            &mut params,
+        ),
         NoteFilter::Unspent => state_condition(&[
             OutputNoteState::STATE_EXPECTED_PARTIAL,
             OutputNoteState::STATE_EXPECTED_FULL,
@@ -162,7 +170,7 @@ pub(super) fn note_filter_to_query_input_note_after(
             );
             params.push(ToSqlOutput::from(cursor.consumed_block_height().as_u32()));
             params.push(ToSqlOutput::from(cursor.consumed_tx_order()));
-            params.push(ToSqlOutput::from(cursor.details_commitment().to_bytes()));
+            params.push(ToSqlOutput::from(cursor.details_commitment().as_bytes().to_vec()));
         },
         None => {
             if let Some(start) = block_start {
@@ -206,22 +214,28 @@ pub(super) fn note_filter_input_notes_condition(filter: &NoteFilter) -> (String,
             InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
         ]),
         NoteFilter::Unique(note_id) => {
-            in_rarray_condition("note.note_id", blob_array([note_id.as_word()]), &mut params)
+            in_rarray_condition("note.note_id", blob_array([note_id.as_bytes()]), &mut params)
         },
         NoteFilter::List(note_ids) => in_rarray_condition(
             "note.note_id",
-            blob_array(note_ids.iter().map(NoteId::as_word)),
+            blob_array(note_ids.iter().map(NoteId::as_bytes)),
             &mut params,
         ),
-        NoteFilter::DetailsCommitments(commitments) => {
-            in_rarray_condition("note.details_commitment", blob_array(commitments), &mut params)
-        },
-        NoteFilter::Nullifiers(nullifiers) => {
-            in_rarray_condition("note.nullifier", blob_array(nullifiers), &mut params)
-        },
-        NoteFilter::ScriptRoots(script_roots) => {
-            in_rarray_condition("note.script_root", blob_array(script_roots), &mut params)
-        },
+        NoteFilter::DetailsCommitments(commitments) => in_rarray_condition(
+            "note.details_commitment",
+            blob_array(commitments.iter().map(NoteDetailsCommitment::as_bytes)),
+            &mut params,
+        ),
+        NoteFilter::Nullifiers(nullifiers) => in_rarray_condition(
+            "note.nullifier",
+            blob_array(nullifiers.iter().map(Nullifier::as_bytes)),
+            &mut params,
+        ),
+        NoteFilter::ScriptRoots(script_roots) => in_rarray_condition(
+            "note.script_root",
+            blob_array(script_roots.iter().map(NoteScriptRoot::as_bytes)),
+            &mut params,
+        ),
         NoteFilter::Unverified => state_condition(&[InputNoteState::STATE_UNVERIFIED]),
         NoteFilter::Unspent => state_condition(&InputNoteState::UNSPENT_STATES),
     };

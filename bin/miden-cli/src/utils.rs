@@ -9,7 +9,7 @@ use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
-use miden_client::utils::{Deserializable, hex_to_bytes};
+use miden_client::utils::hex_to_bytes;
 use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
 use miden_client::{
     AssetError,
@@ -20,10 +20,11 @@ use miden_client::{
     WORD_SIZE,
     Word,
 };
+use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
-use crate::commands::account::{DEFAULT_ACCOUNT_ID_KEY, get_non_fungible_faucet_symbol};
+use crate::commands::account::{get_default_account_id, get_non_fungible_faucet_symbol};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
 
@@ -47,8 +48,7 @@ pub(crate) async fn get_input_acc_id_by_prefix_or_default<AUTH>(
     let account_id_str = if let Some(account_id_prefix) = account_id {
         account_id_prefix
     } else {
-        client
-            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
+        get_default_account_id(client)
             .await?
             .map(AccountId::to_hex)
             .ok_or(CliError::Input("No input account ID nor default account defined".to_string()))?
@@ -611,7 +611,13 @@ impl FaucetMetadataResolver {
         }
         // 2) settings store
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
+        let Some(bytes) = client.get_setting(setting_key).await? else {
+            return Ok(None);
+        };
+        let meta = faucet_metadata_from_bytes(&bytes).map_err(|err| {
+            CliError::Parse(err.into(), "Failed to parse the stored faucet metadata".to_string())
+        })?;
+        Ok(Some(meta))
     }
 
     /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
@@ -664,7 +670,7 @@ impl FaucetMetadataResolver {
         let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
             return Ok(None);
         };
-        if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+        if let Err(err) = client.set_setting(setting_key, faucet_metadata_to_bytes(&meta)).await {
             tracing::warn!("failed to persist faucet metadata for {}: {err}", faucet_id.to_hex());
         }
         Ok(Some(meta))
@@ -798,6 +804,17 @@ const FAUCET_METADATA_SETTING_PREFIX: &str = "faucet_metadata:";
 /// Returns the settings-store key under which the metadata for `faucet_id` is persisted.
 fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
     format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
+}
+
+/// Encodes `meta` for the settings store as its `(symbol, decimals)` pair.
+fn faucet_metadata_to_bytes(meta: &FaucetMetadata) -> Vec<u8> {
+    (&meta.symbol, meta.decimals).to_bytes()
+}
+
+/// Decodes faucet metadata that [`faucet_metadata_to_bytes`] encoded.
+fn faucet_metadata_from_bytes(bytes: &[u8]) -> Result<FaucetMetadata, DeserializationError> {
+    let (symbol, decimals) = <(String, u8)>::read_from_bytes(bytes)?;
+    Ok(FaucetMetadata { symbol, decimals })
 }
 
 /// Parses a bech32 address from the token symbol map and checks that it belongs to `network_id`.
@@ -985,14 +1002,17 @@ mod tests {
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
-    use miden_client::utils::Serializable;
     use miden_client::{ClientError, ErrorHint};
+    use miden_protocol::utils::serde::Serializable;
 
     use super::{
+        FaucetMetadata,
         FaucetMetadataResolver,
         RawFaucetEntry,
         TokenParseError,
         base_units_to_tokens,
+        faucet_metadata_from_bytes,
+        faucet_metadata_to_bytes,
         hex_to_bytes,
         parse_ecdsa_public_key,
         tokens_to_base_units,
@@ -1196,5 +1216,23 @@ mod tests {
         };
         assert!(library_help.is_some());
         assert_eq!(help, library_help);
+    }
+
+    #[test]
+    fn faucet_metadata_round_trips_through_the_settings_encoding() {
+        let meta = FaucetMetadata { symbol: "BTC".to_string(), decimals: 8 };
+
+        let bytes = faucet_metadata_to_bytes(&meta);
+        assert_eq!(bytes, ("BTC".to_string(), 8u8).to_bytes());
+        assert_eq!(faucet_metadata_from_bytes(&bytes).unwrap(), meta);
+    }
+
+    #[test]
+    fn faucet_metadata_decoding_rejects_a_truncated_value() {
+        let meta = FaucetMetadata { symbol: "BTC".to_string(), decimals: 8 };
+        let bytes = faucet_metadata_to_bytes(&meta);
+
+        assert!(faucet_metadata_from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        assert!(faucet_metadata_from_bytes(&[]).is_err());
     }
 }

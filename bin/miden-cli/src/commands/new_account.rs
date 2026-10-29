@@ -802,9 +802,9 @@ mod tests {
     use miden_client::account::standards::wallets::BasicWallet;
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
-    use miden_client::utils::Serializable;
     use miden_client::vm::{Section, SectionId};
     use miden_client::{Felt, Word};
+    use miden_protocol::utils::serde::Serializable;
 
     use super::*;
 

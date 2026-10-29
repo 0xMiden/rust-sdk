@@ -325,7 +325,7 @@ impl TransactionRequest {
         self.auth_arg = Some(auth_arg);
     }
 
-    /// Checks the invariants every request must hold, whether it was built or deserialized.
+    /// Checks the invariants every request must hold.
     ///
     /// # Errors
     /// - If a note appears more than once among the input notes.

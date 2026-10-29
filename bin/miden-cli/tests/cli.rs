@@ -17,7 +17,7 @@ use miden_client::account::component::{
 };
 use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::account::standards::faucets::FungibleFaucet;
-use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
+use miden_client::account::{AccountFile, AccountId, AccountType, StorageSlotName};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKey, TransactionAuthenticator};
@@ -41,7 +41,6 @@ use miden_client::testing::common::{
     TestClient,
     create_test_store_path,
 };
-use miden_client::utils::Serializable;
 use miden_client::vm::{
     Package,
     PackageExport,
@@ -51,11 +50,12 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Deserializable, Word};
+use miden_client::{self, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::funding;
 use miden_client_sqlite_store::SqliteStore;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -654,14 +654,15 @@ async fn public_faucet_metadata_is_fetched_and_persisted() -> Result<()> {
     let faucet_id = AccountId::from_hex(&fungible_faucet_account_id).unwrap();
     let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
     let setting_key = format!("faucet_metadata:{}", faucet_id.to_hex());
-    let stored: Option<FaucetMetadata> = client.get_setting(setting_key).await?;
+    let stored = client.get_setting(setting_key).await?;
     assert!(
         stored.is_some(),
         "expected settings store to contain metadata for {fungible_faucet_account_id} after notes -s",
     );
-    let stored = stored.unwrap();
-    assert_eq!(stored.symbol, "BTC");
-    assert_eq!(stored.decimals, 10);
+    // The CLI stores the `(symbol, decimals)` pair.
+    let (symbol, decimals) = <(String, u8)>::read_from_bytes(&stored.unwrap()).unwrap();
+    assert_eq!(symbol, "BTC");
+    assert_eq!(decimals, 10);
     Ok(())
 }
 

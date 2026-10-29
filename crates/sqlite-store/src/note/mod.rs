@@ -16,7 +16,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteRecipient, NoteScript, Nullifier};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::utils::serde::Serializable;
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
@@ -28,7 +28,7 @@ use crate::note::filters::{
     note_filter_to_query_output_notes,
 };
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, proto, u64_to_value, with_write_tx};
+use crate::{column_value_as_u64, proto, u64_to_value, with_write_tx, word_from_blob};
 
 mod filters;
 
@@ -215,7 +215,7 @@ impl SqliteStore {
             .expect("no binding parameters used in query")
             .map(|result| {
                 let v: Vec<u8> = result.into_store_error()?;
-                Ok(Nullifier::read_from_bytes(&v)?)
+                Ok(Nullifier::from_raw(word_from_blob(&v)?))
             })
             .collect::<Result<Vec<Nullifier>, _>>()
     }
@@ -242,7 +242,7 @@ impl SqliteStore {
         let script_bytes: Option<Vec<u8>> = conn
             .prepare_cached(QUERY)
             .into_store_error()?
-            .query_row([script_root.to_bytes()], |row| row.get(0))
+            .query_row([script_root.as_bytes()], |row| row.get(0))
             .optional()
             .into_store_error()?;
 
@@ -267,7 +267,7 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
     let attachments: Vec<u8> = row.get("attachments").into_store_error()?;
 
     let assets = proto::decode_unchecked(&assets)?;
-    let serial_number = Word::read_from_bytes(&serial_number)?;
+    let serial_number = word_from_blob(&serial_number)?;
     let script = proto::decode_unchecked(&script)?;
     let inputs = proto::decode_unchecked(&inputs)?;
     let recipient = NoteRecipient::new(serial_number, script, inputs);
@@ -281,12 +281,12 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
 
 /// Serialize the provided input note into database compatible types.
 fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
-    let details_commitment = note.details_commitment().to_bytes();
+    let details_commitment = note.details_commitment().as_bytes().to_vec();
     // `note_id` and `nullifier` require metadata, so they're only available when the record carries
     // it. The columns are NULL-able and get populated once metadata arrives (via sync / inclusion
     // proof).
-    let id = note.id().map(|id| id.as_word().to_bytes());
-    let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
+    let id = note.id().map(|id| id.as_bytes().to_vec());
+    let nullifier = note.nullifier().map(|nullifier| nullifier.as_bytes().to_vec());
     let created_at = note.created_at().unwrap_or(0);
 
     let details = note.details();
@@ -294,11 +294,11 @@ fn serialize_input_note(note: &InputNoteRecord) -> SerializedInputNoteData {
     let attachments = proto::encode(note.attachments());
     let recipient = details.recipient();
 
-    let serial_number = recipient.serial_num().to_bytes();
+    let serial_number = recipient.serial_num().as_bytes().to_vec();
     let script = proto::encode(recipient.script());
     let inputs = proto::encode(recipient.storage());
 
-    let script_root = recipient.script().root().to_bytes();
+    let script_root = recipient.script().root().as_bytes().to_vec();
 
     let state_discriminant = note.state().discriminant();
     let state = proto::encode(note.state());
@@ -336,7 +336,7 @@ fn parse_output_note(row: &rusqlite::Row<'_>) -> Result<OutputNoteRecord, StoreE
     let attachments: Vec<u8> = row.get("attachments").into_store_error()?;
     let script: Option<Vec<u8>> = row.get("serialized_note_script").into_store_error()?;
 
-    let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
+    let recipient_digest = word_from_blob(&recipient_digest)?;
     let assets = proto::decode_unchecked(&assets)?;
     let metadata = proto::decode_unchecked(&metadata)?;
     let script = script.map(|script| proto::decode_unchecked(&script)).transpose()?;
@@ -360,7 +360,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
     let consumer_account_id = note.consumer_account().map(|id| id.to_bytes());
 
     SerializedInputNoteStateUpdate {
-        details_commitment: note.details_commitment().to_bytes(),
+        details_commitment: note.details_commitment().as_bytes().to_vec(),
         state_discriminant: note.state().discriminant(),
         state: proto::encode(note.state()),
         attachments: proto::encode(note.attachments()),
@@ -373,7 +373,7 @@ fn serialize_input_note_state(note: &InputNoteRecord) -> SerializedInputNoteStat
 /// Serialize the provided output note state into a lightweight state-only update.
 fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteStateUpdate {
     SerializedOutputNoteStateUpdate {
-        details_commitment: note.details_commitment().to_bytes(),
+        details_commitment: note.details_commitment().as_bytes().to_vec(),
         state_discriminant: note.state().discriminant(),
         state: proto::encode_output_note_state_without_script(note.state()),
     }
@@ -381,17 +381,17 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
 
 /// Serialize the provided output note into database compatible types.
 fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
-    let details_commitment = note.details_commitment().to_bytes();
-    let id = note.id().as_word().to_bytes();
+    let details_commitment = note.details_commitment().as_bytes().to_vec();
+    let id = note.id().as_bytes().to_vec();
     let assets = proto::encode(note.assets());
-    let recipient_digest = note.recipient_digest().to_bytes();
+    let recipient_digest = note.recipient_digest().as_bytes().to_vec();
     let metadata = proto::encode(note.metadata());
 
-    let nullifier = note.nullifier().map(|nullifier| nullifier.to_bytes());
+    let nullifier = note.nullifier().map(|nullifier| nullifier.as_bytes().to_vec());
 
     // The script is only known when the note's full details (recipient) are known. It is stored in
     // the shared `notes_scripts` table, with the note row referencing it by root.
-    let script_root = note.script_root().map(|root| root.to_bytes());
+    let script_root = note.script_root().map(|root| root.as_bytes().to_vec());
     let script = note.recipient().map(|recipient| proto::encode(recipient.script()));
 
     let state_discriminant = note.state().discriminant();
@@ -645,7 +645,7 @@ pub(super) fn upsert_note_script_tx(
 ) -> Result<(), StoreError> {
     tx.prepare_cached(UPSERT_NOTE_SCRIPT_QUERY)
         .into_store_error()?
-        .execute(params![note_script.root().to_bytes(), proto::encode(note_script)])
+        .execute(params![note_script.root().as_bytes(), proto::encode(note_script)])
         .into_store_error()?;
 
     Ok(())

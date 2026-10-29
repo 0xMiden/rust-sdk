@@ -14,10 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use miden_client::Deserializable;
 use miden_client::account::AccountId;
 use miden_client::note::Note;
 use miden_client::testing::fee::FeeFunder;
+use miden_protocol::utils::serde::Deserializable;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 

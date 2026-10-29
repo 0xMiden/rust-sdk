@@ -12,13 +12,6 @@ use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
 };
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 // TRANSACTION RESULT
 // ================================================================================================
@@ -105,21 +98,5 @@ impl From<TransactionResult> for TransactionInputs {
 impl From<TransactionResult> for ExecutedTransaction {
     fn from(tx_result: TransactionResult) -> ExecutedTransaction {
         tx_result.transaction
-    }
-}
-
-impl Serializable for TransactionResult {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.transaction.write_into(target);
-        self.future_notes.write_into(target);
-    }
-}
-
-impl Deserializable for TransactionResult {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let transaction = ExecutedTransaction::read_from(source)?;
-        let future_notes = Vec::<(NoteDetails, NoteTag)>::read_from(source)?;
-
-        Ok(Self { transaction, future_notes })
     }
 }

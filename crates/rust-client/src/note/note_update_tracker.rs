@@ -618,7 +618,6 @@ mod tests {
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
     use miden_protocol::transaction::TransactionId;
-    use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
 
@@ -814,7 +813,6 @@ mod tests {
         };
         assert_eq!(state.submission_data, original_state.submission_data);
         assert_eq!(state.inclusion_proof, proof);
-        assert_eq!(InputNoteRecord::read_from_bytes(&note.to_bytes()).unwrap(), note);
         assert!(!note.inclusion_received(proof, metadata, &header).unwrap());
     }
 }

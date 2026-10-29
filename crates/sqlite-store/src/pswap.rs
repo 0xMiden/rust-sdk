@@ -42,7 +42,7 @@ impl SqliteStore {
         let order_id = conn
             .query_row(
                 "SELECT order_id FROM pswap_lineages WHERE current_tip_note_id = ? AND state = 0",
-                params![tip.to_bytes()],
+                params![tip.as_bytes()],
                 |row| column_value_as_u64(row, 0),
             )
             .optional()
@@ -100,7 +100,7 @@ impl SqliteStore {
             params![
                 u64_to_value(record.order_id().as_canonical_u64()),
                 record.creator_account_id().to_bytes(),
-                record.current_tip_note_id.to_bytes(),
+                record.current_tip_note_id.as_bytes(),
                 record.state.as_u8(),
                 proto::encode(record),
             ],

@@ -33,8 +33,8 @@ impl SqliteStore {
         let account_id_bytes = account_id.to_bytes();
 
         for asset in assets {
-            let asset_id_bytes = asset.id().to_bytes();
-            let asset_bytes = asset.to_value_word().to_bytes();
+            let asset_id_bytes = asset.id().to_word().as_bytes();
+            let asset_bytes = asset.to_value_word().as_bytes();
 
             latest_stmt
                 .execute(params![&account_id_bytes, &asset_id_bytes, &asset_bytes])
@@ -86,9 +86,12 @@ impl SqliteStore {
         // The patch holds one value per asset id, so an id is either removed or updated, never
         // both. The removed assets can therefore be deleted after the inserts.
         let removed_asset_ids: Vec<AssetId> = vault_patch.removed_asset_ids().copied().collect();
-        let removed = removed_asset_ids.iter().map(|asset_id| (asset_id.to_bytes(), None::<Asset>));
-        let updated =
-            vault_patch.updated_assets().map(|asset| (asset.id().to_bytes(), Some(asset)));
+        let removed = removed_asset_ids
+            .iter()
+            .map(|asset_id| (asset_id.to_word().as_bytes(), None::<Asset>));
+        let updated = vault_patch
+            .updated_assets()
+            .map(|asset| (asset.id().to_word().as_bytes(), Some(asset)));
 
         for (asset_id_bytes, new_asset) in removed.chain(updated) {
             // Read the value the entry held before this nonce. A NULL value marks a new entry.
@@ -103,7 +106,7 @@ impl SqliteStore {
                 .into_store_error()?;
 
             if let Some(asset) = new_asset {
-                let asset_bytes = asset.to_value_word().to_bytes();
+                let asset_bytes = asset.to_value_word().as_bytes();
                 latest_stmt
                     .execute(params![&account_id_bytes, &asset_id_bytes, &asset_bytes])
                     .into_store_error()?;
@@ -111,7 +114,9 @@ impl SqliteStore {
         }
 
         if !removed_asset_ids.is_empty() {
-            tx.execute(DELETE_LATEST, params![&account_id_bytes, blob_array(&removed_asset_ids)])
+            let removed_ids =
+                blob_array(removed_asset_ids.iter().map(|id| id.to_word().as_bytes()));
+            tx.execute(DELETE_LATEST, params![&account_id_bytes, removed_ids])
                 .into_store_error()?;
         }
 

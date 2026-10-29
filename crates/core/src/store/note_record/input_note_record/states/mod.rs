@@ -6,13 +6,6 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{NoteId, NoteInclusionProof, NoteMetadata};
 use miden_protocol::transaction::TransactionId;
-pub use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 mod committed;
 mod consumed_authenticated_local;
@@ -233,53 +226,6 @@ impl InputNoteState {
     }
 }
 
-impl Serializable for InputNoteState {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        target.write_u8(self.discriminant());
-        match self {
-            InputNoteState::Expected(inner) => inner.write_into(target),
-            InputNoteState::Unverified(inner) => inner.write_into(target),
-            InputNoteState::Committed(inner) => inner.write_into(target),
-            InputNoteState::Invalid(inner) => inner.write_into(target),
-            InputNoteState::ProcessingAuthenticated(inner) => inner.write_into(target),
-            InputNoteState::ProcessingUnauthenticated(inner) => inner.write_into(target),
-            InputNoteState::ConsumedAuthenticatedLocal(inner) => inner.write_into(target),
-            InputNoteState::ConsumedUnauthenticatedLocal(inner) => inner.write_into(target),
-            InputNoteState::ConsumedExternal(inner) => inner.write_into(target),
-        }
-    }
-}
-
-impl Deserializable for InputNoteState {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let discriminant = source.read_u8()?;
-        match discriminant {
-            Self::STATE_EXPECTED => Ok(ExpectedNoteState::read_from(source)?.into()),
-            Self::STATE_UNVERIFIED => Ok(UnverifiedNoteState::read_from(source)?.into()),
-            Self::STATE_COMMITTED => Ok(CommittedNoteState::read_from(source)?.into()),
-            Self::STATE_INVALID => Ok(InvalidNoteState::read_from(source)?.into()),
-            Self::STATE_PROCESSING_AUTHENTICATED => {
-                Ok(ProcessingAuthenticatedNoteState::read_from(source)?.into())
-            },
-            Self::STATE_PROCESSING_UNAUTHENTICATED => {
-                Ok(ProcessingUnauthenticatedNoteState::read_from(source)?.into())
-            },
-            Self::STATE_CONSUMED_AUTHENTICATED_LOCAL => {
-                Ok(ConsumedAuthenticatedLocalNoteState::read_from(source)?.into())
-            },
-            Self::STATE_CONSUMED_UNAUTHENTICATED_LOCAL => {
-                Ok(ConsumedUnauthenticatedLocalNoteState::read_from(source)?.into())
-            },
-            Self::STATE_CONSUMED_EXTERNAL => {
-                Ok(ConsumedExternalNoteState::read_from(source)?.into())
-            },
-            _ => Err(DeserializationError::InvalidValue(format!(
-                "Invalid NoteState discriminant: {discriminant}"
-            ))),
-        }
-    }
-}
-
 impl Display for InputNoteState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -422,27 +368,6 @@ pub struct NoteSubmissionData {
     pub consumer_account: AccountId,
     /// The ID of the transaction that is consuming the note.
     pub consumer_transaction: TransactionId,
-}
-
-impl Serializable for NoteSubmissionData {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.submitted_at.write_into(target);
-        self.consumer_account.write_into(target);
-        self.consumer_transaction.write_into(target);
-    }
-}
-
-impl Deserializable for NoteSubmissionData {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let submitted_at = Option::<u64>::read_from(source)?;
-        let consumer_account = AccountId::read_from(source)?;
-        let consumer_transaction = TransactionId::read_from(source)?;
-        Ok(NoteSubmissionData {
-            submitted_at,
-            consumer_account,
-            consumer_transaction,
-        })
-    }
 }
 
 // TESTS

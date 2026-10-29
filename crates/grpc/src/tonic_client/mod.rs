@@ -33,6 +33,7 @@ use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use tonic::Status;
 
+use crate::api_version::ApiVersion;
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
 use crate::{Endpoint, RpcMethod, v1};
@@ -92,6 +93,8 @@ struct ConnectionState {
     client: Option<ApiClient>,
     /// The genesis commitment sent with every request, once known.
     genesis_commitment: Option<Word>,
+    /// The newest API version that the node is known to serve on this connection.
+    api_version: ApiVersion,
 }
 
 impl ConnectionState {
@@ -114,7 +117,14 @@ impl ConnectionState {
         if let Some(commitment) = self.genesis_commitment {
             client.set_genesis_commitment(commitment);
         }
+        // A new connection can reach a node that serves newer versions.
+        self.api_version = ApiVersion::NEWEST;
         self.client.insert(client).clone()
+    }
+
+    /// Records that the node does not serve versions newer than `version`.
+    fn lower_api_version(&mut self, version: ApiVersion) {
+        self.api_version = self.api_version.min(version);
     }
 }
 
@@ -196,6 +206,31 @@ impl GrpcClient {
         let output = method.execute(self).await?;
         method.validate(&output)?;
         Ok(output)
+    }
+
+    /// Runs `call` with the newest API version that the node is known to serve.
+    ///
+    /// If the node answers [`GrpcError::Unimplemented`], it does not serve that version. The client
+    /// then records the previous version for later calls on this connection, and runs `call` again
+    /// with it.
+    async fn with_version_fallback<T, F, Fut>(&self, mut call: F) -> Result<T, RpcError>
+    where
+        F: FnMut(ApiVersion) -> Fut,
+        Fut: Future<Output = Result<T, RpcError>>,
+    {
+        let mut version = self.connection.read().api_version;
+        loop {
+            match call(version).await {
+                Err(err) if is_unimplemented(&err) => {
+                    let Some(previous) = version.previous() else {
+                        return Err(err);
+                    };
+                    self.connection.write().lower_api_version(previous);
+                    version = previous;
+                },
+                result => return result,
+            }
+        }
     }
 
     /// Returns the cached transport or establishes a connection.
@@ -321,7 +356,12 @@ impl NodeRpcClient for GrpcClient {
     async fn get_transaction_encryption_key(
         &self,
     ) -> Result<AttestedTransactionEncryptionKey, RpcError> {
-        self.call(v1::GetTransactionEncryptionKey).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::GetTransactionEncryptionKey).await,
+            }
+        })
+        .await
     }
 
     async fn submit_proven_transaction(
@@ -329,9 +369,19 @@ impl NodeRpcClient for GrpcClient {
         proven_transaction: &ProvenTransaction,
         sealed_transaction_inputs: SealedTransactionInputs,
     ) -> Result<BlockNumber, RpcError> {
-        self.call(v1::SubmitProvenTx {
-            transaction: proven_transaction,
-            sealed_transaction_inputs,
+        self.with_version_fallback(|version| {
+            let sealed_transaction_inputs = sealed_transaction_inputs.clone();
+            async move {
+                match version {
+                    ApiVersion::V1 => {
+                        self.call(v1::SubmitProvenTx {
+                            transaction: proven_transaction,
+                            sealed_transaction_inputs,
+                        })
+                        .await
+                    },
+                }
+            }
         })
         .await
     }
@@ -342,10 +392,20 @@ impl NodeRpcClient for GrpcClient {
         proposed_batch: &ProposedBatch,
         sealed_transaction_inputs: Vec<SealedTransactionInputs>,
     ) -> Result<BlockNumber, RpcError> {
-        self.call(v1::SubmitProvenTxBatch {
-            proven_batch,
-            proposed_batch,
-            sealed_transaction_inputs,
+        self.with_version_fallback(|version| {
+            let sealed_transaction_inputs = sealed_transaction_inputs.clone();
+            async move {
+                match version {
+                    ApiVersion::V1 => {
+                        self.call(v1::SubmitProvenTxBatch {
+                            proven_batch,
+                            proposed_batch,
+                            sealed_transaction_inputs,
+                        })
+                        .await
+                    },
+                }
+            }
         })
         .await
     }
@@ -355,35 +415,51 @@ impl NodeRpcClient for GrpcClient {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
     ) -> Result<(BlockHeader, Option<MmrProof>), RpcError> {
-        let response = self
-            .call(v1::GetBlockHeaderByNumber {
-                block_num,
-                include_mmr_proof,
-                include_protocol_config: false,
-            })
-            .await?;
-
-        Ok((response.block_header, response.mmr_proof))
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    let response = self
+                        .call(v1::GetBlockHeaderByNumber {
+                            block_num,
+                            include_mmr_proof,
+                            include_protocol_config: false,
+                        })
+                        .await?;
+                    Ok((response.block_header, response.mmr_proof))
+                },
+            }
+        })
+        .await
     }
 
     async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError> {
-        let response = self
-            .call(v1::GetBlockHeaderByNumber {
-                block_num: Some(BlockNumber::GENESIS),
-                include_mmr_proof: false,
-                include_protocol_config: true,
-            })
-            .await?;
-
-        let protocol_config = response
-            .protocol_config
-            .ok_or(RpcError::ExpectedDataMissing("ProtocolConfig".into()))?;
-
-        Ok((response.block_header, protocol_config))
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    let response = self
+                        .call(v1::GetBlockHeaderByNumber {
+                            block_num: Some(BlockNumber::GENESIS),
+                            include_mmr_proof: false,
+                            include_protocol_config: true,
+                        })
+                        .await?;
+                    let protocol_config = response
+                        .protocol_config
+                        .ok_or(RpcError::ExpectedDataMissing("ProtocolConfig".into()))?;
+                    Ok((response.block_header, protocol_config))
+                },
+            }
+        })
+        .await
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
-        self.call(v1::GetNotesById { note_ids }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::GetNotesById { note_ids }).await,
+            }
+        })
+        .await
     }
 
     async fn sync_chain_mmr(
@@ -391,7 +467,14 @@ impl NodeRpcClient for GrpcClient {
         current_block_height: BlockNumber,
         upper_bound: SyncTarget,
     ) -> Result<ChainMmrInfo, RpcError> {
-        self.call(v1::SyncChainMmr { current_block_height, upper_bound }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::SyncChainMmr { current_block_height, upper_bound }).await
+                },
+            }
+        })
+        .await
     }
 
     /// Sends a `GetAccount` request to the Miden node, and extracts the [`AccountProof`] from the
@@ -410,7 +493,15 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        self.call(v1::GetAccount { account_id, request }).await
+        self.with_version_fallback(|version| {
+            let request = request.clone();
+            async move {
+                match version {
+                    ApiVersion::V1 => self.call(v1::GetAccount { account_id, request }).await,
+                }
+            }
+        })
+        .await
     }
 
     async fn register_account(
@@ -418,15 +509,32 @@ impl NodeRpcClient for GrpcClient {
         invitation_code: &str,
         account_id: AccountId,
     ) -> Result<(), RpcError> {
-        self.call(v1::RegisterAccount { invitation_code, account_id }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::RegisterAccount { invitation_code, account_id }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
-        self.call(v1::IsAccountAllowed { account_id }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::IsAccountAllowed { account_id }).await,
+            }
+        })
+        .await
     }
 
     async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
-        self.call(v1::IsInvitationCodeValid { invitation_code }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::IsInvitationCodeValid { invitation_code }).await,
+            }
+        })
+        .await
     }
 
     async fn sync_notes(
@@ -435,7 +543,14 @@ impl NodeRpcClient for GrpcClient {
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> Result<Vec<SyncNotesBlock>, RpcError> {
-        self.call(v1::SyncNotes { block_from, block_to, note_tags }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::SyncNotes { block_from, block_to, note_tags }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn sync_nullifiers(
@@ -444,7 +559,14 @@ impl NodeRpcClient for GrpcClient {
         block_from: BlockNumber,
         block_to: BlockNumber,
     ) -> Result<Vec<NullifierUpdate>, RpcError> {
-        self.call(v1::SyncNullifiers { prefixes, block_from, block_to }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::SyncNullifiers { prefixes, block_from, block_to }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn get_block_by_number(
@@ -452,11 +574,23 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        self.call(v1::GetBlockByNumber { block_num, include_proof }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::GetBlockByNumber { block_num, include_proof }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        self.call(v1::GetNoteScriptByRoot { root }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::GetNoteScriptByRoot { root }).await,
+            }
+        })
+        .await
     }
 
     async fn sync_storage_maps(
@@ -465,7 +599,14 @@ impl NodeRpcClient for GrpcClient {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<StorageMapInfo, RpcError> {
-        self.call(v1::SyncAccountStorageMaps { block_from, block_to, account_id }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::SyncAccountStorageMaps { block_from, block_to, account_id }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn sync_account_vault(
@@ -474,7 +615,14 @@ impl NodeRpcClient for GrpcClient {
         block_to: BlockNumber,
         account_id: AccountId,
     ) -> Result<AccountVaultInfo, RpcError> {
-        self.call(v1::SyncAccountVault { block_from, block_to, account_id }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => {
+                    self.call(v1::SyncAccountVault { block_from, block_to, account_id }).await
+                },
+            }
+        })
+        .await
     }
 
     async fn sync_transactions(
@@ -483,7 +631,17 @@ impl NodeRpcClient for GrpcClient {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError> {
-        self.call(v1::SyncTransactions { block_from, block_to, account_ids }).await
+        self.with_version_fallback(|version| {
+            let account_ids = account_ids.clone();
+            async move {
+                match version {
+                    ApiVersion::V1 => {
+                        self.call(v1::SyncTransactions { block_from, block_to, account_ids }).await
+                    },
+                }
+            }
+        })
+        .await
     }
 
     async fn get_network_id(&self) -> Result<NetworkId, RpcError> {
@@ -497,7 +655,13 @@ impl NodeRpcClient for GrpcClient {
             return Ok(limits);
         }
 
-        let limits = self.call(v1::GetLimits).await?;
+        let limits = self
+            .with_version_fallback(|version| async move {
+                match version {
+                    ApiVersion::V1 => self.call(v1::GetLimits).await,
+                }
+            })
+            .await?;
 
         // Cache fetched values
         self.limits.write().replace(limits);
@@ -520,7 +684,12 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        self.call(v1::GetNetworkNoteStatus { note_id }).await
+        self.with_version_fallback(|version| async move {
+            match version {
+                ApiVersion::V1 => self.call(v1::GetNetworkNoteStatus { note_id }).await,
+            }
+        })
+        .await
     }
 }
 
@@ -531,16 +700,88 @@ fn grpc_error_from_status(status: &Status) -> GrpcError {
     GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))
 }
 
+/// Returns whether the node rejected the call because it does not serve the requested service or
+/// method.
+fn is_unimplemented(err: &RpcError) -> bool {
+    matches!(err, RpcError::RequestError { error_kind: GrpcError::Unimplemented, .. })
+}
+
 #[cfg(test)]
 mod tests {
-    use miden_client_core::errors::RpcError;
-    use miden_client_core::rpc::NodeRpcClient;
+    use core::cell::{Cell, RefCell};
+
+    use miden_client_core::errors::{GrpcError, RpcError};
+    use miden_client_core::rpc::{NodeRpcClient, RpcEndpoint};
     use miden_protocol::Word;
     use miden_protocol::block::BlockNumber;
 
-    use super::{DEFAULT_MAX_RESPONSE_SIZE_BYTES, Endpoint, GrpcClient};
+    use super::{ApiVersion, DEFAULT_MAX_RESPONSE_SIZE_BYTES, Endpoint, GrpcClient};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    fn request_error(error_kind: GrpcError) -> RpcError {
+        RpcError::RequestError {
+            endpoint: RpcEndpoint::Status,
+            error_kind,
+            endpoint_error: None,
+            source: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn version_fallback_starts_with_the_newest_version() {
+        let client = GrpcClient::new(&Endpoint::localhost(), 1000);
+        let versions = RefCell::new(Vec::new());
+
+        let result = client
+            .with_version_fallback(|version| {
+                versions.borrow_mut().push(version);
+                async { Ok::<_, RpcError>(()) }
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(versions.into_inner(), vec![ApiVersion::NEWEST]);
+    }
+
+    #[tokio::test]
+    async fn version_fallback_returns_unimplemented_for_the_oldest_version() {
+        let client = GrpcClient::new(&Endpoint::localhost(), 1000);
+        let calls = Cell::new(0);
+
+        let result = client
+            .with_version_fallback(|_| {
+                calls.set(calls.get() + 1);
+                async { Err::<(), _>(request_error(GrpcError::Unimplemented)) }
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(RpcError::RequestError { error_kind: GrpcError::Unimplemented, .. })
+        ));
+        // The newest version is also the oldest one, so there is no version to fall back to.
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn version_fallback_does_not_retry_other_errors() {
+        let client = GrpcClient::new(&Endpoint::localhost(), 1000);
+        let calls = Cell::new(0);
+
+        let result = client
+            .with_version_fallback(|_| {
+                calls.set(calls.get() + 1);
+                async { Err::<(), _>(request_error(GrpcError::Unavailable)) }
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(RpcError::RequestError { error_kind: GrpcError::Unavailable, .. })
+        ));
+        assert_eq!(calls.get(), 1);
+    }
 
     #[test]
     fn is_send_sync() {

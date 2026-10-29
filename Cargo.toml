@@ -63,6 +63,7 @@ miden-node-proto-build = { default-features = false, version = "0.18.1" }
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.36" }
 miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.19.0" }
+miden-debug-engine    = { default-features = false, features = ["std"], version = "0.19.0" }
 miden-mast-package    = { default-features = false, version = "0.36" }
 miden-processor       = { default-features = false, version = "0.36" }
 

@@ -29,6 +29,8 @@ use miden_client::vm::{
 use miden_client::{Client, ClientError, Felt, TransactionExecutorError, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
+#[cfg(feature = "trace")]
+use crate::call_trace::{self, TraceArgs, TraceCall};
 use crate::codecs::with_cli_codecs;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
 use crate::commands::new_account::load_packages;
@@ -80,6 +82,10 @@ pub struct CallCmd {
     /// Path to a TOML file with advice map entries, in the same format as the `exec` command.
     #[arg(long, short, long_help = crate::advice_inputs::INPUTS_PATH_LONG_HELP)]
     inputs_path: Option<PathBuf>,
+
+    #[cfg(feature = "trace")]
+    #[command(flatten)]
+    trace: TraceArgs,
 }
 
 impl CallCmd {
@@ -216,7 +222,21 @@ impl CallCmd {
         // to resolve `call.<digest>` to a known procedure — otherwise it emits a "phantom target"
         // warning. Dynamic linking provides that resolution without embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
-        Ok(CallCode { builder, digest, args, typed })
+        #[cfg(feature = "trace")]
+        let entry = typed
+            .as_ref()
+            .zip(export.signature.as_ref())
+            .map(|(_, signature)| (name.to_string(), self.args.as_slice(), signature.params.len()));
+        #[cfg(feature = "trace")]
+        let trace = TraceCall::new(self.trace.level(), package, entry);
+        Ok(CallCode {
+            builder,
+            digest,
+            args,
+            typed,
+            #[cfg(feature = "trace")]
+            trace,
+        })
     }
 
     /// Resolves the call from a hex digest. Nothing describes the procedure, so each argument is
@@ -243,6 +263,8 @@ impl CallCmd {
             digest,
             args: encode_raw_args(&self.args)?,
             typed: None,
+            #[cfg(feature = "trace")]
+            trace: TraceCall::without_package(self.trace.level()),
         })
     }
 }
@@ -257,6 +279,81 @@ struct CallCode {
     digest: Word,
     args: Vec<Felt>,
     typed: Option<TypedProcInfo>,
+    #[cfg(feature = "trace")]
+    trace: TraceCall,
+}
+
+/// What a call prints: the result types, and with `--trace` the call tree.
+struct CallOutput<'a> {
+    typed: Option<&'a TypedProcInfo>,
+    #[cfg(feature = "trace")]
+    trace: &'a TraceCall,
+}
+
+/// The program of a call and the account state it runs against.
+struct ProgramRun {
+    account_id: AccountId,
+    tx_script: TransactionScript,
+    advice_inputs: AdviceInputs,
+    foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+}
+
+/// Runs the call without a transaction and prints the result, then the trace if asked. A failed run
+/// still prints its trace.
+async fn execute_and_print_call<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    program: ProgramRun,
+    output: CallOutput<'_>,
+) -> Result<(), CliError> {
+    #[cfg(feature = "trace")]
+    if output.trace.level().is_some() {
+        return execute_and_print_trace(client, program, output.typed, output.trace).await;
+    }
+
+    let output_stack = client
+        .execute_program(
+            program.account_id,
+            program.tx_script,
+            program.advice_inputs,
+            program.foreign_accounts,
+        )
+        .await?;
+    print_call_result(&output_stack, output.typed);
+    Ok(())
+}
+
+/// Runs the call without a transaction and prints the result, then the call tree. A failed run
+/// still prints its tree up to the failure.
+#[cfg(feature = "trace")]
+async fn execute_and_print_trace<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    program: ProgramRun,
+    typed: Option<&TypedProcInfo>,
+    trace: &TraceCall,
+) -> Result<(), CliError> {
+    let (result, recording) = client
+        .execute_program_with_trace(
+            program.account_id,
+            program.tx_script,
+            program.advice_inputs,
+            program.foreign_accounts,
+            trace.package(),
+        )
+        .await;
+
+    if let Ok(output_stack) = &result {
+        print_call_result(output_stack, typed);
+    }
+    let decoded = result
+        .as_ref()
+        .ok()
+        .zip(typed)
+        .and_then(|(output_stack, typed)| call_trace::entry_result(output_stack, typed));
+    // The CLI runs one call and has nothing else to do while the replay blocks.
+    let replay = recording.map(miden_client::transaction::trace::replay_call_trace);
+    print!("{}", trace.render(replay.as_ref(), decoded.as_deref()));
+
+    result.map(|_| ()).map_err(Into::into)
 }
 
 /// Prints the values the procedure returned, rendered as their declared types when the package
@@ -280,7 +377,7 @@ fn print_call_result(output_stack: &[Felt; MIN_STACK_DEPTH], typed: Option<&Type
 }
 
 /// Runs a remote call via FPI. FPI cannot mutate the foreign account, so there is no state delta to
-/// compute — only the read phase runs.
+/// compute — the call only reads.
 async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     target_id: AccountId,
@@ -289,7 +386,14 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed } = call_code;
+    let CallCode {
+        builder,
+        digest,
+        args,
+        typed,
+        #[cfg(feature = "trace")]
+        trace,
+    } = call_code;
     let tx_script =
         build_fpi_script(builder, target_id, digest, &args).map_err(|err| match err {
             TransactionRequestError::ForeignProcedureInputsTooLong { max, actual } => {
@@ -303,42 +407,54 @@ async fn run_remote_call<AUTH: Keystore + Sync + 'static>(
             },
         })?;
 
-    let output_stack = client
-        .execute_program(
-            executor_id,
-            tx_script,
-            AdviceInputs::default().with_map(advice_entries),
-            BTreeMap::from([(target_id, *foreign_account)]),
-        )
-        .await?;
-
-    print_call_result(&output_stack, typed.as_ref());
+    let program = ProgramRun {
+        account_id: executor_id,
+        tx_script,
+        advice_inputs: AdviceInputs::default().with_map(advice_entries),
+        foreign_accounts: BTreeMap::from([(target_id, *foreign_account)]),
+    };
+    let output = CallOutput {
+        typed: typed.as_ref(),
+        #[cfg(feature = "trace")]
+        trace: &trace,
+    };
+    execute_and_print_call(client, program, output).await?;
 
     println!("\nA call on an account read from the network can only read it; no state delta.");
     Ok(())
 }
 
-/// Runs a local call: a read phase for the return values, then a transaction for the state delta.
-/// The account runs the call itself, so the procedure may mutate it.
+/// Runs a local call: a read-only run for the return values, then a transaction for the state
+/// delta. The account runs the call itself, so the procedure may mutate it.
 async fn run_local_call<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
     account_id: AccountId,
     call_code: CallCode,
     advice_entries: Vec<(Word, Vec<Felt>)>,
 ) -> Result<(), CliError> {
-    let CallCode { builder, digest, args, typed } = call_code;
+    let CallCode {
+        builder,
+        digest,
+        args,
+        typed,
+        #[cfg(feature = "trace")]
+        trace,
+    } = call_code;
     let tx_script = generate_tx_script(builder, &digest, &args)?;
 
     // 1) Read-only execution to get return values.
-    let output_stack = client
-        .execute_program(
-            account_id,
-            tx_script.clone(),
-            AdviceInputs::default().with_map(advice_entries.clone()),
-            BTreeMap::new(),
-        )
-        .await?;
-    print_call_result(&output_stack, typed.as_ref());
+    let program = ProgramRun {
+        account_id,
+        tx_script: tx_script.clone(),
+        advice_inputs: AdviceInputs::default().with_map(advice_entries.clone()),
+        foreign_accounts: BTreeMap::new(),
+    };
+    let output = CallOutput {
+        typed: typed.as_ref(),
+        #[cfg(feature = "trace")]
+        trace: &trace,
+    };
+    execute_and_print_call(client, program, output).await?;
 
     // 2) Transaction execution to get the state delta.
     let tx_request = TransactionRequestBuilder::new()
@@ -351,6 +467,7 @@ async fn run_local_call<AUTH: Keystore + Sync + 'static>(
 
     match client.execute_transaction(account_id, tx_request).await {
         Ok(tx_result) => {
+            println!();
             print_executed_transaction(client, tx_result.executed_transaction()).await?;
         },
         Err(e) => report_failed_delta(&e),

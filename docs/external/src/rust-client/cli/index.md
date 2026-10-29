@@ -611,6 +611,8 @@ Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE
 | ----------------------------- | ------------------------------------------------------------- | ------- |
 | `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+| `--trace`                     | Print the hierarchy of procedure calls the execution made. Needs `--package` and a build with the `trace` feature. |         |
+| `--verbose`                   | With `--trace`, widen what is shown: `-v` adds library functions, `-vv` shows every named frame. | `-v`    |
 
 The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
@@ -674,6 +676,36 @@ A procedure that only reads leaves the transaction with no effects at all, which
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
 :::
+
+##### Tracing the calls a procedure makes
+
+`--trace` prints, under the result, the procedures the call went through, nested the way they called each other. Each line shows the arguments the call received, the value it returned and the cycles it took, including the calls below it:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:apply_op 0 5 --package target/miden/dev/counter-contract.masp --trace
+```
+
+```sh
+Signature: apply_op(felt, felt) -> felt
+
+Result: 5
+
+Replay: 27116 cycles
+
+Call trace:
+  apply_op(0, 5) -> 5  16004 cycles
+    CounterContractStorage::apply_op(op=0, amount=5) -> 5  14600 cycles
+      add_amount(current=0, amount=5) -> 5  646 cycles
+        clamp_to_max(value=5) -> 5  585 cycles
+
+200 frame(s) hidden; show library functions with -v, everything with -vv.
+```
+
+The first line is the export as it was called, with the arguments as typed and the result decoded to its declared type. The lines below it come from the package's debug information: argument values are shown as field elements, and `?` stands for a value that could not be read. The replay cycle count covers the whole transaction script, so it is larger than the cycles of the call itself.
+
+By default only the Rust functions of the contract's own crate are shown; every other frame is counted and hidden, and the frames it called are printed in its place so the nesting between the shown ones is kept. `-v` also shows Rust functions from other crates (the Rust SDK, its dependencies and the bindings it generates), and `-vv` adds procedures that are not Rust code, such as hand-written MASM. A frame that the debug engine could not name is never shown: its calls are printed in its place, and it is not counted as hidden. A call that fails is traced up to the failure: the frames that were still running are marked `did not return`, and the innermost one, where execution stopped, is marked `stopped here`. If that frame is hidden or has no name, no line is marked `stopped here`, and the innermost shown frame reads `did not return`.
+
+Names and arguments come from the debug information in the package given with `--package`.
 
 ##### Calling an account that isn't tracked locally
 

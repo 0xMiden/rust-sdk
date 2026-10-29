@@ -3,10 +3,10 @@
 use miden_client_core::rpc::RpcLimits;
 use miden_client_core::rpc::encryption::TransactionEncryptionKey;
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::PublicKey;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::utils::serde::Serializable;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, required};
+use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
 
 impl ProtobufValue for RpcLimits {
     type Message = proto::RpcLimits;
@@ -59,8 +59,7 @@ impl ProtobufValue for TransactionEncryptionKey {
     fn from_proto(key: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction encryption key";
 
-        let public_key = PublicKey::read_from_bytes(&key.public_key)
-            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        let public_key = read_upstream::<PublicKey>(&key.public_key)?;
         let genesis_commitment =
             required(key.genesis_commitment, MESSAGE, "genesis commitment")?.try_into()?;
         TransactionEncryptionKey::from_parts(key.scheme, key.key_id, public_key, genesis_commitment)

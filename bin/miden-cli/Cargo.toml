@@ -26,6 +26,7 @@ testing = ["miden-client/testing"]
 miden-client              = { features = ["std", "tonic"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
 miden-debug               = { optional = true, workspace = true }
+miden-protocol            = { workspace = true }
 
 # External dependencies
 chrono             = { workspace = true }
@@ -44,7 +45,8 @@ tracing            = { workspace = true }
 tracing-subscriber = { default-features = true, workspace = true }
 
 [build-dependencies]
-miden-client = { features = ["std"], workspace = true }
+miden-client   = { features = ["std"], workspace = true }
+miden-protocol = { workspace = true }
 
 [dev-dependencies]
 anyhow                         = { workspace = true }

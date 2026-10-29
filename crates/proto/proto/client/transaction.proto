@@ -5,11 +5,15 @@ syntax = "proto3";
 package client.transaction;
 
 import "account.proto";
+import "block.proto";
 import "block_number.proto";
 import "note.proto";
+import "partial_blockchain.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
+import "client/note_update.proto";
+import "client/sync.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -159,4 +163,27 @@ message AccountStorageRequirements {
   }
 
   repeated SlotKeys slots = 1;
+}
+
+// An executed transaction with the notes that later transactions create from it.
+message TransactionResult {
+  // Upstream encoding of the executed transaction.
+  bytes executed_transaction = 1;
+  repeated ExpectedFutureNote future_notes = 2;
+}
+
+// The changes that a transaction gives to the store.
+message TransactionStoreUpdate {
+  // Upstream encoding of the executed transaction.
+  bytes executed_transaction = 1;
+  blockchain.BlockNumber submission_height = 2;
+  repeated ExpectedFutureNote future_notes = 3;
+  note_update.NoteUpdates note_updates = 4;
+  repeated sync.NoteTagRecord new_tags = 5;
+}
+
+// A reference block with a partial blockchain that is consistent with it.
+message ChainAnchor {
+  blockchain.BlockHeader header = 1;
+  blockchain.PartialBlockchain partial_blockchain = 2;
 }

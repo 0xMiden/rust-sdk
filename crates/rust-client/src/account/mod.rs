@@ -83,13 +83,6 @@ use miden_protocol::asset::AssetVault;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 pub use miden_protocol::errors::{AccountIdError, AddressError, NetworkIdError};
 use miden_protocol::{Felt, Word};
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 /// Display-only metadata for a faucet account, persisted in the client's settings store.
 ///
@@ -99,21 +92,6 @@ use miden_tx::utils::serde::{
 pub struct FaucetMetadata {
     pub symbol: String,
     pub decimals: u8,
-}
-
-impl Serializable for FaucetMetadata {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.symbol.write_into(target);
-        target.write_u8(self.decimals);
-    }
-}
-
-impl Deserializable for FaucetMetadata {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let symbol = String::read_from(source)?;
-        let decimals = source.read_u8()?;
-        Ok(Self { symbol, decimals })
-    }
 }
 
 /// Returns whether `err` is the node's answer that the account does not exist at the requested

@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+// Note update values. Field numbers are part of the encoded format, so a released number must keep
+// its meaning. Add fields, do not renumber or reuse them.
+package client.note_update;
+
+import "client/input_note.proto";
+import "client/output_note.proto";
+
+// What the store does with a note record of an update.
+enum NoteUpdateType {
+  // The type is absent. Decoding rejects a value with this type.
+  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
+  // The note is new.
+  NOTE_UPDATE_TYPE_INSERT = 1;
+  // The note is tracked and changes.
+  NOTE_UPDATE_TYPE_UPDATE = 2;
+  // An expected note that the chain committed.
+  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 3;
+}
+
+message InputNoteUpdate {
+  input_note.InputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+message OutputNoteUpdate {
+  output_note.OutputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+// The note changes that a sync or a transaction gives to the store.
+message NoteUpdates {
+  repeated InputNoteUpdate input_notes = 1;
+  repeated OutputNoteUpdate output_notes = 2;
+}

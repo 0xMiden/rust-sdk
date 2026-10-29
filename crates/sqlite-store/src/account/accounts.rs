@@ -104,7 +104,7 @@ impl SqliteStore {
         Ok(query_historical_account_headers(
             conn,
             "account_commitment = ?",
-            params![account_commitment.to_bytes()],
+            params![account_commitment.as_bytes()],
         )?
         .pop()
         .map(|(header, _)| header))
@@ -206,7 +206,7 @@ impl SqliteStore {
         conn: &mut Connection,
         account_ids: Vec<AccountId>,
     ) -> Result<BTreeMap<AccountId, AccountCode>, StoreError> {
-        let account_id_list = blob_array(account_ids);
+        let account_id_list = blob_array(account_ids.into_iter().map(|id| id.to_bytes()));
         const QUERY: &str = "
             SELECT account_id, code
             FROM foreign_account_code JOIN account_code ON foreign_account_code.code_commitment = account_code.commitment
@@ -391,7 +391,7 @@ impl SqliteStore {
             const QUERY: &str =
                 insert_sql!(foreign_account_code { account_id, code_commitment } | REPLACE);
 
-            tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().to_bytes()])
+            tx.execute(QUERY, params![account_id.to_bytes(), code.commitment().as_bytes()])
                 .into_store_error()?;
 
             Ok(())
@@ -440,7 +440,7 @@ impl SqliteStore {
         const QUERY: &str = insert_sql!(account_code { commitment, code } | IGNORE);
         tx.execute(
             QUERY,
-            params![account_code.commitment().to_bytes(), proto::encode(account_code)],
+            params![account_code.commitment().as_bytes(), proto::encode(account_code)],
         )
         .into_store_error()?;
         Ok(())
@@ -660,7 +660,7 @@ impl SqliteStore {
         }
 
         let commitment_params =
-            blob_array(discarded_states.iter().map(|(_, commitment)| commitment));
+            blob_array(discarded_states.iter().map(|(_, commitment)| commitment.as_bytes()));
 
         // Resolve (account_id, nonce) pairs from both latest and historical headers, and group the
         // nonces by account. The most recent discarded state is in latest, older ones are in
@@ -1022,7 +1022,7 @@ impl SqliteStore {
         // shouldn't lock the account.
         const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
         let account_id_bytes = account_id.to_bytes();
-        let digest_bytes = mismatched_digest.to_bytes();
+        let digest_bytes = mismatched_digest.as_bytes();
         let params = named_params! {
             ":account_id": account_id_bytes,
             ":digest": digest_bytes
@@ -1053,12 +1053,12 @@ impl SqliteStore {
         watched: bool,
     ) -> Result<(), StoreError> {
         let id = new_header.id().to_bytes();
-        let code_commitment = new_header.code_commitment().to_bytes();
-        let storage_commitment = new_header.storage_commitment().to_bytes();
-        let vault_root = new_header.vault_root().to_bytes();
+        let code_commitment = new_header.code_commitment().as_bytes();
+        let storage_commitment = new_header.storage_commitment().as_bytes();
+        let vault_root = new_header.vault_root().as_bytes();
         let nonce = u64_to_value(new_header.nonce().as_canonical_u64());
-        let commitment = new_header.to_commitment().to_bytes();
-        let account_seed = account_seed.map(|seed| seed.to_bytes());
+        let commitment = new_header.to_commitment().as_bytes();
+        let account_seed = account_seed.map(|seed| seed.as_bytes());
 
         const LATEST_QUERY: &str = insert_sql!(
             latest_account_headers {
@@ -1139,11 +1139,11 @@ impl SqliteStore {
 
         // Archive the old header to historical.
         let old_id = old_header.id().to_bytes();
-        let old_code_commitment = old_header.code_commitment().to_bytes();
-        let old_storage_commitment = old_header.storage_commitment().to_bytes();
-        let old_vault_root = old_header.vault_root().to_bytes();
+        let old_code_commitment = old_header.code_commitment().as_bytes();
+        let old_storage_commitment = old_header.storage_commitment().as_bytes();
+        let old_vault_root = old_header.vault_root().as_bytes();
         let old_nonce = u64_to_value(old_header.nonce().as_canonical_u64());
-        let old_commitment = old_header.to_commitment().to_bytes();
+        let old_commitment = old_header.to_commitment().as_bytes();
         let replaced_at_nonce = u64_to_value(new_header.nonce().as_canonical_u64());
 
         const HISTORICAL_QUERY: &str = insert_sql!(

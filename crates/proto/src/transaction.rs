@@ -2,7 +2,11 @@ use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
+#[cfg(feature = "client")]
+use miden_client::transaction::{ChainAnchor, ChainAnchorError, TransactionResult};
 use miden_client_core::rpc::domain::account::AccountStorageRequirements;
+use miden_client_core::store::NoteUpdates;
+use miden_client_core::sync::NoteTagRecord;
 use miden_client_core::transaction::{
     DiscardCause,
     ForeignAccount,
@@ -12,18 +16,26 @@ use miden_client_core::transaction::{
     TransactionRequestBuilder,
     TransactionScriptTemplate,
     TransactionStatus,
+    TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
+#[cfg(feature = "client")]
+use miden_protocol::MAX_INPUT_NOTES_PER_TX;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
+#[cfg(feature = "client")]
+use miden_protocol::block::BlockHeader;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
+#[cfg(feature = "client")]
+use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, required};
+use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;
@@ -182,13 +194,7 @@ impl ProtobufValue for TransactionRequest {
             explicit_input_notes: self.explicit_input_notes().values().map(Into::into).collect(),
             script_template: self.script_template().as_ref().map(Into::into),
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
-            expected_future_notes: self
-                .expected_future_notes()
-                .map(|(details, tag)| proto::ExpectedFutureNote {
-                    details: Some(details.into()),
-                    tag: (*tag).into(),
-                })
-                .collect(),
+            expected_future_notes: self.expected_future_notes().map(encode_future_note).collect(),
             advice_map: Some(self.advice_map().into()),
             merkle_store: Some(self.merkle_store().into()),
             foreign_accounts: self.foreign_accounts().values().map(Into::into).collect(),
@@ -244,15 +250,7 @@ fn decode_transaction_request_v1(
         .collect::<Result<Vec<NoteRecipient>, _>>()?;
     let (custom_script, own_output_notes) =
         decode_script_template(request.script_template, &expected_output_recipients)?;
-    let expected_future_notes = request
-        .expected_future_notes
-        .into_iter()
-        .map(|note| {
-            let details =
-                required(note.details, "expected future note", "details")?.decode_and_verify()?;
-            Ok((details, NoteTag::from(note.tag)))
-        })
-        .collect::<Result<Vec<(NoteDetails, NoteTag)>, ProtoDecodeError>>()?;
+    let expected_future_notes = decode_future_notes(request.expected_future_notes)?;
     let advice_map: AdviceMap =
         required(request.advice_map, MESSAGE, "advice map")?.decode_and_verify()?;
     let merkle_store: MerkleStore =
@@ -565,6 +563,119 @@ impl TryFrom<proto::AccountStorageRequirements> for AccountStorageRequirements {
     }
 }
 
+// TRANSACTION RESULT
+// ================================================================================================
+
+fn encode_future_note((details, tag): &(NoteDetails, NoteTag)) -> proto::ExpectedFutureNote {
+    proto::ExpectedFutureNote {
+        details: Some(details.into()),
+        tag: (*tag).into(),
+    }
+}
+
+fn decode_future_notes(
+    notes: Vec<proto::ExpectedFutureNote>,
+) -> Result<Vec<(NoteDetails, NoteTag)>, ProtoDecodeError> {
+    notes
+        .into_iter()
+        .map(|note| {
+            let details =
+                required(note.details, "expected future note", "details")?.decode_and_verify()?;
+            Ok((details, NoteTag::from(note.tag)))
+        })
+        .collect()
+}
+
+#[cfg(feature = "client")]
+impl ProtobufValue for TransactionResult {
+    type Message = proto::TransactionResult;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            executed_transaction: self.executed_transaction().to_bytes(),
+            future_notes: self.future_notes().iter().map(encode_future_note).collect(),
+        }
+    }
+
+    fn from_proto(result: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(TransactionResult::new(
+            read_upstream(&result.executed_transaction)?,
+            decode_future_notes(result.future_notes)?,
+        ))
+    }
+}
+
+impl ProtobufValue for TransactionStoreUpdate {
+    type Message = proto::TransactionStoreUpdate;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            executed_transaction: self.executed_transaction().to_bytes(),
+            submission_height: Some(self.submission_height().into()),
+            future_notes: self.future_notes().iter().map(encode_future_note).collect(),
+            note_updates: Some(self.note_updates().to_proto()),
+            new_tags: self.new_tags().iter().map(ProtobufValue::to_proto).collect(),
+        }
+    }
+
+    fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "transaction store update";
+
+        Ok(TransactionStoreUpdate::new(
+            read_upstream(&update.executed_transaction)?,
+            required(update.submission_height, MESSAGE, "submission height")?
+                .decode_and_verify()?,
+            NoteUpdates::from_proto(required(update.note_updates, MESSAGE, "note updates")?)?,
+            decode_future_notes(update.future_notes)?,
+            update
+                .new_tags
+                .into_iter()
+                .map(NoteTagRecord::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+}
+
+// CHAIN ANCHOR
+// ================================================================================================
+
+#[cfg(feature = "client")]
+impl ProtobufValue for ChainAnchor {
+    type Message = proto::ChainAnchor;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            header: Some(self.header().to_proto()),
+            partial_blockchain: Some(self.partial_blockchain().into()),
+        }
+    }
+
+    /// Builds the partial blockchain with the checks of [`PartialBlockchain::new`], then checks it
+    /// against the header with [`ChainAnchor::new`]. The header itself is not authenticated.
+    fn from_proto(anchor: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "chain anchor";
+
+        let header = BlockHeader::from_proto(required(anchor.header, MESSAGE, "header")?)?;
+        let chain = required(anchor.partial_blockchain, MESSAGE, "partial blockchain")?;
+
+        // `ChainAnchor::new` checks the count too, but only after the decoder verifies every block.
+        // An early check bounds the work that an oversized anchor causes.
+        if chain.block_headers.len() > MAX_INPUT_NOTES_PER_TX {
+            return Err(ProtoDecodeError::InvalidValue(
+                ChainAnchorError::TooManyTrackedBlocks {
+                    count: chain.block_headers.len(),
+                    max: MAX_INPUT_NOTES_PER_TX,
+                }
+                .to_string(),
+            ));
+        }
+        let chain: PartialBlockchain = chain.decode_and_build_unchecked()?;
+
+        ChainAnchor::new(header, chain)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec;
@@ -730,5 +841,86 @@ mod tests {
                     .into()
             })
             .collect()
+    }
+
+    // CHAIN ANCHOR
+    // --------------------------------------------------------------------------------------------
+
+    #[cfg(feature = "client")]
+    mod chain_anchor {
+        use std::vec::Vec;
+
+        use miden_client::transaction::ChainAnchor;
+        use miden_protocol::MAX_INPUT_NOTES_PER_TX;
+        use miden_protocol::block::BlockHeader;
+        use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};
+        use miden_protocol::transaction::PartialBlockchain;
+
+        use crate::{ProtoDecodeError, ProtobufValue, decode, encode};
+
+        /// Returns an anchor at block 8 whose partial blockchain tracks block 3.
+        fn anchor() -> ChainAnchor {
+            let mut mmr = Mmr::default();
+            let mut headers = Vec::new();
+            for block_num in 0..8u32 {
+                let header = BlockHeader::mock(block_num, None, None, &[]);
+                mmr.add(header.commitment()).unwrap();
+                headers.push(header);
+            }
+
+            let peaks = mmr.peaks();
+            let mut partial_mmr = PartialMmr::from_peaks(peaks.clone());
+            partial_mmr
+                .track(3, mmr.get(3).unwrap(), mmr.open(3).unwrap().merkle_path())
+                .unwrap();
+            let chain = PartialBlockchain::new(partial_mmr, vec![headers[3].clone()]).unwrap();
+            let header = BlockHeader::mock(8, Some(peaks.hash_peaks()), None, &[]);
+
+            ChainAnchor::new(header, chain).unwrap()
+        }
+
+        #[test]
+        fn chain_anchor_round_trips() {
+            let anchor = anchor();
+            assert_eq!(decode::<ChainAnchor>(&encode(&anchor)).unwrap(), anchor);
+        }
+
+        #[test]
+        fn chain_anchor_rejects_a_missing_partial_blockchain() {
+            let mut message = anchor().to_proto();
+            message.partial_blockchain = None;
+
+            assert!(matches!(
+                ChainAnchor::from_proto(message),
+                Err(ProtoDecodeError::MissingField { field: "partial blockchain", .. })
+            ));
+        }
+
+        /// `PartialBlockchain::new` panics on a tracked block that has no authentication path. The
+        /// decoder must return an error for it.
+        #[test]
+        fn chain_anchor_rejects_a_tracked_block_without_its_path() {
+            let mut message = anchor().to_proto();
+            let chain = message.partial_blockchain.as_mut().unwrap();
+            chain.mmr.as_mut().unwrap().tracked_leaves[0].path.clear();
+
+            assert!(matches!(
+                ChainAnchor::from_proto(message),
+                Err(ProtoDecodeError::Conversion(_))
+            ));
+        }
+
+        #[test]
+        fn chain_anchor_rejects_too_many_blocks_before_it_decodes_them() {
+            let mut message = anchor().to_proto();
+            let block = message.header.clone().unwrap();
+            message.partial_blockchain.as_mut().unwrap().block_headers =
+                vec![block; MAX_INPUT_NOTES_PER_TX + 1];
+
+            assert!(matches!(
+                ChainAnchor::from_proto(message),
+                Err(ProtoDecodeError::InvalidValue(_))
+            ));
+        }
     }
 }

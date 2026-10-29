@@ -19,7 +19,6 @@ use miden_protocol::asset::{Asset, AssetVault};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
 use crate::errors::RpcError;
@@ -467,20 +466,6 @@ impl AccountStorageRequirements {
     /// Returns the keys requested for a given slot, or an empty slice if none were specified.
     pub fn keys_for_slot(&self, slot_name: &StorageSlotName) -> &[StorageMapKey] {
         self.0.get(slot_name).map_or(&[], Vec::as_slice)
-    }
-}
-
-impl Serializable for AccountStorageRequirements {
-    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
-        target.write(&self.0);
-    }
-}
-
-impl Deserializable for AccountStorageRequirements {
-    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
-        Ok(AccountStorageRequirements(source.read()?))
     }
 }
 

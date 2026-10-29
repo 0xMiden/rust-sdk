@@ -15,7 +15,6 @@ use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
-    ChainAnchor,
     ChainAnchorError,
     DiscardCause,
     ForeignAccount,
@@ -32,7 +31,7 @@ use miden_client::transaction::{
     TransactionScript,
     TransactionStatus,
 };
-use miden_client::{ClientError, Deserializable, Serializable, async_trait};
+use miden_client::{ClientError, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
 use miden_protocol::account::{
     Account,
@@ -1078,10 +1077,6 @@ async fn chain_anchor_pins_execution_to_an_older_reference_block() {
     // reference block needs tracking.
     let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
     let anchor_block = anchor.block_num();
-
-    // The anchor round-trips through serialization, as it would inside a proposal payload.
-    let anchor = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
-    assert_eq!(anchor.block_num(), anchor_block);
 
     // Advance the chain past the anchor and sync, so the local tip no longer matches it.
     for _ in 0..3 {

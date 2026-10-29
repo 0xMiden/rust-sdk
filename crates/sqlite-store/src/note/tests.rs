@@ -11,7 +11,6 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::{Felt, ZERO};
 use miden_client_core::errors::StoreError;
 use miden_client_core::store::input_note_states::{
@@ -45,6 +44,7 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::TransactionId;
+use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::StandardNote;
 
 use crate::tests::create_test_store;
@@ -232,7 +232,7 @@ fn consumption_key(note: &InputNoteRecord) -> (u32, u32, Vec<u8>) {
     (
         note.state().consumed_block_height().expect("note is consumed").as_u32(),
         note.state().consumed_tx_order().expect("note has a consumption order"),
-        note.details_commitment().to_bytes(),
+        note.details_commitment().as_bytes().to_vec(),
     )
 }
 
@@ -984,18 +984,20 @@ fn unspent_states_classify_every_note_state() {
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    for discriminant in 0..=u8::MAX {
-        // The deserializer decides which bytes are real discriminants: an unused one hits the
-        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
-        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
-        // payload also reports `InvalidValue` would be skipped here instead of checked.
-        if matches!(
-            InputNoteState::read_from_bytes(&[discriminant]),
-            Err(DeserializationError::InvalidValue(_))
-        ) {
-            continue;
-        }
+    // A new state must be added to this list and to one of the two lists above.
+    const ALL_STATES: [u8; 9] = [
+        InputNoteState::STATE_EXPECTED,
+        InputNoteState::STATE_UNVERIFIED,
+        InputNoteState::STATE_COMMITTED,
+        InputNoteState::STATE_INVALID,
+        InputNoteState::STATE_PROCESSING_AUTHENTICATED,
+        InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
+        InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
+        InputNoteState::STATE_CONSUMED_EXTERNAL,
+    ];
 
+    for discriminant in ALL_STATES {
         assert!(
             InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),

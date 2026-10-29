@@ -64,7 +64,6 @@ use miden_client::transaction::{
     TransactionRequestError,
     TransactionStatus,
 };
-use miden_client::utils::{Deserializable, Serializable};
 use miden_client_core::store::{AccountStorageFilter, ClientAccountType};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::account::{
@@ -120,6 +119,7 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::RawOutputNote;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::AdviceInputs;
 use miden_protocol::{EMPTY_WORD, Felt, ONE, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;

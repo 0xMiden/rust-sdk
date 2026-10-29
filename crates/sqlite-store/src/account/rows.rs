@@ -22,7 +22,7 @@ use rusqlite::types::{ToSqlOutput, Value};
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, proto, text_array};
+use crate::{column_value_as_u64, proto, text_array, word_from_blob};
 
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,
@@ -38,7 +38,7 @@ pub(crate) struct SerializedHeaderData {
 pub(crate) fn parse_accounts(
     row: SerializedHeaderData,
 ) -> Result<(AccountHeader, AccountStatus), StoreError> {
-    let account_seed = row.account_seed.map(|seed| Word::read_from_bytes(&seed[..])).transpose()?;
+    let account_seed = row.account_seed.map(|seed| word_from_blob(&seed)).transpose()?;
 
     let status = match (account_seed, row.locked) {
         (seed, true) => AccountStatus::Locked { seed },
@@ -53,9 +53,9 @@ pub(crate) fn parse_accounts(
         AccountHeader::new(
             AccountId::read_from_bytes(&row.id)?,
             nonce,
-            Word::read_from_bytes(&row.vault_root)?,
-            Word::read_from_bytes(&row.storage_commitment)?,
-            Word::read_from_bytes(&row.code_commitment)?,
+            word_from_blob(&row.vault_root)?,
+            word_from_blob(&row.storage_commitment)?,
+            word_from_blob(&row.code_commitment)?,
         ),
         status,
     ))
@@ -140,7 +140,7 @@ pub(super) fn query_account_code(
 
     conn.prepare_cached(CODE_QUERY)
         .into_store_error()?
-        .query_row(params![commitment.to_bytes()], |row| row.get::<_, Vec<u8>>(0))
+        .query_row(params![commitment.as_bytes()], |row| row.get::<_, Vec<u8>>(0))
         .optional()
         .into_store_error()?
         .map(|bytes| Ok(proto::decode_unchecked::<AccountCode>(&bytes)?))
@@ -185,8 +185,8 @@ pub(crate) fn query_vault_assets(
         .into_store_error()?
         .map(|result| {
             let (asset_id_bytes, asset_bytes): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
-            let asset_id = AssetId::read_from_bytes(&asset_id_bytes)?;
-            let value_word = Word::read_from_bytes(&asset_bytes)?;
+            let asset_id = AssetId::try_from(word_from_blob(&asset_id_bytes)?)?;
+            let value_word = word_from_blob(&asset_bytes)?;
             Ok(Asset::from_id_and_value_words(asset_id.into(), value_word)?)
         })
         .collect::<Result<Vec<Asset>, StoreError>>()
@@ -261,8 +261,8 @@ pub(crate) fn query_storage_maps(
         let value: Vec<u8> = row.get("value").into_store_error()?;
         let slot_name = StorageSlotName::new(slot_name)
             .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-        let key = StorageMapKey::new(Word::read_from_bytes(&key)?);
-        let value = Word::read_from_bytes(&value)?;
+        let key = StorageMapKey::new(word_from_blob(&key)?);
+        let value = word_from_blob(&value)?;
         let map = maps.entry(slot_name).or_insert_with(StorageMap::new);
         map.insert(key, value)?;
     }
@@ -306,7 +306,7 @@ fn query_filtered_storage_values(
             format!("{BASE_QUERY} AND slot_name IN rarray(?2)")
         },
         AccountStorageFilter::Root(root) => {
-            values_params.push(ToSqlOutput::Owned(Value::Blob(root.to_bytes())));
+            values_params.push(ToSqlOutput::Owned(Value::Blob(root.as_bytes().to_vec())));
             format!("{BASE_QUERY} AND slot_value = ?2")
         },
     };
@@ -326,7 +326,7 @@ fn query_filtered_storage_values(
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
             let slot_type = StorageSlotType::try_from(slot_type)
                 .map_err(|err| StoreError::ParsingError(err.to_string()))?;
-            Ok((slot_name, (slot_type, Word::read_from_bytes(&value)?)))
+            Ok((slot_name, (slot_type, word_from_blob(&value)?)))
         })
         .collect()
 }

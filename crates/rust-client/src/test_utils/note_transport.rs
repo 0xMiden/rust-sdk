@@ -7,13 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 
 use crate::note_transport::{
@@ -50,6 +44,38 @@ impl MockNoteTransportNode {
             max_batch: None,
             proven_notes: BTreeMap::default(),
         }
+    }
+
+    /// Builds a mock from the state that [`Self::notes`], [`Self::nonce`] and
+    /// [`Self::next_sequence`] return. An encoder uses this to rebuild a mock that it encoded in
+    /// its own format. The batch cap and the proven notes are not part of that state.
+    pub fn from_parts(
+        notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
+        nonce: u64,
+        next_sequence: u64,
+    ) -> Self {
+        Self {
+            notes,
+            nonce,
+            next_sequence,
+            max_batch: None,
+            proven_notes: BTreeMap::default(),
+        }
+    }
+
+    /// Returns the stored notes of each tag with their cursors.
+    pub fn notes(&self) -> &BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>> {
+        &self.notes
+    }
+
+    /// Returns the nonce of the mock.
+    pub fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Returns the sequence number that the next stored note gets.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
     }
 
     /// Build a mock that caps each `get_notes` response at `max_batch` entries.
@@ -357,32 +383,5 @@ impl NoteTransportClient for FaultyNoteTransportApi {
             ));
         }
         Ok(self.inner.fetch_notes(tags, cursor))
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for MockNoteTransportNode {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.notes.write_into(target);
-        self.nonce.write_into(target);
-        self.next_sequence.write_into(target);
-    }
-}
-
-impl Deserializable for MockNoteTransportNode {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let notes = BTreeMap::<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>::read_from(source)?;
-        let nonce = u64::read_from(source)?;
-        let next_sequence = u64::read_from(source)?;
-
-        Ok(Self {
-            notes,
-            nonce,
-            next_sequence,
-            max_batch: None,
-            proven_notes: BTreeMap::default(),
-        })
     }
 }

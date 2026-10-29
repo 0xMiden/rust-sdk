@@ -1,13 +1,5 @@
 //! Defines the note transport types shared by the client and the store implementations.
 
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
-
 /// Note transport cursor
 ///
 /// Identifies a position in the note transport service's stored-note sequence.
@@ -31,17 +23,5 @@ impl NoteTransportCursor {
     /// Returns the nonce and sequence, or `None` for the initial cursor.
     pub fn parts(&self) -> Option<(u64, u64)> {
         self.0
-    }
-}
-
-impl Serializable for NoteTransportCursor {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.0.write_into(target);
-    }
-}
-
-impl Deserializable for NoteTransportCursor {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        Ok(Self(Option::<(u64, u64)>::read_from(source)?))
     }
 }

@@ -255,8 +255,8 @@ mod tests {
     use std::sync::Arc;
 
     use clap::Parser;
-    use miden_client::Serializable;
     use miden_client::assembly::{Assembler, DefaultSourceManager, Module, ModuleKind, Path};
+    use miden_protocol::utils::serde::Serializable;
 
     use super::{CliConfig, ExecCmd, explain_empty_transaction, load_tx_script_package};
     use crate::errors::CliError;

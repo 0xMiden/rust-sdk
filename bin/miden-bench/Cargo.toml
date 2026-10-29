@@ -22,11 +22,13 @@ miden-client                   = { features = ["std", "testing", "tonic"], path 
 miden-client-core              = { workspace = true }
 miden-client-integration-tests = { workspace = true }
 miden-client-sqlite-store      = { path = "../../crates/sqlite-store" }
+miden-objects                  = { workspace = true }
 
 # External dependencies
 anyhow      = { features = ["std"], workspace = true }
 clap        = { features = ["derive", "env"], workspace = true }
 comfy-table = { workspace = true }
+prost       = { workspace = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
 tokio       = { workspace = true }

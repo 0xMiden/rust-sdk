@@ -13,13 +13,13 @@ use miden_protocol::account::{
     StorageSlotContent,
     StorageSlotType,
 };
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{EMPTY_WORD, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::forest::ScopedAccountForest;
 use crate::sql_error::SqlResultExt;
-use crate::{SqliteStore, insert_sql, subst, u64_to_value};
+use crate::{SqliteStore, insert_sql, subst, u64_to_value, word_from_blob};
 
 impl SqliteStore {
     // READER METHODS
@@ -53,7 +53,7 @@ impl SqliteStore {
 
         for slot in account_storage {
             let slot_name_str = slot.name().to_string();
-            let slot_value_bytes = slot.value().to_bytes();
+            let slot_value_bytes = slot.value().as_bytes();
             let slot_type_val = slot.slot_type() as u8;
 
             latest_slot_stmt
@@ -71,8 +71,8 @@ impl SqliteStore {
                         .execute(params![
                             &account_id_bytes,
                             &slot_name_str,
-                            key.to_bytes(),
-                            value.to_bytes(),
+                            key.as_bytes(),
+                            value.as_bytes(),
                         ])
                         .into_store_error()?;
                 }
@@ -178,7 +178,7 @@ impl SqliteStore {
                     .execute(params![
                         &account_id_bytes,
                         &slot_name_str,
-                        value.to_bytes(),
+                        value.as_bytes(),
                         slot_type_val
                     ])
                     .into_store_error()?;
@@ -285,7 +285,7 @@ impl SqliteStore {
                     row.get::<_, Vec<u8>>("key")
                 })
                 .into_store_error()?;
-            rows.map(|row| Ok((Word::read_from_bytes(&row.into_store_error()?)?, EMPTY_WORD)))
+            rows.map(|row| Ok((word_from_blob(&row.into_store_error()?)?, EMPTY_WORD)))
                 .collect::<Result<_, StoreError>>()?
         };
         changed.extend(new_entries.iter().filter(|(_, value)| *value != EMPTY_WORD).copied());
@@ -317,7 +317,7 @@ impl SqliteStore {
         let mut read_stmt = tx.prepare_cached(READ_OLD_MAP_ENTRY).into_store_error()?;
         let mut delete_stmt = tx.prepare_cached(DELETE_LATEST_MAP_ENTRY).into_store_error()?;
         for (key, value) in changed_entries {
-            let key_bytes = key.to_bytes();
+            let key_bytes = key.as_bytes();
 
             // Read old map entry value from latest (NULL if entry is new)
             let old_entry_value: Option<Vec<u8>> = read_stmt
@@ -345,7 +345,7 @@ impl SqliteStore {
             } else {
                 latest_map_stmt
                     .execute(
-                        params![account_id_bytes, slot_name_str, &key_bytes, value.to_bytes(),],
+                        params![account_id_bytes, slot_name_str, &key_bytes, value.as_bytes(),],
                     )
                     .into_store_error()?;
             }

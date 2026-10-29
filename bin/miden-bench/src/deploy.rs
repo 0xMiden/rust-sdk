@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use miden_client::Client;
 use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
 use miden_client::account::standards::auth::{Approver, AuthSingleSig};
 use miden_client::account::standards::wallets::BasicWallet;
@@ -20,14 +21,13 @@ use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::testing::common::TestClient;
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client::{Client, Serializable};
 use rand::RngExt;
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 
 use crate::generators::{SlotDescriptor, generate_reader_component_code};
 use crate::masm::generate_expansion_component_code;
-use crate::report::format_size;
+use crate::report::{format_size, proven_transaction_size};
 
 /// Waits for the chain height to advance, ensuring transaction is in a block
 pub(crate) async fn wait_for_block_advancement(
@@ -161,7 +161,7 @@ pub async fn deploy_account(client: &mut TestClient, maps: usize) -> anyhow::Res
         let t = Instant::now();
         let proven_tx = client.prove_transaction(&tx_result).await?;
         let prove_elapsed = t.elapsed();
-        let tx_size = proven_tx.to_bytes().len();
+        let tx_size = proven_transaction_size(&proven_tx);
         println!("  Prove: {:.2?} (tx size: {})", prove_elapsed, format_size(tx_size));
 
         let t = Instant::now();

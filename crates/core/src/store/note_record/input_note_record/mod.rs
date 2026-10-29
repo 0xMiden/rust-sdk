@@ -15,13 +15,6 @@ use miden_protocol::note::{
     Nullifier,
 };
 use miden_protocol::transaction::{InputNote, TransactionId};
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::errors::NoteRecordError;
 
@@ -405,29 +398,6 @@ impl InputNoteRecord {
         } else {
             Ok(false)
         }
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for InputNoteRecord {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.details.write_into(target);
-        self.attachments.write_into(target);
-        self.created_at.write_into(target);
-        self.state.write_into(target);
-    }
-}
-
-impl Deserializable for InputNoteRecord {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let details = NoteDetails::read_from(source)?;
-        let attachments = NoteAttachments::read_from(source)?;
-        let created_at = Option::<u64>::read_from(source)?;
-        let state = InputNoteState::read_from(source)?;
-
-        Ok(InputNoteRecord { details, attachments, created_at, state })
     }
 }
 

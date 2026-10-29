@@ -20,15 +20,8 @@ use miden_protocol::note::{
     NoteInclusionProof,
     NoteTag,
 };
-use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    SliceReader,
-};
+use miden_tx::utils::serde::{Deserializable, SliceReader};
 
 pub use self::errors::NoteTransportError;
 use crate::note::{NoteFile, NoteSyncHint};
@@ -599,23 +592,6 @@ impl NoteInfo {
 
 // SERIALIZATION
 // ================================================================================================
-
-impl Serializable for NoteInfo {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.header.write_into(target);
-        self.details_bytes.write_into(target);
-        self.block_hint.write_into(target);
-    }
-}
-
-impl Deserializable for NoteInfo {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let header = NoteHeader::read_from(source)?;
-        let details_bytes = Vec::<u8>::read_from(source)?;
-        let block_hint = Option::<BlockNumber>::read_from(source)?;
-        Ok(NoteInfo { header, details_bytes, block_hint })
-    }
-}
 
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, NoteTransportError> {
     let mut reader = SliceReader::new(details_bytes);

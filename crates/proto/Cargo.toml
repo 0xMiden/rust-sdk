@@ -13,8 +13,15 @@ version.workspace      = true
 crate-type = ["lib"]
 doctest    = false
 
+[features]
+# Encodes the types that only miden-client defines, such as transaction results and chain anchors.
+client = ["dep:miden-client"]
+# Encodes the testing types of miden-client, such as the mock note transport node.
+testing = ["client", "miden-client/testing"]
+
 [dependencies]
 # Miden dependencies
+miden-client      = { optional = true, workspace = true }
 miden-client-core = { workspace = true }
 miden-objects     = { workspace = true }
 miden-protocol    = { workspace = true }

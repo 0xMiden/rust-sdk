@@ -4,8 +4,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use miden_tx::utils::serde::{Deserializable, Serializable};
-
 use super::Client;
 use crate::errors::ClientError;
 
@@ -21,26 +19,15 @@ impl<AUTH> Client<AUTH> {
     // SETTINGS ACCESSORS
     // --------------------------------------------------------------------------------------------
 
-    /// Sets a setting value in the store. It can then be retrieved using `get_setting`.
-    pub async fn set_setting<T: Serializable>(
-        &self,
-        key: String,
-        value: T,
-    ) -> Result<(), ClientError> {
-        self.store.set_setting(key, value.to_bytes()).await.map_err(Into::into)
+    /// Stores `value` under `key` in the user settings. It can then be retrieved using
+    /// `get_setting`. The caller chooses the encoding of `value`.
+    pub async fn set_setting(&self, key: String, value: Vec<u8>) -> Result<(), ClientError> {
+        self.store.set_setting(key, value).await.map_err(Into::into)
     }
 
     /// Retrieves the value for `key`, or `None` if it hasn’t been set.
-    pub async fn get_setting<T: Deserializable>(
-        &self,
-        key: String,
-    ) -> Result<Option<T>, ClientError> {
-        self.store
-            .get_setting(key)
-            .await
-            .map(|value| value.map(|value| Deserializable::read_from_bytes(&value)))?
-            .transpose()
-            .map_err(Into::into)
+    pub async fn get_setting(&self, key: String) -> Result<Option<Vec<u8>>, ClientError> {
+        self.store.get_setting(key).await.map_err(Into::into)
     }
 
     /// Deletes the setting value from the store. Returns `true` if `key` had a value set.

@@ -31,7 +31,6 @@ use miden_client::store::input_note_states::{
 };
 use miden_client::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
 use miden_client::transaction::TransactionId;
-use miden_client::utils::Serializable;
 use miden_client::{EMPTY_WORD, Felt, Word, ZERO};
 
 /// Notes consumed by a single transaction of the benchmarked account. Consumed notes are spread
@@ -108,7 +107,7 @@ pub fn consumption_key(note: &InputNoteRecord) -> (u32, u32, Vec<u8>) {
     (
         note.state().consumed_block_height().expect("note is consumed").as_u32(),
         note.state().consumed_tx_order().expect("note has a consumption order"),
-        note.details_commitment().to_bytes(),
+        note.details_commitment().as_bytes().to_vec(),
     )
 }
 

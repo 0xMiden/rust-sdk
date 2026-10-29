@@ -8,7 +8,7 @@ To use the Miden client library in a Rust project, include it as a dependency.
 In your project's `Cargo.toml`, add:
 
 ```toml
-miden-client = { version = "0.17", features = ["tonic"] }
+miden-client = { version = "0.18", features = ["tonic"] }
 ```
 
 The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
@@ -449,9 +449,15 @@ A request normally declares foreign accounts as `ForeignAccount::public` or `For
 `Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 
 ```rust
+use miden_client::rpc::domain::account::{
+    AccountFetch, StorageMapFetch, VaultFetch,
+};
 use miden_client::transaction::{ForeignAccount, TransactionRequestBuilder};
 
-let declarations = [ForeignAccount::public(foreign_account_id, storage_requirements)?];
+let fetch = AccountFetch::new()
+    .with_storage(StorageMapFetch::Slots(storage_requirements))
+    .with_vault(VaultFetch::Assets(asset_ids));
+let declarations = [ForeignAccount::public(foreign_account_id, fetch)?];
 let block_num = client.get_sync_height().await?;
 let inputs = client.get_foreign_account_inputs(declarations, block_num).await?;
 
@@ -462,5 +468,7 @@ let request = TransactionRequestBuilder::new()
 ```
 
 Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
+
+`GetAccountRequest::new(account_id).with_fetch(fetch)` builds an RPC request with the same `AccountFetch`. Pass the request to `NodeRpcClient::get_account(request)`. Both policies default to `Skip`, so a declaration without them fetches the account header, code, and witness only. Execution then reads each skipped map entry or asset through its own lookup, from the store for a tracked account and from the node otherwise. Set `VaultFetch::Always` or `VaultFetch::Assets` to carry the assets with the inputs instead.
 
 Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

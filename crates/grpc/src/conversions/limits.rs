@@ -44,6 +44,7 @@ impl TryFrom<proto::GetLimitsResponse> for RpcLimits {
             nullifiers_limit: get_param(&proto, RpcEndpoint::SyncNullifiers, "nullifier_prefix")?,
             account_ids_limit: get_param(&proto, RpcEndpoint::SyncTransactions, "account_id")?,
             note_tags_limit: get_param(&proto, RpcEndpoint::SyncNotes, "note_tag")?,
+            vault_assets_limit: get_param(&proto, RpcEndpoint::GetAccount, "vault_asset")?,
         })
     }
 }
@@ -78,6 +79,12 @@ mod tests {
             RpcEndpoint::SyncNotes.proto_name().into(),
             proto::EndpointLimits {
                 parameters: [(String::from("note_tag"), 1000)].into(),
+            },
+        );
+        proto.endpoints.insert(
+            RpcEndpoint::GetAccount.proto_name().into(),
+            proto::EndpointLimits {
+                parameters: [(String::from("vault_asset"), 64)].into(),
             },
         );
 

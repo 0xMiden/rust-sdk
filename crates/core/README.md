@@ -8,7 +8,7 @@ Core traits and types shared by the miden-client crates. This crate holds the co
 - The types in the `NodeRpcClient` signatures: the RPC request and response types in `rpc::domain`, `RpcEndpoint`, `AccountStateAt` and the transaction encryption types
 - The errors of these types, in the `errors` module
 - The RPC data that a store persists: RPC limits and the transaction encryption key
-- The note transport cursor
+- The note transport cursor and sync state
 
 Applications that use the client should depend on `miden-client`, which re-exports the types of its API. Depend on this crate to implement a store or an RPC client, or to use these contracts directly.
 
@@ -17,13 +17,13 @@ Applications that use the client should depend on `miden-client`, which re-expor
 Add to `Cargo.toml`:
 
 ```toml
-miden-client-core = { version = "0.17" }
+miden-client-core = { version = "0.18" }
 ```
 
 To use it in a `no_std` environment, turn off the default features:
 
 ```toml
-miden-client-core = { version = "0.17", default-features = false }
+miden-client-core = { version = "0.18", default-features = false }
 ```
 
 ## Features

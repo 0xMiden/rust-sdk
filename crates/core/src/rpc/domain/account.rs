@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
@@ -9,16 +9,21 @@ use miden_protocol::account::{
     AccountId,
     AccountStorage,
     AccountStorageHeader,
+    PartialAccount,
+    PartialStorage,
+    PartialStorageMap,
     StorageMap,
     StorageMapKey,
     StorageSlot,
+    StorageSlotHeader,
     StorageSlotName,
     StorageSlotType,
 };
-use miden_protocol::asset::{Asset, AssetVault};
+use miden_protocol::asset::{Asset, AssetId, AssetVault, PartialVault};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::SparseMerklePath;
 use miden_protocol::crypto::merkle::smt::PartialSmt;
+use miden_protocol::transaction::AccountInputs;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use thiserror::Error;
 
@@ -37,21 +42,119 @@ pub struct AccountDetails {
     pub vault_details: AccountVaultDetails,
 }
 
+impl TryFrom<AccountDetails> for PartialAccount {
+    type Error = RpcError;
+
+    /// Builds a partial account with the available vault and storage proofs.
+    ///
+    /// A map or vault that the node omitted or capped keeps its committed root. Reads fetch proofs
+    /// for that root during execution.
+    ///
+    /// # Errors
+    /// Returns an error if entries, assets, or proofs do not match the roots in the header, or if
+    /// the account requires a seed.
+    fn try_from(details: AccountDetails) -> Result<Self, Self::Error> {
+        let AccountDetails {
+            header,
+            storage_details,
+            code,
+            vault_details,
+        } = details;
+        let mut storage_maps = Vec::with_capacity(storage_details.map_details.len());
+        for map_details in storage_details.map_details {
+            let map = match map_details.entries {
+                StorageMapEntries::AllEntries(entries) => {
+                    let map = StorageMap::with_entries(
+                        entries.iter().map(|entry| (entry.key, entry.value)),
+                    )
+                    .map_err(|err| {
+                        RpcError::InvalidResponse(format!("invalid storage map entries: {err}"))
+                    })?;
+                    let slot_root = storage_details
+                        .header
+                        .slots()
+                        .find(|slot| *slot.name() == map_details.slot_name)
+                        .map(StorageSlotHeader::value);
+                    if Some(map.root()) != slot_root {
+                        return Err(RpcError::InvalidResponse(format!(
+                            "storage map entries for slot '{}' do not match the slot root",
+                            map_details.slot_name
+                        )));
+                    }
+                    PartialStorageMap::new_full(map)
+                },
+                StorageMapEntries::PartialMap { map_keys, partial_smt } => {
+                    PartialStorageMap::try_from_parts(partial_smt, map_keys).map_err(|err| {
+                        RpcError::InvalidResponse(format!("invalid storage map proof: {err}"))
+                    })?
+                },
+                StorageMapEntries::LimitExceeded => continue,
+            };
+            storage_maps.push(map);
+        }
+        let vault = match vault_details {
+            AccountVaultDetails::Assets(assets) => {
+                let vault = AssetVault::new(&assets).map_err(|err| {
+                    RpcError::InvalidResponse(format!("invalid asset list: {err}"))
+                })?;
+                if vault.root() == header.vault_root() {
+                    PartialVault::new_full(vault)
+                } else if assets.is_empty() {
+                    // The node sends no assets when the request skips the vault or sends its
+                    // current root.
+                    PartialVault::new(header.vault_root())
+                } else {
+                    return Err(RpcError::InvalidResponse(
+                        "asset list does not match the vault root".into(),
+                    ));
+                }
+            },
+            AccountVaultDetails::Partial(vault) => {
+                if vault.root() != header.vault_root() {
+                    return Err(RpcError::InvalidResponse(
+                        "vault proofs do not match the vault root".into(),
+                    ));
+                }
+                vault
+            },
+            AccountVaultDetails::TooManyAssets => PartialVault::new(header.vault_root()),
+        };
+        let storage = PartialStorage::new(storage_details.header, storage_maps)
+            .map_err(|err| RpcError::InvalidResponse(format!("invalid partial storage: {err}")))?;
+        let account = PartialAccount::new(header.id(), header.nonce(), code, storage, vault, None)
+            .map_err(|err| RpcError::InvalidResponse(format!("invalid partial account: {err}")))?;
+        if account.to_commitment() != header.to_commitment() {
+            return Err(RpcError::InvalidResponse(
+                "partial account does not match its header".into(),
+            ));
+        }
+        Ok(account)
+    }
+}
+
 impl TryFrom<&AccountDetails> for Account {
     type Error = RpcError;
 
     /// Builds an [`Account`] from [`AccountDetails`].
     ///
     /// This conversion fails if the account details are incomplete, i.e., when the account's
-    /// storage maps or vault exceed the node's size threshold, or when only specific map keys were
-    /// requested. It also fails if the rebuilt account does not commit to the same value as the
-    /// account header in the details.
+    /// storage maps or vault exceed the node's size threshold, or when only specific map keys or
+    /// vault assets were requested. It also fails if the rebuilt account does not commit to the
+    /// same value as the account header in the details.
     fn try_from(details: &AccountDetails) -> Result<Self, Self::Error> {
-        if details.vault_details.too_many_assets {
-            return Err(RpcError::ExpectedDataMissing(
-                "cannot build account: vault has too many assets".into(),
-            ));
-        }
+        let assets = match &details.vault_details {
+            AccountVaultDetails::Assets(assets) => assets,
+            AccountVaultDetails::TooManyAssets => {
+                return Err(RpcError::ExpectedDataMissing(
+                    "cannot build account: vault has too many assets".into(),
+                ));
+            },
+            AccountVaultDetails::Partial(_) => {
+                return Err(RpcError::ExpectedDataMissing(
+                    "cannot build account: only specific vault assets were requested".into(),
+                ));
+            },
+        };
 
         if let Some(slot_name) = details
             .storage_details
@@ -108,7 +211,7 @@ impl TryFrom<&AccountDetails> for Account {
             }
         }
 
-        let asset_vault = AssetVault::new(&details.vault_details.assets).map_err(|err| {
+        let asset_vault = AssetVault::new(assets).map_err(|err| {
             RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
         })?;
 
@@ -170,16 +273,18 @@ impl AccountStorageDetails {
     /// # Errors
     /// - If a partial map does not cover a key that was requested for its slot.
     /// - If a partial map covers a key that was not requested.
-    pub fn validate_against_request(
-        &self,
-        storage_requirements: &AccountStorageRequirements,
-    ) -> Result<(), RpcError> {
+    pub fn validate_against_request(&self, storage: &StorageMapFetch) -> Result<(), RpcError> {
         for map_detail in &self.map_details {
             let StorageMapEntries::PartialMap { map_keys, .. } = &map_detail.entries else {
                 continue;
             };
 
-            let requested_keys = storage_requirements.keys_for_slot(&map_detail.slot_name);
+            let requested_keys = match storage {
+                StorageMapFetch::Slots(requirements) => {
+                    requirements.keys_for_slot(&map_detail.slot_name)
+                },
+                StorageMapFetch::Skip | StorageMapFetch::All => &[],
+            };
             if let Some(key) = requested_keys.iter().find(|key| !map_keys.contains(key)) {
                 return Err(RpcError::InvalidResponse(format!(
                     "partial storage map for slot '{}' does not cover requested key {}",
@@ -279,13 +384,46 @@ impl StorageMapEntries {
 // ACCOUNT VAULT DETAILS
 // ================================================================================================
 
+/// The vault data that a `/GetAccount` response carries for an account. The variants are mutually
+/// exclusive.
 #[derive(Clone, Debug)]
-pub struct AccountVaultDetails {
-    /// A flag that is set to true if the account contains too many assets. This indicates to the
-    /// user that `SyncAccountVault` endpoint should be used to retrieve the account's assets
-    pub too_many_assets: bool,
-    /// When `too_many_assets` == false, this will contain the list of assets in the account's vault
-    pub assets: Vec<Asset>,
+pub enum AccountVaultDetails {
+    /// The vault has more assets than the node returns in a single response. No assets are carried.
+    /// Fetch them with [`crate::rpc::NodeRpcClient::sync_account_vault`].
+    TooManyAssets,
+    /// The assets in the account's vault.
+    ///
+    /// The list is empty if the request skips the vault, or if the vault root is equal to the
+    /// commitment in [`VaultFetch::IfChangedFrom`]. Thus, an empty list does not show that the
+    /// vault is empty.
+    Assets(Vec<Asset>),
+    /// Proofs for the assets requested with [`VaultFetch::Assets`]. The proofs also cover requested
+    /// assets that are not in the vault.
+    Partial(PartialVault),
+}
+
+impl AccountVaultDetails {
+    /// Returns `true` if the vault has more assets than the node returns in a single response.
+    pub fn is_too_many_assets(&self) -> bool {
+        matches!(self, Self::TooManyAssets)
+    }
+
+    /// Returns the asset list, or `None` for every variant other than [`Assets`](Self::Assets).
+    pub fn assets(&self) -> Option<&[Asset]> {
+        match self {
+            Self::Assets(assets) => Some(assets),
+            Self::TooManyAssets | Self::Partial(_) => None,
+        }
+    }
+
+    /// Converts the details into the vault proofs, or returns `None` for every variant other than
+    /// [`Partial`](Self::Partial).
+    pub fn into_partial_vault(self) -> Option<PartialVault> {
+        match self {
+            Self::Partial(partial_vault) => Some(partial_vault),
+            Self::TooManyAssets | Self::Assets(_) => None,
+        }
+    }
 }
 
 // ACCOUNT PROOF
@@ -301,6 +439,17 @@ pub struct AccountProof {
 }
 
 impl AccountProof {
+    /// Converts public account details and their witness into execution inputs.
+    ///
+    /// # Errors
+    /// Returns an error if account details are absent or cannot form a partial account.
+    pub fn into_account_inputs(self) -> Result<AccountInputs, RpcError> {
+        let (witness, details) = self.into_parts();
+        let details = details
+            .ok_or_else(|| RpcError::ExpectedDataMissing("public account details".into()))?;
+        Ok(AccountInputs::new(details.try_into()?, witness))
+    }
+
     /// Creates a new [`AccountProof`].
     pub fn new(
         account_witness: AccountWitness,
@@ -488,7 +637,7 @@ impl Deserializable for AccountStorageRequirements {
 // ================================================================================================
 
 /// Controls whether vault data is included in a `/GetAccount` response.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum VaultFetch {
     /// Do not include vault data in the response.
     #[default]
@@ -500,6 +649,13 @@ pub enum VaultFetch {
     /// An omitted asset list is byte-identical to a genuinely empty vault, so callers must keep the
     /// vault whose root they send and verify any reconstruction against the header's vault root.
     IfChangedFrom(Word),
+    /// Include proofs for these assets only, in [`AccountVaultDetails::Partial`]. The node proves
+    /// an asset that is not in the vault as absent.
+    ///
+    /// The node accepts at most
+    /// [`RpcLimits::vault_assets_limit`](crate::rpc::RpcLimits::vault_assets_limit) assets in a
+    /// single request.
+    Assets(BTreeSet<AssetId>),
 }
 
 /// Which storage map entries to include in a `/GetAccount` response.
@@ -507,7 +663,7 @@ pub enum VaultFetch {
 /// Mirrors the node's `AccountDetailRequest` storage request: the storage header (slot roots) is
 /// always returned; this only controls which map *entries* come with it. The variants are mutually
 /// exclusive.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum StorageMapFetch {
     /// Don't request any map entries; only the storage header is returned.
     #[default]
@@ -521,38 +677,80 @@ pub enum StorageMapFetch {
     Slots(AccountStorageRequirements),
 }
 
-/// Parameters for [`crate::rpc::NodeRpcClient::get_account`].
-#[derive(Clone, Debug, Default)]
-pub struct GetAccountRequest {
-    /// Which storage map entries to include in the response.
-    pub storage: StorageMapFetch,
-    /// Block at which to retrieve the proof.
-    pub at: AccountStateAt,
-    /// Code commitment the client already has. When the on-chain commitment matches, the node skips
-    /// re-sending the code.
-    pub known_code: Option<AccountCode>,
-    /// Vault data retrieval policy.
-    pub vault: VaultFetch,
+/// Storage map entries and vault data to fetch for an account.
+///
+/// Both policies default to `Skip`. A transaction reads skipped entries and assets during
+/// execution, one lookup at a time, from the store or from the node.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountFetch {
+    storage: StorageMapFetch,
+    vault: VaultFetch,
 }
 
-impl GetAccountRequest {
-    /// Creates a request for the minimal account data: the account commitment and storage header at
-    /// the chain tip, with no map entries, no known code, and no vault data. Opt into additional
-    /// data with the builder methods.
+impl AccountFetch {
+    /// Creates a fetch policy that skips storage map entries and vault data.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            storage: StorageMapFetch::Skip,
-            at: AccountStateAt::ChainTip,
-            known_code: None,
-            vault: VaultFetch::Skip,
-        }
+        Self::default()
     }
 
-    /// Sets which storage map entries to include in the response.
+    /// Sets which storage map entries to fetch.
     #[must_use]
     pub fn with_storage(mut self, storage: StorageMapFetch) -> Self {
         self.storage = storage;
+        self
+    }
+
+    /// Sets which vault data to fetch.
+    #[must_use]
+    pub fn with_vault(mut self, vault: VaultFetch) -> Self {
+        self.vault = vault;
+        self
+    }
+
+    /// Returns the storage map fetch policy.
+    pub fn storage(&self) -> &StorageMapFetch {
+        &self.storage
+    }
+
+    /// Returns the vault fetch policy.
+    pub fn vault(&self) -> &VaultFetch {
+        &self.vault
+    }
+}
+
+/// Parameters for [`crate::rpc::NodeRpcClient::get_account`].
+///
+/// The node returns details for public accounts only. For a private account, the response holds the
+/// witness alone, and `fetch` and `known_code` have no effect.
+#[derive(Clone, Debug)]
+pub struct GetAccountRequest {
+    /// Account to fetch.
+    pub account_id: AccountId,
+    /// Storage map entries and vault data to include in the response.
+    pub fetch: AccountFetch,
+    /// Block at which to retrieve the proof.
+    pub at: AccountStateAt,
+    /// Code the client already has. The node omits code with the same commitment.
+    pub known_code: Option<AccountCode>,
+}
+
+impl GetAccountRequest {
+    /// Creates a request at the chain tip with no map entries, known code, or vault data.
+    #[must_use]
+    pub fn new(account_id: AccountId) -> Self {
+        Self {
+            account_id,
+            fetch: AccountFetch::default(),
+            at: AccountStateAt::ChainTip,
+            known_code: None,
+        }
+    }
+
+    /// Sets the storage map entries and vault data to include in the response.
+    #[must_use]
+    pub fn with_fetch(mut self, fetch: AccountFetch) -> Self {
+        self.fetch = fetch;
         self
     }
 
@@ -568,13 +766,6 @@ impl GetAccountRequest {
     #[must_use]
     pub fn with_known_code(mut self, known_code: Option<AccountCode>) -> Self {
         self.known_code = known_code;
-        self
-    }
-
-    /// Sets the vault data retrieval policy.
-    #[must_use]
-    pub fn with_vault(mut self, vault: VaultFetch) -> Self {
-        self.vault = vault;
         self
     }
 }

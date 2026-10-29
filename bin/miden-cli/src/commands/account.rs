@@ -15,7 +15,7 @@ use miden_client::account::{
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
 use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
-use miden_client::rpc::domain::account::{GetAccountRequest, VaultFetch};
+use miden_client::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::vm::{Package, PackageExport};
@@ -497,7 +497,7 @@ async fn resolve_account_code<AUTH>(
     ));
 
     let (_, account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(account_id))
         .await
         .map_err(|err| {
             CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))
@@ -546,7 +546,10 @@ async fn load_partial_account<AUTH>(
     };
 
     let (block_number, mut account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new().with_vault(VaultFetch::Always))
+        .get_account(
+            GetAccountRequest::new(account_id)
+                .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
+        )
         .await
         .map_err(fetch_error)?;
 
@@ -561,7 +564,10 @@ async fn load_partial_account<AUTH>(
         "Account {account_id} is private and not tracked by the client",
     )))?;
 
-    let vault = AssetVault::new(&details.vault_details.assets)
+    let assets = details.vault_details.assets().ok_or(CliError::Input(format!(
+        "The node returned no asset list for account {account_id}",
+    )))?;
+    let vault = AssetVault::new(assets)
         .map_err(|err| CliError::Input(format!("Invalid vault for account {account_id}: {err}")))?;
     let storage = PartialStorage::new(details.storage_details.header, []).map_err(account_error)?;
 

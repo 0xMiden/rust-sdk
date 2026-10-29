@@ -10,7 +10,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::code_builder::CodeBuilder;
 
 use super::TransactionRequestError;
-use crate::rpc::domain::account::AccountStorageRequirements;
+use crate::rpc::domain::account::AccountFetch;
 
 // FPI SCRIPT
 // ================================================================================================
@@ -72,11 +72,9 @@ pub fn build_fpi_script(
 #[allow(clippy::large_enum_variant)]
 pub enum ForeignAccount {
     /// Account with public visibility whose state and code will be retrieved from the network at
-    /// execution time. Declaring it upfront lets you specify [`AccountStorageRequirements`] so the
-    /// correct storage map entries are fetched in a single RPC call. If not declared, the account
-    /// is lazily loaded with empty storage requirements, and any storage map accesses will trigger
-    /// additional RPC calls during execution.
-    Public(AccountId, AccountStorageRequirements),
+    /// execution time. [`AccountFetch`] selects storage map entries and vault assets to fetch in
+    /// one RPC call. Missing entries and assets are loaded during execution.
+    Public(AccountId, AccountFetch),
     /// Private account that requires a [`PartialAccount`] to be provided by the caller. An account
     /// witness will be retrieved from the network at execution time so that it can be used as
     /// inputs to the transaction kernel.
@@ -92,18 +90,16 @@ pub enum ForeignAccount {
 }
 
 impl ForeignAccount {
-    /// Creates a new [`ForeignAccount::Public`]. The account's components (code, storage header and
-    /// inclusion proof) will be retrieved at execution time, alongside particular storage slot maps
-    /// correspondent to keys passed in `indices`.
+    /// Creates a public foreign account declaration with a storage and vault fetch policy.
     pub fn public(
         account_id: AccountId,
-        storage_requirements: AccountStorageRequirements,
+        fetch: AccountFetch,
     ) -> Result<Self, TransactionRequestError> {
         if !account_id.is_public() {
             return Err(TransactionRequestError::InvalidForeignAccountId(account_id));
         }
 
-        Ok(Self::Public(account_id, storage_requirements))
+        Ok(Self::Public(account_id, fetch))
     }
 
     /// Creates a new [`ForeignAccount::Private`]. A proof of the account's inclusion will be
@@ -117,14 +113,11 @@ impl ForeignAccount {
         Ok(Self::Private(partial_account))
     }
 
-    pub fn storage_slot_requirements(&self) -> AccountStorageRequirements {
+    /// Returns the fetch policy of a public foreign account.
+    pub fn fetch(&self) -> Option<&AccountFetch> {
         match self {
-            ForeignAccount::Public(_, account_storage_requirements) => {
-                account_storage_requirements.clone()
-            },
-            ForeignAccount::Private(_) | ForeignAccount::Prefetched(_) => {
-                AccountStorageRequirements::default()
-            },
+            ForeignAccount::Public(_, fetch) => Some(fetch),
+            ForeignAccount::Private(_) | ForeignAccount::Prefetched(_) => None,
         }
     }
 

@@ -21,6 +21,7 @@ use crate::{insert_sql, subst};
 pub(crate) const RPC_LIMITS_KEY: &str = "rpc_limits";
 pub(crate) const TRANSACTION_ENCRYPTION_KEY_KEY: &str = "transaction_encryption_key";
 pub(crate) const NOTE_TRANSPORT_CURSORS_KEY: &str = "note_transport_cursors";
+pub(crate) const NOTE_TRANSPORT_SYNC_STATE_KEY: &str = "note_transport_sync_state";
 
 /// Returns the `client_config` key of the protocol configuration for `commitment`.
 pub(crate) fn protocol_config_key(commitment: Word) -> String {

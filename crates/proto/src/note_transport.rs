@@ -2,32 +2,32 @@
 
 use std::collections::BTreeMap;
 
-use miden_client_core::note_transport::NoteTransportCursor;
+use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
 use miden_protocol::note::NoteTag;
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
 
-impl ProtobufValue for NoteTransportCursor {
+impl ProtobufValue for Option<NoteTransportCursor> {
     type Message = proto::NoteTransportCursor;
 
     fn to_proto(&self) -> Self::Message {
         Self::Message {
-            position: self.parts().map(|(nonce, sequence)| {
+            position: self.map(|NoteTransportCursor { nonce, sequence }| {
                 proto::note_transport_cursor::Position { nonce, sequence }
             }),
         }
     }
 
     fn from_proto(cursor: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(match cursor.position {
-            Some(position) => NoteTransportCursor::from_parts(position.nonce, position.sequence),
-            None => NoteTransportCursor::init(),
-        })
+        Ok(cursor.position.map(|position| NoteTransportCursor {
+            nonce: position.nonce,
+            sequence: position.sequence,
+        }))
     }
 }
 
-impl ProtobufValue for BTreeMap<NoteTag, NoteTransportCursor> {
+impl ProtobufValue for BTreeMap<NoteTag, Option<NoteTransportCursor>> {
     type Message = proto::NoteTransportCursors;
 
     fn to_proto(&self) -> Self::Message {
@@ -48,8 +48,28 @@ impl ProtobufValue for BTreeMap<NoteTag, NoteTransportCursor> {
             .into_iter()
             .map(|entry| {
                 let cursor = required(entry.cursor, "note transport cursors entry", "cursor")?;
-                Ok((NoteTag::from(entry.tag), NoteTransportCursor::from_proto(cursor)?))
+                Ok((NoteTag::from(entry.tag), Option::<NoteTransportCursor>::from_proto(cursor)?))
             })
             .collect()
+    }
+}
+
+impl ProtobufValue for NoteTransportSyncState {
+    type Message = proto::NoteTransportSyncState;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            cursor: Some(Some(self.cursor).to_proto()),
+            covered_tags: self.covered_tags.iter().map(NoteTag::as_u32).collect(),
+        }
+    }
+
+    fn from_proto(state: Self::Message) -> Result<Self, ProtoDecodeError> {
+        let cursor = required(state.cursor, "note transport sync state", "cursor")?;
+        let cursor = Option::<NoteTransportCursor>::from_proto(cursor)?;
+        Ok(Self {
+            cursor: required(cursor, "note transport sync state", "cursor position")?,
+            covered_tags: state.covered_tags.into_iter().map(NoteTag::from).collect(),
+        })
     }
 }

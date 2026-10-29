@@ -2,7 +2,12 @@ use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
-use miden_client_core::rpc::domain::account::AccountStorageRequirements;
+use miden_client_core::rpc::domain::account::{
+    AccountFetch,
+    AccountStorageRequirements,
+    StorageMapFetch,
+    VaultFetch,
+};
 use miden_client_core::transaction::{
     DiscardCause,
     ForeignAccount,
@@ -473,9 +478,9 @@ impl From<&ForeignAccount> for proto::ForeignAccount {
         use proto::foreign_account::{Account, Prefetched, Public};
 
         let account = match account {
-            ForeignAccount::Public(account_id, storage_requirements) => Account::Public(Public {
+            ForeignAccount::Public(account_id, fetch) => Account::Public(Public {
                 account_id: Some(account_id.into()),
-                storage_requirements: Some(storage_requirements.into()),
+                fetch: Some(fetch.into()),
             }),
             ForeignAccount::Private(partial_account) => Account::Private(partial_account.into()),
             ForeignAccount::Prefetched(inputs) => Account::Prefetched(Prefetched {
@@ -499,8 +504,7 @@ impl TryFrom<proto::ForeignAccount> for ForeignAccount {
         let account = match required(account.account, MESSAGE, "variant")? {
             Account::Public(public) => ForeignAccount::public(
                 required(public.account_id, MESSAGE, "account id")?.decode_and_verify()?,
-                required(public.storage_requirements, MESSAGE, "storage requirements")?
-                    .try_into()?,
+                required(public.fetch, MESSAGE, "fetch")?.try_into()?,
             ),
             Account::Private(partial_account) => {
                 ForeignAccount::private(partial_account.decode_and_verify()?)
@@ -522,6 +526,58 @@ impl TryFrom<proto::ForeignAccount> for ForeignAccount {
         };
 
         account.map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
+impl From<&AccountFetch> for proto::AccountFetch {
+    fn from(fetch: &AccountFetch) -> Self {
+        use proto::account_fetch::{AllAssets, AllStorageMaps, AssetIds, Storage, Vault};
+
+        let storage = match fetch.storage() {
+            StorageMapFetch::Skip => None,
+            StorageMapFetch::All => Some(Storage::AllStorageMaps(AllStorageMaps {})),
+            StorageMapFetch::Slots(requirements) => Some(Storage::StorageMaps(requirements.into())),
+        };
+        let vault = match fetch.vault() {
+            VaultFetch::Skip => None,
+            VaultFetch::Always => Some(Vault::AllAssets(AllAssets {})),
+            VaultFetch::IfChangedFrom(root) => Some(Vault::IfChangedFrom((*root).into())),
+            VaultFetch::Assets(asset_ids) => Some(Vault::AssetIds(AssetIds {
+                asset_ids: asset_ids.iter().map(Into::into).collect(),
+            })),
+        };
+
+        Self { storage, vault }
+    }
+}
+
+impl TryFrom<proto::AccountFetch> for AccountFetch {
+    type Error = ProtoDecodeError;
+
+    fn try_from(fetch: proto::AccountFetch) -> Result<Self, Self::Error> {
+        use proto::account_fetch::{Storage, Vault};
+
+        let storage = match fetch.storage {
+            None => StorageMapFetch::Skip,
+            Some(Storage::AllStorageMaps(_)) => StorageMapFetch::All,
+            Some(Storage::StorageMaps(requirements)) => {
+                StorageMapFetch::Slots(requirements.try_into()?)
+            },
+        };
+        let vault = match fetch.vault {
+            None => VaultFetch::Skip,
+            Some(Vault::AllAssets(_)) => VaultFetch::Always,
+            Some(Vault::IfChangedFrom(root)) => VaultFetch::IfChangedFrom(root.try_into()?),
+            Some(Vault::AssetIds(asset_ids)) => VaultFetch::Assets(
+                asset_ids
+                    .asset_ids
+                    .into_iter()
+                    .map(DecodeMessageExt::decode_and_verify)
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+
+        Ok(AccountFetch::new().with_storage(storage).with_vault(vault))
     }
 }
 
@@ -602,8 +658,32 @@ mod tests {
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
 
-    use super::AccountStorageRequirements;
+    use super::{AccountFetch, AccountStorageRequirements, StorageMapFetch, VaultFetch, proto};
     use crate::{decode, encode};
+
+    #[test]
+    fn account_fetch_round_trips() {
+        let slot = StorageSlotName::new("miden::testing::map").unwrap();
+        let key = StorageMapKey::new(Word::from([1u32; 4]));
+        let storage = AccountStorageRequirements::new([(slot, &[key])]);
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let asset_id = FungibleAsset::new(faucet_id, 100).unwrap().id();
+
+        for storage in
+            [StorageMapFetch::Skip, StorageMapFetch::All, StorageMapFetch::Slots(storage)]
+        {
+            let fetch = AccountFetch::new().with_storage(storage);
+            for fetch in [
+                fetch.clone().with_vault(VaultFetch::Skip),
+                fetch.clone().with_vault(VaultFetch::Always),
+                fetch.clone().with_vault(VaultFetch::IfChangedFrom(Word::from([2u32; 4]))),
+                fetch.with_vault(VaultFetch::Assets([asset_id].into())),
+            ] {
+                let decoded = AccountFetch::try_from(proto::AccountFetch::from(&fetch)).unwrap();
+                assert_eq!(decoded, fetch);
+            }
+        }
+    }
 
     /// A request with a send notes template. Plain and explicit input notes are mixed, so the
     /// decoder must keep their order.
@@ -613,6 +693,7 @@ mod tests {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
         let mut rng = RandomCoin::new(Word::default());
         let mut notes = notes(8, &mut rng);
 
@@ -649,10 +730,14 @@ mod tests {
             .foreign_accounts([
                 ForeignAccount::public(
                     target_id,
-                    AccountStorageRequirements::new([(
-                        StorageSlotName::new("demo::storage_slot").unwrap(),
-                        &[StorageMapKey::new(Word::default())],
-                    )]),
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::Slots(AccountStorageRequirements::new([(
+                            StorageSlotName::new("demo::storage_slot").unwrap(),
+                            &[StorageMapKey::new(Word::default())],
+                        )])))
+                        .with_vault(VaultFetch::Assets(
+                            [FungibleAsset::new(faucet_id, 100).unwrap().id()].into(),
+                        )),
                 )
                 .unwrap(),
                 ForeignAccount::private(&private_account).unwrap(),

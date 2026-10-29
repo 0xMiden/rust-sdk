@@ -11,7 +11,7 @@ Protobuf schemas and conversions for the miden-client types.
 Add to `Cargo.toml`:
 
 ```toml
-miden-client-proto = { version = "0.17.0-rc.5" }
+miden-client-proto = { version = "0.18" }
 ```
 
 `decode` runs all checks on the value. `decode_unchecked` can skip the expensive checks, so use it only for bytes from a trusted source, such as a store that this crate wrote.

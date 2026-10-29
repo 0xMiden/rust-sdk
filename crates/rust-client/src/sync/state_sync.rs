@@ -1390,13 +1390,13 @@ impl StateSync {
 
             // For a public note, pair its fetched body with the inclusion proof and metadata from
             // the sync record (the single source of truth) to build the candidate record.
-            let public_note = note.details.take().map(|details| {
+            let public_note = note.take_details().map(|details| {
                 let state = UnverifiedNoteState {
-                    metadata: note.metadata,
-                    inclusion_proof: note.inclusion_proof.clone(),
+                    metadata: *note.metadata(),
+                    inclusion_proof: note.inclusion_proof().clone(),
                 }
                 .into();
-                InputNoteRecord::new(details, note.attachments.clone(), None, state)
+                InputNoteRecord::new(details, note.attachments().clone(), None, state)
             });
 
             let committed = note.into_committed_note();

@@ -20,13 +20,11 @@ use miden_protocol::account::{
     AccountId,
     AccountPatch,
     AccountStorage,
-    AccountStorageHeader,
     PartialAccount,
     PartialStorage,
     PartialStorageMap,
     StorageMapKey,
     StorageMapWitness,
-    StorageSlotHeader,
     StorageSlotName,
     StorageSlotType,
 };
@@ -36,15 +34,18 @@ use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::errors::AccountError;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Felt, Word};
-use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
+use rusqlite::{Connection, Transaction, named_params, params};
 
 use crate::account::rows::{
+    StoredAccountHeader,
     query_account_addresses,
     query_account_code,
     query_historical_account_headers,
+    query_latest_account_header,
     query_latest_account_headers,
+    query_storage_header,
     query_storage_slots,
-    query_storage_values,
+    query_storage_value,
     query_vault_assets,
 };
 use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
@@ -84,7 +85,7 @@ impl SqliteStore {
     ) -> Result<Vec<(AccountHeader, AccountStatus)>, StoreError> {
         Ok(query_latest_account_headers(conn, "1=1 ORDER BY id", params![])?
             .into_iter()
-            .map(|(header, status, _)| (header, status))
+            .map(|row| (row.header, row.status))
             .collect())
     }
 
@@ -92,9 +93,7 @@ impl SqliteStore {
         conn: &Connection,
         account_id: AccountId,
     ) -> Result<Option<(AccountHeader, AccountStatus)>, StoreError> {
-        Ok(query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?
-            .pop()
-            .map(|(header, status, _)| (header, status)))
+        Ok(query_latest_account_header(conn, account_id)?.map(|row| (row.header, row.status)))
     }
 
     pub(crate) fn get_account_header_by_commitment(
@@ -116,8 +115,8 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
         let tx = conn.transaction().into_store_error()?;
-        let Some((header, status, client_account_type)) =
-            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?.pop()
+        let Some(StoredAccountHeader { header, status, account_type }) =
+            query_latest_account_header(&tx, account_id)?
         else {
             return Ok(None);
         };
@@ -146,7 +145,7 @@ impl SqliteStore {
         );
 
         let account_data = AccountRecordData::Full(account);
-        Ok(Some(AccountRecord::new(account_data, status, client_account_type)))
+        Ok(Some(AccountRecord::new(account_data, status, account_type)))
     }
 
     /// Retrieves a minimal partial account record from one database snapshot.
@@ -155,8 +154,8 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
         let tx = conn.transaction().into_store_error()?;
-        let Some((header, status, client_account_type)) =
-            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?.pop()
+        let Some(StoredAccountHeader { header, status, account_type }) =
+            query_latest_account_header(&tx, account_id)?
         else {
             return Ok(None);
         };
@@ -164,24 +163,12 @@ impl SqliteStore {
         // Partial vault retrieval
         let partial_vault = PartialVault::new(header.vault_root());
 
-        // Partial storage retrieval
-        let mut storage_header = Vec::new();
-        let mut maps = vec![];
-
-        let storage_values = query_storage_values(&tx, account_id)?;
-
-        // Storage maps are always minimal here (just roots, no entries). New accounts that need
-        // full storage data are handled by the DataStore layer, which fetches the full account via
-        // `get_account()` when nonce == 0.
-        for (slot_name, (slot_type, value)) in storage_values {
-            storage_header.push(StorageSlotHeader::new(slot_name.clone(), slot_type, value));
-            if slot_type == StorageSlotType::Map {
-                maps.push(PartialStorageMap::new(value));
-            }
-        }
-        storage_header.sort_by_key(StorageSlotHeader::id);
-        let storage_header =
-            AccountStorageHeader::new(storage_header).map_err(StoreError::AccountError)?;
+        // Partial storage retrieval. Storage maps are always minimal here (just roots, no entries).
+        // New accounts that need full storage data are handled by the DataStore layer, which
+        // fetches the full account via `get_account()` when nonce == 0.
+        let storage_header = query_storage_header(&tx, account_id)?;
+        let maps: Vec<PartialStorageMap> =
+            storage_header.map_slot_roots().map(PartialStorageMap::new).collect();
         let partial_storage =
             PartialStorage::new(storage_header, maps).map_err(StoreError::AccountError)?;
 
@@ -199,7 +186,7 @@ impl SqliteStore {
             status.seed().copied(),
         )?;
         let account_record_data = AccountRecordData::Partial(partial_account);
-        Ok(Some(AccountRecord::new(account_record_data, status, client_account_type)))
+        Ok(Some(AccountRecord::new(account_record_data, status, account_type)))
     }
 
     pub fn get_foreign_account_code(
@@ -259,7 +246,7 @@ impl SqliteStore {
     ) -> Result<Option<(Asset, AssetWitness)>, StoreError> {
         // Begin the transaction first so the header and forest reads share one snapshot.
         let db_tx = conn.transaction().into_store_error()?;
-        let header = Self::require_latest_account_header(&db_tx, account_id)?;
+        let header = Self::require_latest_account_header(&db_tx, account_id)?.header;
         let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&db_tx))?;
 
         match smt_forest.get_asset_and_witness(account_id, header.vault_root(), asset_id) {
@@ -279,11 +266,9 @@ impl SqliteStore {
     ) -> Result<(Word, StorageMapWitness), StoreError> {
         // Begin the transaction first so the slot root and forest reads share one snapshot.
         let db_tx = conn.transaction().into_store_error()?;
-        let header = Self::require_latest_account_header(&db_tx, account_id)?;
+        let header = Self::require_latest_account_header(&db_tx, account_id)?.header;
 
-        let mut storage_values = query_storage_values(&db_tx, account_id)?;
-        let (slot_type, map_root) = storage_values
-            .remove(&slot_name)
+        let (slot_type, map_root) = query_storage_value(&db_tx, account_id, &slot_name)?
             .ok_or(StoreError::AccountStorageRootNotFound(header.storage_commitment()))?;
         if slot_type != StorageSlotType::Map {
             return Err(StoreError::AccountError(AccountError::StorageSlotNotMap(slot_name)));
@@ -327,15 +312,11 @@ impl SqliteStore {
         account_id: AccountId,
     ) -> Result<Option<AccountCode>, StoreError> {
         let tx = conn.transaction().into_store_error()?;
-        let Some((header, ..)) =
-            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?
-                .into_iter()
-                .next()
-        else {
+        let Some(row) = query_latest_account_header(&tx, account_id)? else {
             return Ok(None);
         };
 
-        let code = query_account_code(&tx, header.code_commitment())?;
+        let code = query_account_code(&tx, row.header.code_commitment())?;
         tx.commit().into_store_error()?;
         Ok(code)
     }
@@ -347,7 +328,7 @@ impl SqliteStore {
         conn: &mut Connection,
         account: &Account,
         initial_address: &Address,
-        client_account_type: ClientAccountType,
+        account_type: ClientAccountType,
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
@@ -356,7 +337,7 @@ impl SqliteStore {
             let account_id = account.id();
             Self::insert_storage_slots(tx, account_id, account.storage().slots().iter())?;
             Self::insert_assets(tx, account_id, account.vault().assets())?;
-            let watched = matches!(client_account_type, ClientAccountType::Watched);
+            let watched = matches!(account_type, ClientAccountType::Watched);
             Self::insert_new_account_header(tx, &account.into(), account.seed(), watched)?;
             Self::insert_address_tx(tx, initial_address, account.id())?;
 
@@ -462,12 +443,12 @@ impl SqliteStore {
         // would silently create partial state from empty trees), and stale or replayed patches
         // whose initial state does not match the stored latest state (they would overwrite newer
         // state and archive incorrect history).
-        let stored_header = Self::require_latest_account_header(tx, account_id)?;
-        if stored_header.to_commitment() != init_account_state.to_commitment() {
+        let stored = Self::require_latest_account_header(tx, account_id)?;
+        if stored.header.to_commitment() != init_account_state.to_commitment() {
             return Err(StoreError::DatabaseError(format!(
                 "apply_account_patch: stored state {} for account {} does not match the patch's \
                  initial state {}",
-                stored_header.to_commitment(),
+                stored.header.to_commitment(),
                 account_id,
                 init_account_state.to_commitment(),
             )));
@@ -502,7 +483,7 @@ impl SqliteStore {
         }
 
         // Archive old header and insert the new one
-        Self::replace_account_header(tx, final_account_state, init_account_state, None)?;
+        Self::replace_account_header(tx, final_account_state, &stored, None)?;
 
         Self::apply_account_vault_patch(tx, account_id, final_account_state, patch.vault())?;
 
@@ -584,17 +565,7 @@ impl SqliteStore {
         account_id: AccountId,
         expected: Word,
     ) -> Result<(), StoreError> {
-        let mut slot_headers: Vec<StorageSlotHeader> = query_storage_values(tx, account_id)?
-            .into_iter()
-            .map(|(slot_name, (slot_type, value))| {
-                StorageSlotHeader::new(slot_name, slot_type, value)
-            })
-            .collect();
-        slot_headers.sort_by_key(StorageSlotHeader::id);
-
-        let actual = AccountStorageHeader::new(slot_headers)
-            .map_err(StoreError::AccountError)?
-            .to_commitment();
+        let actual = query_storage_header(tx, account_id)?.to_commitment();
         if actual != expected {
             return Err(StoreError::MerkleStoreError(MerkleError::ConflictingRoots {
                 expected_root: expected,
@@ -620,11 +591,8 @@ impl SqliteStore {
     fn require_latest_account_header(
         tx: &Transaction<'_>,
         account_id: AccountId,
-    ) -> Result<AccountHeader, StoreError> {
-        query_latest_account_headers(tx, "id = ?", params![account_id.to_bytes()])?
-            .into_iter()
-            .next()
-            .map(|(header, ..)| header)
+    ) -> Result<StoredAccountHeader, StoreError> {
+        query_latest_account_header(tx, account_id)?
             .ok_or(StoreError::AccountDataNotFound(account_id))
     }
 
@@ -721,21 +689,11 @@ impl SqliteStore {
         // one nonce, because an entry is added to the map only when a nonce is inserted.
         let min_nonce_val = u64_to_value(*nonces.first().expect("nonces is not empty"));
 
-        let old_header_exists: bool = tx
-            .query_row(
-                "SELECT COUNT(*) FROM historical_account_headers \
-                 WHERE id = ? AND replaced_at_nonce = ?",
-                params![account_id_bytes, &min_nonce_val],
-                |row| row.get::<_, i64>(0),
-            )
-            .into_store_error()?
-            > 0;
-
-        if old_header_exists {
-            // `watched` is not carried in historical_account_headers, so this restore resets it to
-            // the column default (FALSE). This is safe because undo only fires for discarded local
-            // transactions, and watched accounts have none.
-            tx.execute(
+        // `watched` is not carried in historical_account_headers, so this restore resets it to the
+        // column default (FALSE). This is safe because undo only fires for discarded local
+        // transactions, and watched accounts have none.
+        let restored_headers = tx
+            .execute(
                 "INSERT OR REPLACE INTO latest_account_headers \
                  (id, account_commitment, code_commitment, storage_commitment, \
                   vault_root, nonce, account_seed, locked) \
@@ -746,7 +704,8 @@ impl SqliteStore {
                 params![account_id_bytes, &min_nonce_val],
             )
             .into_store_error()?;
-        } else {
+
+        if restored_headers == 0 {
             // No previous state — delete the account entirely
             for table in [
                 "DELETE FROM latest_account_headers WHERE id = ?",
@@ -876,13 +835,13 @@ impl SqliteStore {
 
         // Read old header before mutating the SMT snapshot or database rows. Sync filters stale
         // full-account snapshots; if one still reaches storage, reject it before mutating.
-        let old_header = Self::require_latest_account_header(tx, account_id)?;
+        let old = Self::require_latest_account_header(tx, account_id)?;
 
-        if new_account_state.nonce().as_canonical_u64() < old_header.nonce().as_canonical_u64() {
+        if new_account_state.nonce().as_canonical_u64() < old.header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(
                 "update_account_state: new nonce {} is less than old nonce {} for account {}",
                 new_account_state.nonce().as_canonical_u64(),
-                old_header.nonce().as_canonical_u64(),
+                old.header.nonce().as_canonical_u64(),
                 account_id,
             )));
         }
@@ -979,7 +938,7 @@ impl SqliteStore {
         // Archive the old header to historical and write the new one to latest. A state that is
         // still undeployed keeps its seed
         let new_seed = new_account_state.seed().filter(|_| new_account_state.is_new());
-        Self::replace_account_header(tx, &new_account_state.into(), &old_header, new_seed)?;
+        Self::replace_account_header(tx, &new_account_state.into(), &old, new_seed)?;
 
         Ok(())
     }
@@ -994,7 +953,8 @@ impl SqliteStore {
         let account_id = new_header.id();
 
         // Read current header from the store.
-        let init_header = Self::require_latest_account_header(tx, account_id)?;
+        let init = Self::require_latest_account_header(tx, account_id)?;
+        let init_header = &init.header;
 
         if new_header.nonce().as_canonical_u64() <= init_header.nonce().as_canonical_u64() {
             return Err(StoreError::DatabaseError(format!(
@@ -1007,7 +967,7 @@ impl SqliteStore {
 
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
 
-        Self::apply_account_patch(tx, smt_forest, &init_header, new_header, patch)
+        Self::apply_account_patch(tx, smt_forest, init_header, new_header, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
@@ -1103,9 +1063,10 @@ impl SqliteStore {
     fn replace_account_header(
         tx: &Transaction<'_>,
         new_header: &AccountHeader,
-        old_header: &AccountHeader,
+        old: &StoredAccountHeader,
         new_seed: Option<Word>,
     ) -> Result<(), StoreError> {
+        let old_header = &old.header;
         if new_header.id() != old_header.id() {
             return Err(StoreError::DatabaseError(format!(
                 "replace_account_header: account id mismatch (new: {}, old: {})",
@@ -1122,20 +1083,11 @@ impl SqliteStore {
             )));
         }
 
-        let id_bytes = new_header.id().to_bytes();
-
-        // `AccountHeader` doesn't carry the seed or per-account flags, so read them from the row
-        // we're about to overwrite: `account_seed`/`locked` get archived into the historical row,
-        // `watched` is carried into the new latest row.
-        let (old_seed, old_locked, old_watched): (Option<Vec<u8>>, bool, bool) = tx
-            .query_row(
-                "SELECT account_seed, locked, watched FROM latest_account_headers WHERE id = ?",
-                params![&id_bytes],
-                |row| Ok((row.get("account_seed")?, row.get("locked")?, row.get("watched")?)),
-            )
-            .optional()
-            .into_store_error()?
-            .unwrap_or((None, false, false));
+        // `account_seed` and `locked` get archived into the historical row, `watched` is carried
+        // into the new latest row.
+        let old_seed = old.status.seed().map(Serializable::to_bytes);
+        let old_locked = old.status.is_locked();
+        let old_watched = old.account_type == ClientAccountType::Watched;
 
         // Archive the old header to historical.
         let old_id = old_header.id().to_bytes();

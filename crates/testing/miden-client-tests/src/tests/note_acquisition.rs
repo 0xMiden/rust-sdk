@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use miden_client::async_trait;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note::{
@@ -22,7 +23,6 @@ use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
 use miden_client::utils::RwLock;
-use miden_client::async_trait;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::EMPTY_WORD;
 use miden_protocol::block::BlockNumber;

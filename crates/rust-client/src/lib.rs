@@ -394,6 +394,7 @@ use crate::transaction::TransactionProver;
 /// - Connects to a Miden node to periodically sync with the current state of the network.
 /// - Executes, proves, and submits transactions to the network as directed by the user.
 pub struct Client<AUTH> {
+    note_acquisition: Option<note::NoteAcquisitionConfig>,
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
     /// An instance of [`FeltRng`] which provides randomness tools for generating new keys, serial
@@ -514,6 +515,19 @@ impl<AUTH> Client<AUTH> {
     /// file path).
     pub fn store_identifier(&self) -> &str {
         self.store.identifier()
+    }
+
+    /// Requires retention acknowledgement before subsequent note import writes.
+    ///
+    /// The callback must use independent storage and must not re-enter the client.
+    #[must_use]
+    pub fn with_note_acquisition_gate(
+        mut self,
+        gate: Arc<dyn note::NoteAcquisitionGate>,
+        limits: note::NoteAcquisitionLimits,
+    ) -> Self {
+        self.note_acquisition = Some(note::NoteAcquisitionConfig { gate, limits });
+        self
     }
 
     /// Registers a [`transaction::TransactionObserver`]. Per-observer failures are logged.

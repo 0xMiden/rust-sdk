@@ -28,7 +28,7 @@ pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorErr
 use miden_tx::{DataStoreError, TransactionProverError};
 use thiserror::Error;
 
-use crate::note::NoteScreenerError;
+use crate::note::{NoteAcquisitionError, NoteScreenerError};
 use crate::note_transport::NoteTransportError;
 use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
 use crate::store::{NoteRecordError, StoreError};
@@ -258,6 +258,12 @@ pub(crate) fn log_observer_failure(
 // CONVERSIONS
 // ================================================================================================
 
+impl From<NoteAcquisitionError> for ClientError {
+    fn from(err: NoteAcquisitionError) -> Self {
+        Self::Observer(Box::new(err))
+    }
+}
+
 impl From<ClientError> for String {
     fn from(err: ClientError) -> String {
         err.to_string()
@@ -365,6 +371,13 @@ impl From<&ClientError> for Option<ErrorHint> {
 }
 
 impl ClientError {
+    /// Returns the acquisition refusal carried by this error, if present.
+    pub fn note_acquisition_error(&self) -> Option<&NoteAcquisitionError> {
+        match self {
+            Self::Observer(error) => error.downcast_ref::<NoteAcquisitionError>(),
+            _ => None,
+        }
+    }
     pub fn error_hint(&self) -> Option<ErrorHint> {
         self.into()
     }

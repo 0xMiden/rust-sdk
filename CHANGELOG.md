@@ -15,6 +15,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version.
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
@@ -26,6 +27,7 @@
 
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
+* [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][param][rust] The `rng` parameter of the `TransactionRequestBuilder` helpers (`build_mint_fungible_asset`, `build_mint_non_fungible_asset`, `build_burn_non_fungible_asset`, `build_pay_to_id`, `build_swap`, `build_register_note_scripts` and the `build_pswap_*` helpers) takes `&mut impl FeltRng` instead of `&mut ClientRng`. Passing `client.rng()` still works ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][removal][rust] Removed `TransactionRequestError::error_hint`. `ClientError::error_hint` still returns the hints of a `TransactionRequestError` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).

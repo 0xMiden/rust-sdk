@@ -65,17 +65,17 @@ pub(crate) struct ResolvedSyncNotesBlock {
 #[derive(Debug, Clone)]
 pub struct SyncedNote {
     /// Note ID of the synced note, as reported by `SyncNotes`.
-    pub note_id: NoteId,
+    note_id: NoteId,
     /// The note's full metadata, as reported by `SyncNotes`.
-    pub metadata: NoteMetadata,
+    metadata: NoteMetadata,
     /// Inclusion proof for the note in the block, as reported by `SyncNotes`.
-    pub inclusion_proof: NoteInclusionProof,
+    inclusion_proof: NoteInclusionProof,
     /// The public note's body, fetched via `GetNotesById`. `None` for a private note, and for a
     /// public note whose body was not requested or not returned.
-    pub details: Option<NoteDetails>,
+    details: Option<NoteDetails>,
     /// The note's attachments, either carried in full by the sync record or fetched via
     /// `GetNotesById`. Empty for a note whose metadata advertises none.
-    pub attachments: NoteAttachments,
+    attachments: NoteAttachments,
 }
 
 impl SyncedNote {
@@ -124,9 +124,39 @@ impl SyncedNote {
         })
     }
 
+    /// Returns the note ID, as reported by `SyncNotes`.
+    pub fn note_id(&self) -> &NoteId {
+        &self.note_id
+    }
+
+    /// Returns the note's full metadata, as reported by `SyncNotes`.
+    pub fn metadata(&self) -> &NoteMetadata {
+        &self.metadata
+    }
+
+    /// Returns the inclusion proof for the note in the block, as reported by `SyncNotes`.
+    pub fn inclusion_proof(&self) -> &NoteInclusionProof {
+        &self.inclusion_proof
+    }
+
+    /// Returns the public note's body, if it was fetched.
+    pub fn details(&self) -> Option<&NoteDetails> {
+        self.details.as_ref()
+    }
+
+    /// Returns the note's attachments. The set is empty for a note without attachments.
+    pub fn attachments(&self) -> &NoteAttachments {
+        &self.attachments
+    }
+
     /// Returns the number of the block in which the note was committed.
     pub fn block_num(&self) -> BlockNumber {
         self.inclusion_proof.location().block_num()
+    }
+
+    /// Takes the public note's body out of the synced note, leaving `None` in its place.
+    pub(crate) fn take_details(&mut self) -> Option<NoteDetails> {
+        self.details.take()
     }
 
     /// Consumes the synced note and returns its sync record together with the attachment content

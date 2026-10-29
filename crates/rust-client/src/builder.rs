@@ -16,6 +16,7 @@ use rand_chacha::ChaCha20Rng;
 use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
+use crate::note::{NoteAcquisitionConfig, NoteAcquisitionGate, NoteAcquisitionLimits};
 use crate::note_transport::NoteTransportClient;
 use crate::pswap::PswapTransactionObserver;
 use crate::rpc::NodeRpcClient;
@@ -113,6 +114,7 @@ pub trait StoreFactory {
 ///   transactions and account proofs to be considered valid. Configure via
 ///   [`max_block_number_delta()`](Self::max_block_number_delta).
 pub struct ClientBuilder<AUTH> {
+    note_acquisition: Option<NoteAcquisitionConfig>,
     /// An optional custom RPC client. If provided, this takes precedence over `rpc_endpoint`.
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
@@ -151,6 +153,7 @@ pub struct ClientBuilder<AUTH> {
 impl<AUTH> Default for ClientBuilder<AUTH> {
     fn default() -> Self {
         Self {
+            note_acquisition: None,
             rpc_api: None,
             store: None,
             rng: None,
@@ -369,6 +372,19 @@ where
         self
     }
 
+    /// Requires retention acknowledgement before note import writes.
+    ///
+    /// The gate is absent by default. The callback must not re-enter the client or its store.
+    #[must_use]
+    pub fn note_acquisition_gate(
+        mut self,
+        gate: Arc<dyn NoteAcquisitionGate>,
+        limits: NoteAcquisitionLimits,
+    ) -> Self {
+        self.note_acquisition = Some(NoteAcquisitionConfig { gate, limits });
+        self
+    }
+
     /// Sets a gRPC client from the endpoint and optional timeout, wrapped in a
     /// [`VerifyingRpcClient`] so node responses are verified against the requests.
     #[must_use]
@@ -576,6 +592,7 @@ where
 
         // Construct and return the Client
         let client = Client {
+            note_acquisition: self.note_acquisition,
             store,
             rng: ClientRng::new(rng),
             rpc_api,

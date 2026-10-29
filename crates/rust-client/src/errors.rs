@@ -30,7 +30,7 @@ pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorErr
 use miden_tx::{DataStoreError, TransactionProverError};
 use thiserror::Error;
 
-use crate::note::NoteScreenerError;
+use crate::note::{NoteAcquisitionError, NoteScreenerError};
 use crate::note_transport::NoteTransportError;
 use crate::rpc::encryption::TransactionEncryptionError;
 use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
@@ -78,6 +78,9 @@ const TROUBLESHOOTING_DOC: &str =
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ClientError {
+    /// The configured retention gate refused a note acquisition candidate.
+    #[error(transparent)]
+    NoteAcquisition(#[from] NoteAcquisitionError),
     #[error("address {0} is already being tracked")]
     AddressAlreadyTracked(String),
     #[error("account with id {0} is already being tracked")]

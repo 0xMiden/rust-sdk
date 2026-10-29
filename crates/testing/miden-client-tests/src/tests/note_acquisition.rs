@@ -22,7 +22,7 @@ use miden_client::testing::common::create_test_store_path;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
 use miden_client::utils::RwLock;
-use miden_client::{ClientError, async_trait};
+use miden_client::async_trait;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::EMPTY_WORD;
 use miden_protocol::block::BlockNumber;
@@ -69,7 +69,7 @@ async fn acquisition_rejection_precedes_genesis_initialization() {
 
     assert!(matches!(
         result,
-        Err(ClientError::NoteAcquisition(NoteAcquisitionError::RetentionFailed))
+        Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::RetentionFailed)
     ));
     assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
@@ -114,7 +114,7 @@ async fn acquisition_acknowledgement_is_awaited_before_genesis_initialization() 
     gate.release.notify_one();
     assert!(matches!(
         import.await,
-        Err(ClientError::NoteAcquisition(NoteAcquisitionError::Rejected))
+        Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::Rejected)
     ));
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
 }
@@ -158,7 +158,7 @@ async fn acquisition_rejection_of_second_item_precedes_all_import_writes() {
 
     assert!(matches!(
         result,
-        Err(ClientError::NoteAcquisition(NoteAcquisitionError::RetentionFailed))
+        Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::RetentionFailed)
     ));
     assert_eq!(gate.calls.load(Ordering::SeqCst), 2);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
@@ -264,7 +264,7 @@ async fn acquisition_preserves_candidates_and_does_not_invent_expected_note_meta
 
     assert!(matches!(
         result,
-        Err(ClientError::NoteAcquisition(NoteAcquisitionError::Rejected))
+        Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::Rejected)
     ));
     assert_eq!(*gate.files.lock().unwrap(), files);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
@@ -297,7 +297,7 @@ async fn acquisition_count_and_item_limits_refuse_before_callback() {
 
         assert!(matches!(
             result,
-            Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))
+            Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::LimitExceeded)
         ));
         assert_eq!(gate.calls.load(Ordering::SeqCst), 0);
         assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
@@ -348,7 +348,7 @@ async fn acquisition_aggregate_limit_preserves_import_state_after_an_earlier_ack
 
     assert!(matches!(
         result,
-        Err(ClientError::NoteAcquisition(NoteAcquisitionError::LimitExceeded))
+        Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::LimitExceeded)
     ));
     assert_eq!(gate.calls.load(Ordering::SeqCst), 1);
     assert!(store.get_block_header_by_num(BlockNumber::GENESIS).await.unwrap().is_none());
@@ -452,7 +452,7 @@ async fn acquisition_transport_failure_preserves_cursors_in_direct_and_combined_
 
         assert!(matches!(
             result,
-            Err(ClientError::NoteAcquisition(NoteAcquisitionError::RetentionFailed))
+            Err(ref error) if error.note_acquisition_error() == Some(&NoteAcquisitionError::RetentionFailed)
         ));
         assert_eq!(
             store

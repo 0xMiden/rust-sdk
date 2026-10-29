@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 use miden_client::ClientError;
+use miden_client::note::NoteAcquisitionError;
 
 fn match_released_client_error(error: ClientError) {
     match error {
@@ -63,4 +64,21 @@ fn match_released_client_error(error: ClientError) {
 #[test]
 fn released_client_error_remains_exhaustively_matchable() {
     match_released_client_error(ClientError::AccountNonceTooLow);
+}
+
+#[test]
+fn acquisition_refusals_remain_typed() {
+    for refusal in [
+        NoteAcquisitionError::LimitExceeded,
+        NoteAcquisitionError::RetentionFailed,
+        NoteAcquisitionError::Rejected,
+    ] {
+        let error = ClientError::from(refusal);
+        assert_eq!(error.note_acquisition_error(), Some(&refusal));
+    }
+    assert_eq!(ClientError::AccountNonceTooLow.note_acquisition_error(), None);
+    assert_eq!(
+        ClientError::NoteImportError("other failure".into()).note_acquisition_error(),
+        None
+    );
 }

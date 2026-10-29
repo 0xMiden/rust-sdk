@@ -3,6 +3,7 @@
 //! [`GrpcClient::call`] calls one endpoint of a specific node RPC API version, such as the types in
 //! [`v1`].
 
+mod api_version;
 mod conversions;
 mod endpoint;
 pub use endpoint::Endpoint;

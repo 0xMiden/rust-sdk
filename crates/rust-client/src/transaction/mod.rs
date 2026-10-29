@@ -1030,12 +1030,15 @@ where
             .await?)
     }
 
-    /// Runs the transaction script, records it, and replays it in the debug engine for the call
-    /// tree.
+    /// Runs the transaction script and records it. [`trace::replay_call_trace`] replays the
+    /// recording in the debug engine for the call tree. The replay blocks the thread until it ends.
     ///
-    /// A failed run keeps the trace up to the failure. The replay is `None` if the program never
-    /// ran. Without `package` the frames have no names, since account code from the store has no
-    /// debug info.
+    /// A failed run keeps the recording up to the failure. The recording is `None` if the program
+    /// never ran. Without `package` the frames have no names, since account code from the store has
+    /// no debug info.
+    ///
+    /// The recording is kept in one slot per process, so only one traced execution can run at a
+    /// time. A second one fails with [`trace::TraceError::Busy`] and leaves no recording.
     #[cfg(feature = "trace")]
     pub async fn execute_program_with_trace(
         &self,
@@ -1044,9 +1047,10 @@ where
         advice_inputs: AdviceInputs,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
         package: Option<&Package>,
-    ) -> (Result<[Felt; MIN_STACK_DEPTH], ClientError>, Option<trace::CallTraceReplay>) {
-        // Drop a recording left by an earlier run.
-        drop(trace::take_recording());
+    ) -> (Result<[Felt; MIN_STACK_DEPTH], ClientError>, Option<trace::ReplaySnapshot>) {
+        let Some(slot) = trace::TraceSlot::acquire() else {
+            return (Err(trace::TraceError::Busy.into()), None);
+        };
 
         let outcome = async {
             let (data_store, block_ref) =
@@ -1065,7 +1069,18 @@ where
         }
         .await;
 
-        (outcome, trace::take_recording().map(trace::replay_call_trace))
+        let recording = slot.take_recording().map(|mut recording| {
+            // The recording can hold the account code from the store, which has no debug info.
+            // The replay keeps the last forest for each procedure, so the package goes last.
+            if let Some(package) = package {
+                recording
+                    .mast_forests
+                    .push(miden_protocol::package::loaded_mast_forest_from_package(package));
+            }
+            recording
+        });
+
+        (outcome, recording)
     }
 
     // HELPERS

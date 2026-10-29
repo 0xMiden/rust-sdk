@@ -2309,9 +2309,13 @@ fn call_test_exports(package: &Package) -> Vec<PackageExport> {
         ],
     ))));
 
-    let signature_overrides: [(&str, FunctionType); 6] = [
+    let signature_overrides: [(&str, FunctionType); 7] = [
         (
             "add",
+            FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
+        ),
+        (
+            "traced_add",
             FunctionType::new(CallConv::ComponentModel, [Type::Felt, Type::Felt], [Type::Felt]),
         ),
         (
@@ -2360,67 +2364,100 @@ fn call_test_exports(package: &Package) -> Vec<PackageExport> {
     exports
 }
 
+/// The call-test account component. Each procedure covers one `call` case.
+const CALL_TEST_CODE: &str = r#"
+    use miden::protocol::native_account
+    use miden::core::word
+    use miden::core::sys
+
+    const STORED_VALUE = word("miden::testing::call_test::stored_value")
+
+    @account_procedure
+    pub proc add
+        add
+    end
+
+    @account_procedure
+    pub proc set_value
+        push.STORED_VALUE[0..2]
+        exec.native_account::set_item
+        dropw
+        exec.sys::truncate_stack
+    end
+
+    @account_procedure
+    pub proc wide_result
+        exec.sys::truncate_stack
+    end
+
+    @account_procedure
+    pub proc read_advice
+        # Look up a fixed key in the advice map and return the sum of its two values.
+        push.268435456.0.0.0
+        adv.push_mapval
+        dropw
+        adv_push adv_push
+        add
+        exec.sys::truncate_stack
+    end
+
+    @account_procedure
+    pub proc take_account_id
+        # Identity over the two felts of an account id, so the typed decoder can be checked
+        # against the value that was encoded.
+        nop
+    end
+
+    @account_procedure
+    pub proc account_id_suffix
+        # Drops the prefix and returns the suffix, so a swapped field order cannot pass
+        # unnoticed the way it does through the identity above.
+        drop
+    end
+
+    @account_procedure
+    pub proc raw_add
+        # Left out of `signature_overrides`, so the package describes no WIT types for it and
+        # `call` has to fall back to raw field elements.
+        add
+    end
+
+    # The frame markers the compiler puts around a call, so `--trace` records frames. The
+    # transaction host ignores the events. Hand-written MASM has no debug info, so the frames
+    # carry no name.
+    @account_procedure
+    pub proc traced_add
+        emit.event("readonly::miden_debug::frame_start")
+        exec.add_once_removed
+        emit.event("readonly::miden_debug::frame_end")
+    end
+
+    proc add_once_removed
+        emit.event("readonly::miden_debug::frame_start")
+        exec.add_inner
+        emit.event("readonly::miden_debug::frame_end")
+    end
+
+    proc add_inner
+        add
+    end
+
+    # Fails inside a frame that never closes, so the trace has a frame to mark as stopped.
+    @account_procedure
+    pub proc traced_fail
+        emit.event("readonly::miden_debug::frame_start")
+        exec.fail_inner
+        emit.event("readonly::miden_debug::frame_end")
+    end
+
+    proc fail_inner
+        push.0 assert
+    end
+"#;
+
 fn build_call_test_masp(out_path: &Path) {
-    let call_test_code = r#"
-        use miden::protocol::native_account
-        use miden::core::word
-        use miden::core::sys
-
-        const STORED_VALUE = word("miden::testing::call_test::stored_value")
-
-        @account_procedure
-        pub proc add
-            add
-        end
-
-        @account_procedure
-        pub proc set_value
-            push.STORED_VALUE[0..2]
-            exec.native_account::set_item
-            dropw
-            exec.sys::truncate_stack
-        end
-
-        @account_procedure
-        pub proc wide_result
-            exec.sys::truncate_stack
-        end
-
-        @account_procedure
-        pub proc read_advice
-            # Look up a fixed key in the advice map and return the sum of its two values.
-            push.268435456.0.0.0
-            adv.push_mapval
-            dropw
-            adv_push adv_push
-            add
-            exec.sys::truncate_stack
-        end
-
-        @account_procedure
-        pub proc take_account_id
-            # Identity over the two felts of an account id, so the typed decoder can be checked
-            # against the value that was encoded.
-            nop
-        end
-
-        @account_procedure
-        pub proc account_id_suffix
-            # Drops the prefix and returns the suffix, so a swapped field order cannot pass
-            # unnoticed the way it does through the identity above.
-            drop
-        end
-
-        @account_procedure
-        pub proc raw_add
-            # Left out of `signature_overrides`, so the package describes no WIT types for it and
-            # `call` has to fall back to raw field elements.
-            add
-        end
-    "#;
-
     let component_package: Package = CodeBuilder::default()
-        .compile_component_code("miden::testing::call_test", call_test_code)
+        .compile_component_code("miden::testing::call_test", CALL_TEST_CODE)
         .expect("failed to compile call-test component")
         .into();
 
@@ -2643,39 +2680,106 @@ fn call_shows_nonce_delta() {
     );
 }
 
-/// `--trace` prints the trace after the result. The MASM test package has no frame markers, so the
-/// tree is empty and only the replay is checked.
+/// The lines of the call tree in `stdout`. The cycle count of a line is replaced by `N`, since it
+/// depends on the VM version.
+#[cfg(feature = "trace")]
+fn call_trace_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip_while(|line| *line != "Call trace:")
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .map(|line| match line.rsplit_once("  ") {
+            Some((head, tail)) if tail.ends_with(" cycles") => {
+                let count = tail.trim_end_matches(" cycles");
+                assert!(count.parse::<usize>().is_ok(), "not a cycle count: {line}");
+                format!("{head}  N cycles")
+            },
+            _ => line.to_string(),
+        })
+        .collect()
+}
+
+/// `--trace` prints the call tree under the result. The MASM test package has no debug info, so the
+/// recorded frames have no name, and no `--verbose` level shows them.
 #[cfg(feature = "trace")]
 #[test]
-fn call_trace_prints_call_trace() {
+fn call_trace_leaves_out_frames_without_a_name() {
     let (temp_dir, account_id, masp_path) = setup_call_test_account();
+    let target = format!("{account_id}:traced_add");
+    let package = masp_path.to_str().unwrap();
 
     let mut cmd = cargo_bin_cmd!("miden-client");
-    cmd.args([
-        "call",
-        &format!("{account_id}:add"),
-        "1",
-        "2",
-        "--package",
-        masp_path.to_str().unwrap(),
-        "--trace",
-    ]);
-
+    cmd.args(["call", &target, "1", "2", "--package", package, "--trace"]);
     let output = cmd.current_dir(&temp_dir).output().unwrap();
     assert!(
         output.status.success(),
         "Call failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(output_line(&stdout, "Result:"), "Result: 3felt");
-    let result = stdout.find("Result:").expect("expected the result in output");
+    assert_eq!(call_trace_lines(&stdout), ["  (no frames to show)"]);
+    assert!(!stdout.contains("hidden"), "no level shows a frame without a name:\n{stdout}");
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", &target, "1", "2", "--package", package, "--trace", "-vv"]);
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(
+        output.status.success(),
+        "Call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result = stdout.find("Result: 3felt").expect("expected the result in output");
     let trace = stdout.find("Call trace:").expect("expected the call trace in output");
     assert!(result < trace, "the trace should be printed after the result:\n{stdout}");
+    assert_eq!(call_trace_lines(&stdout), ["  (no frames to show)"]);
     assert!(
-        !stdout.contains("Warning: the replay"),
-        "the replay should not stop with an error:\n{stdout}"
+        !stdout
+            .lines()
+            .any(|line| line.contains("hidden") || line.starts_with("Warning:")),
+        "nothing is hidden at -vv and the replay does not fail:\n{stdout}"
+    );
+}
+
+/// `--trace` is rejected without `--package`, as only the package names the frames.
+#[cfg(feature = "trace")]
+#[test]
+fn call_trace_requires_package() {
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args(["call", "0x4614b8bf575eab71455e97bd394e90:0x00", "--trace"]);
+
+    cmd.assert().failure().stderr(contains(
+        "the following required arguments were not provided:\n  --package <PACKAGE>",
+    ));
+}
+
+/// A call that fails still prints its trace, and says that the replay stopped early.
+#[cfg(feature = "trace")]
+#[test]
+fn call_trace_prints_the_trace_of_a_failed_call() {
+    let (temp_dir, account_id, masp_path) = setup_call_test_account();
+
+    let mut cmd = cargo_bin_cmd!("miden-client");
+    cmd.args([
+        "call",
+        &format!("{account_id}:traced_fail"),
+        "--package",
+        masp_path.to_str().unwrap(),
+        "--trace",
+        "-vv",
+    ]);
+    let output = cmd.current_dir(&temp_dir).output().unwrap();
+    assert!(!output.status.success(), "the call must fail on the assertion");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(call_trace_lines(&stdout), ["  (no frames to show)"]);
+    assert!(
+        output_line(&stdout, "Warning: the replay").starts_with(
+            "Warning: the replay stopped with an error; the trace below is incomplete:"
+        ),
+        "{stdout}"
     );
 }
 

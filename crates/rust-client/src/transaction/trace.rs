@@ -5,15 +5,11 @@
 //! engine cannot depend on `miden-tx`.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use miden_debug_engine::debug::{CallFrameRecord, CallTrace, TracedArg};
-pub use miden_debug_engine::exec::{CallTraceReplay, replay_call_trace};
-use miden_debug_engine::exec::{
-    EventMutationRecorder,
-    MastForestRecorder,
-    RecordingHost,
-    ReplaySnapshot,
-};
+pub use miden_debug_engine::exec::{CallTraceReplay, ReplaySnapshot, replay_call_trace};
+use miden_debug_engine::exec::{EventMutationRecorder, MastForestRecorder, RecordingHost};
 use miden_processor::advice::{AdviceError, AdviceInputs};
 use miden_processor::{
     ExecutionError,
@@ -29,14 +25,54 @@ use miden_protocol::vm::{DebugSourceNodeId, PackageDebugInfo};
 use miden_tx::ProgramExecutor;
 
 use super::package::build_debug_package;
+use crate::{Box, ClientError};
+
+/// Errors of a traced execution that the executor itself does not report.
+#[derive(Debug, thiserror::Error)]
+pub enum TraceError {
+    /// A second traced execution started while another one was still running.
+    #[error("another traced execution is running in this process; run one at a time")]
+    Busy,
+}
+
+impl From<TraceError> for ClientError {
+    fn from(err: TraceError) -> Self {
+        ClientError::Observer(Box::new(err))
+    }
+}
 
 /// Slot for the last recording. `with_program_executor` takes a type, not a value, so the recording
-/// cannot leave through a handle. One traced execution at a time.
+/// cannot leave through a handle. The executor writes here and the caller reads it back.
 static RECORDING: Mutex<Option<ReplaySnapshot>> = Mutex::new(None);
 
-/// Takes the last recording out of the slot.
-pub(crate) fn take_recording() -> Option<ReplaySnapshot> {
-    RECORDING.lock().expect("trace recording slot poisoned").take()
+/// Set while a traced execution owns the slot.
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Exclusive use of the recording slot. The slot is per process, so two traced executions at the
+/// same time would read each other's recording. The guard makes the second one fail instead.
+pub(crate) struct TraceSlot(());
+
+impl TraceSlot {
+    /// Claims the slot, or `None` if another traced execution holds it. Drops a recording left by
+    /// an earlier run that failed before it was read.
+    pub(crate) fn acquire() -> Option<Self> {
+        BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).ok()?;
+        RECORDING.lock().expect("trace recording slot poisoned").take();
+        Some(Self(()))
+    }
+
+    /// Takes the recording out of the slot, then releases the slot.
+    pub(crate) fn take_recording(self) -> Option<ReplaySnapshot> {
+        let recording = RECORDING.lock().expect("trace recording slot poisoned").take();
+        drop(self);
+        recording
+    }
+}
+
+impl Drop for TraceSlot {
+    fn drop(&mut self) {
+        BUSY.store(false, Ordering::Release);
+    }
 }
 
 /// The normal executor plus a [`ReplaySnapshot`] left in the slot. Holds the inputs until `execute`

@@ -268,6 +268,8 @@ impl DerefMut for CliClient {
 }
 
 mod advice_inputs;
+#[cfg(feature = "trace")]
+mod call_trace;
 mod codecs;
 pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils

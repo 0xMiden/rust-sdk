@@ -24,6 +24,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust,store] Renamed `AccountUpdates` to `AccountUpdateTracker`. `Store::apply_state_sync` and `Client::apply_state_sync` return the IDs of the private accounts that the update locked ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][param][rust] The `rng` parameter of the `TransactionRequestBuilder` helpers (`build_mint_fungible_asset`, `build_mint_non_fungible_asset`, `build_burn_non_fungible_asset`, `build_pay_to_id`, `build_swap`, `build_register_note_scripts` and the `build_pswap_*` helpers) takes `&mut impl FeltRng` instead of `&mut ClientRng`. Passing `client.rng()` still works ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][removal][rust] Removed `TransactionRequestError::error_hint`. `ClientError::error_hint` still returns the hints of a `TransactionRequestError` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
@@ -77,6 +78,7 @@
 
 ### Fixes
 
+* [FIX][rust] `SyncSummary::locked_accounts` reports only the accounts that the current sync locked. It excludes accounts that were already locked and mismatches that a stale network commitment caused. The sync applies transaction inclusions before it discards superseded transactions, so a transaction the node included is never discarded in the same sync. An on-chain transaction that competes with a local pending transaction for the same account state discards that transaction and the ones that build on it ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118), [#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 * [FIX][rust,cli] Removed the outdated debug-mode hint for `TransactionProgramExecutionFailed` from `ClientError::error_hint()`. `exec` and `consume-notes` now hint to re-run with `--start-debug-adapter`, or to build with the `dap` feature first ([#2752](https://github.com/0xMiden/rust-sdk/pull/2752)).
 * [FIX][rust] Preserved the pinned genesis commitment in RPC headers when it is set during a native connection handshake.
 * [FIX][store] Read complete and minimal partial SQLite accounts, account storage, and account code from one database snapshot per call. Concurrent updates cannot mix account states, and history pruning cannot hide code selected by an earlier query ([#2729](https://github.com/0xMiden/rust-sdk/pull/2729)).

@@ -70,9 +70,15 @@ pub enum CliError {
         )
     )]
     ConfigAlreadyExists(String, String),
-    #[error("execute program error: {1}")]
+    #[error("execute program error: {message}")]
     #[diagnostic(code(cli::execute_program_error))]
-    Exec(#[source] SourceError, String),
+    Exec {
+        #[source]
+        error: SourceError,
+        message: String,
+        #[help]
+        help: Option<String>,
+    },
     #[error("export error: {0}")]
     #[diagnostic(code(cli::export_error), help("Check the ID."))]
     Export(String),
@@ -110,6 +116,9 @@ pub enum CliError {
     #[error(transparent)]
     #[diagnostic(code(cli::typed_error))]
     Typed(#[from] TypedError),
+    #[error("package registry error: {0}")]
+    #[diagnostic(code(cli::package_registry_error))]
+    PackageRegistry(String),
     #[error("parse error: {1}")]
     #[diagnostic(code(cli::parse_error), help("Check the inputs."))]
     Parse(#[source] SourceError, String),

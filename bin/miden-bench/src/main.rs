@@ -274,19 +274,19 @@ async fn main() {
         StartupMode::Unsynced => {},
     }
 
-    dispatch_command(args.command, &mut client, store_path, endpoint, &store_flag).await;
+    dispatch_command(args.command, client, store_path, endpoint, &store_flag).await;
 }
 
 async fn dispatch_command(
     command: Command,
-    client: &mut TestClient,
+    mut client: TestClient,
     store_path: PathBuf,
     endpoint: Endpoint,
     store_flag: &str,
 ) {
     match command {
         Command::Deploy(deploy_args) => {
-            let result = Box::pin(deploy::deploy_account(client, deploy_args.maps)).await;
+            let result = Box::pin(deploy::deploy_account(&mut client, deploy_args.maps)).await;
 
             match result {
                 Ok(account_id) => {
@@ -303,7 +303,7 @@ async fn dispatch_command(
         },
         Command::Expand(expand_args) => {
             let result = Box::pin(expand::expand_storage(
-                client,
+                &mut client,
                 &expand_args.account_id,
                 expand_args.map_idx,
                 expand_args.offset,
@@ -352,10 +352,10 @@ async fn dispatch_command(
         Command::Import(import_args) => {
             let result = match (import_args.filename, import_args.account_id) {
                 (Some(filename), None) => {
-                    Box::pin(import::import_from_file(client, &filename)).await
+                    Box::pin(import::import_from_file(&mut client, &filename)).await
                 },
                 (None, Some(account_id)) => {
-                    Box::pin(import::import_from_network(client, &account_id)).await
+                    Box::pin(import::import_from_network(&mut client, &account_id)).await
                 },
                 // clap enforces exactly one of the two via `required_unless_present`.
                 _ => unreachable!("clap should enforce exactly one of --filename / --account-id"),
@@ -367,7 +367,7 @@ async fn dispatch_command(
         },
         Command::Export(export_args) => {
             let result = Box::pin(export::export_account(
-                client,
+                &client,
                 &export_args.account_id,
                 export_args.filename,
             ))

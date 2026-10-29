@@ -394,7 +394,7 @@ impl InputNoteRecord {
     /// Modifies the state of the note record to reflect that the transaction consuming the note was
     /// discarded, making the note available again. Only a note being processed by that transaction
     /// is affected. Returns `true` if the state was changed.
-    pub(crate) fn transaction_discarded(
+    pub fn transaction_discarded(
         &mut self,
         transaction_id: TransactionId,
     ) -> Result<bool, NoteRecordError> {

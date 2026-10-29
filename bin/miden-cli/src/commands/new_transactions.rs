@@ -36,6 +36,7 @@ use crate::utils::{
     load_faucet_metadata_resolver,
     parse_account_id,
     print_executed_transaction,
+    with_debug_adapter_hint,
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -359,6 +360,7 @@ impl ConsumeNotesCmd {
 
         execute_transaction(&mut client, account_id, transaction_request, &self.submit_options)
             .await
+            .map_err(with_debug_adapter_hint)
     }
 }
 

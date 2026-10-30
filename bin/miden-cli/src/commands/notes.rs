@@ -7,7 +7,6 @@ use miden_client::note::{
     Note,
     NoteConsumability,
     NoteConsumptionStatus,
-    NoteMetadata,
     StandardNote,
     get_input_note_with_id_prefix,
 };
@@ -15,11 +14,12 @@ use miden_client::store::{InputNoteRecord, NoteFilter as ClientNoteFilter, Outpu
 use miden_client::{Client, ClientError, IdPrefixFetchError, PrettyPrint};
 
 use crate::errors::CliError;
-use crate::note_decoding::{
+use crate::notes::decoding::{
     format_attachment_content,
     note_storage_rows,
     standard_attachment_name,
 };
+use crate::notes::display::format_note_type;
 use crate::utils::{
     FormattedAsset,
     configured_network_id,
@@ -522,17 +522,6 @@ fn note_consumption_status_type(note_consumption_status: &NoteConsumptionStatus)
     .clone()
 }
 
-pub(crate) fn note_record_type(note_record_metadata: Option<&NoteMetadata>) -> String {
-    match note_record_metadata {
-        Some(metadata) => match metadata.note_type() {
-            miden_client::note::NoteType::Private => "Private",
-            miden_client::note::NoteType::Public => "Public",
-        },
-        None => "-",
-    }
-    .to_string()
-}
-
 /// Given that one of the two records is Some, this function will return a summary of the note.
 fn note_summary(
     input_note_record: Option<&InputNoteRecord>,
@@ -574,7 +563,7 @@ fn note_summary(
             (None, None) => panic!("One of the two records should be Some"),
         };
 
-    let note_type = note_record_type(
+    let note_type = format_note_type(
         input_note_record
             .and_then(InputNoteRecord::metadata)
             .or(output_note_record.map(OutputNoteRecord::metadata)),

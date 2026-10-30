@@ -9,8 +9,8 @@ use miden_protocol::{Felt, Word};
 use tracing::warn;
 
 use crate::rpc::NodeRpcClient;
-use crate::rpc::domain::note::ResolvedSyncNotesBlock;
 use crate::store::{BlockRelevance, StoreError};
+use crate::sync::ResolvedSyncNotesBlock;
 #[cfg(feature = "testing")]
 use crate::test_utils::mock::MockRpcApi;
 use crate::{CachedPartialMmr, Client, ClientError};

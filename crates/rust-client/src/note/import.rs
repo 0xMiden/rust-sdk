@@ -25,11 +25,16 @@ use miden_protocol::note::{
 };
 use miden_tx::auth::TransactionAuthenticator;
 
-use crate::rpc::domain::note::{FetchedNote, ResolvedSyncNotesBlock};
-use crate::rpc::{NoteContentFetch, RpcError};
+use crate::rpc::RpcError;
+use crate::rpc::domain::note::FetchedNote;
 use crate::store::input_note_states::ExpectedNoteState;
 use crate::store::{InputNoteRecord, InputNoteState, NoteFilter};
-use crate::sync::NoteTagRecord;
+use crate::sync::{
+    NoteContentFetch,
+    NoteTagRecord,
+    ResolvedSyncNotesBlock,
+    sync_notes_with_content,
+};
 use crate::{Client, ClientError};
 
 /// Note importing methods.
@@ -379,7 +384,7 @@ where
             let commitment = note_record.details_commitment();
             let Some((sync_note, block_header)) = blocks.iter().find_map(|block| {
                 let sync_note = block.notes.values().find(|sync_note| {
-                    NoteId::new(commitment, &sync_note.metadata) == sync_note.note_id
+                    NoteId::new(commitment, sync_note.metadata()) == *sync_note.note_id()
                 })?;
                 Some((sync_note, &block.block_header))
             }) else {
@@ -389,11 +394,11 @@ where
 
             // A note that carries no attachments has nothing to apply to the record.
             let attachments =
-                (!sync_note.attachments.is_empty()).then(|| sync_note.attachments.clone());
+                (!sync_note.attachments().is_empty()).then(|| sync_note.attachments().clone());
 
-            let metadata = sync_note.metadata;
+            let metadata = *sync_note.metadata();
             let mut note_changed = note_record
-                .inclusion_proof_received(sync_note.inclusion_proof.clone(), metadata)?;
+                .inclusion_proof_received(sync_note.inclusion_proof().clone(), metadata)?;
 
             if let Some(attachments) = attachments {
                 note_changed |= note_record.attachments_received(attachments);
@@ -489,16 +494,15 @@ where
             return Ok(Vec::new());
         }
 
-        let blocks = self
-            .rpc_api
-            .sync_notes_with_content(
-                request_block_num,
-                current_block_num,
-                &sync_tags,
-                NoteContentFetch::AttachmentsOnly,
-            )
-            .await
-            .map_err(ClientError::RpcError)?;
+        let blocks = sync_notes_with_content(
+            self.rpc_api.as_ref(),
+            request_block_num,
+            current_block_num,
+            &sync_tags,
+            NoteContentFetch::AttachmentsOnly,
+        )
+        .await
+        .map_err(ClientError::RpcError)?;
 
         let mut matched_blocks = vec![];
         for block in blocks {
@@ -517,7 +521,7 @@ where
                 }
 
                 let Some((..)) = expected_notes.iter().find(|(commitment, _)| {
-                    NoteId::new(*commitment, &sync_note.metadata) == sync_note.note_id
+                    NoteId::new(*commitment, sync_note.metadata()) == *sync_note.note_id()
                 }) else {
                     continue;
                 };

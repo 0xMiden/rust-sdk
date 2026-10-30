@@ -65,6 +65,8 @@ use alloc::vec::Vec;
 use miden_protocol::account::AccountId;
 use miden_tx::auth::TransactionAuthenticator;
 
+use crate::rpc::domain::note::FetchedNote;
+use crate::store::input_note_states::UnverifiedNoteState;
 use crate::store::{InputNoteRecord, NoteFilter, OutputNoteRecord};
 use crate::{Client, ClientError, IdPrefixFetchError};
 
@@ -160,6 +162,40 @@ where
         filter: NoteFilter,
     ) -> Result<Vec<InputNoteRecord>, ClientError> {
         self.store.get_input_notes(filter).await.map_err(Into::into)
+    }
+
+    /// Fetches public note-related data for a list of [`NoteId`] from the node and builds
+    /// [`InputNoteRecord`]s with it. If a note is not found or it's private, it is ignored and will
+    /// not be included in the returned list.
+    ///
+    /// The records are not verified or stored. Use [`Client::import_notes`] to do both.
+    pub async fn get_public_note_records(
+        &self,
+        note_ids: &[NoteId],
+    ) -> Result<Vec<InputNoteRecord>, ClientError> {
+        if note_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let current_timestamp = self.store.get_current_timestamp();
+        let mut public_notes = Vec::with_capacity(note_ids.len());
+        let note_details = self.rpc_api.get_notes_by_id(note_ids).await?;
+
+        for detail in note_details {
+            if let FetchedNote::Public(note, inclusion_proof) = detail {
+                let state = UnverifiedNoteState {
+                    metadata: *note.metadata(),
+                    inclusion_proof,
+                }
+                .into();
+                let attachments = note.attachments().clone();
+                let note = InputNoteRecord::new(note.into(), attachments, current_timestamp, state);
+
+                public_notes.push(note);
+            }
+        }
+
+        Ok(public_notes)
     }
 
     /// Returns the input notes and their consumability. Assuming the notes will be consumed by a

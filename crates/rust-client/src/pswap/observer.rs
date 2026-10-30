@@ -14,9 +14,8 @@ use tracing::warn;
 use crate::ClientError;
 use crate::pswap::discovery::discover_pswap_rounds;
 use crate::pswap::lineage::ObservedPswapNote;
-use crate::rpc::domain::note::SyncedNote;
 use crate::store::Store;
-use crate::sync::NoteObserver;
+use crate::sync::{NoteObserver, SyncedNote};
 use crate::utils::RwLock;
 
 // PSWAP CHAIN OBSERVER
@@ -55,16 +54,16 @@ impl NoteObserver for PswapChainObserver {
     async fn observe(&self, note: &SyncedNote) -> Result<bool, ClientError> {
         // Notes without a PSWAP attachment are the common case; `extract_pswap_attachment`
         // fast-rejects them. Foreign-order filtering happens later in `discovery`.
-        let Some(attachment) = extract_pswap_attachment(&note.attachments) else {
+        let Some(attachment) = extract_pswap_attachment(note.attachments()) else {
             return Ok(false);
         };
 
-        let inclusion_proof = note.inclusion_proof.clone();
+        let inclusion_proof = note.inclusion_proof().clone();
         self.chain_note_updates.write().push(ObservedPswapNote {
-            note_id: note.note_id,
+            note_id: *note.note_id(),
             attachment,
-            sender: note.metadata.sender(),
-            tag: note.metadata.tag(),
+            sender: note.metadata().sender(),
+            tag: note.metadata().tag(),
             block_num: inclusion_proof.location().block_num(),
             inclusion_proof,
         });

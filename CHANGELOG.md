@@ -59,6 +59,7 @@
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `PswapLineageRecord`, `RpcLimits`, `TransactionEncryptionKey`, `TransactionDetails`, `TransactionStatus`, `DiscardCause`, `TransportNote`, `TransactionRequest` and `ForeignAccount`. Use the protobuf encodings in `miden-client-proto`. Removed `PswapLineageState::try_from_u8` ([#2738](https://github.com/0xMiden/rust-sdk/pull/2738)).
 * [BREAKING][type][rust] Added `NodeRpcClient::get_genesis_block_header`, which returns the genesis block header and the `ProtocolConfig` that it commits to. `Client::ensure_genesis_in_place` stores the genesis protocol configuration, so note screening works on the first sync ([#2724](https://github.com/0xMiden/rust-sdk/pull/2724)).
 * [BREAKING][removal][rust] Removed `NodeRpcClient::has_genesis_commitment`. `Client::ensure_genesis_in_place` checks the store for the genesis block header and its protocol configuration instead ([#2724](https://github.com/0xMiden/rust-sdk/pull/2724)).
+* [BREAKING][arch][rust] Removed `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::get_public_note_records`. `get_public_note_records` is now `Client::get_public_note_records`. Moved `SyncedNote` from `miden_client_core::rpc::domain::note` to `miden_client::sync` and made its fields private. Removed `ResolvedSyncNotesBlock` and `NoteContentFetch` from the public API ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
 
 ### Features
 

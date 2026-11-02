@@ -1,3 +1,7 @@
+use alloc::string::ToString;
+
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
@@ -20,13 +24,13 @@ use thiserror::Error;
 /// Since protocol 0.16 the signed transaction summary binds the reference block commitment, so a
 /// summary produced at one block cannot be reproduced by re-executing at another. Flows that
 /// collect signatures over a summary and execute later (e.g. multisig) capture an anchor at the
-/// block the summary was built at (`Client::chain_anchor_for_request`), ship it with the signed
-/// data, and replay the transaction with `Client::execute_transaction_at` so the summary — and with
-/// it the signature advice keys — reproduces exactly.
+/// block the summary was built at ([`crate::Client::chain_anchor_for_request`]), ship it with the
+/// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`] so the
+/// summary — and with it the signature advice keys — reproduces exactly.
 ///
 /// The anchor's [`PartialBlockchain`] must track each block that the transaction authenticates.
-/// `Client::chain_anchor_for_request` captures the blocks declared by the request and the creation
-/// blocks of its authenticated input notes.
+/// [`crate::Client::chain_anchor_for_request`] captures the blocks declared by the request and the
+/// creation blocks of its authenticated input notes.
 ///
 /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +138,45 @@ pub enum ChainAnchorError {
     },
 }
 
+// SERIALIZATION
+// ================================================================================================
+
+impl ProtobufValue for ChainAnchor {
+    type Message = proto::ChainAnchor;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            header: Some(self.header.to_proto()),
+            partial_blockchain: Some((&self.chain).into()),
+        }
+    }
+
+    /// Builds the partial blockchain with the checks of [`PartialBlockchain::new`], then checks it
+    /// against the header with [`ChainAnchor::new`]. The header itself is not authenticated.
+    fn from_proto(anchor: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "chain anchor";
+
+        let header = BlockHeader::from_proto(required(anchor.header, MESSAGE, "header")?)?;
+        let chain = required(anchor.partial_blockchain, MESSAGE, "partial blockchain")?;
+
+        // `ChainAnchor::new` checks the count too, but only after the decoder verifies every block.
+        // An early check bounds the work that an oversized anchor causes.
+        if chain.block_headers.len() > MAX_INPUT_NOTES_PER_TX {
+            return Err(ProtoDecodeError::InvalidValue(
+                ChainAnchorError::TooManyTrackedBlocks {
+                    count: chain.block_headers.len(),
+                    max: MAX_INPUT_NOTES_PER_TX,
+                }
+                .to_string(),
+            ));
+        }
+        let chain: PartialBlockchain = chain.decode_and_build_unchecked()?;
+
+        ChainAnchor::new(header, chain)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
 // TESTS
 // ================================================================================================
 
@@ -141,6 +184,8 @@ pub enum ChainAnchorError {
 mod tests {
     use alloc::vec::Vec;
 
+    use miden_client_proto::{ProtoDecodeError, ProtobufValue, decode, encode};
+    use miden_protocol::MAX_INPUT_NOTES_PER_TX;
     use miden_protocol::block::BlockHeader;
     use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};
     use miden_protocol::transaction::PartialBlockchain;
@@ -209,5 +254,55 @@ mod tests {
         let err = ChainAnchor::new(header, chain).unwrap_err();
 
         assert!(matches!(err, ChainAnchorError::ChainCommitmentMismatch { .. }), "got {err:?}");
+    }
+
+    // SERIALIZATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Returns an anchor at block 8 whose partial blockchain tracks block 3.
+    fn anchor() -> ChainAnchor {
+        let (header, chain) = anchor_parts(8, &[3]);
+        ChainAnchor::new(header, chain).unwrap()
+    }
+
+    #[test]
+    fn chain_anchor_round_trips() {
+        let anchor = anchor();
+        assert_eq!(decode::<ChainAnchor>(&encode(&anchor)).unwrap(), anchor);
+    }
+
+    #[test]
+    fn chain_anchor_rejects_a_missing_partial_blockchain() {
+        let mut message = anchor().to_proto();
+        message.partial_blockchain = None;
+
+        assert!(matches!(
+            ChainAnchor::from_proto(message),
+            Err(ProtoDecodeError::MissingField { field: "partial blockchain", .. })
+        ));
+    }
+
+    /// `PartialBlockchain::new` panics on a tracked block that has no authentication path. The
+    /// decoder must return an error for it.
+    #[test]
+    fn chain_anchor_rejects_a_tracked_block_without_its_path() {
+        let mut message = anchor().to_proto();
+        let chain = message.partial_blockchain.as_mut().unwrap();
+        chain.mmr.as_mut().unwrap().tracked_leaves[0].path.clear();
+
+        assert!(matches!(ChainAnchor::from_proto(message), Err(ProtoDecodeError::Conversion(_))));
+    }
+
+    #[test]
+    fn chain_anchor_rejects_too_many_blocks_before_it_decodes_them() {
+        let mut message = anchor().to_proto();
+        let block = message.header.clone().unwrap();
+        message.partial_blockchain.as_mut().unwrap().block_headers =
+            vec![block; MAX_INPUT_NOTES_PER_TX + 1];
+
+        assert!(matches!(
+            ChainAnchor::from_proto(message),
+            Err(ProtoDecodeError::InvalidValue(_))
+        ));
     }
 }

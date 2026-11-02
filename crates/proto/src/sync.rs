@@ -1,11 +1,11 @@
 //! Protobuf conversion of sync values.
 
-use miden_client_core::sync::{NoteTagRecord, NoteTagSource, SyncSummary};
+use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 use miden_objects::DecodeMessageExt;
-use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteTag};
+use miden_protocol::note::{NoteDetailsCommitment, NoteTag};
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, decode_all, required};
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for NoteTagSource {
     type Message = proto::NoteTagSource;
@@ -55,38 +55,6 @@ impl ProtobufValue for NoteTagRecord {
     }
 }
 
-impl ProtobufValue for SyncSummary {
-    type Message = proto::SyncSummary;
-
-    fn to_proto(&self) -> Self::Message {
-        let note_ids = |ids: &[NoteId]| ids.iter().map(Into::into).collect();
-
-        Self::Message {
-            block_num: Some(self.block_num.into()),
-            new_public_notes: note_ids(&self.new_public_notes),
-            new_private_notes: note_ids(&self.new_private_notes),
-            committed_notes: note_ids(&self.committed_notes),
-            consumed_notes: note_ids(&self.consumed_notes),
-            updated_accounts: self.updated_accounts.iter().map(|id| (*id).into()).collect(),
-            locked_accounts: self.locked_accounts.iter().map(|id| (*id).into()).collect(),
-            committed_transactions: self.committed_transactions.iter().map(Into::into).collect(),
-        }
-    }
-
-    fn from_proto(summary: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(SyncSummary::new(
-            required(summary.block_num, "sync summary", "block number")?.decode_and_verify()?,
-            decode_all(summary.new_public_notes)?,
-            decode_all(summary.new_private_notes)?,
-            decode_all(summary.committed_notes)?,
-            decode_all(summary.consumed_notes)?,
-            decode_all(summary.updated_accounts)?,
-            decode_all(summary.locked_accounts)?,
-            decode_all(summary.committed_transactions)?,
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
@@ -129,48 +97,6 @@ mod tests {
 
         assert!(matches!(
             NoteTagRecord::from_proto(message),
-            Err(ProtoDecodeError::Conversion(_))
-        ));
-    }
-
-    fn sync_summary() -> miden_client_core::sync::SyncSummary {
-        use miden_protocol::block::BlockNumber;
-        use miden_protocol::note::NoteId;
-        use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
-        use miden_protocol::transaction::TransactionId;
-
-        let note_id = |seed: u32| NoteId::from_raw(Word::from([seed, 0, 0, 0]));
-        miden_client_core::sync::SyncSummary::new(
-            BlockNumber::from(9u32),
-            vec![note_id(1)],
-            vec![note_id(2)],
-            vec![note_id(3)],
-            vec![note_id(4)],
-            vec![AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap()],
-            vec![AccountId::try_from(ACCOUNT_ID_SENDER).unwrap()],
-            vec![TransactionId::from_raw(Word::from([5u32, 0, 0, 0]))],
-        )
-    }
-
-    /// Each list holds a different ID, so a field mix-up causes a mismatch.
-    #[test]
-    fn sync_summary_round_trips() {
-        let summary = sync_summary();
-        assert_eq!(
-            decode::<miden_client_core::sync::SyncSummary>(&encode(&summary)).unwrap(),
-            summary
-        );
-    }
-
-    #[test]
-    fn sync_summary_rejects_a_malformed_note_id() {
-        let mut message = sync_summary().to_proto();
-        message.committed_notes[0] = miden_objects::proto::note::NoteId {
-            id: Some(primitives::Word { encoded: vec![0; 31] }),
-        };
-
-        assert!(matches!(
-            miden_client_core::sync::SyncSummary::from_proto(message),
             Err(ProtoDecodeError::Conversion(_))
         ));
     }

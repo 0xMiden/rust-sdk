@@ -122,17 +122,17 @@ use crate::sync::NoteTagRecord;
 pub mod batch;
 pub use batch::{BatchBuilder, BatchBuilderError, ProvenBatchSubmission};
 
+mod chain_anchor;
+pub use chain_anchor::{ChainAnchor, ChainAnchorError};
+
 #[cfg(feature = "dap")]
 mod dap_executor;
 mod prover;
 pub use miden_client_core::transaction::{
     BatchStoreUpdate,
-    ChainAnchor,
-    ChainAnchorError,
     DiscardCause,
     TransactionDetails,
     TransactionRecord,
-    TransactionResult,
     TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
@@ -154,6 +154,9 @@ pub use request::{
 };
 
 mod observer;
+pub use observer::TransactionObserver;
+
+mod result;
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_protocol::transaction::{
@@ -192,7 +195,7 @@ pub use miden_tx::{
     TransactionExecutorError,
     TransactionProverError,
 };
-pub use observer::TransactionObserver;
+pub use result::TransactionResult;
 
 // CONSTANTS
 // ================================================================================================

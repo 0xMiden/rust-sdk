@@ -155,12 +155,12 @@ impl From<ProtoDecodeError> for StoreError {
 // ================================================================================================
 
 /// Decodes a value of an upstream type from its upstream encoding.
-pub(crate) fn read_upstream<T: Deserializable>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
+pub fn read_upstream<T: Deserializable>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
     T::read_from_bytes(bytes).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
 }
 
 /// Decodes and verifies every message of a list.
-pub(crate) fn decode_all<M>(
+pub fn decode_all<M>(
     messages: Vec<M>,
 ) -> Result<Vec<<M::Decoded as Verify>::Verified>, ProtoDecodeError>
 where
@@ -171,7 +171,7 @@ where
 }
 
 /// Returns a required field, or an error that names it.
-pub(crate) fn required<T>(
+pub fn required<T>(
     field: Option<T>,
     message: &'static str,
     name: &'static str,

@@ -1,8 +1,5 @@
 //! Defines the transaction types shared by the client and the store implementations.
 
-mod chain_anchor;
-pub use chain_anchor::{ChainAnchor, ChainAnchorError};
-
 mod record;
 pub use record::{
     DiscardCause,
@@ -11,9 +8,6 @@ pub use record::{
     TransactionStatus,
     TransactionStatusVariant,
 };
-
-mod result;
-pub use result::TransactionResult;
 
 mod store_update;
 pub use store_update::{BatchStoreUpdate, TransactionStoreUpdate};

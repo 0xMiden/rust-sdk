@@ -60,13 +60,17 @@ use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::cmp::max;
 
 use futures::{StreamExt, TryStreamExt};
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, decode_all, required};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
+use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use tracing::{info, warn};
 
@@ -77,7 +81,7 @@ use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
-pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource, SyncSummary};
+pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 mod tag;
 
 mod note_observer;
@@ -538,5 +542,177 @@ where
         validate_account_witness(&witness, account_id, chain_tip_header)?;
 
         Ok(witness)
+    }
+}
+
+// SYNC SUMMARY
+// ================================================================================================
+
+/// Contains stats about the sync operation.
+#[derive(Debug, PartialEq)]
+pub struct SyncSummary {
+    /// Block number up to which the client has been synced.
+    pub block_num: BlockNumber,
+    /// IDs of new public notes that the client has received.
+    pub new_public_notes: Vec<NoteId>,
+    /// IDs of private notes imported from the Note Transport Layer in this sync. They are still
+    /// `Expected` until observed on-chain.
+    ///
+    /// Only populated by [`Client::sync_state`]; [`Client::sync_chain`] always leaves this empty
+    /// because it does not touch the Note Transport Layer.
+    pub new_private_notes: Vec<NoteId>,
+    /// IDs of tracked notes that have been committed.
+    pub committed_notes: Vec<NoteId>,
+    /// IDs of notes that have been consumed.
+    pub consumed_notes: Vec<NoteId>,
+    /// IDs of on-chain accounts that have been updated.
+    pub updated_accounts: Vec<AccountId>,
+    /// IDs of private accounts that have been locked.
+    pub locked_accounts: Vec<AccountId>,
+    /// IDs of committed transactions.
+    pub committed_transactions: Vec<TransactionId>,
+}
+
+impl SyncSummary {
+    pub fn new(
+        block_num: BlockNumber,
+        new_public_notes: Vec<NoteId>,
+        new_private_notes: Vec<NoteId>,
+        committed_notes: Vec<NoteId>,
+        consumed_notes: Vec<NoteId>,
+        updated_accounts: Vec<AccountId>,
+        locked_accounts: Vec<AccountId>,
+        committed_transactions: Vec<TransactionId>,
+    ) -> Self {
+        Self {
+            block_num,
+            new_public_notes,
+            new_private_notes,
+            committed_notes,
+            consumed_notes,
+            updated_accounts,
+            locked_accounts,
+            committed_transactions,
+        }
+    }
+
+    pub fn new_empty(block_num: BlockNumber) -> Self {
+        Self {
+            block_num,
+            new_public_notes: vec![],
+            new_private_notes: vec![],
+            committed_notes: vec![],
+            consumed_notes: vec![],
+            updated_accounts: vec![],
+            locked_accounts: vec![],
+            committed_transactions: vec![],
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.new_public_notes.is_empty()
+            && self.new_private_notes.is_empty()
+            && self.committed_notes.is_empty()
+            && self.consumed_notes.is_empty()
+            && self.updated_accounts.is_empty()
+            && self.locked_accounts.is_empty()
+            && self.committed_transactions.is_empty()
+    }
+
+    pub fn combine_with(&mut self, mut other: Self) {
+        self.block_num = max(self.block_num, other.block_num);
+        self.new_public_notes.append(&mut other.new_public_notes);
+        self.new_private_notes.append(&mut other.new_private_notes);
+        self.committed_notes.append(&mut other.committed_notes);
+        self.consumed_notes.append(&mut other.consumed_notes);
+        self.updated_accounts.append(&mut other.updated_accounts);
+        self.locked_accounts.append(&mut other.locked_accounts);
+        self.committed_transactions.append(&mut other.committed_transactions);
+    }
+}
+
+// SERIALIZATION
+// ================================================================================================
+
+impl ProtobufValue for SyncSummary {
+    type Message = proto::SyncSummary;
+
+    fn to_proto(&self) -> Self::Message {
+        let note_ids = |ids: &[NoteId]| ids.iter().map(Into::into).collect();
+
+        Self::Message {
+            block_num: Some(self.block_num.into()),
+            new_public_notes: note_ids(&self.new_public_notes),
+            new_private_notes: note_ids(&self.new_private_notes),
+            committed_notes: note_ids(&self.committed_notes),
+            consumed_notes: note_ids(&self.consumed_notes),
+            updated_accounts: self.updated_accounts.iter().map(|id| (*id).into()).collect(),
+            locked_accounts: self.locked_accounts.iter().map(|id| (*id).into()).collect(),
+            committed_transactions: self.committed_transactions.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn from_proto(summary: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(SyncSummary::new(
+            required(summary.block_num, "sync summary", "block number")?.decode_and_verify()?,
+            decode_all(summary.new_public_notes)?,
+            decode_all(summary.new_private_notes)?,
+            decode_all(summary.committed_notes)?,
+            decode_all(summary.consumed_notes)?,
+            decode_all(summary.updated_accounts)?,
+            decode_all(summary.locked_accounts)?,
+            decode_all(summary.committed_transactions)?,
+        ))
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use miden_client_proto::{ProtoDecodeError, ProtobufValue, decode, encode};
+    use miden_objects::proto::{note, primitives};
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::note::NoteId;
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        ACCOUNT_ID_SENDER,
+    };
+    use miden_protocol::transaction::TransactionId;
+
+    use super::SyncSummary;
+
+    fn sync_summary() -> SyncSummary {
+        let note_id = |seed: u32| NoteId::from_raw(Word::from([seed, 0, 0, 0]));
+        SyncSummary::new(
+            BlockNumber::from(9u32),
+            vec![note_id(1)],
+            vec![note_id(2)],
+            vec![note_id(3)],
+            vec![note_id(4)],
+            vec![AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap()],
+            vec![AccountId::try_from(ACCOUNT_ID_SENDER).unwrap()],
+            vec![TransactionId::from_raw(Word::from([5u32, 0, 0, 0]))],
+        )
+    }
+
+    /// Each list holds a different ID, so a field mix-up causes a mismatch.
+    #[test]
+    fn sync_summary_round_trips() {
+        let summary = sync_summary();
+        assert_eq!(decode::<SyncSummary>(&encode(&summary)).unwrap(), summary);
+    }
+
+    #[test]
+    fn sync_summary_rejects_a_malformed_note_id() {
+        let mut message = sync_summary().to_proto();
+        message.committed_notes[0] = note::NoteId {
+            id: Some(primitives::Word { encoded: vec![0; 31] }),
+        };
+
+        assert!(matches!(SyncSummary::from_proto(message), Err(ProtoDecodeError::Conversion(_))));
     }
 }

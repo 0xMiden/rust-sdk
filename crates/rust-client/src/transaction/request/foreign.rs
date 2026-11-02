@@ -1,116 +1,4 @@
-//! Converts account proofs from the node into foreign account inputs.
-use alloc::vec::Vec;
-
-use miden_client_core::transaction::TransactionRequestError;
-use miden_protocol::account::{
-    PartialAccount,
-    PartialStorage,
-    PartialStorageMap,
-    StorageMap,
-    StorageMapKey,
-    StorageMapWitness,
-    StorageSlotHeader,
-};
-use miden_protocol::asset::{AssetVault, PartialVault};
-use miden_protocol::crypto::merkle::smt::PartialSmt;
-use miden_protocol::transaction::AccountInputs;
-
-use crate::rpc::domain::account::{AccountDetails, AccountProof, StorageMapEntries};
-
-// ACCOUNT PROOF CONVERSION
-// ================================================================================================
-
-/// Converts an [`AccountProof`] to [`AccountInputs`].
-pub(crate) fn account_proof_into_inputs(
-    account_proof: AccountProof,
-) -> Result<AccountInputs, TransactionRequestError> {
-    let (witness, account_details) = account_proof.into_parts();
-
-    if let Some(AccountDetails {
-        header: account_header,
-        code,
-        storage_details,
-        vault_details,
-    }) = account_details
-    {
-        // discard slot indices - not needed for execution
-        let account_storage_map_details = storage_details.map_details;
-        let mut storage_map_proofs = Vec::with_capacity(account_storage_map_details.len());
-        for account_storage_detail in account_storage_map_details {
-            let partial_storage = match account_storage_detail.entries {
-                StorageMapEntries::AllEntries(entries) => {
-                    // Keep the entry list only if it hashes to the slot's root in the storage
-                    // header. Otherwise skip the map (the header alone carries its root) and let
-                    // map reads resolve lazily as per-key witnesses during execution, rather than
-                    // carry a map at a root the account never committed.
-                    let slot_root = storage_details
-                        .header
-                        .slots()
-                        .find(|slot| *slot.name() == account_storage_detail.slot_name)
-                        .map(StorageSlotHeader::value);
-                    let storage_entries_iter = entries.iter().map(|e| (e.key, e.value));
-                    match StorageMap::with_entries(storage_entries_iter)
-                        .ok()
-                        .filter(|map| Some(map.root()) == slot_root)
-                    {
-                        Some(map) => PartialStorageMap::new_full(map),
-                        None => continue,
-                    }
-                },
-                StorageMapEntries::PartialMap { map_keys, partial_smt } => {
-                    partial_map_into_partial_storage(&map_keys, &partial_smt)?
-                },
-                // The node carries no entries for an oversize map, so only the slot's root in the
-                // storage header is known. Reads resolve lazily as per-key witnesses.
-                StorageMapEntries::LimitExceeded => continue,
-            };
-            storage_map_proofs.push(partial_storage);
-        }
-
-        // Keep the asset list only if it hashes to the header's vault root; otherwise carry the
-        // root alone and let asset reads resolve lazily as per-asset witnesses.
-        let vault = AssetVault::new(&vault_details.assets)
-            .ok()
-            .filter(|vault| vault.root() == account_header.vault_root())
-            .map_or_else(|| PartialVault::new(account_header.vault_root()), PartialVault::new_full);
-
-        return Ok(AccountInputs::new(
-            PartialAccount::new(
-                account_header.id(),
-                account_header.nonce(),
-                code,
-                PartialStorage::new(storage_details.header, storage_map_proofs)?,
-                vault,
-                None,
-            )?,
-            witness,
-        ));
-    }
-    Err(TransactionRequestError::ForeignAccountDataMissing)
-}
-
-/// Rebuilds a [`PartialStorageMap`] from the raw keys the node covered and the partial SMT covering
-/// them.
-///
-/// An empty key list keeps the root alone, since there is no opening to derive it from.
-fn partial_map_into_partial_storage(
-    map_keys: &[StorageMapKey],
-    partial_smt: &PartialSmt,
-) -> Result<PartialStorageMap, TransactionRequestError> {
-    if map_keys.is_empty() {
-        return Ok(PartialStorageMap::new(partial_smt.root()));
-    }
-
-    let witnesses = map_keys
-        .iter()
-        .map(|key| {
-            let proof = partial_smt.open(&key.hash().as_word())?;
-            StorageMapWitness::new(proof, [*key]).map_err(TransactionRequestError::StorageMapError)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(PartialStorageMap::with_witnesses(witnesses)?)
-}
+//! Tests the conversion of account proofs from the node into foreign account inputs.
 
 // TESTS
 // ================================================================================================
@@ -119,13 +7,20 @@ fn partial_map_into_partial_storage(
 mod foreign_vault_tests {
     use alloc::sync::Arc;
 
-    use miden_protocol::account::Account;
+    use miden_protocol::Word;
+    use miden_protocol::account::{
+        Account,
+        AccountStorageHeader,
+        PartialAccount,
+        StorageSlotHeader,
+        StorageSlotName,
+        StorageSlotType,
+    };
     use miden_protocol::asset::FungibleAsset;
     use miden_testing::{Auth, MockChainBuilder};
 
-    use super::account_proof_into_inputs;
-    use crate::rpc::NodeRpcClient;
-    use crate::rpc::domain::account::{GetAccountRequest, VaultFetch};
+    use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
+    use crate::rpc::{NodeRpcClient, RpcError};
     use crate::test_utils::mock::MockRpcApi;
 
     fn chain_with_funded_account() -> (Account, Arc<dyn NodeRpcClient>) {
@@ -144,20 +39,19 @@ mod foreign_vault_tests {
         let committed_root = account.vault().root();
 
         let (_block, proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
-            )
+            .get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_vault(VaultFetch::IfChangedFrom(committed_root)),
+            ))
             .await
             .unwrap();
 
         let details = proof.vault_details().expect("public account must carry vault details");
         assert!(
-            details.assets.is_empty(),
+            details.assets().is_some_and(<[_]>::is_empty),
             "the node omits the asset list when the sent root matches"
         );
 
-        let inputs = account_proof_into_inputs(proof).unwrap();
+        let inputs = proof.into_account_inputs().unwrap();
 
         assert_eq!(inputs.vault().root(), committed_root);
         assert!(
@@ -173,17 +67,52 @@ mod foreign_vault_tests {
         let committed_root = account.vault().root();
 
         let (_block, proof) = rpc
-            .get_account(account.id(), GetAccountRequest::new().with_vault(VaultFetch::Always))
+            .get_account(
+                GetAccountRequest::new(account.id())
+                    .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
+            )
             .await
             .unwrap();
 
-        let inputs = account_proof_into_inputs(proof).unwrap();
+        let inputs = proof.into_account_inputs().unwrap();
 
         assert_eq!(inputs.vault().root(), committed_root);
         assert!(
             inputs.vault().assets().next().is_some(),
             "a verified asset list must be kept in the partial vault"
         );
+    }
+
+    #[tokio::test]
+    async fn account_details_convert_to_a_partial_account() {
+        let (account, rpc) = chain_with_funded_account();
+        let (_, proof) = rpc
+            .get_account(
+                GetAccountRequest::new(account.id())
+                    .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
+            )
+            .await
+            .unwrap();
+        let partial = PartialAccount::try_from(proof.into_details().unwrap()).unwrap();
+        assert_eq!(partial.to_commitment(), account.to_commitment());
+        assert_eq!(
+            partial.vault().open(FungibleAsset::mock(500).id()).unwrap(),
+            account.vault().open(FungibleAsset::mock(500).id())
+        );
+    }
+
+    #[tokio::test]
+    async fn account_details_reject_a_mismatched_storage_header() {
+        let (account, rpc) = chain_with_funded_account();
+        let (_, proof) = rpc.get_account(GetAccountRequest::new(account.id())).await.unwrap();
+        let mut details = proof.into_details().unwrap();
+        details.storage_details.header = AccountStorageHeader::new(vec![StorageSlotHeader::new(
+            StorageSlotName::new("miden::testing::wrong_storage").unwrap(),
+            StorageSlotType::Value,
+            Word::from([1u32, 2, 3, 4]),
+        )])
+        .unwrap();
+        assert!(matches!(PartialAccount::try_from(details), Err(RpcError::InvalidResponse(_))));
     }
 }
 
@@ -202,9 +131,9 @@ mod foreign_storage_map_tests {
     use miden_protocol::transaction::AccountInputs;
     use miden_testing::{Auth, MockChainBuilder};
 
-    use super::account_proof_into_inputs;
     use crate::rpc::NodeRpcClient;
     use crate::rpc::domain::account::{
+        AccountFetch,
         AccountStorageRequirements,
         GetAccountRequest,
         StorageMapEntries,
@@ -251,15 +180,14 @@ mod foreign_storage_map_tests {
         keys: &[StorageMapKey],
     ) -> AccountInputs {
         let requirements = AccountStorageRequirements::new([(slot_name.clone(), keys.iter())]);
-        let (_block, proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_storage(StorageMapFetch::Slots(requirements)),
-            )
+        let (_block, proof) =
+            rpc.get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
+            ))
             .await
             .unwrap();
 
-        account_proof_into_inputs(proof).unwrap()
+        proof.into_account_inputs().unwrap()
     }
 
     /// An entry list that hashes to the slot's root in the storage header is kept as a full map.
@@ -316,19 +244,18 @@ mod foreign_storage_map_tests {
         );
     }
 
-    /// An entry list that does not hash to the slot's root in the storage header must likewise
-    /// degrade to a root-only map instead of being carried at a root the account never committed.
+    /// An entry list that does not hash to the slot's root in the storage header is rejected,
+    /// because only an inconsistent response produces it.
     #[tokio::test]
-    async fn mismatched_map_entries_degrade_to_a_root_only_map() {
+    async fn mismatched_map_entries_are_rejected() {
         let (account, slot_name, _map_root, rpc) = chain_with_map_account();
 
         let requirements =
             AccountStorageRequirements::all_entries(core::slice::from_ref(&slot_name));
-        let (_block, mut proof) = rpc
-            .get_account(
-                account.id(),
-                GetAccountRequest::new().with_storage(StorageMapFetch::Slots(requirements)),
-            )
+        let (_block, mut proof) =
+            rpc.get_account(GetAccountRequest::new(account.id()).with_fetch(
+                AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
+            ))
             .await
             .unwrap();
 
@@ -342,11 +269,9 @@ mod foreign_storage_map_tests {
         };
         entries.pop();
 
-        let inputs = account_proof_into_inputs(proof).unwrap();
-
-        assert!(
-            inputs.storage().maps().next().is_none(),
-            "an entry list that disagrees with the slot root must not be carried"
-        );
+        assert!(matches!(
+            proof.into_account_inputs(),
+            Err(crate::rpc::RpcError::InvalidResponse(_))
+        ));
     }
 }

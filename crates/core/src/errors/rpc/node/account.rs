@@ -28,6 +28,12 @@ pub enum GetAccountError {
     /// Requested block has been pruned
     #[error("block pruned")]
     BlockPruned,
+    /// Requested storage slot does not exist in the account at the requested block
+    #[error("storage slot not found")]
+    StorageSlotNotFound,
+    /// Requested storage slot is not a map slot
+    #[error("storage slot is not a map")]
+    StorageSlotNotMap,
     /// Error code not recognized by this client version. This can happen if the node is newer than
     /// the client and has added new error variants.
     #[error("unknown error code {code}: {message}")]
@@ -43,6 +49,8 @@ impl GetAccountError {
             3 => Self::AccountNotPublic,
             4 => Self::UnknownBlock,
             5 => Self::BlockPruned,
+            6 => Self::StorageSlotNotFound,
+            7 => Self::StorageSlotNotMap,
             _ => Self::Unknown { code, message: String::from(message) },
         }
     }

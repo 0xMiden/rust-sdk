@@ -29,6 +29,7 @@ use crate::ClientError;
 use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
     AccountStorageMapDetails,
     GetAccountRequest,
@@ -1073,7 +1074,7 @@ impl StateSync {
         let chain_tip = chain_tip_header.block_num();
         let (proof_block_num, proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(chain_tip)))
             .await?;
 
         if proof_block_num != chain_tip {
@@ -1192,11 +1193,13 @@ impl StateSync {
         let (proof_block_num, proof) = self
             .rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
+                GetAccountRequest::new(account_id)
                     .at(AccountStateAt::Block(target_block_num))
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_fetch(
+                        AccountFetch::new()
+                            .with_storage(StorageMapFetch::All)
+                            .with_vault(VaultFetch::Always),
+                    ),
             )
             .await
             .map_err(ClientError::RpcError)?;
@@ -1219,7 +1222,7 @@ impl StateSync {
             Ordering::Greater => {},
         }
 
-        let vault_oversized = details.vault_details.too_many_assets;
+        let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
             .storage_details
             .map_details
@@ -1732,7 +1735,7 @@ mod tests {
     use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
-    use crate::rpc::domain::account::AccountProofError;
+    use crate::rpc::domain::account::{AccountProofError, AccountVaultDetails};
     use crate::store::{OutputNoteRecord, OutputNoteState};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -2092,10 +2095,11 @@ mod tests {
     ) -> (BlockNumber, AccountProof) {
         rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(VaultFetch::Always),
+                ),
             )
             .await
             .unwrap()
@@ -2231,18 +2235,14 @@ mod tests {
         );
 
         let extra_faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let AccountVaultDetails::Assets(assets) = &mut details.vault_details else {
+            panic!("the honest snapshot must carry the asset list");
+        };
         assert!(
-            details
-                .vault_details
-                .assets
-                .iter()
-                .all(|asset| asset.faucet_id() != extra_faucet),
+            assets.iter().all(|asset| asset.faucet_id() != extra_faucet),
             "the extra asset must come from a faucet the account does not hold yet"
         );
-        details
-            .vault_details
-            .assets
-            .push(FungibleAsset::new(extra_faucet, 1_000).unwrap().into());
+        assets.push(FungibleAsset::new(extra_faucet, 1_000).unwrap().into());
 
         let result = Account::try_from(&details);
         assert!(

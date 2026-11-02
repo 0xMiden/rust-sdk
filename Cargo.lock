@@ -2874,7 +2874,6 @@ dependencies = [
  "miden-client-sqlite-store",
  "miden-debug",
  "miden-mast-package",
- "miden-protocol",
  "midenc-hir-type",
  "miette",
  "predicates",
@@ -2959,15 +2958,16 @@ dependencies = [
 name = "miden-client-proto"
 version = "0.18.0"
 dependencies = [
- "miden-client",
  "miden-client-core",
  "miden-objects",
  "miden-protocol",
  "miden-standards",
+ "miden-testing",
  "prost",
  "prost-build",
  "protox",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

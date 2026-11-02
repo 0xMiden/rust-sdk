@@ -1,17 +1,11 @@
 //! Protobuf conversion of sync values.
 
-#[cfg(feature = "client")]
-use miden_client::sync::SyncSummary;
-use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+use miden_client_core::sync::{NoteTagRecord, NoteTagSource, SyncSummary};
 use miden_objects::DecodeMessageExt;
-#[cfg(feature = "client")]
-use miden_protocol::note::NoteId;
-use miden_protocol::note::{NoteDetailsCommitment, NoteTag};
+use miden_protocol::note::{NoteDetailsCommitment, NoteId, NoteTag};
 
 use crate as proto;
-#[cfg(feature = "client")]
-use crate::decode_all;
-use crate::{ProtoDecodeError, ProtobufValue, required};
+use crate::{ProtoDecodeError, ProtobufValue, decode_all, required};
 
 impl ProtobufValue for NoteTagSource {
     type Message = proto::NoteTagSource;
@@ -61,7 +55,6 @@ impl ProtobufValue for NoteTagRecord {
     }
 }
 
-#[cfg(feature = "client")]
 impl ProtobufValue for SyncSummary {
     type Message = proto::SyncSummary;
 
@@ -140,15 +133,14 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "client")]
-    fn sync_summary() -> miden_client::sync::SyncSummary {
+    fn sync_summary() -> miden_client_core::sync::SyncSummary {
         use miden_protocol::block::BlockNumber;
         use miden_protocol::note::NoteId;
         use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
         use miden_protocol::transaction::TransactionId;
 
         let note_id = |seed: u32| NoteId::from_raw(Word::from([seed, 0, 0, 0]));
-        miden_client::sync::SyncSummary::new(
+        miden_client_core::sync::SyncSummary::new(
             BlockNumber::from(9u32),
             vec![note_id(1)],
             vec![note_id(2)],
@@ -161,14 +153,15 @@ mod tests {
     }
 
     /// Each list holds a different ID, so a field mix-up causes a mismatch.
-    #[cfg(feature = "client")]
     #[test]
     fn sync_summary_round_trips() {
         let summary = sync_summary();
-        assert_eq!(decode::<miden_client::sync::SyncSummary>(&encode(&summary)).unwrap(), summary);
+        assert_eq!(
+            decode::<miden_client_core::sync::SyncSummary>(&encode(&summary)).unwrap(),
+            summary
+        );
     }
 
-    #[cfg(feature = "client")]
     #[test]
     fn sync_summary_rejects_a_malformed_note_id() {
         let mut message = sync_summary().to_proto();
@@ -177,7 +170,7 @@ mod tests {
         };
 
         assert!(matches!(
-            miden_client::sync::SyncSummary::from_proto(message),
+            miden_client_core::sync::SyncSummary::from_proto(message),
             Err(ProtoDecodeError::Conversion(_))
         ));
     }

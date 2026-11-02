@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
-#[cfg(feature = "client")]
-use miden_client::transaction::{ChainAnchor, ChainAnchorError, TransactionResult};
 use miden_client_core::rpc::domain::account::{
     AccountFetch,
     AccountStorageRequirements,
@@ -13,31 +11,29 @@ use miden_client_core::rpc::domain::account::{
 use miden_client_core::store::NoteUpdates;
 use miden_client_core::sync::NoteTagRecord;
 use miden_client_core::transaction::{
+    ChainAnchor,
+    ChainAnchorError,
     DiscardCause,
     ForeignAccount,
     NoteArgs,
     TransactionDetails,
     TransactionRequest,
     TransactionRequestBuilder,
+    TransactionResult,
     TransactionScriptTemplate,
     TransactionStatus,
     TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
-#[cfg(feature = "client")]
-use miden_protocol::MAX_INPUT_NOTES_PER_TX;
-use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
-#[cfg(feature = "client")]
 use miden_protocol::block::BlockHeader;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
-#[cfg(feature = "client")]
-use miden_protocol::transaction::PartialBlockchain;
-use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+use miden_protocol::transaction::{AccountInputs, InputNote, PartialBlockchain, TransactionScript};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::vm::AdviceMap;
+use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
@@ -642,7 +638,6 @@ fn decode_future_notes(
         .collect()
 }
 
-#[cfg(feature = "client")]
 impl ProtobufValue for TransactionResult {
     type Message = proto::TransactionResult;
 
@@ -695,7 +690,6 @@ impl ProtobufValue for TransactionStoreUpdate {
 // CHAIN ANCHOR
 // ================================================================================================
 
-#[cfg(feature = "client")]
 impl ProtobufValue for ChainAnchor {
     type Message = proto::ChainAnchor;
 
@@ -734,6 +728,7 @@ impl ProtobufValue for ChainAnchor {
 
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
     use std::vec;
     use std::vec::Vec;
 
@@ -741,6 +736,7 @@ mod tests {
         ForeignAccount,
         TransactionRequest,
         TransactionRequestBuilder,
+        TransactionResult,
     };
     use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
     use miden_protocol::account::{
@@ -752,12 +748,12 @@ mod tests {
         StorageMapKey,
         StorageSlotName,
     };
-    use miden_protocol::asset::FungibleAsset;
+    use miden_protocol::asset::{Asset, FungibleAsset};
     use miden_protocol::block::BlockNumber;
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::MerkleTree;
     use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
-    use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
+    use miden_protocol::note::{Note, NoteDetails, NoteScript, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
@@ -768,6 +764,7 @@ mod tests {
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
+    use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 
     use super::{AccountFetch, AccountStorageRequirements, StorageMapFetch, VaultFetch, proto};
     use crate::{decode, encode};
@@ -928,14 +925,50 @@ mod tests {
             .collect()
     }
 
+    // TRANSACTION RESULT
+    // --------------------------------------------------------------------------------------------
+
+    /// The executed transaction consumes a P2ID note, and the result expects the same note as a
+    /// future note, so both fields carry data.
+    #[tokio::test]
+    async fn transaction_result_round_trips() {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100).unwrap());
+
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+        let note = builder
+            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
+            .unwrap();
+        let mut chain = builder.build().unwrap();
+        chain.prove_next_block().unwrap();
+
+        let executed_transaction = Box::pin(
+            chain
+                .build_transaction(MockTransactionInput::Account(account.clone()))
+                .unauthenticated_input_note(note.clone())
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+
+        let future_notes =
+            vec![(NoteDetails::from(note), NoteTag::with_account_target(account.id()))];
+        let result = TransactionResult::new(executed_transaction, future_notes);
+
+        assert_eq!(decode::<TransactionResult>(&encode(&result)).unwrap(), result);
+    }
+
     // CHAIN ANCHOR
     // --------------------------------------------------------------------------------------------
 
-    #[cfg(feature = "client")]
     mod chain_anchor {
         use std::vec::Vec;
 
-        use miden_client::transaction::ChainAnchor;
+        use miden_client_core::transaction::ChainAnchor;
         use miden_protocol::MAX_INPUT_NOTES_PER_TX;
         use miden_protocol::block::BlockHeader;
         use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};

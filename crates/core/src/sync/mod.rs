@@ -9,5 +9,8 @@ pub use state_sync_update::{
     TransactionUpdateTracker,
 };
 
+mod summary;
+pub use summary::SyncSummary;
+
 mod tag;
 pub use tag::{NoteTagRecord, NoteTagSource};

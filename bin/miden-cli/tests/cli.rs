@@ -41,6 +41,7 @@ use miden_client::testing::common::{
     TestClient,
     create_test_store_path,
 };
+use miden_client::utils::Serializable;
 use miden_client::vm::{
     Package,
     PackageExport,
@@ -50,12 +51,11 @@ use miden_client::vm::{
     SectionId,
     TargetType,
 };
-use miden_client::{self, Word};
+use miden_client::{self, Deserializable, Word};
 use miden_client_cli::MIDEN_DIR;
 use miden_client_cli::config::{KEYSTORE_DIRECTORY, Network};
 use miden_client_integration_tests::funding;
 use miden_client_sqlite_store::SqliteStore;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use midenc_hir_type::{CallConv, FunctionType, StructRef, StructType, Type};
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;

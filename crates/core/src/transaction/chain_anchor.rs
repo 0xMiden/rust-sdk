@@ -20,13 +20,13 @@ use thiserror::Error;
 /// Since protocol 0.16 the signed transaction summary binds the reference block commitment, so a
 /// summary produced at one block cannot be reproduced by re-executing at another. Flows that
 /// collect signatures over a summary and execute later (e.g. multisig) capture an anchor at the
-/// block the summary was built at ([`crate::Client::chain_anchor_for_request`]), ship it with the
-/// signed data, and replay the transaction with [`crate::Client::execute_transaction_at`] so the
-/// summary — and with it the signature advice keys — reproduces exactly.
+/// block the summary was built at (`Client::chain_anchor_for_request`), ship it with the signed
+/// data, and replay the transaction with `Client::execute_transaction_at` so the summary — and with
+/// it the signature advice keys — reproduces exactly.
 ///
 /// The anchor's [`PartialBlockchain`] must track each block that the transaction authenticates.
-/// [`crate::Client::chain_anchor_for_request`] captures the blocks declared by the request and the
-/// creation blocks of its authenticated input notes.
+/// `Client::chain_anchor_for_request` captures the blocks declared by the request and the creation
+/// blocks of its authenticated input notes.
 ///
 /// [`TransactionSummary`]: miden_protocol::transaction::TransactionSummary
 #[derive(Debug, Clone, PartialEq, Eq)]

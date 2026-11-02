@@ -139,6 +139,8 @@ mod test_utils;
 
 pub mod errors;
 
+pub use miden_protocol::utils::serde::{Deserializable, Serializable, SliceReader};
+
 // RE-EXPORTS
 // ================================================================================================
 

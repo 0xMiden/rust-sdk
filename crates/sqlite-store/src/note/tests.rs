@@ -11,6 +11,7 @@ use miden_client::note::{
     NoteType,
     PartialNoteMetadata,
 };
+use miden_client::utils::Serializable;
 use miden_client::{Felt, ZERO};
 use miden_client_core::errors::StoreError;
 use miden_client_core::store::input_note_states::{
@@ -44,7 +45,6 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
 };
 use miden_protocol::transaction::TransactionId;
-use miden_protocol::utils::serde::Serializable;
 use miden_standards::note::StandardNote;
 
 use crate::tests::create_test_store;

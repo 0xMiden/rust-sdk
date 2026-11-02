@@ -4,12 +4,9 @@ use std::collections::BTreeMap;
 #[cfg(feature = "testing")]
 use std::vec::Vec;
 
-#[cfg(feature = "client")]
-use miden_client::note_transport::NoteInfo;
+use miden_client_core::note_transport::{NoteInfo, NoteTransportCursor, NoteTransportSyncState};
 #[cfg(feature = "testing")]
-use miden_client::testing::note_transport::MockNoteTransportNode;
-use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
-#[cfg(feature = "client")]
+use miden_client_core::testing::note_transport::MockNoteTransportNode;
 use miden_objects::DecodeMessageExt;
 use miden_protocol::note::NoteTag;
 
@@ -82,7 +79,6 @@ impl ProtobufValue for NoteTransportSyncState {
     }
 }
 
-#[cfg(feature = "client")]
 impl ProtobufValue for NoteInfo {
     type Message = proto::NoteInfo;
 
@@ -155,9 +151,9 @@ impl ProtobufValue for MockNoteTransportNode {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
 mod tests {
-    use miden_client::note_transport::NoteInfo;
+    use miden_client_core::note_transport::NoteInfo;
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;

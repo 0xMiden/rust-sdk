@@ -9,7 +9,7 @@ use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
-use miden_client::utils::hex_to_bytes;
+use miden_client::utils::{Deserializable, DeserializationError, Serializable, hex_to_bytes};
 use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
 use miden_client::{
     AssetError,
@@ -20,7 +20,6 @@ use miden_client::{
     WORD_SIZE,
     Word,
 };
-use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
@@ -1002,8 +1001,8 @@ mod tests {
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
+    use miden_client::utils::Serializable;
     use miden_client::{ClientError, ErrorHint};
-    use miden_protocol::utils::serde::Serializable;
 
     use super::{
         FaucetMetadata,

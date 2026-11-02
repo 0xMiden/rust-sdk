@@ -1,7 +1,6 @@
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use miden_client_core::sync::{PublicAccountUpdate, StateSyncUpdate};
 use miden_protocol::account::{
     AccountCode,
     AccountCodePatch,
@@ -16,83 +15,7 @@ use miden_protocol::account::{
     StorageValuePatch,
 };
 use miden_protocol::errors::AccountPatchError;
-use miden_protocol::note::NoteId;
 use miden_protocol::{ONE, Word};
-
-use super::SyncSummary;
-use crate::note::NoteUpdateType;
-
-impl From<&StateSyncUpdate> for SyncSummary {
-    fn from(value: &StateSyncUpdate) -> Self {
-        let new_public_note_ids = value
-            .note_updates()
-            .input_notes()
-            .iter()
-            .filter_map(|note_update| {
-                let note = note_update.inner();
-                if let NoteUpdateType::Insert = note_update.update_type() {
-                    note.id()
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let committed_note_ids: BTreeSet<NoteId> = value
-            .note_updates()
-            .input_notes()
-            .iter()
-            .filter_map(|note_update| {
-                let note = note_update.inner();
-                // `InsertCommitted` is a previously-tracked expected note that just committed, so
-                // it counts as committed (not as a newly-discovered note) even though it is
-                // persisted via a full-row insert.
-                if matches!(
-                    note_update.update_type(),
-                    NoteUpdateType::Update | NoteUpdateType::InsertCommitted
-                ) && note.is_committed()
-                {
-                    note.id()
-                } else {
-                    None
-                }
-            })
-            .chain(value.note_updates().output_notes().iter().filter_map(|note_update| {
-                let note = note_update.inner();
-                if let NoteUpdateType::Update = note_update.update_type() {
-                    note.is_committed().then_some(note.id())
-                } else {
-                    None
-                }
-            }))
-            .collect();
-
-        let consumed_note_ids: BTreeSet<NoteId> =
-            value.note_updates().consumed_input_note_ids().collect();
-
-        SyncSummary::new(
-            value.block_num(),
-            new_public_note_ids,
-            // Populated by Client::sync_state from the Note Transport Layer fetch.
-            Vec::new(),
-            committed_note_ids.into_iter().collect(),
-            consumed_note_ids.into_iter().collect(),
-            value
-                .account_updates()
-                .updated_public_accounts()
-                .iter()
-                .map(PublicAccountUpdate::id)
-                .collect(),
-            value
-                .account_updates()
-                .mismatched_private_accounts()
-                .iter()
-                .map(|(id, _)| *id)
-                .collect(),
-            value.transaction_updates().committed_transactions().map(|t| t.id).collect(),
-        )
-    }
-}
 
 /// Builds the absolute [`AccountPatch`] implied by the updates fetched from the node's incremental
 /// endpoints: the value-slot values, the absolute changed map entries per slot, and the absolute

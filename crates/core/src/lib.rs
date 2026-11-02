@@ -11,4 +11,6 @@ pub mod pswap;
 pub mod rpc;
 pub mod store;
 pub mod sync;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod transaction;

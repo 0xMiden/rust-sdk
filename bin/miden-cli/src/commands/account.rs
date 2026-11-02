@@ -18,9 +18,9 @@ use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
 use miden_client::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
+use miden_client::utils::{Deserializable, Serializable};
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;

@@ -31,7 +31,11 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-pub use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
+pub use miden_client_core::note_transport::{
+    NoteInfo,
+    NoteTransportCursor,
+    NoteTransportSyncState,
+};
 
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
@@ -549,28 +553,6 @@ pub struct NoteTransportPage {
     /// Inclusive upper bound of the request. When `has_more` is `false`, the page completes the
     /// requested tags up to this bound.
     pub sync_to: NoteTransportCursor,
-}
-
-/// Information about a note fetched from the note transport network
-#[derive(Debug, Clone)]
-pub struct NoteInfo {
-    /// Note header.
-    pub header: NoteHeader,
-    /// Serialized note details.
-    pub details_bytes: Vec<u8>,
-    /// Block from which the recipient starts scanning for the note's on-chain commitment. This is
-    /// either an unverified sender hint or the exact block verified by a proof-aware transport.
-    /// `None` applies the recipient's default lookback window.
-    pub block_hint: Option<BlockNumber>,
-}
-
-impl NoteInfo {
-    /// Builds a [`NoteInfo`] without a block hint (`block_hint` is `None`).
-    ///
-    /// Use the [`NoteInfo::block_hint`] field directly to attach a hint.
-    pub fn new(header: NoteHeader, details_bytes: Vec<u8>) -> Self {
-        Self { header, details_bytes, block_hint: None }
-    }
 }
 
 // SERIALIZATION

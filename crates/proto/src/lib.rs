@@ -11,9 +11,7 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
-use miden_objects::ConversionError;
-#[cfg(feature = "client")]
-use miden_objects::{DecodeMessageExt, Verify};
+use miden_objects::{ConversionError, DecodeMessageExt, Verify};
 use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 
 mod input_note;
@@ -162,7 +160,6 @@ pub(crate) fn read_upstream<T: Deserializable>(bytes: &[u8]) -> Result<T, ProtoD
 }
 
 /// Decodes and verifies every message of a list.
-#[cfg(feature = "client")]
 pub(crate) fn decode_all<M>(
     messages: Vec<M>,
 ) -> Result<Vec<<M::Decoded as Verify>::Verified>, ProtoDecodeError>

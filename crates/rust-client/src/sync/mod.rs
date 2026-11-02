@@ -60,7 +60,6 @@ use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cmp::max;
 
 use futures::{StreamExt, TryStreamExt};
 use miden_protocol::account::AccountId;
@@ -68,7 +67,6 @@ use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
-use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
 use tracing::{info, warn};
 
@@ -79,7 +77,7 @@ use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
-pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource, SyncSummary};
 mod tag;
 
 mod note_observer;
@@ -540,91 +538,5 @@ where
         validate_account_witness(&witness, account_id, chain_tip_header)?;
 
         Ok(witness)
-    }
-}
-
-// SYNC SUMMARY
-// ================================================================================================
-
-/// Contains stats about the sync operation.
-#[derive(Debug, PartialEq)]
-pub struct SyncSummary {
-    /// Block number up to which the client has been synced.
-    pub block_num: BlockNumber,
-    /// IDs of new public notes that the client has received.
-    pub new_public_notes: Vec<NoteId>,
-    /// IDs of private notes imported from the Note Transport Layer in this sync. They are still
-    /// `Expected` until observed on-chain.
-    ///
-    /// Only populated by [`Client::sync_state`]; [`Client::sync_chain`] always leaves this empty
-    /// because it does not touch the Note Transport Layer.
-    pub new_private_notes: Vec<NoteId>,
-    /// IDs of tracked notes that have been committed.
-    pub committed_notes: Vec<NoteId>,
-    /// IDs of notes that have been consumed.
-    pub consumed_notes: Vec<NoteId>,
-    /// IDs of on-chain accounts that have been updated.
-    pub updated_accounts: Vec<AccountId>,
-    /// IDs of private accounts that have been locked.
-    pub locked_accounts: Vec<AccountId>,
-    /// IDs of committed transactions.
-    pub committed_transactions: Vec<TransactionId>,
-}
-
-impl SyncSummary {
-    pub fn new(
-        block_num: BlockNumber,
-        new_public_notes: Vec<NoteId>,
-        new_private_notes: Vec<NoteId>,
-        committed_notes: Vec<NoteId>,
-        consumed_notes: Vec<NoteId>,
-        updated_accounts: Vec<AccountId>,
-        locked_accounts: Vec<AccountId>,
-        committed_transactions: Vec<TransactionId>,
-    ) -> Self {
-        Self {
-            block_num,
-            new_public_notes,
-            new_private_notes,
-            committed_notes,
-            consumed_notes,
-            updated_accounts,
-            locked_accounts,
-            committed_transactions,
-        }
-    }
-
-    pub fn new_empty(block_num: BlockNumber) -> Self {
-        Self {
-            block_num,
-            new_public_notes: vec![],
-            new_private_notes: vec![],
-            committed_notes: vec![],
-            consumed_notes: vec![],
-            updated_accounts: vec![],
-            locked_accounts: vec![],
-            committed_transactions: vec![],
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.new_public_notes.is_empty()
-            && self.new_private_notes.is_empty()
-            && self.committed_notes.is_empty()
-            && self.consumed_notes.is_empty()
-            && self.updated_accounts.is_empty()
-            && self.locked_accounts.is_empty()
-            && self.committed_transactions.is_empty()
-    }
-
-    pub fn combine_with(&mut self, mut other: Self) {
-        self.block_num = max(self.block_num, other.block_num);
-        self.new_public_notes.append(&mut other.new_public_notes);
-        self.new_private_notes.append(&mut other.new_private_notes);
-        self.committed_notes.append(&mut other.committed_notes);
-        self.consumed_notes.append(&mut other.consumed_notes);
-        self.updated_accounts.append(&mut other.updated_accounts);
-        self.locked_accounts.append(&mut other.locked_accounts);
-        self.committed_transactions.append(&mut other.committed_transactions);
     }
 }

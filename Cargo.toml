@@ -34,7 +34,7 @@ edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
 rust-version = "1.98.1"
-version      = "0.17.4"
+version      = "0.18.0"
 
 [profile.dev]
 codegen-units = 16
@@ -45,31 +45,31 @@ opt-level = 1
 
 [workspace.dependencies]
 # Workspace crates
-miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.17" }
-miden-client-core              = { default-features = false, path = "crates/core", version = "0.17" }
-miden-client-grpc              = { default-features = false, path = "crates/grpc", version = "0.17" }
-miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.17" }
-miden-client-proto             = { default-features = false, path = "crates/proto", version = "0.17" }
-miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.17" }
+miden-client                   = { default-features = false, path = "crates/rust-client", version = "0.18" }
+miden-client-core              = { default-features = false, path = "crates/core", version = "0.18" }
+miden-client-grpc              = { default-features = false, path = "crates/grpc", version = "0.18" }
+miden-client-integration-tests = { default-features = false, path = "bin/integration-tests", version = "0.18" }
+miden-client-proto             = { default-features = false, path = "crates/proto", version = "0.18" }
+miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.18" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.17" }
-miden-objects   = { default-features = false, version = "0.17" }
-miden-protocol  = { default-features = false, version = "0.17" }
-miden-standards = { default-features = false, version = "0.17" }
-miden-testing   = { default-features = false, version = "0.17" }
-miden-tx        = { default-features = false, version = "0.17" }
-miden-tx-batch  = { default-features = false, version = "0.17" }
-miden-usdcx     = { default-features = false, version = "0.17" }
+miden-agglayer  = { default-features = false, version = "0.18" }
+miden-objects   = { default-features = false, version = "0.18" }
+miden-protocol  = { default-features = false, version = "0.18" }
+miden-standards = { default-features = false, version = "0.18" }
+miden-testing   = { default-features = false, version = "0.18" }
+miden-tx        = { default-features = false, version = "0.18" }
+miden-tx-batch  = { default-features = false, version = "0.18" }
+miden-usdcx     = { default-features = false, version = "0.18" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.17.3" }
+miden-node-proto-build = { default-features = false, version = "0.18.1" }
 
 # Miden VM dependencies
-miden-assembly-syntax = { default-features = false, version = "0.35" }
-miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.18.0" }
-miden-mast-package    = { default-features = false, version = "0.35" }
-miden-processor       = { default-features = false, version = "0.35" }
+miden-assembly-syntax = { default-features = false, version = "0.36" }
+miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.19.0" }
+miden-mast-package    = { default-features = false, version = "0.36" }
+miden-processor       = { default-features = false, version = "0.36" }
 
 # External dependencies
 anyhow                = { default-features = false, version = "1.0" }

@@ -17,6 +17,7 @@ impl ProtobufValue for RpcLimits {
             nullifiers_limit: self.nullifiers_limit,
             account_ids_limit: self.account_ids_limit,
             note_tags_limit: self.note_tags_limit,
+            vault_assets_limit: self.vault_assets_limit,
         }
     }
 
@@ -27,6 +28,7 @@ impl ProtobufValue for RpcLimits {
             ("nullifiers", limits.nullifiers_limit),
             ("account IDs", limits.account_ids_limit),
             ("note tags", limits.note_tags_limit),
+            ("vault assets", limits.vault_assets_limit),
         ] {
             if limit == 0 {
                 return Err(ProtoDecodeError::InvalidValue(format!(
@@ -40,6 +42,7 @@ impl ProtobufValue for RpcLimits {
             nullifiers_limit: limits.nullifiers_limit,
             account_ids_limit: limits.account_ids_limit,
             note_tags_limit: limits.note_tags_limit,
+            vault_assets_limit: limits.vault_assets_limit,
         })
     }
 }
@@ -80,6 +83,7 @@ mod tests {
             nullifiers_limit: 100,
             account_ids_limit: 100,
             note_tags_limit: 0,
+            vault_assets_limit: 64,
         };
 
         let error = decode::<RpcLimits>(&encode(&limits)).unwrap_err();

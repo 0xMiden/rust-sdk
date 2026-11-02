@@ -5,6 +5,7 @@ syntax = "proto3";
 package client.transaction;
 
 import "account.proto";
+import "asset.proto";
 import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
@@ -133,7 +134,7 @@ message ExpectedFutureNote {
 message ForeignAccount {
   message Public {
     account.AccountId account_id = 1;
-    AccountStorageRequirements storage_requirements = 2;
+    AccountFetch fetch = 2;
   }
 
   // An account whose state and inclusion witness the request carries.
@@ -147,6 +148,34 @@ message ForeignAccount {
     Public public = 1;
     account.PartialAccount private = 2;
     Prefetched prefetched = 3;
+  }
+}
+
+// Storage map entries and vault data that the client gets for a public foreign account.
+message AccountFetch {
+  // Gets the entries of every storage map.
+  message AllStorageMaps {}
+
+  // Gets the full vault.
+  message AllAssets {}
+
+  // Gets proofs for these vault assets.
+  message AssetIds {
+    repeated asset.AssetId asset_ids = 1;
+  }
+
+  // An absent storage policy gets no storage map entries.
+  oneof storage {
+    AllStorageMaps all_storage_maps = 1;
+    AccountStorageRequirements storage_maps = 2;
+  }
+
+  // An absent vault policy gets no vault data.
+  oneof vault {
+    AllAssets all_assets = 3;
+    // Gets the full vault only when its root differs from this root.
+    primitives.Word if_changed_from = 4;
+    AssetIds asset_ids = 5;
   }
 }
 

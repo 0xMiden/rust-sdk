@@ -1,15 +1,10 @@
 use std::collections::BTreeMap;
 
 use miden_client_core::errors::RpcError;
-use miden_client_core::rpc::domain::account::{
-    AccountProof,
-    AccountStorageRequirements,
-    GetAccountRequest,
-    StorageMapFetch,
-};
+use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::{AccountStateAt, RpcEndpoint};
 use miden_objects::DecodeMessageExt;
-use miden_protocol::account::{AccountCode, AccountId};
+use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::{EMPTY_WORD, Word};
@@ -21,9 +16,7 @@ use crate::{GrpcClient, RpcMethod, generated as proto};
 
 /// Fetches the proof of an account and, for accounts with public state, its details.
 pub struct GetAccount {
-    /// The account to fetch.
-    pub account_id: AccountId,
-    /// The block and the details to fetch.
+    /// The account, the block, and the details to fetch.
     pub request: GetAccountRequest,
 }
 
@@ -34,7 +27,7 @@ impl RpcMethod for GetAccount {
     type Output = (BlockNumber, AccountProof);
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
-        let GetAccountRequest { storage, at, known_code, vault } = self.request.clone();
+        let GetAccountRequest { account_id, fetch, at, known_code } = self.request.clone();
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
         let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();
@@ -42,19 +35,13 @@ impl RpcMethod for GetAccount {
             known_codes_by_commitment.insert(account_code.commitment(), account_code);
         }
 
-        // We need the requested slots to interpret the node response.
-        let requirements = match storage.clone() {
-            StorageMapFetch::Slots(reqs) => reqs,
-            StorageMapFetch::Skip | StorageMapFetch::All => AccountStorageRequirements::default(),
-        };
-
         // Only request details for accounts with public state (Public or Network), passing the
         // known code commitment so the node can skip re-sending code we already hold.
-        let account_details = if self.account_id.is_public() {
+        let account_details = if account_id.is_public() {
             Some(AccountDetailRequest {
                 code_commitment: Some(known_code_commitment.into()),
-                asset_vault_commitment: vault_fetch_to_proto(&vault),
-                storage_request: storage_map_fetch_to_proto(storage),
+                vault_request: vault_fetch_to_proto(fetch.vault()),
+                storage_request: storage_map_fetch_to_proto(fetch.storage().clone()),
             })
         } else {
             None
@@ -66,7 +53,7 @@ impl RpcMethod for GetAccount {
         };
 
         let request = proto::node::v1::GetAccountRequest {
-            account_id: Some(self.account_id.into()),
+            account_id: Some(account_id.into()),
             block_num,
             details: account_details,
         };
@@ -95,7 +82,7 @@ impl RpcMethod for GetAccount {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &requirements)?;
+                .into_domain(&known_codes_by_commitment, &fetch)?;
 
             Some(details)
         } else {
@@ -115,11 +102,11 @@ impl RpcMethod for GetAccount {
         };
         verify_block_num(requested, *block_num)?;
 
-        if proof.account_id() != self.account_id {
+        if proof.account_id() != self.request.account_id {
             return Err(RpcError::InvalidResponse(format!(
                 "node returned proof for account {} but {} was requested",
                 proof.account_id(),
-                self.account_id,
+                self.request.account_id,
             )));
         }
         Ok(())

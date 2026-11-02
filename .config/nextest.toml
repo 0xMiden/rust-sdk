@@ -29,3 +29,8 @@ test-group = "integration"
 [[profile.default.overrides]]
 filter  = "test(import_genesis_accounts_can_be_used_for_transactions)"
 retries = 0
+
+# The ignored consume-notes test proves 40 transactions locally, so it runs with a raised timeout.
+[[profile.default.overrides]]
+filter       = "test(consume_notes_consumes_more_notes_than_one_transaction_holds)"
+slow-timeout = { period = "3m", terminate-after = 4 }

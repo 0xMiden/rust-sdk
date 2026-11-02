@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.1 (TBD)
+
+### Features
+
+* [FEATURE][cli] `consume-notes` consumes any number of notes. It splits the notes into transactions of at most `--notes-per-tx` notes, which is 50 by default and 1024 at most. If there is more than one transaction, the command asks for confirmation one time and syncs before each transaction after the first. It stops at the first transaction that fails, and a new run consumes the notes that are left. `--filter` limits the notes to the ones that use the given note scripts, each given by a standard note name or a hex script root. Before it consumes the notes, the command prints a table with the number of notes for each note script ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+* [FEATURE][rust] Re-exported `MAX_INPUT_NOTES_PER_TX`, the largest number of input notes in one transaction ([#XXXX](https://github.com/0xMiden/rust-sdk/pull/XXXX)).
+
 ## 0.18.0 (2026-10-27)
 
 ### Breaking Changes

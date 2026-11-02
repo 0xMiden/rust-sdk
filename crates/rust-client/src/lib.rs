@@ -338,6 +338,7 @@ use miden_protocol::assembly::SourceManagerSync;
 pub use miden_protocol::{
     EMPTY_WORD,
     Felt,
+    MAX_INPUT_NOTES_PER_TX,
     MAX_TX_EXECUTION_CYCLES,
     MIN_TX_EXECUTION_CYCLES,
     ONE,

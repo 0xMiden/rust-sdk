@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
@@ -5,6 +6,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::builder::RangedU64ValueParser;
 use clap::{Parser, Subcommand, ValueEnum};
 use miden_client::account::AccountId;
 use miden_client::asset::AssetAmount;
@@ -12,8 +14,10 @@ use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
     Note,
+    NoteScriptRoot,
     NoteTag,
     NoteType as MidenNoteType,
+    StandardNote,
     get_input_note_with_id_prefix,
 };
 use miden_client::store::NoteRecordError;
@@ -22,13 +26,15 @@ use miden_client::transaction::{
     PswapTransactionData,
     RawOutputNote,
     SwapTransactionData,
+    TransactionProver,
     TransactionRequest,
     TransactionRequestBuilder,
 };
-use miden_client::{Client, RemoteTransactionProver};
+use miden_client::{Client, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word};
 use tracing::info;
 
 use crate::config::CliConfig;
+use crate::create_dynamic_table;
 use crate::errors::CliError;
 use crate::utils::{
     SHARED_TOKEN_DOCUMENTATION,
@@ -282,9 +288,13 @@ impl SwapCmd {
     }
 }
 
+/// Default value of the largest number of notes that one note-consumption transaction consumes.
+const DEFAULT_NOTES_PER_TX: usize = 50;
+
 /// Consume with the account corresponding to `account_id` all of the notes from `list_of_notes`. If
 /// no account ID is provided, the default one is used. If no notes are provided, any notes that are
-/// identified to be owned by the account ID are consumed.
+/// identified to be owned by the account ID are consumed. If there are more notes than
+/// `notes_per_tx`, the notes are consumed in more than one transaction.
 #[derive(Debug, Parser, Clone)]
 pub struct ConsumeNotesCmd {
     /// The account ID to be used to consume the note or its hex prefix. If none is provided, the
@@ -300,6 +310,29 @@ pub struct ConsumeNotesCmd {
     /// Flag to delegate proving to the remote prover specified in the config file.
     #[arg(long, default_value_t = false)]
     delegate_proving: bool,
+
+    /// The largest number of notes that one transaction consumes. If there are more notes, the
+    /// command consumes them in more than one transaction. A larger value makes fewer transactions,
+    /// but each transaction needs more time and memory to prove. The node rejects a transaction
+    /// that is larger than its request size limit, so a large value can fail with large notes.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_NOTES_PER_TX,
+        value_parser = RangedU64ValueParser::<usize>::new().range(1..=MAX_INPUT_NOTES_PER_TX as u64),
+    )]
+    notes_per_tx: usize,
+
+    /// Consume only the notes that use one of these note scripts. Each value is the name of a
+    /// standard note (for example P2ID or P2IDE) or a hex note script root. Separate the values
+    /// with commas or use the flag more than one time. This flag cannot be used with note IDs.
+    #[arg(
+        long,
+        value_name = "SCRIPT",
+        value_delimiter = ',',
+        value_parser = parse_note_script_filter,
+        conflicts_with = "list_of_notes",
+    )]
+    filter: Vec<NoteScriptRoot>,
 
     /// Debug the note-consumption transaction instead of proving and submitting it: start a DAP
     /// debug adapter server on the given address (e.g. "127.0.0.1:4711") and wait for a DAP client
@@ -325,7 +358,7 @@ impl ConsumeNotesCmd {
         let mut input_notes = Vec::new();
 
         for note_id in &self.list_of_notes {
-            input_notes.push((resolve_input_note(&client, note_id).await?, None));
+            input_notes.push(resolve_input_note(&client, note_id).await?);
         }
 
         let account_id =
@@ -335,32 +368,65 @@ impl ConsumeNotesCmd {
             info!("No input note IDs provided, getting all notes consumable by {}", account_id);
             let consumable_notes = client.get_consumable_notes(Some(account_id)).await?;
             for (note_record, _) in consumable_notes {
-                input_notes.push((
-                    note_record.try_into().map_err(|err: NoteRecordError| {
-                        CliError::Transaction(
-                            err.into(),
-                            "Failed to convert note record".to_string(),
-                        )
-                    })?,
-                    None,
-                ));
+                let note: Note = note_record.try_into().map_err(|err: NoteRecordError| {
+                    CliError::Transaction(err.into(), "Failed to convert note record".to_string())
+                })?;
+                if self.filter.is_empty() || self.filter.contains(&note.script().root()) {
+                    input_notes.push(note);
+                }
             }
         }
 
         if input_notes.is_empty() {
-            println!("Did not find any consumable notes for {account_id}.");
+            if self.filter.is_empty() {
+                println!("Did not find any consumable notes for {account_id}.");
+            } else {
+                println!(
+                    "Did not find any consumable notes for {account_id} that match the filter."
+                );
+            }
             return Ok(());
         }
 
-        let transaction_request = TransactionRequestBuilder::new()
-            .input_notes(input_notes)
-            .build()
-            .map_err(|err| {
-                CliError::Transaction(
-                    err.into(),
-                    "Failed to build consume notes transaction".to_string(),
+        print_note_scripts(&input_notes);
+
+        if input_notes.len() > self.notes_per_tx {
+            #[cfg(feature = "dap")]
+            if self.start_debug_adapter.is_some() {
+                return Err(CliError::Input(format!(
+                    "the debug adapter runs one transaction, but {} notes need more than one transaction of up to {} notes. Pass fewer notes or a larger --notes-per-tx",
+                    input_notes.len(),
+                    self.notes_per_tx
+                )));
+            }
+
+            println!(
+                "Consuming {} notes in {} transactions of up to {} notes each.",
+                input_notes.len(),
+                input_notes.len().div_ceil(self.notes_per_tx),
+                self.notes_per_tx
+            );
+            if !force
+                && !user_confirms(
+                    "\nContinue with executing, proving and submitting all transactions? Changes will be irreversible once the proofs are finalized on the network (y/N)",
                 )
-            })?;
+            {
+                println!("Note consumption was cancelled.");
+                return Ok(());
+            }
+
+            let prover = transaction_prover(&client, self.delegate_proving)?;
+            return consume_notes_in_chunks(
+                &mut client,
+                account_id,
+                &input_notes,
+                self.notes_per_tx,
+                prover,
+            )
+            .await;
+        }
+
+        let transaction_request = consume_notes_request(&input_notes)?;
 
         #[cfg(feature = "dap")]
         if let Some(addr) = self.start_debug_adapter.as_ref() {
@@ -383,6 +449,137 @@ impl ConsumeNotesCmd {
         )
         .await
     }
+}
+
+/// Standard notes that `--filter` accepts by name.
+const STANDARD_NOTES: [StandardNote; 19] = [
+    StandardNote::P2ID,
+    StandardNote::P2IDE,
+    StandardNote::SWAP,
+    StandardNote::PSWAP,
+    StandardNote::MINT,
+    StandardNote::BURN,
+    StandardNote::CONSTANT_FEE_POLICY_CONFIG,
+    StandardNote::FAUCET_POLICY_CONFIG,
+    StandardNote::FAUCET_METADATA_CONFIG,
+    StandardNote::MIN_BURN_AMOUNT_CONFIG,
+    StandardNote::ALLOWLIST_CONFIG,
+    StandardNote::BLOCKLIST_CONFIG,
+    StandardNote::PAUSE_CONFIG,
+    StandardNote::OWNER_CONFIG,
+    StandardNote::RBAC_CONFIG,
+    StandardNote::NETWORK_ACCOUNT_CONFIG,
+    StandardNote::UPGRADE,
+    StandardNote::FEE_SPONSORSHIP,
+    StandardNote::TX_FEE,
+];
+
+/// Parses a `--filter` value: the name of a standard note in any letter case, or a hex note script
+/// root.
+fn parse_note_script_filter(value: &str) -> Result<NoteScriptRoot, String> {
+    if let Some(standard_note) =
+        STANDARD_NOTES.iter().find(|note| note.name().eq_ignore_ascii_case(value))
+    {
+        return Ok(standard_note.script_root());
+    }
+
+    Word::try_from(value).map(NoteScriptRoot::from_raw).map_err(|_| {
+        let names = STANDARD_NOTES.iter().map(StandardNote::name).collect::<Vec<_>>();
+        format!(
+            "expected a hex note script root or the name of a standard note: {}",
+            names.join(", ")
+        )
+    })
+}
+
+/// Prints a table with the number of notes in `notes` for each note script.
+fn print_note_scripts(notes: &[Note]) {
+    let mut num_notes_by_script = BTreeMap::<NoteScriptRoot, usize>::new();
+    for note in notes {
+        *num_notes_by_script.entry(note.script().root()).or_default() += 1;
+    }
+
+    let mut table = create_dynamic_table(&["Standard note", "Script root", "Notes"]);
+    for (script_root, num_notes) in num_notes_by_script {
+        let standard_note =
+            StandardNote::from_script_root(script_root).map_or("Unknown", |note| note.name());
+        table.add_row(vec![standard_note.to_string(), script_root.to_hex(), num_notes.to_string()]);
+    }
+    println!("{table}");
+}
+
+/// Builds a transaction request that consumes `input_notes`.
+fn consume_notes_request(input_notes: &[Note]) -> Result<TransactionRequest, CliError> {
+    TransactionRequestBuilder::new()
+        .input_notes(input_notes.iter().cloned().map(|note| (note, None)))
+        .build()
+        .map_err(|err| {
+            CliError::Transaction(
+                err.into(),
+                "Failed to build consume notes transaction".to_string(),
+            )
+        })
+}
+
+/// Consumes `input_notes` with the account `account_id`, in transactions of at most `notes_per_tx`
+/// notes each.
+///
+/// Each transaction starts from the account state that the previous transaction leaves. The client
+/// syncs before each transaction after the first, to keep the reference block of the transaction
+/// recent during a long run. The function stops at the first transaction that fails. The notes of
+/// that transaction and of the transactions after it stay unconsumed, so a new run of the command
+/// can consume them.
+async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
+    client: &mut Client<AUTH>,
+    account_id: AccountId,
+    input_notes: &[Note],
+    notes_per_tx: usize,
+    prover: Arc<dyn TransactionProver + Send + Sync>,
+) -> Result<(), CliError> {
+    let num_transactions = input_notes.len().div_ceil(notes_per_tx);
+    let mut num_consumed = 0;
+
+    for (index, notes) in input_notes.chunks(notes_per_tx).enumerate() {
+        println!(
+            "Transaction {}/{num_transactions}: consuming {} notes...",
+            index + 1,
+            notes.len()
+        );
+
+        let result = async {
+            if index > 0 {
+                client.sync_state().await?;
+            }
+            let transaction_request = consume_notes_request(notes)?;
+            Ok::<_, CliError>(
+                client
+                    .submit_new_transaction_with_prover(
+                        account_id,
+                        transaction_request,
+                        prover.clone(),
+                    )
+                    .await?,
+            )
+        }
+        .await;
+
+        let transaction_id = match result {
+            Ok(transaction_id) => transaction_id,
+            Err(err) => {
+                println!(
+                    "Consumed {num_consumed} of {} notes in {index} transactions. To consume the other notes, run `consume-notes` again without note IDs.",
+                    input_notes.len()
+                );
+                return Err(err);
+            },
+        };
+
+        num_consumed += notes.len();
+        println!("Transaction ID: {transaction_id}");
+    }
+
+    println!("Consumed {num_consumed} notes in {num_transactions} transactions.");
+    Ok(())
 }
 
 // PSWAP COMMANDS
@@ -624,17 +821,13 @@ async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
 
     // Show delta and ask for confirmation
     print_executed_transaction(client, &executed_transaction).await?;
-    if !force {
-        println!(
-            "\nContinue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)"
-        );
-        let mut proceed_str: String = String::new();
-        io::stdin().read_line(&mut proceed_str).expect("Should read line");
-
-        if proceed_str.trim().to_lowercase() != "y" {
-            println!("Transaction was cancelled.");
-            return Ok(());
-        }
+    if !force
+        && !user_confirms(
+            "\nContinue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)",
+        )
+    {
+        println!("Transaction was cancelled.");
+        return Ok(());
     }
 
     let transaction_id = executed_transaction.id();
@@ -646,21 +839,7 @@ async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
 
     println!("Proving transaction...");
 
-    let prover = if delegated_proving {
-        let cli_config = CliConfig::load()?;
-        let remote_prover_endpoint =
-            cli_config.remote_prover_endpoint.as_ref().ok_or(CliError::Config(
-                "Remote prover endpoint".to_string().into(),
-                "remote prover endpoint is not set in the configuration file".to_string(),
-            ))?;
-
-        Arc::new(
-            RemoteTransactionProver::new(remote_prover_endpoint.to_string())
-                .with_timeout(cli_config.remote_prover_timeout),
-        )
-    } else {
-        client.prover()
-    };
+    let prover = transaction_prover(client, delegated_proving)?;
 
     let proven_transaction = client.prove_transaction_with(&transaction_result, prover).await?;
 
@@ -685,6 +864,38 @@ async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
     }
 
     Ok(())
+}
+
+/// Returns the remote prover from the configuration file if `delegated_proving` is set. Otherwise,
+/// returns the prover of `client`.
+fn transaction_prover<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+    delegated_proving: bool,
+) -> Result<Arc<dyn TransactionProver + Send + Sync>, CliError> {
+    if !delegated_proving {
+        return Ok(client.prover());
+    }
+
+    let cli_config = CliConfig::load()?;
+    let remote_prover_endpoint =
+        cli_config.remote_prover_endpoint.as_ref().ok_or(CliError::Config(
+            "Remote prover endpoint".to_string().into(),
+            "remote prover endpoint is not set in the configuration file".to_string(),
+        ))?;
+
+    Ok(Arc::new(
+        RemoteTransactionProver::new(remote_prover_endpoint.to_string())
+            .with_timeout(cli_config.remote_prover_timeout),
+    ))
+}
+
+/// Prints `question` and returns `true` if the user answers `y`.
+fn user_confirms(question: &str) -> bool {
+    println!("{question}");
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).expect("Should read line");
+
+    answer.trim().to_lowercase() == "y"
 }
 
 /// Runs `transaction_request` under a DAP debug adapter instead of proving and submitting it, so a
@@ -744,4 +955,295 @@ async fn debug_transaction<AUTH: Keystore + Sync + 'static>(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use clap::Parser;
+    use miden_client::account::{Account, AccountId};
+    use miden_client::asset::{Asset, FungibleAsset};
+    use miden_client::builder::ClientBuilder;
+    use miden_client::crypto::eddsa_25519_sha512::KeyExchangeKey;
+    use miden_client::keystore::FilesystemKeyStore;
+    use miden_client::note::{BlockNumber, NoteFile, NoteScriptRoot, NoteType, StandardNote};
+    use miden_client::rpc::encryption::TransactionEncryptionKey;
+    use miden_client::store::{NoteFilter, TransactionFilter};
+    use miden_client::testing::account_id::{
+        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PRIVATE_SENDER,
+    };
+    use miden_client::testing::common::create_test_store_path;
+    use miden_client::testing::mock::MockRpcApi;
+    use miden_client::testing::{Auth, MockChainBuilder};
+    use miden_client::transaction::{
+        LocalTransactionProver,
+        ProvenTransaction,
+        TransactionInputs,
+        TransactionProver,
+        TransactionProverError,
+    };
+    use miden_client::{Client, ClientError, Word};
+    use miden_client_sqlite_store::ClientBuilderSqliteExt;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    use super::{ConsumeNotesCmd, DEFAULT_NOTES_PER_TX, parse_note_script_filter};
+    use crate::errors::CliError;
+
+    const NOTE_AMOUNT: u64 = 10;
+
+    /// A prover that fails on one call and sends the other calls to the local prover.
+    struct FailingProver {
+        calls: AtomicUsize,
+        failing_call: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl TransactionProver for FailingProver {
+        async fn prove(
+            &self,
+            tx_inputs: TransactionInputs,
+        ) -> Result<ProvenTransaction, TransactionProverError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.failing_call {
+                return Err(TransactionProverError::other("the test prover fails this call"));
+            }
+            LocalTransactionProver::default().prove(tx_inputs)
+        }
+    }
+
+    fn faucet_id() -> AccountId {
+        AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap()
+    }
+
+    /// Returns the RPC API of a mock chain that has `num_p2id_notes` P2ID notes and
+    /// `num_extended_notes` P2IDE notes for one wallet, the wallet, and a file for each note.
+    ///
+    /// The notes are in the genesis block, which the client does not sync. A client must import the
+    /// note files to track the notes.
+    fn mock_chain_with_notes(
+        num_p2id_notes: usize,
+        num_extended_notes: usize,
+    ) -> (MockRpcApi, Account, Vec<NoteFile>) {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
+        let asset = Asset::from(FungibleAsset::new(faucet_id(), NOTE_AMOUNT).unwrap());
+
+        let mut builder = MockChainBuilder::new();
+        let wallet = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+        let mut note_files = Vec::new();
+        for _ in 0..num_p2id_notes {
+            let note = builder
+                .add_p2id_note(sender_id, wallet.id(), &[asset], NoteType::Public)
+                .unwrap();
+            note_files.push(NoteFile::NoteId(note.id()));
+        }
+        for _ in 0..num_extended_notes {
+            let note = builder
+                .add_p2ide_note(
+                    sender_id,
+                    wallet.id(),
+                    None,
+                    &[asset],
+                    NoteType::Public,
+                    None,
+                    None,
+                )
+                .unwrap();
+            note_files.push(NoteFile::NoteId(note.id()));
+        }
+        let mut chain = builder.build().unwrap();
+        chain.prove_next_block().unwrap();
+
+        (MockRpcApi::new(chain), wallet, note_files)
+    }
+
+    /// Opens a client on the store at `store_path`.
+    async fn open_client(
+        rpc: &MockRpcApi,
+        store_path: PathBuf,
+        prover: Option<Arc<dyn TransactionProver + Send + Sync>>,
+    ) -> Client<FilesystemKeyStore> {
+        let mut builder = ClientBuilder::new()
+            .rpc(Arc::new(rpc.clone()))
+            .sqlite_store(store_path)
+            .authenticator(Arc::new(FilesystemKeyStore::new(std::env::temp_dir()).unwrap()))
+            .tx_discard_delta(None);
+        if let Some(prover) = prover {
+            builder = builder.prover(prover);
+        }
+
+        builder.build().await.unwrap()
+    }
+
+    /// Opens a client on a new store, makes it track `wallet` and the notes of `note_files`, and
+    /// syncs it.
+    async fn new_wallet_client(
+        rpc: &MockRpcApi,
+        store_path: PathBuf,
+        wallet: &Account,
+        note_files: &[NoteFile],
+        prover: Option<Arc<dyn TransactionProver + Send + Sync>>,
+    ) -> Client<FilesystemKeyStore> {
+        let mut client = open_client(rpc, store_path, prover).await;
+        client.ensure_genesis_in_place().await.unwrap();
+        client.seed_protocol_config(rpc.protocol_config()).await.unwrap();
+        let genesis_commitment = client
+            .get_block_header_by_num(BlockNumber::GENESIS)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .commitment();
+        client
+            .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+                b"mock-key-id".to_vec(),
+                KeyExchangeKey::with_rng(&mut StdRng::seed_from_u64(0)).public_key(),
+                genesis_commitment,
+            ))
+            .await
+            .unwrap();
+        client.add_account(wallet, false).await.unwrap();
+        client.import_notes(note_files).await.unwrap();
+        client.sync_state().await.unwrap();
+
+        client
+    }
+
+    /// Runs `consume-notes --force` for `wallet` with `extra_args`.
+    async fn consume_notes(
+        client: Client<FilesystemKeyStore>,
+        wallet: &Account,
+        extra_args: &[&str],
+    ) -> Result<(), CliError> {
+        let account_id = wallet.id().to_hex();
+        let args = ["consume-notes", "--force", "--account", account_id.as_str()];
+        let cmd = ConsumeNotesCmd::try_parse_from(args.iter().chain(extra_args)).unwrap();
+        Box::pin(cmd.execute(client)).await
+    }
+
+    async fn num_input_notes(client: &Client<FilesystemKeyStore>, filter: NoteFilter) -> usize {
+        client.get_input_notes(filter).await.unwrap().len()
+    }
+
+    async fn balance(client: &Client<FilesystemKeyStore>, wallet: &Account) -> u64 {
+        client
+            .account_reader(wallet.id())
+            .get_balance(faucet_id())
+            .await
+            .unwrap()
+            .as_u64()
+    }
+
+    /// The command consumes more notes than one transaction can hold, in transactions of at most
+    /// the default number of notes.
+    #[tokio::test]
+    #[ignore = "proves 40 transactions of 50 notes, which takes minutes and more than 2 GB of memory"]
+    async fn consume_notes_consumes_more_notes_than_one_transaction_holds() {
+        const NUM_NOTES: usize = 2_000;
+
+        let (rpc, wallet, note_files) = mock_chain_with_notes(NUM_NOTES, 0);
+        let store_path = create_test_store_path();
+        let client = new_wallet_client(&rpc, store_path.clone(), &wallet, &note_files, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, NUM_NOTES);
+        let initial_balance = balance(&client, &wallet).await;
+
+        consume_notes(client, &wallet, &[]).await.unwrap();
+
+        let client = open_client(&rpc, store_path, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 0);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, NUM_NOTES);
+        assert_eq!(
+            client.get_transactions(TransactionFilter::All).await.unwrap().len(),
+            NUM_NOTES.div_ceil(DEFAULT_NOTES_PER_TX)
+        );
+        assert_eq!(
+            balance(&client, &wallet).await,
+            initial_balance + NUM_NOTES as u64 * NOTE_AMOUNT
+        );
+    }
+
+    /// The command stops at the first transaction that fails. A new run consumes the notes that the
+    /// failed run did not consume.
+    #[tokio::test]
+    async fn consume_notes_resumes_after_a_failed_transaction() {
+        const NUM_NOTES: usize = 5;
+        const NOTES_PER_TX: usize = 2;
+        let notes_per_tx = NOTES_PER_TX.to_string();
+
+        let (rpc, wallet, note_files) = mock_chain_with_notes(NUM_NOTES, 0);
+        let store_path = create_test_store_path();
+        let prover = Arc::new(FailingProver {
+            calls: AtomicUsize::new(0),
+            failing_call: 1,
+        });
+        let client =
+            new_wallet_client(&rpc, store_path.clone(), &wallet, &note_files, Some(prover)).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, NUM_NOTES);
+
+        let result = consume_notes(client, &wallet, &["--notes-per-tx", &notes_per_tx]).await;
+        assert!(matches!(
+            result,
+            Err(CliError::Client {
+                error: ClientError::TransactionProvingError(_),
+                ..
+            })
+        ));
+
+        let client = open_client(&rpc, store_path.clone(), None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, NOTES_PER_TX);
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, NUM_NOTES - NOTES_PER_TX);
+
+        consume_notes(client, &wallet, &["--notes-per-tx", &notes_per_tx])
+            .await
+            .unwrap();
+
+        let client = open_client(&rpc, store_path, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 0);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, NUM_NOTES);
+        assert_eq!(client.get_transactions(TransactionFilter::All).await.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn filter_accepts_standard_note_names_and_script_roots() {
+        assert_eq!(parse_note_script_filter("p2ide"), Ok(StandardNote::P2IDE.script_root()));
+        assert_eq!(parse_note_script_filter("P2ID"), Ok(StandardNote::P2ID.script_root()));
+        let custom_root = NoteScriptRoot::from_raw(Word::from([1u32, 2, 3, 4]));
+        assert_eq!(parse_note_script_filter(&custom_root.to_hex()), Ok(custom_root));
+        assert!(parse_note_script_filter("p2id2").is_err());
+
+        let cmd =
+            ConsumeNotesCmd::try_parse_from(["consume-notes", "--filter", "p2id,p2ide"]).unwrap();
+        assert_eq!(
+            cmd.filter,
+            [StandardNote::P2ID.script_root(), StandardNote::P2IDE.script_root()]
+        );
+        assert!(
+            ConsumeNotesCmd::try_parse_from(["consume-notes", "--filter", "p2id", "0x1234"])
+                .is_err()
+        );
+    }
+
+    /// With `--filter`, the command consumes only the notes that use a matching note script.
+    #[tokio::test]
+    async fn consume_notes_consumes_only_the_notes_that_match_the_filter() {
+        let (rpc, wallet, note_files) = mock_chain_with_notes(2, 1);
+        let store_path = create_test_store_path();
+        let client = new_wallet_client(&rpc, store_path.clone(), &wallet, &note_files, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 3);
+
+        consume_notes(client, &wallet, &["--filter", "p2ide"]).await.unwrap();
+
+        let client = open_client(&rpc, store_path, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, 1);
+        let committed_notes = client.get_input_notes(NoteFilter::Committed).await.unwrap();
+        assert_eq!(committed_notes.len(), 2);
+        assert!(
+            committed_notes
+                .iter()
+                .all(|note| note.details().script().root() == StandardNote::P2ID.script_root())
+        );
+    }
 }

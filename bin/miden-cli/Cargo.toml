@@ -47,6 +47,7 @@ miden-client = { features = ["std"], workspace = true }
 [dev-dependencies]
 anyhow                         = { workspace = true }
 assert_cmd                     = { workspace = true }
+async-trait                    = { workspace = true }
 miden-client                   = { features = ["testing"], workspace = true }
 miden-client-integration-tests = { workspace = true }
 miden-mast-package             = { features = ["std"], workspace = true }

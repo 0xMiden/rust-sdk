@@ -60,7 +60,7 @@ impl SqliteStore {
     pub(super) fn apply_state_sync(
         conn: &mut Connection,
         state_sync_update: StateSyncUpdate,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<AccountId>, StoreError> {
         let (
             block_num,
             partial_blockchain_updates,
@@ -147,8 +147,11 @@ impl SqliteStore {
                 }
             }
 
+            let mut locked_accounts = Vec::new();
             for (account_id, digest) in account_updates.mismatched_private_accounts() {
-                Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
+                if Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)? {
+                    locked_accounts.push(*account_id);
+                }
             }
 
             // Writes only land for accounts registered for witness prefetching; the rest are
@@ -165,7 +168,7 @@ impl SqliteStore {
                 )?;
             }
 
-            Ok(())
+            Ok(locked_accounts)
         })
     }
 }

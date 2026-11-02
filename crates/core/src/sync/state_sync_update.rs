@@ -31,7 +31,7 @@ pub struct StateSyncUpdate {
     /// Committed and discarded transactions after the sync.
     transaction_updates: TransactionUpdateTracker,
     /// Public account updates and mismatched private accounts after the sync.
-    account_updates: AccountUpdates,
+    account_updates: AccountUpdateTracker,
     /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
     /// genesis, or when the starting block and `block_num` commit to different configurations.
     protocol_config: Option<ProtocolConfig>,
@@ -46,7 +46,7 @@ impl StateSyncUpdate {
         partial_blockchain_updates: PartialBlockchainUpdates,
         note_updates: NoteUpdates,
         transaction_updates: TransactionUpdateTracker,
-        account_updates: AccountUpdates,
+        account_updates: AccountUpdateTracker,
         protocol_config: Option<ProtocolConfig>,
     ) -> Self {
         Self {
@@ -80,7 +80,7 @@ impl StateSyncUpdate {
     }
 
     /// Returns the account updates.
-    pub fn account_updates(&self) -> &AccountUpdates {
+    pub fn account_updates(&self) -> &AccountUpdateTracker {
         &self.account_updates
     }
 
@@ -97,7 +97,7 @@ impl StateSyncUpdate {
         PartialBlockchainUpdates,
         NoteUpdates,
         TransactionUpdateTracker,
-        AccountUpdates,
+        AccountUpdateTracker,
         Option<ProtocolConfig>,
     ) {
         (
@@ -238,6 +238,10 @@ impl TransactionUpdateTracker {
     /// The included transaction is matched to a local pending transaction by its ID only. The node
     /// reports the original transaction ID, so a record with an unknown ID is an external
     /// transaction of a tracked account.
+    ///
+    /// A local pending transaction that starts from the same account state as the included one but
+    /// ends in a different state lost the race for that state. It is discarded as superseded,
+    /// together with the transactions that build on its result.
     pub fn apply_transaction_inclusion(
         &mut self,
         block_num: BlockNumber,
@@ -248,15 +252,25 @@ impl TransactionUpdateTracker {
 
         if let Some(transaction) = self.transactions.get_mut(&header.id()) {
             transaction.commit_transaction(block_num, timestamp);
-            return;
+        } else {
+            // No local transaction has this ID. This is an external transaction by a tracked
+            // account. Record the nullifier→account mappings so we can attribute note consumption
+            // to tracked accounts during nullifier processing.
+            for commitment in header.input_notes().iter() {
+                self.external_nullifier_accounts.insert(commitment.nullifier(), account_id);
+            }
         }
 
-        // No local transaction has this ID. This is an external transaction by a tracked account.
-        // Record the nullifier→account mappings so we can attribute note consumption to tracked
-        // accounts during nullifier processing.
-        for commitment in header.input_notes().iter() {
-            self.external_nullifier_accounts.insert(commitment.nullifier(), account_id);
-        }
+        let initial_state = header.initial_state_commitment();
+        let final_state = header.final_state_commitment();
+        self.discard_transaction_with_predicate(
+            |transaction| {
+                transaction.details.account_id == account_id
+                    && transaction.details.init_account_state == initial_state
+                    && transaction.details.final_account_state != final_state
+            },
+            DiscardCause::Superseded,
+        );
     }
 
     /// Applies the necessary state transitions to the [`TransactionUpdateTracker`] when a the sync
@@ -389,13 +403,13 @@ impl PublicAccountUpdate {
     }
 }
 
-// ACCOUNT UPDATES
+// ACCOUNT UPDATE TRACKER
 // ================================================================================================
 
-/// Contains account changes to apply to the store after a sync request.
+/// Collects account changes to apply after a sync request.
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
-pub struct AccountUpdates {
+pub struct AccountUpdateTracker {
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
     /// Account commitments received from the network that don't match the currently locally-tracked
@@ -410,8 +424,8 @@ pub struct AccountUpdates {
     account_witnesses: Vec<(AccountId, AccountWitness)>,
 }
 
-impl AccountUpdates {
-    /// Creates a new instance of `AccountUpdates`.
+impl AccountUpdateTracker {
+    /// Creates a new account update tracker.
     pub fn new(
         updated_public_accounts: Vec<PublicAccountUpdate>,
         mismatched_private_accounts: Vec<(AccountId, Word)>,
@@ -448,7 +462,7 @@ impl AccountUpdates {
         &self.account_witnesses
     }
 
-    pub fn extend(&mut self, other: AccountUpdates) {
+    pub fn extend(&mut self, other: AccountUpdateTracker) {
         self.updated_public_accounts.extend(other.updated_public_accounts);
         self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
         self.account_witnesses.extend(other.account_witnesses);
@@ -530,6 +544,46 @@ mod tests {
         assert_eq!(
             tracker.external_nullifier_account(&Nullifier::from_raw(word(2))),
             Some(account_id())
+        );
+    }
+
+    /// A discard is terminal, so a transaction the node included stays committed when a later
+    /// superseded state names its result.
+    #[test]
+    fn inclusion_before_superseded_state_keeps_the_transaction_committed() {
+        let local = pending_transaction(1, 2, 1);
+        let local_id = local.id;
+        let header = transaction_header(1, 2, 1);
+        assert_eq!(header.id(), local_id);
+        let mut tracker = TransactionUpdateTracker::new(vec![local]);
+
+        tracker.apply_transaction_inclusion(BlockNumber::from(5u32), &header, 0);
+        tracker.apply_superseded_account_state(word(2));
+
+        let transaction = tracker.transactions.get(&local_id).unwrap();
+        assert!(matches!(transaction.status, TransactionStatus::Committed { .. }));
+    }
+
+    /// An external transaction from the same initial state as a local pending transaction, with a
+    /// different final state, discards that transaction and the chain built on its result.
+    #[test]
+    fn competing_account_transition_discards_the_optimistic_chain() {
+        let first = pending_transaction(1, 2, 1);
+        let first_id = first.id;
+        let second = pending_transaction(2, 3, 2);
+        let second_id = second.id;
+        let mut tracker = TransactionUpdateTracker::new(vec![first, second]);
+
+        let competing = transaction_header(1, 4, 3);
+        tracker.apply_transaction_inclusion(BlockNumber::from(5u32), &competing, 0);
+
+        assert_eq!(
+            tracker.transactions.get(&first_id).unwrap().status,
+            TransactionStatus::Discarded(DiscardCause::Superseded)
+        );
+        assert_eq!(
+            tracker.transactions.get(&second_id).unwrap().status,
+            TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)
         );
     }
 }

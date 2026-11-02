@@ -83,12 +83,9 @@ impl From<&StateSyncUpdate> for SyncSummary {
                 .iter()
                 .map(PublicAccountUpdate::id)
                 .collect(),
-            value
-                .account_updates()
-                .mismatched_private_accounts()
-                .iter()
-                .map(|(id, _)| *id)
-                .collect(),
+            // The store decides which mismatched private accounts it locks, so the client fills
+            // this from the result of `Store::apply_state_sync`.
+            Vec::new(),
             value.transaction_updates().committed_transactions().map(|t| t.id).collect(),
         )
     }

@@ -88,7 +88,7 @@ pub use note_observer::NoteObserver;
 
 mod state_sync;
 pub use miden_client_core::sync::{
-    AccountUpdates,
+    AccountUpdateTracker,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
@@ -217,15 +217,17 @@ where
 
         let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
 
-        let sync_summary: SyncSummary = (&state_sync_update).into();
+        let mut sync_summary: SyncSummary = (&state_sync_update).into();
         // Post-sync observer hooks; run before persisting. Per-observer errors are logged, not
         // propagated.
         state_sync.run_apply_hooks(&state_sync_update).await?;
 
         info!("Applying changes to the store.");
 
-        // Apply received and computed updates to the store
-        self.store
+        // Apply received and computed updates to the store. The store decides which mismatched
+        // private accounts it locks, so the summary takes the locked accounts from its result.
+        sync_summary.locked_accounts = self
+            .store
             .apply_state_sync(state_sync_update)
             .await
             .map_err(ClientError::StoreError)?;
@@ -353,12 +355,17 @@ where
     /// configured cadence.
     ///
     /// See [`crate::Store::apply_state_sync()`] for what the update implies.
-    pub async fn apply_state_sync(&mut self, update: StateSyncUpdate) -> Result<(), ClientError> {
-        self.store.apply_state_sync(update).await?;
+    ///
+    /// Returns the IDs of the private accounts that the update locked.
+    pub async fn apply_state_sync(
+        &mut self,
+        update: StateSyncUpdate,
+    ) -> Result<Vec<AccountId>, ClientError> {
+        let locked_accounts = self.store.apply_state_sync(update).await?;
 
         self.maybe_untrack_and_prune_irrelevant_blocks().await?;
 
-        Ok(())
+        Ok(locked_accounts)
     }
 
     /// Prunes irrelevant blocks and their MMR authentication nodes according to the configured
@@ -512,7 +519,7 @@ where
 
         chain_sync_data
             .account_updates
-            .extend(AccountUpdates::default().with_account_witnesses(witnesses));
+            .extend(AccountUpdateTracker::default().with_account_witnesses(witnesses));
 
         Ok(())
     }
@@ -566,7 +573,10 @@ pub struct SyncSummary {
     pub consumed_notes: Vec<NoteId>,
     /// IDs of on-chain accounts that have been updated.
     pub updated_accounts: Vec<AccountId>,
-    /// IDs of private accounts that have been locked.
+    /// IDs of the private accounts that this sync locked.
+    ///
+    /// The list excludes accounts that were already locked and mismatches that a stale network
+    /// commitment caused.
     pub locked_accounts: Vec<AccountId>,
     /// IDs of committed transactions.
     pub committed_transactions: Vec<TransactionId>,

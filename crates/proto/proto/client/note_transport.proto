@@ -24,3 +24,9 @@ message NoteTransportCursors {
 
   repeated Entry entries = 1;
 }
+
+// Cursor of the note transport fetch and the note tags that received all notes up to it.
+message NoteTransportSyncState {
+  NoteTransportCursor cursor = 1;
+  repeated fixed32 covered_tags = 2;
+}

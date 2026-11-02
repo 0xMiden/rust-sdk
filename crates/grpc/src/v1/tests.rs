@@ -282,8 +282,7 @@ fn sync_nullifiers_verifies_block_range() {
 fn get_account_verifies_block_num_only_for_pinned_requests() {
     let response = (BlockNumber::from(5u32), account_proof());
     let method = |at| GetAccount {
-        account_id: test_account_id(),
-        request: GetAccountRequest::new().at(at),
+        request: GetAccountRequest::new(test_account_id()).at(at),
     };
 
     method(AccountStateAt::ChainTip)
@@ -302,8 +301,7 @@ fn get_account_rejects_proof_for_wrong_account_id() {
     // `account_proof()` is built for `test_account_id()`, but a different account is requested.
     let response = (BlockNumber::from(1u32), account_proof());
     let method = GetAccount {
-        account_id: other_account_id(),
-        request: GetAccountRequest::new(),
+        request: GetAccountRequest::new(other_account_id()),
     };
 
     assert!(is_invalid_response(method.validate(&response)));

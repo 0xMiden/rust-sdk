@@ -407,10 +407,9 @@ impl NodeRpcClient for GrpcClient {
     /// - There is an error during storage deserialization.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
-        self.call(v1::GetAccount { account_id, request }).await
+        self.call(v1::GetAccount { request }).await
     }
 
     async fn register_account(

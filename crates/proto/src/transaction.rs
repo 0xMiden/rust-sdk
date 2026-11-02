@@ -326,9 +326,6 @@ fn decode_transaction_request_v1(
     if let Some(script_arg) = script_arg {
         builder = builder.script_arg(script_arg);
     }
-    if let Some(auth_arg) = auth_arg {
-        builder = builder.auth_arg(auth_arg);
-    }
     if let Some(salt) = fee_conversion_salt {
         builder = builder.fee_conversion_salt(salt);
     }
@@ -336,7 +333,33 @@ fn decode_transaction_request_v1(
         builder = builder.account_code_upgrade(account_code_upgrade.into_code());
     }
 
-    builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    let mut transaction_request =
+        builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+    if let Some(auth_arg) = auth_arg {
+        set_auth_arg(&mut transaction_request, auth_arg)?;
+    }
+
+    Ok(transaction_request)
+}
+
+/// Sets `auth_arg` on `transaction_request`.
+///
+/// A request always stores the preimage of its auth arg in its advice map.
+///
+/// # Errors
+/// - If the advice map of the request has no preimage for `auth_arg`.
+fn set_auth_arg(
+    transaction_request: &mut TransactionRequest,
+    auth_arg: Word,
+) -> Result<(), ProtoDecodeError> {
+    let preimage = transaction_request.advice_map().get(&auth_arg).ok_or_else(|| {
+        ProtoDecodeError::InvalidValue(format!(
+            "advice map has no preimage for auth arg {auth_arg}"
+        ))
+    })?;
+    let preimage = preimage.to_vec();
+    transaction_request.commit_auth_args(auth_arg, preimage);
+    Ok(())
 }
 
 /// An input note of a decoded request, with its arguments.
@@ -654,7 +677,7 @@ mod tests {
     };
     use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
-    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
 
@@ -746,7 +769,7 @@ mod tests {
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
             .script_arg(rng.draw_word())
-            .auth_arg(rng.draw_word())
+            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
             .build()

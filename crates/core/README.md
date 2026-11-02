@@ -12,6 +12,8 @@ Core traits and types shared by the miden-client crates. This crate holds the co
 
 Applications that use the client should depend on `miden-client`, which re-exports the types of its API. Depend on this crate to implement a store or an RPC client, or to use these contracts directly.
 
+**Notice:** each `NodeRpcClient` implementation is responsible for its own response validation. It is recommended not to trust a node response without checking that it matches the request.
+
 ## Quick Start
 
 Add to `Cargo.toml`:

@@ -28,7 +28,7 @@ tracing     = { workspace = true }
 # External dependencies
 deadpool           = { default-features = false, features = ["managed", "rt_tokio_1"], version = "0.12" }
 deadpool-sync      = { version = "0.1" }
-rusqlite           = { features = ["array", "bundled", "vtab"], version = "0.37" }
+rusqlite           = { features = ["array", "bundled", "vtab"], workspace = true }
 rusqlite_migration = { version = "2.1" }
 tokio              = { workspace = true }
 
@@ -39,3 +39,4 @@ workspace = true
 # Enable client testing utilities only for tests
 miden-client    = { features = ["std", "testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
+rusqlite        = { features = ["hooks"], workspace = true }

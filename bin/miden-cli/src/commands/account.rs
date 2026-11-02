@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::account::component::MIDEN_PACKAGE_EXTENSION;
 use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_client::account::{
     AccountCode,
@@ -16,15 +15,15 @@ use miden_client::account::{
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
 use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
-use miden_client::rpc::domain::account::{GetAccountRequest, VaultFetch};
+use miden_client::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
-use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
+use crate::packages::{load_packages, load_packages_from_directory};
 use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
@@ -54,7 +53,10 @@ pub struct AccountCmd {
     /// signatures, on top of the packages in the configured packages directory.
     ///
     /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
-    #[arg(short, long, value_name = "FILE", requires = "inspect")]
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
+    #[arg(short, long, value_name = "PACKAGE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
     #[arg(short, long, requires = "inspect")]
@@ -76,12 +78,22 @@ pub struct AccountCmd {
     /// Invitation code that registers the account named by --register.
     #[arg(long, value_name = "CODE", requires = "register")]
     invitation_code: Option<String>,
+    /// Checks whether an invitation code can still be used without consuming it.
+    #[arg(long, group = "action", value_name = "CODE")]
+    check_invitation_code: Option<String>,
 }
 
 impl AccountCmd {
     pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
+            AccountCmd { check_invitation_code: Some(code), .. } => {
+                if client.is_invitation_code_valid(code).await? {
+                    println!("The invitation code can be used.");
+                } else {
+                    println!("The invitation code cannot be used.");
+                }
+            },
             AccountCmd {
                 list: false,
                 show: Some(id),
@@ -375,7 +387,7 @@ async fn inspect_account<AUTH>(
 
     if !unresolved.is_empty() {
         println!(
-            "\nUnresolved ({}) — pass --package <FILE.masp> to resolve names:",
+            "\nUnresolved ({}) — pass --package <PACKAGE> to resolve names:",
             unresolved.len()
         );
         for proc in &unresolved {
@@ -462,48 +474,6 @@ fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Proc
     exports
 }
 
-/// Reads every `.masp` package found recursively under `dir`. A missing directory yields no
-/// packages rather than an error, so inspection still falls back to bare MAST roots.
-fn load_packages_from_directory(dir: &Path) -> Result<Vec<Package>, CliError> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut package_paths = Vec::new();
-    collect_masp_files(dir, &mut package_paths)?;
-
-    // Paths already carry the `.masp` extension, so `load_packages` uses them as-is and never
-    // consults the config's packages directory.
-    load_packages(&CliConfig::default(), &package_paths)
-}
-
-/// Recursively collects the paths of all `.masp` files under `dir` into `paths`.
-fn collect_masp_files(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CliError> {
-    let entries = std::fs::read_dir(dir).map_err(|err| {
-        CliError::Config(
-            Box::new(err),
-            format!("failed to read packages directory {}", dir.display()),
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|err| {
-            CliError::Config(
-                Box::new(err),
-                format!("failed to read entry in packages directory {}", dir.display()),
-            )
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_masp_files(&path, paths)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some(MIDEN_PACKAGE_EXTENSION) {
-            paths.push(path);
-        }
-    }
-
-    Ok(())
-}
-
 // HELPERS
 // ================================================================================================
 
@@ -527,7 +497,7 @@ async fn resolve_account_code<AUTH>(
     ));
 
     let (_, account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(account_id))
         .await
         .map_err(|err| {
             CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))
@@ -576,7 +546,10 @@ async fn load_partial_account<AUTH>(
     };
 
     let (block_number, mut account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new().with_vault(VaultFetch::Always))
+        .get_account(
+            GetAccountRequest::new(account_id)
+                .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
+        )
         .await
         .map_err(fetch_error)?;
 
@@ -591,7 +564,10 @@ async fn load_partial_account<AUTH>(
         "Account {account_id} is private and not tracked by the client",
     )))?;
 
-    let vault = AssetVault::new(&details.vault_details.assets)
+    let assets = details.vault_details.assets().ok_or(CliError::Input(format!(
+        "The node returned no asset list for account {account_id}",
+    )))?;
+    let vault = AssetVault::new(assets)
         .map_err(|err| CliError::Input(format!("Invalid vault for account {account_id}: {err}")))?;
     let storage = PartialStorage::new(details.storage_details.header, []).map_err(account_error)?;
 

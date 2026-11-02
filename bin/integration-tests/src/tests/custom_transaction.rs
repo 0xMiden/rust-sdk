@@ -13,13 +13,7 @@ use miden_client::note::{
 };
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::*;
-use miden_client::transaction::{
-    AdviceMap,
-    InputNote,
-    TransactionRequest,
-    TransactionRequestBuilder,
-};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client::transaction::{AdviceMap, InputNote, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -112,13 +106,6 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
         .script_arg([Felt::from(4u32), Felt::from(3u32), Felt::from(2u32), Felt::from(1u32)].into())
         .extend_advice_map(advice_map)
         .build()?;
-
-    // TEST CUSTOM SCRIPT SERIALIZATION
-    let mut buffer = Vec::new();
-    transaction_request.write_into(&mut buffer);
-
-    let deserialized_transaction_request = TransactionRequest::read_from_bytes(&buffer)?;
-    assert_eq!(transaction_request, deserialized_transaction_request);
 
     let tx_id = client.submit_new_transaction(regular_account.id(), transaction_request).await?;
     let transaction = client

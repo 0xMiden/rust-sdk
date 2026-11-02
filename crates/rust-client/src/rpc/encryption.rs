@@ -1,5 +1,4 @@
-//! Seals the private transaction inputs sent alongside a submission, and adapts the transaction
-//! encryption types to the node's protobuf and RPC errors.
+//! Seals the private transaction inputs sent alongside a submission.
 //!
 //! Transaction inputs are submitted as an IES-sealed blob rather than in the clear, so that the RPC
 //! operator cannot read them and only holders of the validator set's shared encryption secret can.
@@ -17,7 +16,7 @@ use miden_protocol::transaction::{TransactionId, TransactionInputs};
 use miden_protocol::utils::serde::Serializable;
 use rand::CryptoRng;
 
-use super::{RpcError, generated as proto};
+use super::RpcError;
 
 // CONSTANTS
 // ================================================================================================
@@ -90,41 +89,6 @@ fn extend_with_length_prefixed(payload: &mut Vec<u8>, field: &[u8]) {
     payload.extend_from_slice(field);
 }
 
-// SEALED TRANSACTION INPUTS
-// ================================================================================================
-
-/// The sealed, wire-ready form of a transaction's [`TransactionInputs`].
-///
-/// Wraps the serialized bytes of a [`SealedMessage`](miden_protocol::crypto::ies::SealedMessage) so
-/// that a plaintext blob cannot be passed to submission by mistake, alongside the identifier of the
-/// key they were sealed against.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SealedTransactionInputs {
-    key_id: Vec<u8>,
-    ciphertext: Vec<u8>,
-}
-
-impl SealedTransactionInputs {
-    /// Returns the identifier of the key these inputs were sealed against.
-    pub fn key_id(&self) -> &[u8] {
-        &self.key_id
-    }
-
-    /// Returns the sealed bytes.
-    pub fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
-    }
-}
-
-impl From<SealedTransactionInputs> for proto::submission::SealedTransactionInputs {
-    fn from(sealed: SealedTransactionInputs) -> Self {
-        Self {
-            key_id: sealed.key_id().to_vec(),
-            ciphertext: sealed.ciphertext().to_vec(),
-        }
-    }
-}
-
 // SEALING
 // ================================================================================================
 
@@ -145,23 +109,7 @@ pub fn seal_transaction_inputs<R: CryptoRng>(
         .seal_bytes_with_associated_data(rng, &transaction_inputs.to_bytes(), &associated_data)
         .map_err(|err| RpcError::TransactionInputsSealingFailed(err.to_string()))?;
 
-    Ok(SealedTransactionInputs {
-        key_id: key.key_id().to_vec(),
-        ciphertext: sealed.to_bytes(),
-    })
-}
-
-// ERRORS
-// ================================================================================================
-
-impl From<TransactionEncryptionError> for RpcError {
-    fn from(err: TransactionEncryptionError) -> Self {
-        match err {
-            TransactionEncryptionError::KeyRejected(reason) => {
-                RpcError::TransactionEncryptionKeyRejected(reason)
-            },
-        }
-    }
+    Ok(SealedTransactionInputs::new(key.key_id().to_vec(), sealed.to_bytes()))
 }
 
 // TESTS
@@ -178,11 +126,6 @@ mod tests {
     use super::*;
 
     const TEST_KEY_ID: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
-
-    #[test]
-    fn supported_scheme_matches_the_node_protobuf() {
-        assert_eq!(SUPPORTED_SCHEME, proto::submission::IesScheme::X25519Xchacha20Poly1305 as u32);
-    }
 
     fn rng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0xface)
@@ -239,10 +182,7 @@ mod tests {
             .seal_bytes_with_associated_data(&mut rng(), b"transaction inputs", &associated_data)
             .unwrap();
 
-        SealedTransactionInputs {
-            key_id: key.key_id().to_vec(),
-            ciphertext: sealed.to_bytes(),
-        }
+        SealedTransactionInputs::new(key.key_id().to_vec(), sealed.to_bytes())
     }
 
     // ASSOCIATED DATA
@@ -330,10 +270,7 @@ mod tests {
 
         assert_ne!(first, second);
         for ciphertext in [first, second] {
-            let sealed = SealedTransactionInputs {
-                key_id: key.key_id().to_vec(),
-                ciphertext,
-            };
+            let sealed = SealedTransactionInputs::new(key.key_id().to_vec(), ciphertext);
             assert_eq!(
                 unseal(&unsealing_key, &sealed, &key, tx_id(10)).unwrap(),
                 b"transaction inputs"

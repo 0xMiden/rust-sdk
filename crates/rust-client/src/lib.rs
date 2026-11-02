@@ -156,6 +156,15 @@ pub mod agglayer {
     };
 }
 
+/// Provides the `USDCx` (Circle xReserve) faucet components, note constructors, and payload codecs.
+///
+/// The burn note that withdraws `USDCx` from Miden is
+/// [`usdcx::note::xreserve_burn::XReserveBurnNote`]. Its `(destDomain, destRecipient)` payload is
+/// [`usdcx::xreserve::encoding::XReserveBurnItems`].
+pub mod usdcx {
+    pub use miden_usdcx::*;
+}
+
 /// Provides types and utilities for working with Miden Assembly.
 pub mod assembly {
     pub use miden_protocol::MastForest;

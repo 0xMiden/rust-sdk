@@ -2,7 +2,7 @@
 
 Protobuf schemas and conversions for the miden-client types.
 
-- Schemas for input notes, output notes, transactions and the protocol types they contain, under `proto/client`
+- Schemas for input notes, output notes, transactions, the protocol types they contain, and the client settings (note transport, RPC, PSWAP), under `proto/client`
 - The `ProtobufValue` trait, with `encode`, `decode` and `decode_unchecked`
 - Protocol objects reuse the messages and conversions from `miden-objects`
 
@@ -11,7 +11,7 @@ Protobuf schemas and conversions for the miden-client types.
 Add to `Cargo.toml`:
 
 ```toml
-miden-client-proto = { version = "0.17.0-rc.5" }
+miden-client-proto = { version = "0.18" }
 ```
 
 `decode` runs all checks on the value. `decode_unchecked` can skip the expensive checks, so use it only for bytes from a trusted source, such as a store that this crate wrote.

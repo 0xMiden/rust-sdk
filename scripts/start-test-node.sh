@@ -84,10 +84,12 @@ NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover mide
 # Cargo.lock locks for `miden-node-proto-build`. A git pin of the node in Cargo.lock takes
 # precedence.
 #
-# Cargo.lock records the URL as Cargo.toml writes it. Both `0xMiden/node` and `0xMiden/miden-node`
-# reach the repository, so the pattern matches both spellings. A pattern that misses one spelling
-# ignores a git pin with that spelling.
-SRC_LINE="$(grep -m1 -E 'source = "git\+https://github\.com/0xMiden/(miden-)?node[?#"]' "$ROOT/Cargo.lock" || true)"
+# Read the source from the proto builder package so fork pins also select the matching node.
+SRC_LINE="$(awk '/^name = "miden-node-proto-build"$/ { package = 1; next } package && /^source = / { print; exit } package && /^\[\[package\]\]/ { exit }' "$ROOT/Cargo.lock")"
+case "$SRC_LINE" in
+    'source = "git+'*) ;;
+    *) SRC_LINE="" ;;
+esac
 if [ -n "$SRC_LINE" ]; then
     NODE_SOURCE="git"
     SRC="${SRC_LINE#*\"git+}"; SRC="${SRC%\"}"
@@ -175,7 +177,7 @@ cargo build --release -p test-node-genesis --bin gen-genesis
 echo "==> generating genesis + bootstrapping (verification_base_fee = $VERIFICATION_BASE_FEE)"
 rm -rf "$DATA"
 # Each component opens its SQLite DB directly under its data dir and does not create it.
-mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder"
+mkdir -p "$LOG_DIR" "$DATA/validator" "$DATA/node" "$DATA/ntx-builder" "$DATA/funding-service"
 "$GEN_GENESIS" "$DATA/genesis-config"
 mkdir -p "$ROOT/data"
 cp "$DATA/genesis-config/tst_faucet.mac" "$ROOT/data/account.mac"
@@ -215,6 +217,12 @@ ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7
     "$BIN/miden-ntx-builder" bootstrap --data-directory "$DATA/ntx-builder" \
         --genesis "$DATA/genesis/genesis.dat"
 } >"$LOG_DIR/bootstrap.log" 2>&1
+if [ "$VERIFICATION_BASE_FEE" != "0" ]; then
+    FUNDING_ACCOUNT_ID="$(sed -n 's/^Funding account id: //p' "$LOG_DIR/bootstrap.log")"
+    "$BIN/miden-funding-service" bootstrap --data-directory "$DATA/funding-service" \
+        --account-id "$FUNDING_ACCOUNT_ID" --genesis "$DATA/genesis/genesis.dat" \
+        >>"$LOG_DIR/bootstrap.log" 2>&1
+fi
 NATIVE_FAUCET_ID="$(sed -n 's/^Native faucet account id: //p' "$LOG_DIR/bootstrap.log")"
 echo "==> native faucet $NATIVE_FAUCET_ID, operator wallet in $ROOT/data/faucet_operator.mac"
 
@@ -237,17 +245,13 @@ cleanup() {
 # Best-effort teardown for SIGTERM and for interrupts the components' own SIGINT death doesn't
 # cover (e.g. `kill <script>`); Ctrl+C teardown does not depend on this trap firing.
 trap 'echo; cleanup; exit 0' INT TERM
-# The storage-key files are the node repo's checked-in insecure development fixtures
-# (scripts/testdata/insecure-golden-storage-key), vendored here because the validator requires
-# threshold storage-key material to start and ships no generator for it.
-STORAGE_KEY_DIR="$ROOT/scripts/testdata/insecure-golden-storage-key"
+# The bundle contains the node's public development key for validator 1.
+# The validator requires this threshold storage key to start.
+STORAGE_KEY_FILE="$ROOT/scripts/testdata/insecure-golden-storage-key/storage-key.bundle"
 start validator   "$BIN/miden-validator" start --listen "$VALIDATOR" --data-directory "$DATA/validator" \
     --signing-key.hex "$SIGNING_KEY" \
     --encryption-key.hex "$ENCRYPTION_KEY" \
-    --storage-key.epoch "0909090909090909090909090909090909090909090909090909090909090909" \
-    --storage-key.setup-context "$STORAGE_KEY_DIR/setup-context.wire" \
-    --storage-key.public-key-set "$STORAGE_KEY_DIR/public-key-set.wire" \
-    --storage-key.secret-share "$STORAGE_KEY_DIR/secret-share.wire"
+    --storage-key.file "$STORAGE_KEY_FILE"
 # The fee collector deployment and the sequencer both need the validator.
 echo "==> waiting for validator on $VALIDATOR"
 VALIDATOR_READY=""
@@ -335,9 +339,9 @@ wait_for_admin_api() {
 # fee-free one hands out nothing.
 #
 # It pays out of the funding account `gen-genesis` wrote and genesis loaded through
-# `--funding-account`, signing with the key in that file, and trusts the same validator signing key
-# the validator itself was started with. It answers a request with the note before it builds the
-# transaction which creates the note.
+# `--funding-account`, signing with the key `gen-genesis` wrote next to it, and trusts the same
+# validator signing key the validator itself was started with. It answers a request with the note
+# before it builds the transaction which creates the note.
 MIDEN_TEST_FUNDING_ENABLED=""
 if [ "$VERIFICATION_BASE_FEE" != "0" ]; then
     MIDEN_TEST_FUNDING_ENABLED=1
@@ -345,7 +349,8 @@ if [ "$VERIFICATION_BASE_FEE" != "0" ]; then
         --rpc.url "http://$RPC" \
         --tx-prover.url "http://$PROVER" \
         --tx-prover.timeout "$PROVER_TIMEOUT" \
-        --account-file "$DATA/genesis-config/funding_account.mac" \
+        --data-directory "$DATA/funding-service" \
+        --signing-key-file "$DATA/genesis-config/funding_account.key" \
         --validator-signing-public-key "$VALIDATOR_PUBLIC_KEY" \
         --poll-interval 250ms
 fi

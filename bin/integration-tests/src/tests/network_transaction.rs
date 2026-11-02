@@ -967,7 +967,9 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
         .context("failed to find network account after deployment")?;
     assert_eq!(counter_value, Word::from([ZERO, ZERO, ZERO, ZERO]));
 
-    // client_2 starts watching the network account.
+    // client_2 starts watching the network account. The import reads the account at the sync
+    // height, so the client must sync past the block that created the account.
+    client_2.sync_state().await?;
     client_2.import_watched_account_by_id(network_account_id).await?;
 
     let watched_record = client_2

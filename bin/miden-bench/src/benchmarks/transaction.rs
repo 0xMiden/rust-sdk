@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use miden_client::account::{AccountId, StorageMapKey, StorageSlotContent};
 use miden_client::keystore::FilesystemKeyStore;
+use miden_client::testing::common::TestClient;
 use miden_client::{Client, Serializable};
 
 use crate::config::{self, BenchConfig};
@@ -51,7 +52,7 @@ pub struct ReadOp {
 /// multiple transactions per benchmark iteration. Each iteration's reported time is the sum across
 /// all transactions.
 pub async fn run_transaction_benchmarks(
-    client: &mut Client<FilesystemKeyStore>,
+    mut client: TestClient,
     config: &BenchConfig,
     account_id_str: String,
     max_reads_per_tx: Option<usize>,
@@ -110,7 +111,7 @@ pub async fn run_transaction_benchmarks(
     // Measure proven transaction size upfront (execute + prove one tx). If the signing key is
     // missing from the keystore, proving will fail and we fall back to execution-only benchmarks.
     let can_prove = {
-        let tx_request = build_chunk_tx_request(client, &chunks[0], &slot_infos)?;
+        let tx_request = build_chunk_tx_request(&client, &chunks[0], &slot_infos)?;
         let tx_result = client.execute_transaction(account_id, tx_request).await?;
         if let Ok(proven_tx) = client.prove_transaction(&tx_result).await {
             let tx_size = proven_tx.to_bytes().len();
@@ -128,6 +129,9 @@ pub async fn run_transaction_benchmarks(
         }
     };
     println!();
+
+    // Release the writer lock before each benchmark opens its own client.
+    drop(client);
 
     // Benchmark 1: Transaction execution time (without proving)
     println!("Benchmarking transaction execution...");

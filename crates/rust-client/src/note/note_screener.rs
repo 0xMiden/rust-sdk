@@ -11,7 +11,6 @@ use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId};
-use miden_standards::account::auth::commit_fee_conversion_info;
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
     NoteCheckerError,
@@ -31,10 +30,10 @@ use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use crate::transaction::{
     AdviceMap,
+    AuthArgsLayout,
     InputNote,
     NATIVE_FEE_CONVERSION_SALT,
     TransactionArgs,
-    native_fee_conversion_info,
 };
 use crate::utils::LazyLock;
 
@@ -180,12 +179,7 @@ impl NoteScreener {
             data_store.mast_store().load_account_code(&account_code);
 
             let account_tx_args = self
-                .with_native_fee_conversion_info(
-                    tx_args.clone(),
-                    account_id,
-                    &account_code,
-                    block_ref,
-                )
+                .with_default_auth_args(tx_args.clone(), account_id, &account_code, block_ref)
                 .await?;
 
             for note in notes {
@@ -229,7 +223,7 @@ impl NoteScreener {
         let block_ref = self.store.get_sync_height().await?;
         let account_code = self.get_account_code(account_id).await?;
         let tx_args = self
-            .with_native_fee_conversion_info(self.tx_args(), account_id, &account_code, block_ref)
+            .with_default_auth_args(self.tx_args(), account_id, &account_code, block_ref)
             .await?;
 
         let data_store = self.data_store();
@@ -251,14 +245,14 @@ impl NoteScreener {
     /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
     /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
     /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
-    /// standard ones are answered without it. The info comes from [`native_fee_conversion_info`],
-    /// so screening measures the fee execution would pay.
+    /// standard ones are answered without it. The auth args come from
+    /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
     ///
     /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
     /// make the fee irrelevant to screening rather than something to satisfy:
     /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
     /// cannot: an account whose vault is too empty to pay even with the info attached.
-    async fn with_native_fee_conversion_info(
+    async fn with_default_auth_args(
         &self,
         tx_args: TransactionArgs,
         account_id: AccountId,
@@ -275,20 +269,33 @@ impl NoteScreener {
             return Ok(tx_args);
         };
 
-        let Some(conversion_info) = native_fee_conversion_info(
-            &account_code.interface(account_id),
-            header.fee_parameters(),
-            &crate::protocol_config::load_protocol_config(
-                self.store.as_ref(),
-                header.protocol_config_commitment(),
-            )
-            .await?,
-        ) else {
+        let layout = AuthArgsLayout::of(&account_code.interface(account_id));
+        let multisig = matches!(layout, AuthArgsLayout::Multisig(_));
+
+        // Without a fee, only multisig components read auth args. Returning here also skips loading
+        // the protocol configuration.
+        if header.fee_parameters().verification_base_fee() == 0 && !multisig {
+            return Ok(tx_args);
+        }
+
+        let protocol_config = crate::protocol_config::load_protocol_config(
+            self.store.as_ref(),
+            header.protocol_config_commitment(),
+        )
+        .await?;
+
+        // A multisig component requires a declared salt. The trial is never submitted, so any salt
+        // works. With auth args, the trial reaches the signature check, and the checker reports the
+        // note as consumable with authorization.
+        //
+        // TODO: find a way to screen notes for multisig accounts without placeholder auth args.
+        let salt = multisig.then_some(NATIVE_FEE_CONVERSION_SALT);
+        let Ok(Some((auth_arg, preimage))) =
+            layout.default_auth_args(salt, &header, &protocol_config)
+        else {
             return Ok(tx_args);
         };
 
-        let (auth_arg, preimage) =
-            commit_fee_conversion_info(conversion_info, NATIVE_FEE_CONVERSION_SALT);
         let mut tx_args = tx_args.with_auth_args(auth_arg);
         tx_args.extend_advice_map([(auth_arg, preimage)]);
 

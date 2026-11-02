@@ -10,8 +10,16 @@ use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{Deserializable, hex_to_bytes};
-use miden_client::vm::MIN_STACK_DEPTH;
-use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
+use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
+use miden_client::{
+    AssetError,
+    Client,
+    ClientError,
+    Felt,
+    TransactionExecutorError,
+    WORD_SIZE,
+    Word,
+};
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
@@ -803,6 +811,104 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
     Err(format!("address `{address_str}` does not encode an account ID"))
 }
 
+// EMPTY TRANSACTION
+// ================================================================================================
+
+/// The transaction kernel's assertion message for a transaction that changes nothing.
+///
+/// The message is hashed into the error code the assertion carries, and compared against it. It
+/// only decides whether an explanatory line is printed: if the kernel ever rewords it, the line
+/// stops appearing and nothing else changes.
+const EMPTY_TRANSACTION_ASSERTION: &str =
+    "executed transaction neither changed the account state, nor consumed any notes";
+
+/// The line printed for a transaction that the kernel rejected because it changed nothing.
+const EMPTY_TRANSACTION_REPORT: &str = "The transaction was rejected because it did not change the \
+     account state and did not consume any notes.";
+
+/// Returns true when `error` is the transaction kernel's rejection of a transaction that neither
+/// changed the account state nor consumed a note.
+pub(crate) fn is_empty_transaction_error(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(
+                ExecutionError::OperationError {
+                    err: OperationError::FailedAssertion { err_code, .. },
+                    ..
+                },
+            ),
+        ) if *err_code == error_code_from_msg(EMPTY_TRANSACTION_ASSERTION)
+    )
+}
+
+/// Builds the error the executor raises for a failed assertion with the message `msg`.
+#[cfg(test)]
+fn assertion_error(msg: &str) -> ClientError {
+    let assertion = OperationError::FailedAssertion {
+        err_code: error_code_from_msg(msg),
+        err_msg: None,
+    }
+    .with_context();
+    ClientError::TransactionExecutorError(
+        TransactionExecutorError::TransactionProgramExecutionFailed(assertion),
+    )
+}
+
+/// Builds the error the kernel raises for a transaction that changes nothing.
+#[cfg(test)]
+pub(crate) fn empty_transaction_error() -> ClientError {
+    assertion_error(EMPTY_TRANSACTION_ASSERTION)
+}
+
+/// Prints why the kernel rejected a transaction that changed nothing.
+pub(crate) fn print_empty_transaction_report() {
+    println!("\n{EMPTY_TRANSACTION_REPORT}");
+}
+
+// DEBUG ADAPTER HINT
+// ================================================================================================
+
+/// The help text for a transaction program that failed in `exec` or `consume-notes`.
+const DEBUG_ADAPTER_HINT: &str = "Re-run the command with `--start-debug-adapter <ADDR>` and \
+     connect a DAP client, such as `miden-debug`, to step through the transaction and find the \
+     instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// The help text for the same failure when the CLI is built without the `dap` feature.
+const DEBUG_ADAPTER_BUILD_HINT: &str = "Build the CLI with `--features dap`, re-run the command \
+     with `--start-debug-adapter <ADDR>` and connect a DAP client, such as `miden-debug`, to step \
+     through the transaction and find the instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// Returns the debug adapter hint when the transaction program failed during execution.
+pub(crate) fn debug_adapter_hint(error: &ClientError) -> Option<String> {
+    match error {
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(_),
+        ) => {
+            let hint = if cfg!(feature = "dap") {
+                DEBUG_ADAPTER_HINT
+            } else {
+                DEBUG_ADAPTER_BUILD_HINT
+            };
+            Some(hint.to_string())
+        },
+        _ => None,
+    }
+}
+
+/// Sets the debug adapter hint on a client error when the transaction program failed.
+pub(crate) fn with_debug_adapter_hint(error: CliError) -> CliError {
+    match error {
+        CliError::Client { error, help } => {
+            let help = debug_adapter_hint(&error).or(help);
+            CliError::Client { error, help }
+        },
+        other => other,
+    }
+}
+
 // ECDSA PUBLIC KEY PARSING
 // ================================================================================================
 
@@ -880,6 +986,7 @@ mod tests {
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
     use miden_client::utils::Serializable;
+    use miden_client::{ClientError, ErrorHint};
 
     use super::{
         FaucetMetadataResolver,
@@ -890,6 +997,7 @@ mod tests {
         parse_ecdsa_public_key,
         tokens_to_base_units,
     };
+    use crate::errors::CliError;
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()
@@ -1046,5 +1154,47 @@ mod tests {
 
         parse_ecdsa_public_key(&not_on_curve)
             .expect_err("an uncompressed point off the curve should be rejected");
+    }
+
+    #[test]
+    fn the_kernel_rejection_of_an_empty_transaction_is_recognized() {
+        assert!(super::is_empty_transaction_error(&super::empty_transaction_error()));
+    }
+
+    #[test]
+    fn another_failed_assertion_is_not_an_empty_transaction() {
+        let error = super::assertion_error("some other assertion");
+
+        assert!(!super::is_empty_transaction_error(&error));
+    }
+
+    #[test]
+    fn a_failed_program_gets_the_debug_adapter_hint() {
+        let error = super::with_debug_adapter_hint(super::assertion_error("any assertion").into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        let expected = if cfg!(feature = "dap") {
+            super::DEBUG_ADAPTER_HINT
+        } else {
+            super::DEBUG_ADAPTER_BUILD_HINT
+        };
+        assert_eq!(help.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn another_client_error_keeps_its_hint() {
+        let client_error = ClientError::AccountNonceTooLow;
+        let library_help =
+            Option::<ErrorHint>::from(&client_error).map(ErrorHint::into_help_message);
+
+        let error = super::with_debug_adapter_hint(client_error.into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        assert!(library_help.is_some());
+        assert_eq!(help, library_help);
     }
 }

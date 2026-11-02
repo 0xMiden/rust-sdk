@@ -116,29 +116,31 @@ impl SqliteStore {
         .map(|(header, _)| header))
     }
 
-    /// Retrieves a complete account record with full vault and storage data.
+    /// Retrieves a complete account record from one database snapshot.
     pub(crate) fn get_account(
         conn: &mut Connection,
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
+        let tx = conn.transaction().into_store_error()?;
         let Some((header, status, client_account_type)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?.pop()
+            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?.pop()
         else {
             return Ok(None);
         };
 
-        let assets = query_vault_assets(conn, account_id)?;
+        let assets = query_vault_assets(&tx, account_id)?;
         let vault = AssetVault::new(&assets)?;
 
-        let slots = query_storage_slots(conn, account_id, &AccountStorageFilter::All)?
+        let slots = query_storage_slots(&tx, account_id, &AccountStorageFilter::All)?
             .into_values()
             .collect();
 
         let storage = AccountStorage::new(slots)?;
 
-        let Some(account_code) = query_account_code(conn, header.code_commitment())? else {
+        let Some(account_code) = query_account_code(&tx, header.code_commitment())? else {
             return Ok(None);
         };
+        tx.commit().into_store_error()?;
 
         let account = Account::new_unchecked(
             header.id(),
@@ -153,13 +155,14 @@ impl SqliteStore {
         Ok(Some(AccountRecord::new(account_data, status, client_account_type)))
     }
 
-    /// Retrieves a minimal partial account record with storage and vault witnesses.
+    /// Retrieves a minimal partial account record from one database snapshot.
     pub(crate) fn get_minimal_partial_account(
         conn: &mut Connection,
         account_id: AccountId,
     ) -> Result<Option<AccountRecord>, StoreError> {
+        let tx = conn.transaction().into_store_error()?;
         let Some((header, status, client_account_type)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?.pop()
+            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?.pop()
         else {
             return Ok(None);
         };
@@ -171,7 +174,7 @@ impl SqliteStore {
         let mut storage_header = Vec::new();
         let mut maps = vec![];
 
-        let storage_values = query_storage_values(conn, account_id)?;
+        let storage_values = query_storage_values(&tx, account_id)?;
 
         // Storage maps are always minimal here (just roots, no entries). New accounts that need
         // full storage data are handled by the DataStore layer, which fetches the full account via
@@ -188,9 +191,10 @@ impl SqliteStore {
         let partial_storage =
             PartialStorage::new(storage_header, maps).map_err(StoreError::AccountError)?;
 
-        let Some(account_code) = query_account_code(conn, header.code_commitment())? else {
+        let Some(account_code) = query_account_code(&tx, header.code_commitment())? else {
             return Ok(None);
         };
+        tx.commit().into_store_error()?;
 
         let partial_account = PartialAccount::new(
             header.id(),
@@ -234,13 +238,21 @@ impl SqliteStore {
         Ok(AssetVault::new(&assets)?)
     }
 
-    /// Retrieves the full storage for a specific account.
+    /// Retrieves the full storage for a specific account from one database snapshot.
     pub fn get_account_storage(
         conn: &Connection,
         account_id: AccountId,
         filter: &AccountStorageFilter,
     ) -> Result<AccountStorage, StoreError> {
+        let tx = conn
+            .is_autocommit()
+            .then(|| conn.unchecked_transaction())
+            .transpose()
+            .into_store_error()?;
         let slots = query_storage_slots(conn, account_id, filter)?.into_values().collect();
+        if let Some(tx) = tx {
+            tx.commit().into_store_error()?;
+        }
         Ok(AccountStorage::new(slots)?)
     }
 
@@ -315,20 +327,23 @@ impl SqliteStore {
         query_account_addresses(conn, account_id)
     }
 
-    /// Retrieves the account code for a specific account by ID.
+    /// Retrieves the account code for a specific account by ID from one database snapshot.
     pub(crate) fn get_account_code_by_id(
         conn: &mut Connection,
         account_id: AccountId,
     ) -> Result<Option<AccountCode>, StoreError> {
+        let tx = conn.transaction().into_store_error()?;
         let Some((header, ..)) =
-            query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?
+            query_latest_account_headers(&tx, "id = ?", params![account_id.to_bytes()])?
                 .into_iter()
                 .next()
         else {
             return Ok(None);
         };
 
-        query_account_code(conn, header.code_commitment())
+        let code = query_account_code(&tx, header.code_commitment())?;
+        tx.commit().into_store_error()?;
+        Ok(code)
     }
 
     // MUTATOR/WRITER METHODS

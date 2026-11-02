@@ -50,7 +50,7 @@ assert_selection "AggLayer Foundry configuration" "$all_systems" \
   "bin/integration-tests/foundry-vectors/foundry.toml"
 assert_selection "Nextest configuration" "$all_systems" ".config/nextest.toml"
 assert_selection "validator fixture" "$all_systems" \
-  "scripts/testdata/insecure-golden-storage-key/secret-share.wire"
+  "scripts/testdata/insecure-golden-storage-key/storage-key.bundle"
 assert_selection "selector" "$all_systems" ".github/scripts/select-system-tests.sh"
 assert_selection "other integration code" "$integration_only" "bin/miden-cli/src/main.rs"
 assert_selection "benchmark script" "$benchmark_only" "scripts/test-miden-bench-smoke.sh"
@@ -122,15 +122,15 @@ assert_fixture_move_selects_systems() (
   git -C "$test_repo" config user.email "ci@example.com"
   git -C "$test_repo" config user.name "CI"
   mkdir -p "$test_repo/scripts/testdata/insecure-golden-storage-key"
-  echo "fixture" > "$test_repo/scripts/testdata/insecure-golden-storage-key/secret-share.wire"
-  git -C "$test_repo" add scripts/testdata/insecure-golden-storage-key/secret-share.wire
+  echo "fixture" > "$test_repo/scripts/testdata/insecure-golden-storage-key/storage-key.bundle"
+  git -C "$test_repo" add scripts/testdata/insecure-golden-storage-key/storage-key.bundle
   git -C "$test_repo" commit -qm "Add fixture"
   base_sha=$(git -C "$test_repo" rev-parse HEAD)
 
   mkdir -p "$test_repo/moved"
   git -C "$test_repo" mv \
-    scripts/testdata/insecure-golden-storage-key/secret-share.wire \
-    moved/secret-share.wire
+    scripts/testdata/insecure-golden-storage-key/storage-key.bundle \
+    moved/storage-key.bundle
   git -C "$test_repo" commit -qm "Move fixture"
   head_sha=$(git -C "$test_repo" rev-parse HEAD)
 

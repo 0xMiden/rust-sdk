@@ -1,15 +1,20 @@
--- Table for storing different settings in run-time, which need to persist over runs.
---
--- `scope` separates the client's own state from the user's, so the same name in each addresses a
--- different row. It leads the primary key, so listing one scope's keys reads a contiguous run.
-CREATE TABLE settings (
-    scope INTEGER NOT NULL,  -- owner of the row (0 = Client, 1 = User)
+-- The data of the client, as protobuf messages. The client reaches it only through the typed store
+-- methods.
+CREATE TABLE client_config (
     name  TEXT NOT NULL,
     value BLOB NOT NULL,
 
-    PRIMARY KEY (scope, name),
-    CONSTRAINT setting_scope_is_valid    CHECK (scope IN (0, 1)),
-    CONSTRAINT setting_name_is_not_empty CHECK (length(name) > 0)
+    PRIMARY KEY (name),
+    CONSTRAINT client_config_name_is_not_empty CHECK (length(name) > 0)
+) WITHOUT ROWID, STRICT;
+
+-- The values of the user of the client.
+CREATE TABLE user_settings (
+    name  TEXT NOT NULL,
+    value BLOB NOT NULL,
+
+    PRIMARY KEY (name),
+    CONSTRAINT user_setting_name_is_not_empty CHECK (length(name) > 0)
 ) WITHOUT ROWID, STRICT;
 
 -- Create account_code table
@@ -219,11 +224,14 @@ CREATE TABLE notes_scripts (
     PRIMARY KEY (script_root)
 ) STRICT;
 
--- ── Blockchain checkpoint & tags ─────────────────────────────────────────
+-- ── Chain anchors & tags ─────────────────────────────────────────────────
 
-CREATE TABLE blockchain_checkpoint (
-    block_num INTEGER NOT NULL,             -- the block number of the most recent state sync
-    partial_blockchain_peaks BLOB NOT NULL, -- serialized MMR peaks at the current sync height
+-- One row for each block number that a state sync reached. The row with the highest block number
+-- is the current sync height.
+-- The INTEGER primary key is the rowid alias, so a MAX or ORDER BY DESC query is a direct seek.
+CREATE TABLE chain_anchors (
+    block_num INTEGER NOT NULL, -- the block number of a state sync
+    peaks BLOB NOT NULL,        -- serialized MMR peaks committed by the header of the block
     PRIMARY KEY (block_num)
 ) STRICT;
 
@@ -236,11 +244,11 @@ CREATE TABLE tags (
     PRIMARY KEY (tag, source)
 ) STRICT, WITHOUT ROWID;
 
--- insert initial row into blockchain_checkpoint table
-INSERT OR IGNORE INTO blockchain_checkpoint (block_num, partial_blockchain_peaks)
+-- insert initial row into chain_anchors table
+INSERT OR IGNORE INTO chain_anchors (block_num, peaks)
 SELECT 0, X''
 WHERE (
-    SELECT COUNT(*) FROM blockchain_checkpoint
+    SELECT COUNT(*) FROM chain_anchors
 ) = 0;
 
 -- ── Block headers & partial blockchain ───────────────────────────────────
@@ -321,3 +329,22 @@ CREATE TABLE forest_revision (
 ) STRICT;
 
 INSERT INTO forest_revision (id, next_version) VALUES (0, 1);
+
+-- ── PSWAP lineages ───────────────────────────────────────────────────────
+
+-- One row for each PSWAP order that the client tracks. `record` holds the full lineage record. The
+-- other columns repeat the record fields that the queries filter on.
+CREATE TABLE pswap_lineages (
+    order_id            INTEGER NOT NULL,  -- order ID, a u64 stored as i64
+    creator_account_id  BLOB NOT NULL,     -- serialized account ID of the order creator
+    current_tip_note_id BLOB NOT NULL,     -- serialized note ID of the current tip
+    state               INTEGER NOT NULL,  -- lineage state (0 = Active, 1 = FullyFilled, 2 = Reclaimed)
+    record              BLOB NOT NULL,     -- protobuf PswapLineageRecord
+
+    PRIMARY KEY (order_id),
+    CONSTRAINT pswap_lineage_state_is_valid CHECK (state IN (0, 1, 2))
+) WITHOUT ROWID, STRICT;
+CREATE INDEX idx_pswap_lineages_creator_account_id ON pswap_lineages(creator_account_id);
+
+-- The client resolves the tip of an active lineage only. Two active lineages cannot share a tip.
+CREATE UNIQUE INDEX idx_pswap_lineages_active_tip ON pswap_lineages(current_tip_note_id) WHERE state = 0;

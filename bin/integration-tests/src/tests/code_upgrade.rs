@@ -286,6 +286,9 @@ pub async fn test_public_account_code_upgrade_syncs_to_other_client(
 
     let (account, _) = client_1.insert_account(AccountSetup::prebuilt(account, key)).await?;
     client_1.deploy_account(account.id()).await?;
+    // The import reads the account at the sync height, so the client must sync past the block that
+    // created the account.
+    client_2.sync_state().await?;
     client_2.import_account_by_id(account.id()).await?;
 
     let steps = [(&upgraded_code, false, 0u32), (&original_code, true, 1u32)];

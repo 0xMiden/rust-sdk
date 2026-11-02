@@ -280,6 +280,8 @@ pub mod config;
 mod errors;
 mod info;
 mod note_decoding;
+mod package_registry;
+mod packages;
 #[allow(hidden_glob_reexports)]
 mod utils;
 

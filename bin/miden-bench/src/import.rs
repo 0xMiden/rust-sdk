@@ -48,6 +48,9 @@ pub async fn import_from_network(
 
     println!("Importing account {account_id} from network...");
 
+    // The import reads the account at the sync height. This command starts without a sync, so the
+    // client syncs here, before the timed import.
+    client.sync_state().await?;
     let t = Instant::now();
     client.import_account_by_id(account_id).await?;
     let elapsed = t.elapsed();

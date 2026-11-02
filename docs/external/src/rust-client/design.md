@@ -38,7 +38,7 @@ The store can track any number of accounts, and any number of notes that those a
 
 ## RPC client
 
-The RPC client communicates with the node through a defined set of gRPC methods. The provided client works both in `std` and `wasm` environments.
+The RPC client communicates with the node through a defined set of gRPC methods. The provided client, `GrpcClient`, lives in the `miden-client-grpc` crate and works both in `std` and `wasm` environments.
 
 The available gRPC methods are documented in the [Node gRPC Reference](https://docs.miden.xyz/miden-node/rpc).
 

@@ -90,12 +90,20 @@ For the `--default` flag, if `<ID>` is "none" then the previous default account 
 
 The `--inspect` flag lists the procedures an account exposes, grouped into resolved procedures (shown in a table with their name, signature, and MAST root) and unresolved ones (listed by their MAST root under a hint to pass `--package`). Pass `<ID>:<PROCEDURE>` to resolve a single procedure by name; if no procedure with that name can be resolved (the account does not expose it, or its defining package was not provided) the command fails with an error. Like `--show`, it accepts a partial ID. It supports two additional flags:
 
-- `-p, --package <FILE>`: Supplies an additional `.masp` package used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
+- `-p, --package <PACKAGE>`: Supplies an additional `.masp` package, given as a [package argument](#package-arguments), used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
 - `-v, --verbose`: Prints the MASM disassembly of each procedure.
 
 #### Registering an account on the network allowlist
 
 A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt. The network operator hands out the invitation codes. A code is case-sensitive, binds to one account, and cannot be reused for another.
+
+Check an invitation code before registration:
+
+```sh
+miden-client account --check-invitation-code <CODE>
+```
+
+The command prints one line that states whether the code can be used. It does not print or consume the code. Unknown and registered codes cannot be used. A node that does not enforce the allowlist accepts every code. An empty code returns an error when enforcement is enabled.
 
 Register the account after creating it and before its first transaction:
 
@@ -126,7 +134,7 @@ A basic wallet contains an authentication component and a basic wallet component
 The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Used to select the account visibility (private if not specified). It may receive "private" or "public". This is the only thing the protocol's `AccountType` encodes.
-- `--extra-packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
+- `--extra-packages <PACKAGES>`: Specifies a list of packages, each given as a [package argument](#package-arguments), holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
@@ -149,7 +157,7 @@ The command accepts these options:
 - `-t, --account-type <ACCOUNT_TYPE>`: Specifies the account visibility. It accepts either "private" or "public", with "private" as the default. This is the only thing the protocol's `AccountType` encodes.
 
 There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If any package contributes the `FungibleFaucet` component, the resulting account is treated as a fungible faucet and an implicit `TokenPolicyManager` is installed when one is not already provided. `--account-type` only selects visibility.
-- `--packages <PACKAGES>`: Specifies a list of file paths for packages holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
+- `--packages <PACKAGES>`: Specifies a list of packages, each given as a [package argument](#package-arguments), holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
@@ -160,6 +168,19 @@ The authentication scheme flags are mutually exclusive. They also cannot be comb
 After creating an account with the `new-account` command, the account is stored locally and tracked by the client, enabling it to execute transactions and synchronize state changes with the Miden network.
 
 On a network that enforces an account allowlist, register the account before its first transaction. See [Registering an account on the network allowlist](#registering-an-account-on-the-network-allowlist).
+
+#### Package arguments
+
+Every flag that takes a package (`new-account --packages`, `new-wallet --extra-packages`, `call --package`, `exec --package` and `account --inspect --package`) accepts the same forms:
+
+| Argument | Resolves to |
+| --- | --- |
+| `path/to/package.masp` | The file at that path. |
+| `basic-wallet`, `auth/no-auth` | `<NAME>.masp` in the configured packages directory. |
+| `counter-contract@0.1.0` | That version in the local package registry. |
+| `counter-contract@` or `counter-contract@latest` | The highest semantic version in the local package registry. |
+
+A `<NAME>@<VERSION>` argument resolves through the `miden registry show` command of the active Miden toolchain, so it requires the `miden` command from [midenup](https://github.com/0xMiden/midenup) and the `local-registry` component. The default midenup profile does not include this component. Install it with `midenup install --component local-registry`. Run `miden registry list` to see the packages in the local registry. A path that ends in `.masp` is always read as a file, also when it contains `@`.
 
 #### Examples
 
@@ -183,6 +204,9 @@ miden-client new-wallet --ecdsa 0x02...
 # (the resulting account is a faucet because basic-fungible-faucet.masp contributes the
 # `FungibleFaucet` component — no extra flag is needed)
 miden-client new-account --packages packages/basic-fungible-faucet.masp
+
+# Create a public account with a component from the local package registry
+miden-client new-account -t public -p auth/no-auth -p basic-wallet -p counter-contract@0.1.0
 
 # Create a fungible faucet with preset fields
 miden-client new-account --packages packages/basic-fungible-faucet.masp --init-storage-data-path init_data.toml
@@ -608,16 +632,21 @@ miden-client import --overwrite account.mac
 
 #### `exec`
 
-Execute the specified program against the specified account.
+Execute a transaction script against an account. With `--submit`, prove the transaction and submit it to the network.
 
 | Flag                          | Description                                  | Aliases |
 | ----------------------------- | -------------------------------------------- | ------- |
 | `--account <ACCOUNT_ID>`      | Account ID to use for the program execution. | `-a`    |
-| `--package <PACKAGE>`         | Required compiled transaction script package (`.masp`), as a path or a name resolved in the packages directory. | `-p`    |
+| `--package <PACKAGE>`         | Required compiled transaction script package (`.masp`), given as a [package argument](#package-arguments). | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to the inputs file.                     | `-i`    |
 | `--hex-words`                 | Print the output stack grouped into words.   |         |
+| `--submit`                    | Prove the transaction and submit it.         |         |
+| `--force`                     | With `--submit`, submit without asking for confirmation. |         |
+| `--delegate-proving`          | With `--submit`, prove with the remote prover set in the configuration file. |         |
 
 `--package` is required. It accepts a library package with exactly one transaction script export, such as a Rust `#[tx_script]` built with `miden build`. Executable packages and MASM source files are not accepted. Replace `--script-path script.masm` with `--package script.masp` after compiling the script.
+
+Without `--submit`, the command only executes the script and prints the output stack. With `--submit`, the account must be tracked by the client. The command executes the transaction, prints its effects and asks for confirmation. After confirmation it proves the transaction, submits it and applies it to the local store. `--hex-words` and `--start-debug-adapter` cannot be used with `--submit`.
 
 With the `dap` feature, add `--start-debug-adapter <ADDR>` to debug the package. Compile with debug information for source stepping. A restart reloads the package without compiling sources; rebuild it first to apply source changes. See the [debugging guide](../debugging.md).
 
@@ -633,16 +662,16 @@ inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000
 
 Call a procedure on an account and show what it returns, along with the state changes the call would produce.
 
-Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>]`
+Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE>] [--inputs-path <INPUTS_PATH>]`
 
 | Flag                          | Description                                                   | Aliases |
 | ----------------------------- | ------------------------------------------------------------- | ------- |
-| `--package <PACKAGE>`         | The `.masp` package that exports the procedure, as a path or a name resolved in the packages directory. Optional. | `-p`    |
+| `--package <PACKAGE>`         | The `.masp` package that exports the procedure, given as a [package argument](#package-arguments). Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
 
 The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
-`--package` takes either a path to a `.masp` file or a bare name, which is looked up in the configured packages directory. It is optional: without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
+`--package` takes a path to a `.masp` file, a bare name in the configured packages directory, or a `<NAME>@<VERSION>` reference to the local package registry (see [Package arguments](#package-arguments)). It is optional: without it, `<PROCEDURE>` must be the procedure's hex digest instead of its name, and the output stack is printed as raw field elements since there is no manifest to read the signature from.
 
 Arguments are passed positionally after the target, one token per value in the procedure's signature. The signature comes from the package manifest, and it also decides how each token is read and how the result is printed:
 
@@ -670,6 +699,12 @@ Calling `increment-count` on a counter contract:
 
 ```sh
 miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package target/miden/dev/counter-contract.masp
+```
+
+If the package is in the local package registry, give its name and version instead of the path:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:increment-count --package counter-contract@0.1.0
 ```
 
 The command first prints the procedure's signature and its return values, then the effects the call has on the account:

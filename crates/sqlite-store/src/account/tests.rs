@@ -66,6 +66,67 @@ use crate::sql_error::SqlResultExt;
 use crate::tests::create_test_store;
 
 #[tokio::test]
+async fn get_account_uses_one_snapshot_during_concurrent_updates() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let (store, account, value_slot, map_slot) =
+        insert_account_with_storage_for_forest_test().await?;
+    let (_, updated_account) =
+        build_patch_for_forest_rollback_test(&account, value_slot, map_slot)?;
+    let account_id = account.id();
+    let (header_read_tx, header_read_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+
+    let reader = store.interact_with_connection(move |conn| {
+        let mut pause = Some((header_read_tx, resume_rx));
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Read { table_name: "latest_account_assets", .. }
+            ) && let Some((header_read_tx, resume_rx)) = pause.take()
+            {
+                // Pause after the header query so the writer can commit before the vault query.
+                header_read_tx.send(()).expect("writer waits for the header query");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("writer must release the account read");
+            }
+            Authorization::Allow
+        }));
+
+        let record = SqliteStore::get_account(conn, account_id);
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        record
+    });
+    let writer = async {
+        tokio::time::timeout(Duration::from_secs(10), header_read_rx).await??;
+        let result = store.update_account(&updated_account).await;
+        resume_tx.send(())?;
+        result.map_err(anyhow::Error::from)
+    };
+
+    let (record, update) = tokio::join!(reader, writer);
+    update?;
+    let actual = Account::try_from(record?.context("account must exist")?)?;
+    assert_eq!(
+        actual.to_commitment(),
+        account.to_commitment(),
+        "the account must use the snapshot of its header"
+    );
+    let latest =
+        Account::try_from(store.get_account(account_id).await?.context("account exists")?)?;
+    assert_eq!(
+        latest.to_commitment(),
+        updated_account.to_commitment(),
+        "later reads must observe the committed update"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn account_code_insertion_no_duplicates() -> anyhow::Result<()> {
     let store = create_test_store().await;
     let component_code = CodeBuilder::default().compile_component_code(

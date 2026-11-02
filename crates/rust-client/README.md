@@ -7,7 +7,7 @@ Rust library, which can be used by other project to programmatically interact wi
 In order to utilize the `miden-client` library, you can add the dependency to your project's `Cargo.toml` file:
 
 ````toml
-miden-client = { version = "0.16.0-alpha.1", features = ["tonic"] }
+miden-client = { version = "0.18", features = ["tonic"] }
 ````
 
 Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations.
@@ -22,13 +22,15 @@ Talking to a node requires the `tonic` feature, which is not part of the default
 | `testing` | Enables functions meant for testing environments. **Disabled by default.** |
 | `dap`     | Enables running a transaction under a Debug Adapter Protocol client instead of proving it. Implies `std`. **Disabled by default.** |
 
-### Store and RpcClient implementations
+### Store and NodeRpcClient implementations
 
-The library user can provide their own implementations of `Store` and `RpcClient` traits, which can be used as components of `Client`, though it is not necessary. The `Store` trait is used to persist the state of the client, while the `RpcClient` trait is used to communicate via [gRPC](https://grpc.io/) with the Miden node.
+The library user can provide their own implementations of `Store` and `NodeRpcClient` traits, which can be used as components of `Client`, though it is not necessary. The `Store` trait is used to persist the state of the client, while the `NodeRpcClient` trait is used to communicate with the Miden node. Both traits are defined in `miden-client-core`.
 
 Storage backends are provided as separate crates:
 - SQLite: `miden-client-sqlite-store`, based on SQLite. For `std`-compatible environments.
 - Web (WASM): See [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) for browser storage.
+
+The default `NodeRpcClient` implementation is `GrpcClient`, in the `miden-client-grpc` crate. It communicates with the node via [gRPC](https://grpc.io/), and `miden-client` re-exports it with the `tonic` feature.
 
 ## License
 This project is [MIT licensed](../../LICENSE).

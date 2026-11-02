@@ -18,6 +18,7 @@ use miden_protocol::account::{
     StorageSlotType,
 };
 use miden_protocol::address::NetworkId;
+use miden_protocol::asset::{AssetVault, PartialVault};
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::MerklePath;
@@ -103,6 +104,8 @@ pub struct MockRpcApi {
     next_call_failures: Arc<RwLock<BTreeMap<&'static str, RpcError>>>,
     /// Invitation code each account was registered with, recorded by `register_account`.
     registered_accounts: Arc<RwLock<BTreeMap<AccountId, String>>>,
+    /// Invitation codes that tests have made available for registration.
+    invitation_codes: Arc<RwLock<BTreeSet<String>>>,
     /// Whether `is_account_allowed` consults `registered_accounts`. A node that does not enforce
     /// the allowlist answers `true` for every account, which is the default here so that tests
     /// which deploy accounts need no registration.
@@ -142,6 +145,7 @@ impl MockRpcApi {
             get_account_calls: Arc::new(AtomicUsize::new(0)),
             next_call_failures: Arc::new(RwLock::new(BTreeMap::new())),
             registered_accounts: Arc::new(RwLock::new(BTreeMap::new())),
+            invitation_codes: Arc::new(RwLock::new(BTreeSet::new())),
             allowlist_enforced: Arc::new(AtomicBool::new(false)),
             is_account_allowed_calls: Arc::new(AtomicUsize::new(0)),
             submitted_batch_sealed_inputs: Arc::new(RwLock::new(Vec::new())),
@@ -152,6 +156,11 @@ impl MockRpcApi {
     /// enforces the account allowlist. Without this the mock answers `true` for every account.
     pub fn enforce_account_allowlist(&self) {
         self.allowlist_enforced.store(true, Ordering::SeqCst);
+    }
+
+    /// Adds an invitation code for validation queries.
+    pub fn add_invitation_code(&self, invitation_code: &str) {
+        self.invitation_codes.write().insert(String::from(invitation_code));
     }
 
     /// Id of the first account updated in the mock chain's proven blocks, in block then
@@ -245,11 +254,41 @@ impl MockRpcApi {
 
     /// Sets the oversize threshold for `get_account`. A storage map whose entries were requested in
     /// full comes back as `StorageMapEntries::LimitExceeded` past this threshold, and a vault with
-    /// more assets than it comes back with the `too_many_assets` flag set.
+    /// more assets than it comes back as `AccountVaultDetails::TooManyAssets`.
     #[must_use]
     pub fn with_oversize_threshold(mut self, threshold: usize) -> Self {
         self.oversize_threshold = threshold;
         self
+    }
+
+    /// Returns the `get_account` vault details for `vault` under the `request` policy.
+    ///
+    /// Mirrors the node: `Skip` sends no assets, `IfChangedFrom` omits them when the vault root
+    /// already equals the sent commitment, and `Assets` sends proofs for the requested assets for
+    /// any vault size. The node sends no asset list for a vault above `oversize_threshold`.
+    fn vault_details(&self, vault: &AssetVault, request: &VaultFetch) -> AccountVaultDetails {
+        match request {
+            VaultFetch::Skip => AccountVaultDetails::Assets(Vec::new()),
+            VaultFetch::IfChangedFrom(root) if *root == vault.root() => {
+                AccountVaultDetails::Assets(Vec::new())
+            },
+            VaultFetch::Always | VaultFetch::IfChangedFrom(_) => {
+                if vault.num_assets() > self.oversize_threshold {
+                    AccountVaultDetails::TooManyAssets
+                } else {
+                    AccountVaultDetails::Assets(vault.assets().collect())
+                }
+            },
+            VaultFetch::Assets(asset_ids) if asset_ids.is_empty() => {
+                AccountVaultDetails::Partial(PartialVault::new(vault.root()))
+            },
+            VaultFetch::Assets(asset_ids) => {
+                let witnesses = asset_ids.iter().map(|asset_id| vault.open(*asset_id));
+                let partial_vault = PartialVault::with_witnesses(witnesses)
+                    .expect("witnesses from one vault share a root");
+                AccountVaultDetails::Partial(partial_vault)
+            },
+        }
     }
 
     /// Registers a note header to be reported as erased in subsequent sync transaction responses.
@@ -367,13 +406,13 @@ impl MockRpcApi {
 
                 let erased_output_notes = self.erased_notes.read().clone();
 
-                transactions.push(TransactionRecord {
-                    block_num: block_number,
-                    transaction_header: transaction_header.clone(),
-                    output_notes: vec![],
+                transactions.push(TransactionRecord::new(
+                    block_number,
+                    transaction_header.clone(),
+                    vec![],
                     erased_output_notes,
-                    consumed_note_refs: vec![],
-                });
+                    vec![],
+                ));
             }
         }
 
@@ -455,15 +494,6 @@ impl MockRpcApi {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl NodeRpcClient for MockRpcApi {
-    /// Always reports the commitment as unset, unlike a real client.
-    ///
-    /// A real client's RPC connection is its own, so whoever set the commitment also stored the
-    /// header. Tests share one mock across clients with separate stores, where a commitment set by
-    /// the first would stop every later client from storing genesis at all.
-    fn has_genesis_commitment(&self) -> Option<Word> {
-        None
-    }
-
     async fn set_genesis_commitment(&self, _commitment: Word) -> Result<(), RpcError> {
         // The mock sends no request headers, so there is nothing to pin the commitment to.
         Ok(())
@@ -597,6 +627,11 @@ impl NodeRpcClient for MockRpcApi {
         Ok((block, mmr_proof))
     }
 
+    async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError> {
+        let (block, _) = self.get_block_header_by_number(Some(BlockNumber::GENESIS), false).await?;
+        Ok((block, self.protocol_config()))
+    }
+
     /// Returns the node's tracked notes that match the provided note IDs.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
         self.get_notes_by_id_calls.fetch_add(1, Ordering::Relaxed);
@@ -703,14 +738,14 @@ impl NodeRpcClient for MockRpcApi {
         Ok(block_num)
     }
 
-    /// Returns the account proof for the specified account. The `known_code` and `vault` fields are
-    /// ignored: full account data is returned, with truncation flags set when it exceeds
-    /// `oversize_threshold`.
+    /// Returns the account proof for the specified account. The `known_code` field is ignored, so
+    /// the response always contains the account code. Storage maps and vaults above
+    /// `oversize_threshold` come back with truncation flags set.
     async fn get_account(
         &self,
-        account_id: AccountId,
         request: GetAccountRequest,
     ) -> Result<(BlockNumber, AccountProof), RpcError> {
+        let account_id = request.account_id;
         self.get_account_calls.fetch_add(1, Ordering::Relaxed);
 
         if let Some(error) = self.take_failure(RpcEndpoint::GetAccount) {
@@ -741,7 +776,9 @@ impl NodeRpcClient for MockRpcApi {
             // `All` enumerates the account's map slots directly — the mock can introspect the
             // account, so it simulates the (not-yet-on-the-wire) "all storage maps" request. A slot
             // maps to the keys requested for it, empty meaning "every entry".
-            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match &request.storage
+            let requested_slots: Vec<(StorageSlotName, Vec<StorageMapKey>)> = match request
+                .fetch
+                .storage()
             {
                 StorageMapFetch::Skip => Vec::new(),
                 StorageMapFetch::Slots(reqs) => {
@@ -799,23 +836,7 @@ impl NodeRpcClient for MockRpcApi {
                 map_details,
             };
 
-            // Mirror the node: `Skip` sends no assets, and `IfChangedFrom` omits them when the
-            // account's vault root already equals the sent commitment.
-            let include_assets = match request.vault {
-                VaultFetch::Skip => false,
-                VaultFetch::Always => true,
-                VaultFetch::IfChangedFrom(root) => root != account.vault().root(),
-            };
-            let mut assets = vec![];
-            if include_assets {
-                for asset in account.vault().assets() {
-                    assets.push(asset);
-                }
-            }
-            let vault_details = AccountVaultDetails {
-                too_many_assets: assets.len() > self.oversize_threshold,
-                assets,
-            };
+            let vault_details = self.vault_details(account.vault(), request.fetch.vault());
 
             Some(AccountDetails {
                 header: account.into(),
@@ -843,8 +864,7 @@ impl NodeRpcClient for MockRpcApi {
             return Err(error);
         }
 
-        // The mock holds no invitations, so it accepts any code and records the pair. Stage a
-        // failure with `fail_next_call` to exercise a rejection.
+        // Registration accepts any code. Use `fail_next_call` to test a rejection.
         self.registered_accounts
             .write()
             .insert(account_id, String::from(invitation_code));
@@ -866,6 +886,28 @@ impl NodeRpcClient for MockRpcApi {
         }
 
         Ok(self.registered_accounts.read().contains_key(&account_id))
+    }
+
+    async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::IsInvitationCodeValid) {
+            return Err(error);
+        }
+
+        if !self.allowlist_enforced.load(Ordering::SeqCst) {
+            return Ok(true);
+        }
+
+        if invitation_code.is_empty() {
+            return Err(RpcError::RequestError {
+                endpoint: RpcEndpoint::IsInvitationCodeValid,
+                error_kind: crate::rpc::GrpcError::InvalidArgument,
+                endpoint_error: None,
+                source: None,
+            });
+        }
+
+        Ok(self.invitation_codes.read().contains(invitation_code)
+            && !self.registered_accounts.read().values().any(|code| code == invitation_code))
     }
 
     /// Returns the nullifiers created after the specified block number that match the provided

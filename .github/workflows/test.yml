@@ -21,6 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  NODE_OPTIONS: --use-openssl-ca
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   CARGO_PROFILE_DEV_DEBUG: 0
   RUST_CACHE_KEY: rust-cache-2026.02.18
 
@@ -35,6 +37,17 @@ jobs:
       miden-bench: ${{ steps.filter.outputs.miden-bench }}
       test-node: ${{ steps.filter.outputs.test-node }}
     steps:
+      - &update-ca-certificates
+        name: Update CA certificates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ca-certificates
+          ubuntu_version="$(awk -F= '$1 == "VERSION_ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)"
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" \
+            ge "20260816ubuntu0.${ubuntu_version}.1"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -54,6 +67,7 @@ jobs:
     name: Unit tests
     runs-on: warp-ubuntu-latest-x64-8x
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -79,6 +93,7 @@ jobs:
     name: Documentation tests
     runs-on: warp-ubuntu-latest-arm64-2x
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -103,6 +118,7 @@ jobs:
     outputs:
       cache-hit: ${{ steps.cache-test-node.outputs.cache-hit }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -136,6 +152,7 @@ jobs:
     needs: [changes, build-test-node]
     if: ${{ !cancelled() && needs.changes.outputs.test-node != 'false' && (needs.build-test-node.result != 'success' || needs.build-test-node.outputs.cache-hit != 'true') }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -188,6 +205,7 @@ jobs:
     needs: [changes, build-test-node, install-test-node]
     if: ${{ !cancelled() && needs.changes.outputs.miden-bench != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -231,6 +249,7 @@ jobs:
     needs: [changes, build-test-node, install-test-node]
     if: ${{ !cancelled() && needs.changes.outputs.agglayer != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -278,6 +297,7 @@ jobs:
     needs: [changes, build-test-node, install-test-node]
     if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -329,6 +349,7 @@ jobs:
     needs: [changes, build-test-node, install-test-node]
     if: ${{ !cancelled() && needs.changes.outputs.integration != 'false' && (needs.install-test-node.result == 'success' || (needs.build-test-node.result == 'success' && needs.build-test-node.outputs.cache-hit == 'true' && needs.install-test-node.result == 'skipped')) }}
     steps:
+      - *update-ca-certificates
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false

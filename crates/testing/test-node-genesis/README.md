@@ -21,6 +21,7 @@ Writes, into `OUTPUT_DIR`:
   is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
 - `funding_account.mac`: the public funding account `miden-validator genesis` requires, written
   **with** its secret key. The node's funding service pays out of it.
+- `funding_account.key`: the serialized signing key used by the funding service.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
 - `test_account_NNNN.mac`: the test faucets and the `too_many_assets` account (read-only
   fixtures, no secret keys).

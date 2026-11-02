@@ -7,7 +7,7 @@ use clap::Parser;
 use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::AccountFetch;
 use miden_client::transaction::{
     AdviceInputs,
     ForeignAccount,
@@ -60,6 +60,9 @@ pub struct CallCmd {
 
     /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
     /// a hex digest and the output stack is shown as raw felts.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(long, short)]
     package: Option<PathBuf>,
 
@@ -214,14 +217,14 @@ impl CallCmd {
     ) -> Result<CallCode, CliError> {
         let digest = Word::try_from(procedure).map_err(|_| {
             CliError::InvalidArgument(format!(
-                "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                "'{procedure}' is not a hex digest. Pass `--package <PACKAGE>` to \
                  call a procedure by name, or give its hex digest to call without a \
                  package."
             ))
         })?;
         println!(
             "No `--package` provided; output will be raw felts. Pass \
-             `--package <FILE>.masp` for typed output."
+             `--package <PACKAGE>` for typed output."
         );
 
         Ok(CallCode {
@@ -373,8 +376,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
         return Ok(CallTarget::Local(target_id));
     }
 
-    let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
-        .map_err(|err| match err {
+    let foreign_account =
+        ForeignAccount::public(target_id, AccountFetch::default()).map_err(|err| match err {
             TransactionRequestError::InvalidForeignAccountId(_) => {
                 CliError::InvalidArgument(format!(
                     "Account {target_id} isn't tracked locally and its state isn't public, so it \

@@ -73,10 +73,13 @@
 * [FEATURE][cli] The CLI caches faucet metadata lookups for the lifetime of a command, so several assets from the same faucet cause at most one metadata RPC fetch. The cache also holds misses ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FEATURE][rust] Added `Client::push_proven_transaction`, which adds a transaction that another party executed and proved to a batch. The client must not track its account and does not record it locally ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FEATURE][cli] `account --show` no longer fetches storage map entries for an account that the client does not track ([#2680](https://github.com/0xMiden/rust-sdk/pull/2680)).
+* [FEATURE][rust] The note record state transitions (`InputNoteRecord::consumed_locally`, `consumed_externally`, `transaction_committed`, etc., and `OutputNoteRecord::inclusion_proof_received` and `nullifier_received`) and the `NoteUpdateTracker` getters and update methods are public ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
+* [FEATURE][cli] Package flags (`new-account --packages`, `new-wallet --extra-packages`, `call --package`, `exec --package` and `account --inspect --package`) accept a `<NAME>@<VERSION>` reference to the local package registry. `<NAME>@` and `<NAME>@latest` select the highest semantic version. The CLI resolves the reference with the `miden registry` command of the active Miden toolchain, which requires the `local-registry` midenup component ([#2671](https://github.com/0xMiden/rust-sdk/pull/2671)).
 * [FEATURE][rust] The note record state transitions (`InputNoteRecord::consumed_locally`, `consumed_externally`, `transaction_committed`, `transaction_discarded`, etc., and `OutputNoteRecord::inclusion_proof_received` and `nullifier_received`) are public ([#2690](https://github.com/0xMiden/rust-sdk/pull/2690)).
 
 ### Fixes
 
+* [FIX][rust,cli] Removed the outdated debug-mode hint for `TransactionProgramExecutionFailed` from `ClientError::error_hint()`. `exec` and `consume-notes` now hint to re-run with `--start-debug-adapter`, or to build with the `dap` feature first ([#2752](https://github.com/0xMiden/rust-sdk/pull/2752)).
 * [FIX][rust] Preserved the pinned genesis commitment in RPC headers when it is set during a native connection handshake.
 * [FIX][store] Read complete and minimal partial SQLite accounts, account storage, and account code from one database snapshot per call. Concurrent updates cannot mix account states, and history pruning cannot hide code selected by an earlier query ([#2729](https://github.com/0xMiden/rust-sdk/pull/2729)).
 * [FIX][rust] `GetAccount` responses are now checked against the authenticated account header: the account rebuilt from the returned details must match the header's commitment, and the storage header must match its storage commitment ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
@@ -94,6 +97,37 @@
 ### Fixes
 
 * [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
+
+## 0.18.0 (2026-10-27)
+
+### Breaking Changes
+
+* [BREAKING][param][rust] Moved the account ID into `GetAccountRequest::new(account_id)`. `NodeRpcClient::get_account` takes only the request. Removed `Default` from `GetAccountRequest` ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
+* [BREAKING][type][rust] Added `AccountFetch` with builder methods for storage and vault policies. `GetAccountRequest::with_fetch` replaces its storage and vault fields and builder methods. `ForeignAccount::Public` and `ForeignAccount::public` take `AccountFetch`, and `ForeignAccount::fetch` replaces `storage_slot_requirements`. Public foreign account declarations use a new binary encoding. `AccountDetails::into_domain` takes the shared `AccountFetch`. Both policies default to `Skip`: a public foreign account no longer fetches its vault with the inputs, and execution reads each asset through a per-asset lookup instead. Set `VaultFetch::Always` or `VaultFetch::Assets` to keep the previous behavior ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
+* [BREAKING][removal][rust] Removed the unused `TransactionRequestError::ForeignAccountDataMissing`, `MerkleError`, and `StorageMapError` variants. Missing account details return `RpcError::ExpectedDataMissing`, and invalid account data returns `RpcError::InvalidResponse` ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
+* [BREAKING][arch][rust] Updated protocol dependencies to `0.18`, Miden VM to `0.36`, `miden-debug` to `0.19` and `miden-node-proto-build` to `0.18.1`. The client uses the node `0.18` RPC and note transport APIs and requires a node `0.18` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+* [BREAKING][type][rust] Added the `GetAccountError::StorageSlotNotFound` and `GetAccountError::StorageSlotNotMap` variants for the node `0.18` `GetAccount` error codes 6 and 7. These codes previously parsed as `GetAccountError::Unknown` ([#2732](https://github.com/0xMiden/rust-sdk/pull/2732)).
+* [BREAKING][behavior][rust] Note transport stores one cursor and the tags that it covers under `NOTE_TRANSPORT_SYNC_STATE_KEY`. A fetch reads all tags up to the `sync_to` bound that the service returns for the first request, and saves the bound when all covered tags reach it. Added tags start from the first retained note, so adding or removing a tag no longer delivers notes again to the other tags. The client migrates the per-tag cursors under the deprecated `NOTE_TRANSPORT_CURSORS_KEY` to their lowest cursor ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][param][rust] `NoteTransportClient::fetch_notes_page` and `GrpcNoteTransportClient::fetch_notes_page` take an optional cursor and a `sync_to` bound, and the trait method has no default implementation. `NoteTransportPage` has a `sync_to` field with the bound that the service used ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][type][rust] `NoteTransportCursor` has public `nonce` and `sequence` fields. Removed `NoteTransportCursor::init`, `from_parts`, and `parts`. Use `None` where the initial cursor was used. `Store::get_note_transport_cursor` returns `Option<NoteTransportCursor>`, and `MockNoteTransportNode::get_notes` takes an optional cursor ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][removal][rust] Removed `NoteTransportClient::fetch_notes`, `GrpcNoteTransportClient::fetch_notes`, and `MockNoteTransportApi::fetch_notes`. Use `fetch_notes_page` ([#2742](https://github.com/0xMiden/rust-sdk/pull/2742)).
+* [BREAKING][type][rust] Added the `VaultFetch::Assets` variant, which requests proofs for specific vault assets from the node `0.18` `GetAccount` endpoint. `AccountVaultDetails` is an enum with the `TooManyAssets`, `Assets`, and `Partial` variants, which replace the `too_many_assets` and `assets` fields. The `Partial` variant holds the proofs for a `VaultFetch::Assets` request. The `is_too_many_assets`, `assets`, and `into_partial_vault` methods read the variants. The conversion from the gRPC type rejects a response that sets more than one of these fields. The gRPC conversion `AccountDetails::into_domain` takes the vault request as a new parameter, to check that the proofs cover the requested assets ([#2744](https://github.com/0xMiden/rust-sdk/pull/2744)).
+* [BREAKING][type][rust] Added the `RpcLimits::vault_assets_limit` field, which holds the maximum number of assets in a `VaultFetch::Assets` request. The client reads it from the node `GetAccount` limits. The client cannot read the RPC limits that an earlier client version stored, so a store from an earlier version does not load ([#2744](https://github.com/0xMiden/rust-sdk/pull/2744)).
+
+### Features
+
+* [FEATURE][rust] A public foreign account that the client tracks gets its transaction inputs from the store at the sync height. Only the witness is fetched from the node when `Client::track_account_witness` did not cache one ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
+* [FEATURE][rust] Added `TryFrom<AccountDetails>` for `PartialAccount` and `AccountProof::into_account_inputs`. Both keep the available vault and storage proofs and reject entries, assets, and proofs that do not match the account header ([#2756](https://github.com/0xMiden/rust-sdk/pull/2756)).
+
+### Fixes
+
+* [FIX][rust] Preserved the genesis commitment in RPC headers when it is set during a native connection handshake ([#2748](https://github.com/0xMiden/rust-sdk/pull/2748)).
+
+## 0.17.5 (2026-10-21)
+
+### Fixes
+
+* [FIX][rust,cli] Updated `rustls-webpki` to `0.103.16` to reject certificate chains that contain the compromised eMudhra intermediate public keys ([RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382.html)). Native applications must update their own lockfiles and rebuild. CI jobs use CA bundles that distrust the affected certificate authorities before running network actions.
 
 ## 0.17.4 (2026-10-16)
 

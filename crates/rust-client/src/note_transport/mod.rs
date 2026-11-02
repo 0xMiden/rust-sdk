@@ -108,16 +108,12 @@ impl<AUTH> Client<AUTH> {
 
     /// Loads the note transport sync state.
     ///
-    /// A store without the state migrates the legacy cursor of each tag. A missing or unreadable
-    /// value returns `None`, so the next fetch reads the retained history of all tags.
+    /// A missing or unreadable value returns `None`, so the next fetch reads the retained history
+    /// of all tags.
     async fn load_note_transport_sync_state(
         &self,
     ) -> Result<Option<NoteTransportSyncState>, ClientError> {
-        let state = match self.store.get_note_transport_sync_state().await {
-            Ok(None) => self.store.get_note_transport_cursors().await.map(migrate_tag_cursors),
-            state => state,
-        };
-        match state {
+        match self.store.get_note_transport_sync_state().await {
             Ok(state) => Ok(state),
             Err(StoreError::DataDeserializationError(err)) => {
                 tracing::warn!(?err, "resetting unreadable note transport state");
@@ -395,25 +391,6 @@ pub(crate) struct NoteTransportLayerUpdate {
     pub(crate) fetch_error: Option<ClientError>,
 }
 
-/// Migrates the legacy cursor of each tag to the lowest cursor.
-///
-/// Sequences from different service databases do not compare, so cursors with different nonces
-/// migrate to no state. A tag without a cursor is not covered.
-fn migrate_tag_cursors(
-    cursors: BTreeMap<NoteTag, Option<NoteTransportCursor>>,
-) -> Option<NoteTransportSyncState> {
-    let cursors: BTreeMap<_, _> =
-        cursors.into_iter().filter_map(|(tag, cursor)| Some((tag, cursor?))).collect();
-    let cursor = *cursors.values().min_by_key(|cursor| cursor.sequence)?;
-    cursors
-        .values()
-        .all(|other| other.nonce == cursor.nonce)
-        .then(|| NoteTransportSyncState {
-            cursor,
-            covered_tags: cursors.into_keys().collect(),
-        })
-}
-
 /// Fetches the pages of one chunk of tags after `start` and up to the bound.
 ///
 /// The first successful page sets the bound when `sync_to` has none.
@@ -682,29 +659,5 @@ mod tests {
         let other_database = NoteTransportCursor { nonce: 2, sequence: 50 };
         let page = empty_page(cursor(3), false);
         assert!(validate_transport_page(&page, &[], Some(other_database), None).is_ok());
-    }
-
-    #[test]
-    fn transport_migrates_tag_cursors_to_lowest_cursor() {
-        let [first, second, third] = [1, 2, 3].map(NoteTag::new);
-        let cursors =
-            BTreeMap::from([(first, Some(cursor(7))), (second, Some(cursor(4))), (third, None)]);
-
-        let state = migrate_tag_cursors(cursors);
-
-        let covered_tags = BTreeSet::from([first, second]);
-        assert_eq!(state, Some(NoteTransportSyncState { cursor: cursor(4), covered_tags }));
-    }
-
-    #[test]
-    fn transport_migration_drops_cursors_from_different_databases() {
-        let other_database = NoteTransportCursor { nonce: 2, sequence: 4 };
-        let cursors = BTreeMap::from([
-            (NoteTag::new(1), Some(cursor(7))),
-            (NoteTag::new(2), Some(other_database)),
-        ]);
-
-        assert_eq!(migrate_tag_cursors(cursors), None);
-        assert_eq!(migrate_tag_cursors(BTreeMap::new()), None);
     }
 }

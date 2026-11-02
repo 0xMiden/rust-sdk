@@ -17,7 +17,7 @@ use db_management::migration::SqliteMigrator;
 use db_management::pool_manager::{Access, Pool, SqlitePoolManager};
 use deadpool::Runtime;
 use miden_client_core::errors::StoreError;
-use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
+use miden_client_core::note_transport::NoteTransportSyncState;
 use miden_client_core::pswap::{PswapLineageFilter, PswapLineageRecord};
 use miden_client_core::rpc::RpcLimits;
 use miden_client_core::rpc::encryption::TransactionEncryptionKey;
@@ -53,7 +53,7 @@ use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
-use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
+use miden_protocol::note::{NoteId, NoteScript, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
@@ -63,7 +63,6 @@ use sql_error::SqlResultExt;
 
 use crate::account::rows::query_vault_assets;
 use crate::settings::{
-    NOTE_TRANSPORT_CURSORS_KEY,
     NOTE_TRANSPORT_SYNC_STATE_KEY,
     RPC_LIMITS_KEY,
     TRANSACTION_ENCRYPTION_KEY_KEY,
@@ -597,30 +596,6 @@ impl Store for SqliteStore {
         let record = record.clone();
         self.interact_with_connection(move |conn| SqliteStore::upsert_pswap_lineage(conn, &record))
             .await
-    }
-
-    async fn get_note_transport_cursors(
-        &self,
-    ) -> Result<BTreeMap<NoteTag, Option<NoteTransportCursor>>, StoreError> {
-        self.interact_with_connection(|conn| {
-            SqliteStore::get_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY)
-        })
-        .await
-        .map(Option::unwrap_or_default)
-    }
-
-    async fn set_note_transport_cursors(
-        &self,
-        cursors: &BTreeMap<NoteTag, Option<NoteTransportCursor>>,
-    ) -> Result<(), StoreError> {
-        let cursors = cursors.clone();
-        self.interact_with_connection(move |conn| {
-            if cursors.is_empty() {
-                return SqliteStore::remove_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY);
-            }
-            SqliteStore::set_client_config(conn, NOTE_TRANSPORT_CURSORS_KEY, &cursors)
-        })
-        .await
     }
 
     async fn get_note_transport_sync_state(

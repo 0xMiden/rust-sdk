@@ -33,7 +33,6 @@ tracing     = { workspace = true }
 [dev-dependencies]
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
-miden-testing   = { default-features = false, workspace = true }
 rand            = { workspace = true }
 rand_chacha     = { workspace = true }
 tokio           = { workspace = true }

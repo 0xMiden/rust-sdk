@@ -10,8 +10,8 @@
 ## Adding as a dependency
 
 ```toml
-miden-client                   = { version = "0.16", features = ["tonic"] }
-miden-web3signer-authenticator = { version = "0.16" }
+miden-client                   = { version = "0.18", features = ["tonic"] }
+miden-web3signer-authenticator = { version = "0.18" }
 ```
 
 ## Quick Start

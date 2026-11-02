@@ -14,14 +14,14 @@ On native targets, `GrpcClient` uses the `tonic` transport with TLS. On `wasm32`
 Add to `Cargo.toml`:
 
 ```toml
-miden-client-core = { version = "0.17" }
-miden-client-grpc = { version = "0.17" }
+miden-client-core = { version = "0.18" }
+miden-client-grpc = { version = "0.18" }
 ```
 
 To build for `wasm32`, turn off the default features:
 
 ```toml
-miden-client-grpc = { version = "0.17", default-features = false }
+miden-client-grpc = { version = "0.18", default-features = false }
 ```
 
 ## Usage

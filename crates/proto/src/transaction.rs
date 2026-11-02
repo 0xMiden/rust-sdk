@@ -8,7 +8,14 @@ use miden_client_core::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use miden_client_core::store::{InputNoteUpdate, NoteUpdateType, NoteUpdates, OutputNoteUpdate};
+use miden_client_core::store::{
+    InputNoteRecord,
+    InputNoteUpdate,
+    NoteUpdateType,
+    NoteUpdates,
+    OutputNoteRecord,
+    OutputNoteUpdate,
+};
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 use miden_client_core::transaction::{
     DiscardCause,
@@ -665,7 +672,7 @@ impl ProtobufValue for TransactionStoreUpdate {
                 .input_notes()
                 .iter()
                 .map(|update| proto::InputNoteUpdate {
-                    note: Some(update.inner().into()),
+                    note: Some(update.inner().to_proto()),
                     update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
                 })
                 .collect(),
@@ -673,11 +680,11 @@ impl ProtobufValue for TransactionStoreUpdate {
                 .output_notes()
                 .iter()
                 .map(|update| proto::OutputNoteUpdate {
-                    note: Some(update.inner().into()),
+                    note: Some(update.inner().to_proto()),
                     update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
                 })
                 .collect(),
-            new_tags: self.new_tags().iter().map(Into::into).collect(),
+            new_tags: self.new_tags().iter().map(ProtobufValue::to_proto).collect(),
         }
     }
 
@@ -699,7 +706,11 @@ impl ProtobufValue for TransactionStoreUpdate {
             .into_iter()
             .map(|update| {
                 Ok(InputNoteUpdate::new(
-                    required(update.note, "input note update", "note")?.try_into()?,
+                    InputNoteRecord::from_proto(required(
+                        update.note,
+                        "input note update",
+                        "note",
+                    )?)?,
                     proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
                 ))
             })
@@ -709,13 +720,20 @@ impl ProtobufValue for TransactionStoreUpdate {
             .into_iter()
             .map(|update| {
                 Ok(OutputNoteUpdate::new(
-                    required(update.note, "output note update", "note")?.try_into()?,
+                    OutputNoteRecord::from_proto(required(
+                        update.note,
+                        "output note update",
+                        "note",
+                    )?)?,
                     proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
                 ))
             })
             .collect::<Result<_, ProtoDecodeError>>()?;
-        let new_tags =
-            update.new_tags.into_iter().map(TryInto::try_into).collect::<Result<_, _>>()?;
+        let new_tags = update
+            .new_tags
+            .into_iter()
+            .map(NoteTagRecord::from_proto)
+            .collect::<Result<_, _>>()?;
 
         Ok(TransactionStoreUpdate::new(
             executed_transaction,
@@ -753,28 +771,26 @@ impl TryFrom<proto::NoteUpdateType> for NoteUpdateType {
     }
 }
 
-impl From<&NoteTagRecord> for proto::NoteTagRecord {
-    fn from(record: &NoteTagRecord) -> Self {
+impl ProtobufValue for NoteTagRecord {
+    type Message = proto::NoteTagRecord;
+
+    fn to_proto(&self) -> Self::Message {
         use proto::note_tag_record::{Source, User};
 
-        let source = match record.source {
+        let source = match self.source {
             NoteTagSource::Account(account_id) => Source::Account(account_id.into()),
             NoteTagSource::Note(commitment) => Source::Note(commitment.as_word().into()),
             NoteTagSource::User => Source::User(User {}),
             NoteTagSource::Subscription(key) => Source::Subscription(key.into()),
         };
 
-        Self {
-            tag: record.tag.into(),
+        Self::Message {
+            tag: self.tag.into(),
             source: Some(source),
         }
     }
-}
 
-impl TryFrom<proto::NoteTagRecord> for NoteTagRecord {
-    type Error = ProtoDecodeError;
-
-    fn try_from(record: proto::NoteTagRecord) -> Result<Self, Self::Error> {
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
         use proto::note_tag_record::Source;
 
         let source = match required(record.source, "note tag record", "source")? {

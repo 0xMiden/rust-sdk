@@ -77,21 +77,19 @@ impl ProtobufValue for InputNoteState {
 // RECORD
 // ================================================================================================
 
-impl From<&InputNoteRecord> for proto::InputNoteRecord {
-    fn from(record: &InputNoteRecord) -> Self {
-        Self {
-            details: Some(record.details().into()),
-            attachments: Some(record.attachments().to_proto()),
-            created_at: record.created_at(),
-            state: Some(record.state().to_proto()),
+impl ProtobufValue for InputNoteRecord {
+    type Message = proto::InputNoteRecord;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            details: Some(self.details().into()),
+            attachments: Some(self.attachments().to_proto()),
+            created_at: self.created_at(),
+            state: Some(self.state().to_proto()),
         }
     }
-}
 
-impl TryFrom<proto::InputNoteRecord> for InputNoteRecord {
-    type Error = ProtoDecodeError;
-
-    fn try_from(record: proto::InputNoteRecord) -> Result<Self, Self::Error> {
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "input note record";
 
         Ok(InputNoteRecord::new(

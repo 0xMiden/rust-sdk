@@ -11,23 +11,21 @@ use miden_protocol::note::{NoteAssets, NoteAttachments, NoteMetadata, NoteRecipi
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
 
-impl From<&OutputNoteRecord> for proto::OutputNoteRecord {
-    fn from(record: &OutputNoteRecord) -> Self {
-        Self {
-            assets: Some(record.assets().to_proto()),
-            metadata: Some(record.metadata().to_proto()),
-            recipient_digest: Some(record.recipient_digest().into()),
-            state: Some(record.state().to_proto()),
-            expected_height: Some(record.expected_height().into()),
-            attachments: Some(record.attachments().to_proto()),
+impl ProtobufValue for OutputNoteRecord {
+    type Message = proto::OutputNoteRecord;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            assets: Some(self.assets().to_proto()),
+            metadata: Some(self.metadata().to_proto()),
+            recipient_digest: Some(self.recipient_digest().into()),
+            state: Some(self.state().to_proto()),
+            expected_height: Some(self.expected_height().into()),
+            attachments: Some(self.attachments().to_proto()),
         }
     }
-}
 
-impl TryFrom<proto::OutputNoteRecord> for OutputNoteRecord {
-    type Error = ProtoDecodeError;
-
-    fn try_from(record: proto::OutputNoteRecord) -> Result<Self, Self::Error> {
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "output note record";
 
         Ok(OutputNoteRecord::new(

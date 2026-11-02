@@ -135,10 +135,8 @@ message ExpectedFutureNote {
 // An account that is not the executing account and that the transaction reads.
 message ForeignAccount {
   message Public {
-    reserved 2;
-
     account.AccountId account_id = 1;
-    AccountFetch fetch = 3;
+    AccountFetch fetch = 2;
   }
 
   // An account whose state and inclusion witness the request carries.

@@ -199,7 +199,7 @@ impl ProtobufValue for MockNoteTransportNode {
                         .iter()
                         .map(|(note, cursor)| Entry {
                             note: Some(note.to_proto()),
-                            cursor: Some(Some(*cursor).to_proto()),
+                            cursor: Some(cursor.to_proto()),
                         })
                         .collect(),
                 })
@@ -222,8 +222,7 @@ impl ProtobufValue for MockNoteTransportNode {
                     .map(|entry| {
                         let info = NoteInfo::from_proto(required(entry.note, MESSAGE, "note")?)?;
                         let cursor = required(entry.cursor, MESSAGE, "cursor")?;
-                        let cursor = Option::<NoteTransportCursor>::from_proto(cursor)?;
-                        Ok((info, required(cursor, MESSAGE, "cursor position")?))
+                        Ok((info, NoteTransportCursor::from_proto(cursor)?))
                     })
                     .collect::<Result<Vec<_>, ProtoDecodeError>>()?;
                 Ok((NoteTag::from(tag_notes.tag), notes))

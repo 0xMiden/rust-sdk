@@ -13,7 +13,8 @@ import "partial_blockchain.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
-import "client/note_update.proto";
+import "client/input_note.proto";
+import "client/output_note.proto";
 import "client/sync.proto";
 
 // Status of a transaction the client tracks.
@@ -201,14 +202,40 @@ message TransactionResult {
   repeated ExpectedFutureNote future_notes = 2;
 }
 
-// The changes that a transaction gives to the store.
+// Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
-  // Upstream encoding of the executed transaction.
+  // Executed transaction in its protocol encoding.
   bytes executed_transaction = 1;
+  // Block at which the transaction was submitted.
   blockchain.BlockNumber submission_height = 2;
   repeated ExpectedFutureNote future_notes = 3;
-  note_update.NoteUpdates note_updates = 4;
-  repeated sync.NoteTagRecord new_tags = 5;
+  repeated InputNoteUpdate input_notes = 4;
+  repeated OutputNoteUpdate output_notes = 5;
+  repeated sync.NoteTagRecord new_tags = 6;
+}
+
+// How the store writes a note record.
+enum NoteUpdateType {
+  // The type is absent. Decoding rejects a value with this type.
+  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
+  // The note is new.
+  NOTE_UPDATE_TYPE_INSERT = 1;
+  // The note is tracked already.
+  NOTE_UPDATE_TYPE_UPDATE = 2;
+  // A tracked expected note is committed now.
+  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 3;
+}
+
+// An input note record to write, and how to write it.
+message InputNoteUpdate {
+  input_note.InputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
+}
+
+// An output note record to write, and how to write it.
+message OutputNoteUpdate {
+  output_note.OutputNoteRecord note = 1;
+  NoteUpdateType update_type = 2;
 }
 
 // A reference block with a partial blockchain that is consistent with it.

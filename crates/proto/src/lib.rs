@@ -16,7 +16,6 @@ use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 
 mod input_note;
 mod note_transport;
-mod note_update;
 mod output_note;
 mod protocol;
 mod pswap;
@@ -47,9 +46,6 @@ mod generated {
     pub mod note_transport {
         include!(concat!(env!("OUT_DIR"), "/client.note_transport.rs"));
     }
-    pub mod note_update {
-        include!(concat!(env!("OUT_DIR"), "/client.note_update.rs"));
-    }
     pub mod output_note {
         include!(concat!(env!("OUT_DIR"), "/client.output_note.rs"));
     }
@@ -71,7 +67,6 @@ mod generated {
 }
 pub use generated::input_note::*;
 pub use generated::note_transport::*;
-pub use generated::note_update::*;
 pub use generated::output_note::*;
 pub use generated::protocol::*;
 pub use generated::pswap::*;

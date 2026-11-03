@@ -74,6 +74,33 @@ impl ProtobufValue for InputNoteState {
     }
 }
 
+// RECORD
+// ================================================================================================
+
+impl ProtobufValue for InputNoteRecord {
+    type Message = proto::InputNoteRecord;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            details: Some(self.details().into()),
+            attachments: Some(self.attachments().to_proto()),
+            created_at: self.created_at(),
+            state: Some(self.state().to_proto()),
+        }
+    }
+
+    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "input note record";
+
+        Ok(InputNoteRecord::new(
+            required(record.details, MESSAGE, "details")?.decode_and_verify()?,
+            NoteAttachments::from_proto(required(record.attachments, MESSAGE, "attachments")?)?,
+            record.created_at,
+            InputNoteState::from_proto(required(record.state, MESSAGE, "state")?)?,
+        ))
+    }
+}
+
 // STATES
 // ================================================================================================
 
@@ -397,30 +424,6 @@ impl TryFrom<proto::NoteSubmissionData> for NoteSubmissionData {
             )?
             .decode_and_verify()?,
         })
-    }
-}
-
-impl ProtobufValue for InputNoteRecord {
-    type Message = proto::InputNoteRecord;
-
-    fn to_proto(&self) -> Self::Message {
-        Self::Message {
-            details: Some(self.details().into()),
-            attachments: Some(self.attachments().to_proto()),
-            created_at: self.created_at(),
-            state: Some(self.state().to_proto()),
-        }
-    }
-
-    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "input note record";
-
-        Ok(InputNoteRecord::new(
-            required(record.details, MESSAGE, "details")?.decode_and_verify()?,
-            NoteAttachments::from_proto(required(record.attachments, MESSAGE, "attachments")?)?,
-            record.created_at,
-            InputNoteState::from_proto(required(record.state, MESSAGE, "state")?)?,
-        ))
     }
 }
 

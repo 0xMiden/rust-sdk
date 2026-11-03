@@ -240,3 +240,38 @@ async fn foreign_account_requirements_prefetch_storage_and_vault_proofs() {
         fixture.foreign_account.vault().open(fixture.asset.id())
     );
 }
+
+/// The node rejects a request for more than [`RpcLimits::vault_assets_limit`] assets. The client
+/// requests proofs for the first assets up to the limit, and the transaction reads the other assets
+/// during execution.
+#[tokio::test]
+async fn foreign_account_asset_request_over_the_limit_is_capped() {
+    let fixture = Box::pin(oversized_vault_fixture()).await;
+    let limit = RpcLimits::default().vault_assets_limit as usize;
+    let asset_ids: BTreeSet<AssetId> =
+        core::iter::once(fixture.asset.id())
+            .chain((1..=64u8).map(|seed| {
+                AssetId::new_fungible(AccountIdBuilder::new().build_with_seed([seed; 32]))
+            }))
+            .collect();
+    assert_eq!(asset_ids.len(), limit + 1);
+
+    let requirements = AccountFetch::new().with_vault(VaultFetch::Assets(asset_ids.clone()));
+    let declaration = ForeignAccount::public(fixture.foreign_account.id(), requirements).unwrap();
+    let block_num = fixture.client.get_sync_height().await.unwrap();
+    let calls_before = fixture.rpc_api.get_account_call_count();
+    let inputs = fixture
+        .client
+        .get_foreign_account_inputs([declaration], block_num)
+        .await
+        .unwrap();
+
+    assert_eq!(fixture.rpc_api.get_account_call_count() - calls_before, 1);
+    assert_eq!(inputs[0].account().to_commitment(), fixture.foreign_account.to_commitment());
+    for asset_id in asset_ids.iter().take(limit) {
+        assert_eq!(
+            inputs[0].vault().open(*asset_id).unwrap(),
+            fixture.foreign_account.vault().open(*asset_id)
+        );
+    }
+}

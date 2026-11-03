@@ -53,13 +53,13 @@ message OutputNoteRecipient {
   protocol.NoteScript script = 3;
 }
 
-// A note the client produces.
+// A note the client produces, and its state.
 message OutputNoteRecord {
-  primitives.Word recipient_digest = 1;
-  protocol.NoteAssets assets = 2;
-  note.NoteMetadata metadata = 3;
+  protocol.NoteAssets assets = 1;
+  note.NoteMetadata metadata = 2;
+  primitives.Word recipient_digest = 3;
   OutputNoteState state = 4;
-  // Block at which the client expects the note to be committed.
+  // Block at which the client expects the note in the chain.
   blockchain.BlockNumber expected_height = 5;
   note.NoteAttachments attachments = 6;
 }

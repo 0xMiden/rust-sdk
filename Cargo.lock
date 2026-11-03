@@ -2963,10 +2963,12 @@ dependencies = [
  "miden-objects",
  "miden-protocol",
  "miden-standards",
+ "miden-testing",
  "prost",
  "prost-build",
  "protox",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

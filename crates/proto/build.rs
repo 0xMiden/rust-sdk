@@ -10,7 +10,6 @@ use protox::file::{
 const PROTO_FILES: &[&str] = &[
     "proto/client/input_note.proto",
     "proto/client/note_transport.proto",
-    "proto/client/note_update.proto",
     "proto/client/output_note.proto",
     "proto/client/protocol.proto",
     "proto/client/pswap.proto",

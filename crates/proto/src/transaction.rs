@@ -8,7 +8,14 @@ use miden_client_core::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use miden_client_core::store::NoteUpdates;
+use miden_client_core::store::{
+    InputNoteRecord,
+    InputNoteUpdate,
+    NoteUpdateType,
+    NoteUpdates,
+    OutputNoteRecord,
+    OutputNoteUpdate,
+};
 use miden_client_core::sync::NoteTagRecord;
 use miden_client_core::transaction::{
     DiscardCause,
@@ -646,11 +653,27 @@ impl ProtobufValue for TransactionStoreUpdate {
     type Message = proto::TransactionStoreUpdate;
 
     fn to_proto(&self) -> Self::Message {
+        let note_updates = self.note_updates();
         Self::Message {
             executed_transaction: self.executed_transaction().to_bytes(),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
-            note_updates: Some(self.note_updates().to_proto()),
+            input_notes: note_updates
+                .input_notes()
+                .iter()
+                .map(|update| proto::InputNoteUpdate {
+                    note: Some(update.inner().to_proto()),
+                    update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
+                })
+                .collect(),
+            output_notes: note_updates
+                .output_notes()
+                .iter()
+                .map(|update| proto::OutputNoteUpdate {
+                    note: Some(update.inner().to_proto()),
+                    update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
+                })
+                .collect(),
             new_tags: self.new_tags().iter().map(ProtobufValue::to_proto).collect(),
         }
     }
@@ -658,22 +681,81 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
+        let executed_transaction = read_upstream(&update.executed_transaction)?;
+        let submission_height = required(update.submission_height, MESSAGE, "submission height")?
+            .decode_and_verify()?;
+        let future_notes = update
+            .future_notes
+            .into_iter()
+            .map(<(NoteDetails, NoteTag)>::from_proto)
+            .collect::<Result<_, _>>()?;
+        let input_notes = update
+            .input_notes
+            .into_iter()
+            .map(|update| {
+                Ok(InputNoteUpdate::new(
+                    InputNoteRecord::from_proto(required(
+                        update.note,
+                        "input note update",
+                        "note",
+                    )?)?,
+                    proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
+                ))
+            })
+            .collect::<Result<_, ProtoDecodeError>>()?;
+        let output_notes = update
+            .output_notes
+            .into_iter()
+            .map(|update| {
+                Ok(OutputNoteUpdate::new(
+                    OutputNoteRecord::from_proto(required(
+                        update.note,
+                        "output note update",
+                        "note",
+                    )?)?,
+                    proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
+                ))
+            })
+            .collect::<Result<_, ProtoDecodeError>>()?;
+        let new_tags = update
+            .new_tags
+            .into_iter()
+            .map(NoteTagRecord::from_proto)
+            .collect::<Result<_, _>>()?;
+
         Ok(TransactionStoreUpdate::new(
-            read_upstream(&update.executed_transaction)?,
-            required(update.submission_height, MESSAGE, "submission height")?
-                .decode_and_verify()?,
-            NoteUpdates::from_proto(required(update.note_updates, MESSAGE, "note updates")?)?,
-            update
-                .future_notes
-                .into_iter()
-                .map(<(NoteDetails, NoteTag)>::from_proto)
-                .collect::<Result<Vec<_>, _>>()?,
-            update
-                .new_tags
-                .into_iter()
-                .map(NoteTagRecord::from_proto)
-                .collect::<Result<Vec<_>, _>>()?,
+            executed_transaction,
+            submission_height,
+            NoteUpdates::new(input_notes, output_notes),
+            future_notes,
+            new_tags,
         ))
+    }
+}
+
+impl From<NoteUpdateType> for proto::NoteUpdateType {
+    fn from(update_type: NoteUpdateType) -> Self {
+        match update_type {
+            NoteUpdateType::Insert => Self::Insert,
+            NoteUpdateType::Update => Self::Update,
+            NoteUpdateType::InsertCommitted => Self::InsertCommitted,
+        }
+    }
+}
+
+/// The unspecified value is rejected, because the type decides how the store writes the note.
+impl TryFrom<proto::NoteUpdateType> for NoteUpdateType {
+    type Error = ProtoDecodeError;
+
+    fn try_from(update_type: proto::NoteUpdateType) -> Result<Self, Self::Error> {
+        match update_type {
+            proto::NoteUpdateType::Insert => Ok(Self::Insert),
+            proto::NoteUpdateType::Update => Ok(Self::Update),
+            proto::NoteUpdateType::InsertCommitted => Ok(Self::InsertCommitted),
+            proto::NoteUpdateType::Unspecified => {
+                Err(ProtoDecodeError::InvalidValue("note update type is unspecified".to_string()))
+            },
+        }
     }
 }
 
@@ -682,6 +764,8 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    use miden_client_core::store::{InputNoteRecord, OutputNoteRecord};
+    use miden_client_core::sync::NoteTagSource;
     use miden_client_core::transaction::{
         ForeignAccount,
         TransactionRequest,
@@ -713,9 +797,85 @@ mod tests {
     use miden_standards::account::auth::{Approver, AuthSingleSig};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
+    use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 
-    use super::{AccountFetch, AccountStorageRequirements, StorageMapFetch, VaultFetch, proto};
+    use super::{
+        AccountFetch,
+        AccountStorageRequirements,
+        InputNoteUpdate,
+        NoteTagRecord,
+        NoteUpdateType,
+        NoteUpdates,
+        OutputNoteUpdate,
+        StorageMapFetch,
+        TransactionStoreUpdate,
+        VaultFetch,
+        proto,
+    };
     use crate::{decode, encode};
+
+    /// A store update with an executed transaction, every note update type, an output note and
+    /// every tag source.
+    #[tokio::test]
+    async fn transaction_store_update_round_trips() {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let asset = FungibleAsset::new(faucet_id, 100).unwrap().into();
+
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+        let note = builder
+            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
+            .unwrap();
+        let mut chain = builder.build().unwrap();
+        chain.prove_next_block().unwrap();
+        let executed_transaction = Box::pin(
+            chain
+                .build_transaction(MockTransactionInput::Account(account.clone()))
+                .unauthenticated_input_note(note.clone())
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+
+        let input_record = InputNoteRecord::from(note.clone());
+        let output_record = OutputNoteRecord::from_full_note(note.clone(), BlockNumber::from(9u32));
+        let note_updates = NoteUpdates::new(
+            vec![
+                InputNoteUpdate::new(input_record.clone(), NoteUpdateType::Insert),
+                InputNoteUpdate::new(input_record.clone(), NoteUpdateType::Update),
+                InputNoteUpdate::new(input_record, NoteUpdateType::InsertCommitted),
+            ],
+            vec![OutputNoteUpdate::new(output_record, NoteUpdateType::Insert)],
+        );
+        let tag = NoteTag::with_account_target(account.id());
+        let new_tags = vec![
+            NoteTagRecord::with_note_source(tag, note.details_commitment()),
+            NoteTagRecord::with_account_source(tag, account.id()),
+            NoteTagRecord { tag, source: NoteTagSource::User },
+            NoteTagRecord {
+                tag,
+                source: NoteTagSource::Subscription(Word::from([3u32; 4])),
+            },
+        ];
+
+        let update = TransactionStoreUpdate::new(
+            executed_transaction,
+            BlockNumber::from(42u32),
+            note_updates,
+            vec![(note.into(), tag)],
+            new_tags,
+        );
+
+        assert_eq!(decode::<TransactionStoreUpdate>(&encode(&update)).unwrap(), update);
+    }
+
+    #[test]
+    fn note_update_type_unspecified_is_rejected() {
+        assert!(NoteUpdateType::try_from(proto::NoteUpdateType::Unspecified).is_err());
+    }
 
     #[test]
     fn account_fetch_round_trips() {

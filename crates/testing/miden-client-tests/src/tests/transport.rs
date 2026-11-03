@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use miden_client::ClientError;
@@ -462,32 +462,6 @@ async fn transport_cursor_from_another_database_restarts() {
     assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
     let restarted = Some((transport_cursor(2), BTreeSet::from(tags)));
     assert_eq!(stored_note_transport_state(&mut recipient).await, restarted);
-}
-
-/// Migrates the legacy cursor of each tag to the lowest cursor.
-#[tokio::test]
-async fn transport_migrates_legacy_tag_cursors() {
-    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-    let transport = MockNoteTransportApi::new(mock_node.clone());
-    let mut recipient = create_test_client_with_transport(Arc::new(transport.clone())).await;
-    let [first, second] = [NoteTag::new(30_000), NoteTag::new(30_001)];
-    for tag in [first, second] {
-        recipient.add_note_tag(tag).await.unwrap();
-    }
-    seed_transport_note(&mock_node, first, 1);
-    seed_transport_note(&mock_node, second, 2);
-    seed_transport_note(&mock_node, first, 3);
-    let legacy =
-        BTreeMap::from([(first, Some(transport_cursor(2))), (second, Some(transport_cursor(1)))]);
-    recipient.test_store().set_note_transport_cursors(&legacy).await.unwrap();
-
-    recipient.fetch_private_notes().await.unwrap();
-
-    // Both tags start after the note at sequence 1.
-    assert_eq!(transport.fetch_tag_counts(), [2]);
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 2);
-    let state = Some((transport_cursor(3), BTreeSet::from([first, second])));
-    assert_eq!(stored_note_transport_state(&mut recipient).await, state);
 }
 
 /// A failed request for a covered tag keeps the stored cursor. The fetch imports the notes of the

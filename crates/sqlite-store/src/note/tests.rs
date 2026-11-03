@@ -984,20 +984,9 @@ fn unspent_states_classify_every_note_state() {
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    // A new state must be added to this list and to one of the two lists above.
-    const ALL_STATES: [u8; 9] = [
-        InputNoteState::STATE_EXPECTED,
-        InputNoteState::STATE_UNVERIFIED,
-        InputNoteState::STATE_COMMITTED,
-        InputNoteState::STATE_INVALID,
-        InputNoteState::STATE_PROCESSING_AUTHENTICATED,
-        InputNoteState::STATE_PROCESSING_UNAUTHENTICATED,
-        InputNoteState::STATE_CONSUMED_AUTHENTICATED_LOCAL,
-        InputNoteState::STATE_CONSUMED_UNAUTHENTICATED_LOCAL,
-        InputNoteState::STATE_CONSUMED_EXTERNAL,
-    ];
-
-    for discriminant in ALL_STATES {
+    // The state discriminants are consecutive, from the expected state to the consumed external
+    // state. A new state must extend this range.
+    for discriminant in InputNoteState::STATE_EXPECTED..=InputNoteState::STATE_CONSUMED_EXTERNAL {
         assert!(
             InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),

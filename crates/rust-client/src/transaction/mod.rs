@@ -2253,10 +2253,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn an_explicit_auth_arg_is_not_overwritten() {
-        let auth_arg = Word::from([21u32, 22, 23, 24]);
-        let request = TransactionRequestBuilder::new().auth_arg(auth_arg).build().unwrap();
+        let auth_args =
+            MultisigAuthArgs::new(BlockNumber::from(1u32), Word::from([21u32, 22, 23, 24]));
+        let auth_arg = auth_args.to_commitment();
+        let request = TransactionRequestBuilder::new().auth_args(&auth_args).build().unwrap();
 
         assert_eq!(
             injected_auth_arg(request, &singlesig_account(), 500),

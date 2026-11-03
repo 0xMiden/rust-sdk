@@ -26,6 +26,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed the deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded` and `NoteTransportError::PaginationDidNotTerminate`. Use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
+* [BREAKING][removal][rust] Removed the deprecated `TransactionRequestBuilder::auth_arg`; use `TransactionRequestBuilder::auth_args`, which also adds the auth arg preimage to the advice map ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][param][rust] The `rng` parameter of the `TransactionRequestBuilder` helpers (`build_mint_fungible_asset`, `build_mint_non_fungible_asset`, `build_burn_non_fungible_asset`, `build_pay_to_id`, `build_swap`, `build_register_note_scripts` and the `build_pswap_*` helpers) takes `&mut impl FeltRng` instead of `&mut ClientRng`. Passing `client.rng()` still works ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][removal][rust] Removed `TransactionRequestError::error_hint`. `ClientError::error_hint` still returns the hints of a `TransactionRequestError` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).

@@ -48,15 +48,6 @@ impl<AUTH> Client<AUTH> {
     /// Maximum number of note tags in one transport fetch request.
     pub const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST;
 
-    /// Legacy name for [`Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST`].
-    ///
-    /// This value is not a limit on the number of account tags that the client can track.
-    #[deprecated(
-        since = "0.17.1",
-        note = "use MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST; account tags are no longer limited"
-    )]
-    pub const MAX_ACCOUNT_TAGS: usize = Self::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST;
-
     /// Check if note transport connection is configured
     pub fn is_note_transport_enabled(&self) -> bool {
         self.note_transport_api.is_some()
@@ -128,10 +119,6 @@ impl<AUTH> Client<AUTH>
 where
     AUTH: TransactionAuthenticator + Sync + 'static,
 {
-    /// Legacy per-sync cap for tag backfills.
-    #[deprecated(since = "0.17.1", note = "note transport no longer performs per-tag backfills")]
-    pub const MAX_BACKFILL_TAGS_PER_SYNC: usize = 64;
-
     /// Fetch notes for tracked note tags.
     ///
     /// The client queries the configured note transport node for all tracked tags. To list tracked

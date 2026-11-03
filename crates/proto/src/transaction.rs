@@ -243,8 +243,6 @@ impl ProtobufValue for TransactionRequest {
 
 /// Decodes version 1 of the transaction request format. The request is built again with
 /// [`TransactionRequestBuilder`], so decoding applies the same checks as building a request.
-// The encoded auth arg is already a commitment. Its preimage is in the decoded advice map.
-#[allow(deprecated)]
 fn decode_transaction_request_v1(
     request: proto::TransactionRequestV1,
 ) -> Result<TransactionRequest, ProtoDecodeError> {
@@ -343,9 +341,6 @@ fn decode_transaction_request_v1(
     if let Some(script_arg) = script_arg {
         builder = builder.script_arg(script_arg);
     }
-    if let Some(auth_arg) = auth_arg {
-        builder = builder.auth_arg(auth_arg);
-    }
     if let Some(salt) = fee_conversion_salt {
         builder = builder.fee_conversion_salt(salt);
     }
@@ -353,7 +348,33 @@ fn decode_transaction_request_v1(
         builder = builder.account_code_upgrade(account_code_upgrade.into_code());
     }
 
-    builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    let mut transaction_request =
+        builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+    if let Some(auth_arg) = auth_arg {
+        set_auth_arg(&mut transaction_request, auth_arg)?;
+    }
+
+    Ok(transaction_request)
+}
+
+/// Sets `auth_arg` on `transaction_request`.
+///
+/// A request always stores the preimage of its auth arg in its advice map.
+///
+/// # Errors
+/// - If the advice map of the request has no preimage for `auth_arg`.
+fn set_auth_arg(
+    transaction_request: &mut TransactionRequest,
+    auth_arg: Word,
+) -> Result<(), ProtoDecodeError> {
+    let preimage = transaction_request.advice_map().get(&auth_arg).ok_or_else(|| {
+        ProtoDecodeError::InvalidValue(format!(
+            "advice map has no preimage for auth arg {auth_arg}"
+        ))
+    })?;
+    let preimage = preimage.to_vec();
+    transaction_request.commit_auth_args(auth_arg, preimage);
+    Ok(())
 }
 
 /// An input note of a decoded request, with its arguments.
@@ -840,7 +861,7 @@ mod tests {
     };
     use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
-    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
@@ -951,7 +972,6 @@ mod tests {
     /// A request with a send notes template. Plain and explicit input notes are mixed, so the
     /// decoder must keep their order.
     #[test]
-    #[allow(deprecated)]
     fn transaction_request_with_send_notes_round_trips() {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =
@@ -1009,7 +1029,7 @@ mod tests {
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
             .script_arg(rng.draw_word())
-            .auth_arg(rng.draw_word())
+            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
             .build()

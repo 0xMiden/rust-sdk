@@ -53,7 +53,7 @@ use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
-use miden_protocol::note::{NoteId, NoteScript, Nullifier};
+use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};

@@ -151,6 +151,10 @@ pub struct TransferCmd {
     /// Flag to delegate proving to the remote prover specified in the config file
     #[arg(long, default_value_t = false)]
     delegate_proving: bool,
+
+    /// Number of payment notes to create in the transaction. Each note carries the full asset.
+    #[arg(long, default_value_t = 1, value_parser = RangedU64ValueParser::<usize>::new().range(1..))]
+    count: usize,
 }
 
 impl TransferCmd {
@@ -185,8 +189,17 @@ impl TransferCmd {
                 payment_description.with_timelock_height(BlockNumber::from(timelock_height));
         }
 
+        let note_type = (&self.note_type).into();
+        let notes = (0..self.count)
+            .map(|_| payment_description.clone().into_note(note_type, client.rng()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| {
+                CliError::Transaction(err.into(), "Failed to build payment notes".to_string())
+            })?;
+
         let transaction_request = TransactionRequestBuilder::new()
-            .build_pay_to_id(payment_description, (&self.note_type).into(), client.rng())
+            .own_output_notes(notes)
+            .build()
             .map_err(|err| {
                 CliError::Transaction(err.into(), "Failed to build payment transaction".to_string())
             })?;

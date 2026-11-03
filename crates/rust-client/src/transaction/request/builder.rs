@@ -898,11 +898,7 @@ impl PaymentNoteDescription {
     /// Converts the payment transaction data into a [`Note`] based on the specified fields. If the
     /// reclaim and timelock heights are not set, a P2ID note is created; otherwise, a P2IDE note is
     /// created.
-    pub(crate) fn into_note(
-        self,
-        note_type: NoteType,
-        rng: &mut ClientRng,
-    ) -> Result<Note, NoteError> {
+    pub fn into_note(self, note_type: NoteType, rng: &mut ClientRng) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note
             Ok(P2idNote::builder()

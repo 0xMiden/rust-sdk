@@ -222,8 +222,6 @@ impl ProtobufValue for TransactionRequest {
 
 /// Decodes version 1 of the transaction request format. The request is built again with
 /// [`TransactionRequestBuilder`], so decoding applies the same checks as building a request.
-// The encoded auth arg is already a commitment. Its preimage is in the decoded advice map.
-#[allow(deprecated)]
 fn decode_transaction_request_v1(
     request: proto::TransactionRequestV1,
 ) -> Result<TransactionRequest, ProtoDecodeError> {
@@ -711,7 +709,6 @@ mod tests {
     /// A request with a send notes template. Plain and explicit input notes are mixed, so the
     /// decoder must keep their order.
     #[test]
-    #[allow(deprecated)]
     fn transaction_request_with_send_notes_round_trips() {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =

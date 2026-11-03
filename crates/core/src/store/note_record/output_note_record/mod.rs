@@ -19,13 +19,6 @@ use miden_protocol::note::{
     PartialNote,
 };
 use miden_protocol::transaction::RawOutputNote;
-use miden_protocol::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::errors::NoteRecordError;
 
@@ -439,88 +432,6 @@ impl OutputNoteState {
                     "Cannot nullify note without recipient".to_string(),
                 ))
             },
-        }
-    }
-}
-
-impl Serializable for OutputNoteRecord {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.recipient_digest.write_into(target);
-        self.assets.write_into(target);
-        self.metadata.write_into(target);
-        self.state.write_into(target);
-        self.expected_height.write_into(target);
-        self.attachments.write_into(target);
-    }
-}
-
-impl Deserializable for OutputNoteRecord {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let recipient_digest = Word::read_from(source)?;
-        let assets = NoteAssets::read_from(source)?;
-        let metadata = NoteMetadata::read_from(source)?;
-        let state = OutputNoteState::read_from(source)?;
-        let expected_height = BlockNumber::read_from(source)?;
-        let attachments = NoteAttachments::read_from(source)?;
-
-        Ok(Self {
-            assets,
-            metadata,
-            recipient_digest,
-            state,
-            expected_height,
-            attachments,
-        })
-    }
-}
-
-impl Serializable for OutputNoteState {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.discriminant().write_into(target);
-        match self {
-            OutputNoteState::ExpectedPartial => {},
-            OutputNoteState::ExpectedFull { recipient } => {
-                recipient.write_into(target);
-            },
-            OutputNoteState::CommittedPartial { inclusion_proof } => {
-                inclusion_proof.write_into(target);
-            },
-            OutputNoteState::CommittedFull { recipient, inclusion_proof } => {
-                recipient.write_into(target);
-                inclusion_proof.write_into(target);
-            },
-            OutputNoteState::Consumed { block_height, recipient } => {
-                block_height.write_into(target);
-                recipient.write_into(target);
-            },
-        }
-    }
-}
-
-impl Deserializable for OutputNoteState {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let state = source.read_u8()?;
-        match state {
-            Self::STATE_EXPECTED_PARTIAL => Ok(OutputNoteState::ExpectedPartial),
-            Self::STATE_EXPECTED_FULL => {
-                let recipient = NoteRecipient::read_from(source)?;
-                Ok(OutputNoteState::ExpectedFull { recipient })
-            },
-            Self::STATE_COMMITTED_PARTIAL => {
-                let inclusion_proof = NoteInclusionProof::read_from(source)?;
-                Ok(OutputNoteState::CommittedPartial { inclusion_proof })
-            },
-            Self::STATE_COMMITTED_FULL => {
-                let recipient = NoteRecipient::read_from(source)?;
-                let inclusion_proof = NoteInclusionProof::read_from(source)?;
-                Ok(OutputNoteState::CommittedFull { recipient, inclusion_proof })
-            },
-            Self::STATE_CONSUMED => {
-                let block_height = BlockNumber::read_from(source)?;
-                let recipient = NoteRecipient::read_from(source)?;
-                Ok(OutputNoteState::Consumed { block_height, recipient })
-            },
-            _ => Err(DeserializationError::InvalidValue("OutputNoteState".to_string())),
         }
     }
 }

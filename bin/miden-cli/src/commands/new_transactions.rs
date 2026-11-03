@@ -1229,15 +1229,19 @@ mod tests {
     /// With `--filter`, the command consumes only the notes that use a matching note script.
     #[tokio::test]
     async fn consume_notes_consumes_only_the_notes_that_match_the_filter() {
-        let (rpc, wallet, note_files) = mock_chain_with_notes(2, 1);
+        let (rpc, wallet, note_files) = mock_chain_with_notes(2, 2);
         let store_path = create_test_store_path();
         let client = new_wallet_client(&rpc, store_path.clone(), &wallet, &note_files, None).await;
-        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 3);
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 4);
 
-        consume_notes(client, &wallet, &["--filter", "p2ide"]).await.unwrap();
+        // The one-transaction path prints the transaction effects, which reads the CLI config file.
+        // One note per transaction makes two transactions, so the test does not need that file.
+        consume_notes(client, &wallet, &["--filter", "p2ide", "--notes-per-tx", "1"])
+            .await
+            .unwrap();
 
         let client = open_client(&rpc, store_path, None).await;
-        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, 1);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, 2);
         let committed_notes = client.get_input_notes(NoteFilter::Committed).await.unwrap();
         assert_eq!(committed_notes.len(), 2);
         assert!(

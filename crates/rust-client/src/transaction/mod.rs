@@ -142,9 +142,11 @@ pub use prover::TransactionProver;
 mod request;
 pub use request::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestInputNote,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -450,30 +452,27 @@ where
         &self,
         transaction_request: &TransactionRequest,
     ) -> Result<ChainAnchor, ClientError> {
-        let inferred_input_note_ids: Vec<NoteId> = transaction_request
-            .input_note_ids()
-            .filter(|note_id| !transaction_request.explicit_input_notes().contains_key(note_id))
-            .collect();
+        let mut inferred_input_note_ids = Vec::new();
+        let mut tracked_blocks = BTreeSet::new();
+        for input_note in transaction_request.input_notes() {
+            match input_note.authentication() {
+                InputNoteAuthentication::Inferred(note) => inferred_input_note_ids.push(note.id()),
+                InputNoteAuthentication::Explicit(input_note) => tracked_blocks
+                    .extend(input_note.proof().map(|proof| proof.location().block_num())),
+            }
+        }
 
-        let mut tracked_blocks: BTreeSet<BlockNumber> = if inferred_input_note_ids.is_empty() {
-            BTreeSet::new()
-        } else {
-            self.store
-                .get_input_notes(NoteFilter::List(inferred_input_note_ids))
-                .await?
-                .iter()
-                .filter(|record| record.is_authenticated())
-                .filter_map(|record| record.inclusion_proof())
-                .map(|proof| proof.location().block_num())
-                .collect()
-        };
-        tracked_blocks.extend(
-            transaction_request
-                .explicit_input_notes()
-                .values()
-                .filter_map(InputNote::proof)
-                .map(|proof| proof.location().block_num()),
-        );
+        if !inferred_input_note_ids.is_empty() {
+            tracked_blocks.extend(
+                self.store
+                    .get_input_notes(NoteFilter::List(inferred_input_note_ids))
+                    .await?
+                    .iter()
+                    .filter(|record| record.is_authenticated())
+                    .filter_map(|record| record.inclusion_proof())
+                    .map(|proof| proof.location().block_num()),
+            );
+        }
         tracked_blocks.extend(transaction_request.block_numbers().iter().copied());
 
         self.chain_anchor_at_tip(tracked_blocks).await

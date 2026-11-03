@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::string::ToString;
 use std::vec::Vec;
 
@@ -20,7 +19,9 @@ use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 use miden_client_core::transaction::{
     DiscardCause,
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
+    RequestInputNote,
     TransactionDetails,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -37,17 +38,11 @@ use miden_protocol::note::{
     Note,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteId,
     NoteRecipient,
     NoteTag,
     PartialNote,
 };
-use miden_protocol::transaction::{
-    AccountInputs,
-    ExecutedTransaction,
-    InputNote,
-    TransactionScript,
-};
+use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, TransactionScript};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::AdviceMap;
 
@@ -200,15 +195,6 @@ impl ProtobufValue for TransactionRequest {
                 .map(|block_num| (*block_num).into())
                 .collect(),
             input_notes: self.input_notes().iter().map(Into::into).collect(),
-            input_notes_args: self
-                .input_notes_args()
-                .iter()
-                .map(|(note_id, note_args)| proto::NoteArgsEntry {
-                    note_id: Some(note_id.into()),
-                    note_args: note_args.map(Into::into),
-                })
-                .collect(),
-            explicit_input_notes: self.explicit_input_notes().values().map(Into::into).collect(),
             script_template: self.script_template().as_ref().map(Into::into),
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
             expected_future_notes: self
@@ -256,11 +242,11 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(DecodeMessageExt::decode_and_verify)
         .collect::<Result<Vec<_>, _>>()?;
-    let input_notes = decode_input_notes(
-        request.input_notes,
-        request.input_notes_args,
-        request.explicit_input_notes,
-    )?;
+    let input_notes = request
+        .input_notes
+        .into_iter()
+        .map(decode_input_note)
+        .collect::<Result<Vec<_>, _>>()?;
     let expected_output_recipients = request
         .expected_output_recipients
         .into_iter()
@@ -312,12 +298,12 @@ fn decode_transaction_request_v1(
 
     // The builder appends the input notes in call order, so each note is added with its own call to
     // keep the order of the request.
-    for input_note in input_notes {
-        builder = match input_note {
-            DecodedInputNote::Explicit(input_note, note_args) => {
-                builder.explicit_input_notes([(input_note, note_args)])
+    for (authentication, args) in input_notes {
+        builder = match authentication {
+            InputNoteAuthentication::Inferred(note) => builder.input_notes([(note, args)]),
+            InputNoteAuthentication::Explicit(input_note) => {
+                builder.explicit_input_notes([(input_note, args)])
             },
-            DecodedInputNote::Plain(note, note_args) => builder.input_notes([(note, note_args)]),
         };
     }
     if let Some(script) = custom_script {
@@ -377,68 +363,42 @@ fn set_auth_arg(
     Ok(())
 }
 
-/// An input note of a decoded request, with its arguments.
-enum DecodedInputNote {
-    /// A note with a pinned consumption mode.
-    Explicit(InputNote, Option<NoteArgs>),
-    /// A note whose consumption mode the executing client selects.
-    Plain(Note, Option<NoteArgs>),
+/// Decodes an input note of a request into its authentication and its arguments.
+fn decode_input_note(
+    input_note: proto::RequestInputNote,
+) -> Result<(InputNoteAuthentication, Option<NoteArgs>), ProtoDecodeError> {
+    use proto::request_input_note::Authentication;
+
+    let authentication =
+        match required(input_note.authentication, "request input note", "authentication")? {
+            Authentication::Inferred(note) => {
+                InputNoteAuthentication::Inferred(note.decode_and_verify()?)
+            },
+            Authentication::Explicit(input_note) => {
+                InputNoteAuthentication::Explicit(input_note.decode_and_verify()?)
+            },
+        };
+    let args = input_note.args.map(Word::try_from).transpose()?;
+
+    Ok((authentication, args))
 }
 
-/// Decodes the input notes of a request with their arguments, in the order of the request.
-fn decode_input_notes(
-    input_notes: Vec<miden_objects::proto::note::Note>,
-    input_notes_args: Vec<proto::NoteArgsEntry>,
-    explicit_input_notes: Vec<miden_objects::proto::transaction::InputNote>,
-) -> Result<Vec<DecodedInputNote>, ProtoDecodeError> {
-    let input_notes = input_notes
-        .into_iter()
-        .map(DecodeMessageExt::decode_and_verify)
-        .collect::<Result<Vec<Note>, _>>()?;
-    if input_notes_args.len() != input_notes.len() {
-        return Err(ProtoDecodeError::InvalidValue(
-            "the number of input note arguments is not the number of input notes".to_string(),
-        ));
-    }
-    let mut explicit_input_notes = explicit_input_notes
-        .into_iter()
-        .map(|input_note| {
-            let input_note: InputNote = input_note.decode_and_verify()?;
-            Ok((input_note.id(), input_note))
-        })
-        .collect::<Result<BTreeMap<_, _>, ProtoDecodeError>>()?;
+impl From<&RequestInputNote> for proto::RequestInputNote {
+    fn from(input_note: &RequestInputNote) -> Self {
+        use proto::request_input_note::Authentication;
 
-    let mut decoded = Vec::with_capacity(input_notes.len());
-    for (note, entry) in input_notes.into_iter().zip(input_notes_args) {
-        let note_id: NoteId =
-            required(entry.note_id, "note arguments", "note id")?.decode_and_verify()?;
-        if note_id != note.id() {
-            return Err(ProtoDecodeError::InvalidValue(format!(
-                "the arguments of input note {} are for note {note_id}",
-                note.id()
-            )));
+        let authentication = match input_note.authentication() {
+            InputNoteAuthentication::Inferred(note) => Authentication::Inferred(note.into()),
+            InputNoteAuthentication::Explicit(input_note) => {
+                Authentication::Explicit(input_note.into())
+            },
+        };
+
+        Self {
+            authentication: Some(authentication),
+            args: input_note.args().map(Into::into),
         }
-        let note_args = entry.note_args.map(Word::try_from).transpose()?;
-
-        decoded.push(match explicit_input_notes.remove(&note_id) {
-            Some(input_note) if *input_note.note() == note => {
-                DecodedInputNote::Explicit(input_note, note_args)
-            },
-            Some(_) => {
-                return Err(ProtoDecodeError::InvalidValue(format!(
-                    "explicit input note {note_id} does not match the input note"
-                )));
-            },
-            None => DecodedInputNote::Plain(note, note_args),
-        });
     }
-    if let Some(note_id) = explicit_input_notes.keys().next() {
-        return Err(ProtoDecodeError::InvalidValue(format!(
-            "explicit input note {note_id} is not an input note"
-        )));
-    }
-
-    Ok(decoded)
 }
 
 /// Decodes the transaction script template of a request into the custom script and the own output

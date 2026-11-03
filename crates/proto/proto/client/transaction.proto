@@ -84,32 +84,36 @@ message TransactionRequest {
 // Version 1 of the transaction request format.
 message TransactionRequestV1 {
   repeated blockchain.BlockNumber block_numbers = 1;
-  repeated note.Note input_notes = 2;
-  repeated NoteArgsEntry input_notes_args = 3;
-  repeated .transaction.InputNote explicit_input_notes = 4;
-  TransactionScriptTemplate script_template = 5;
-  repeated note.NoteRecipient expected_output_recipients = 6;
-  repeated ExpectedFutureNote expected_future_notes = 7;
-  primitives.AdviceMap advice_map = 8;
-  primitives.MerkleStore merkle_store = 9;
-  repeated ForeignAccount foreign_accounts = 10;
-  optional uint32 expiration_delta = 11;
-  bool ignore_invalid_input_notes = 12;
+  // Notes that the transaction consumes, in consumption order.
+  repeated RequestInputNote input_notes = 2;
+  TransactionScriptTemplate script_template = 3;
+  repeated note.NoteRecipient expected_output_recipients = 4;
+  repeated ExpectedFutureNote expected_future_notes = 5;
+  primitives.AdviceMap advice_map = 6;
+  primitives.MerkleStore merkle_store = 7;
+  repeated ForeignAccount foreign_accounts = 8;
+  optional uint32 expiration_delta = 9;
+  bool ignore_invalid_input_notes = 10;
   // Word that the transaction script receives on the operand stack.
-  primitives.Word script_arg = 13;
+  primitives.Word script_arg = 11;
   // Word that the authentication procedure receives on the operand stack.
-  primitives.Word auth_arg = 14;
-  primitives.Word fee_conversion_salt = 15;
-  repeated note.NoteScript expected_ntx_scripts = 16;
+  primitives.Word auth_arg = 12;
+  primitives.Word fee_conversion_salt = 13;
+  repeated note.NoteScript expected_ntx_scripts = 14;
   // New code of the executing account.
-  account.AccountCodeUpgrade account_code_upgrade = 17;
+  account.AccountCodeUpgrade account_code_upgrade = 15;
 }
 
-// Arguments of one input note.
-message NoteArgsEntry {
-  note.NoteId note_id = 1;
+// An input note of a transaction request, with its arguments.
+message RequestInputNote {
+  oneof authentication {
+    // A note that the executing client authenticates when its store holds the inclusion proof.
+    note.Note inferred = 1;
+    // A note that every client consumes in the mode that the note carries.
+    .transaction.InputNote explicit = 2;
+  }
   // An absent value means that the note has no arguments.
-  primitives.Word note_args = 2;
+  primitives.Word args = 3;
 }
 
 // Template from which the client builds the transaction script.

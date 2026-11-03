@@ -15,9 +15,11 @@ pub use store_update::{BatchStoreUpdate, TransactionStoreUpdate};
 mod request;
 pub use request::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestInputNote,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,

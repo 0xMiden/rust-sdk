@@ -189,7 +189,9 @@ impl TestClient {
         mut transaction_request: TransactionRequest,
     ) -> TransactionRequest {
         if let Some(note) = self.take_funding(account_id) {
-            transaction_request.add_unauthenticated_input_note(note);
+            transaction_request
+                .add_input_note(note)
+                .expect("the funding note is not an input note of the request");
         }
 
         transaction_request

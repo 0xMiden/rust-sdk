@@ -104,6 +104,7 @@ use crate::rpc::encryption::seal_transaction_inputs;
 use crate::store::data_store::ClientDataStore;
 use crate::transaction::{
     BatchStoreUpdate,
+    RequestInputNote,
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdateError,
@@ -405,7 +406,7 @@ where
         req: TransactionRequest,
     ) -> Result<(), ClientError> {
         // 1. Dedup input notes globally for the batch.
-        for note in req.input_notes() {
+        for note in req.input_notes().iter().map(RequestInputNote::note) {
             if batch.consumed_nullifiers.contains(&note.nullifier()) {
                 return Err(ClientError::from(BatchBuilderError::DuplicateInputNote(note.id())));
             }

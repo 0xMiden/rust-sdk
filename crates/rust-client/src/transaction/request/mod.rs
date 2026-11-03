@@ -3,9 +3,11 @@
 mod foreign;
 pub use miden_client_core::transaction::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestInputNote,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,

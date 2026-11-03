@@ -18,7 +18,6 @@ use miden_protocol::note::{
     NoteAttachment,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteId,
     NoteRecipient,
     NoteScript,
     NoteStorage,
@@ -35,7 +34,9 @@ use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteS
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
+    RequestInputNote,
     TransactionRequest,
     TransactionRequestError,
     TransactionScriptTemplate,
@@ -53,15 +54,7 @@ pub struct TransactionRequestBuilder {
     /// Blocks that the transaction must be able to authenticate against its reference block.
     block_numbers: BTreeSet<BlockNumber>,
     /// Notes to be consumed by the transaction, in consumption order.
-    ///
-    /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins. The
-    /// executing client infers the mode of every other note from its store.
-    input_notes: Vec<Note>,
-    /// Optional arguments of the Notes to be consumed by the transaction. This includes both
-    /// authenticated and unauthenticated notes.
-    input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
-    /// Pinned consumption mode of selected input notes.
-    explicit_input_notes: BTreeMap<NoteId, InputNote>,
+    input_notes: Vec<RequestInputNote>,
     /// Notes to be created by the transaction. The full note data is needed internally to build the
     /// transaction script template.
     own_output_notes: Vec<Note>,
@@ -118,8 +111,6 @@ impl TransactionRequestBuilder {
         Self {
             block_numbers: BTreeSet::new(),
             input_notes: vec![],
-            input_notes_args: vec![],
-            explicit_input_notes: BTreeMap::new(),
             own_output_notes: Vec::new(),
             expected_output_recipients: BTreeMap::new(),
             expected_future_notes: BTreeMap::new(),
@@ -155,18 +146,21 @@ impl TransactionRequestBuilder {
 
     /// Adds the specified notes as input notes to the transaction request.
     ///
-    /// The executing client consumes a note as authenticated when its store holds the note's
-    /// inclusion proof and as unauthenticated otherwise. Use [`Self::explicit_input_notes`] when
-    /// the mode must not depend on the executing client.
+    /// The executing client selects the authentication of each note when it executes the request.
+    /// It consumes a note as authenticated when its store holds the note's inclusion proof, and as
+    /// unauthenticated otherwise. Two clients can select different authentications for the same
+    /// request, and the authentication is part of the transaction summary. Use
+    /// [`Self::explicit_input_notes`] when more than one client executes the same request, for
+    /// example to collect multisig signatures.
     #[must_use]
     pub fn input_notes(
         mut self,
         notes: impl IntoIterator<Item = (Note, Option<NoteArgs>)>,
     ) -> Self {
-        for (note, argument) in notes {
-            self.input_notes_args.push((note.id(), argument));
-            self.input_notes.push(note);
-        }
+        self.input_notes.extend(notes.into_iter().map(|(note, args)| RequestInputNote {
+            authentication: InputNoteAuthentication::Inferred(note),
+            args,
+        }));
         self
     }
 
@@ -185,13 +179,11 @@ impl TransactionRequestBuilder {
         mut self,
         notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
     ) -> Self {
-        for (input_note, argument) in notes {
-            let note_id = input_note.id();
-
-            self.input_notes_args.push((note_id, argument));
-            self.input_notes.push(input_note.note().clone());
-            self.explicit_input_notes.insert(note_id, input_note);
-        }
+        self.input_notes
+            .extend(notes.into_iter().map(|(input_note, args)| RequestInputNote {
+                authentication: InputNoteAuthentication::Explicit(input_note),
+                args,
+            }));
         self
     }
 
@@ -828,8 +820,6 @@ impl TransactionRequestBuilder {
         let request = TransactionRequest {
             block_numbers: self.block_numbers,
             input_notes: self.input_notes,
-            input_notes_args: self.input_notes_args,
-            explicit_input_notes: self.explicit_input_notes,
             script_template,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,

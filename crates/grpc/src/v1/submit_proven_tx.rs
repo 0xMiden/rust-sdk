@@ -21,7 +21,7 @@ impl RpcMethod for SubmitProvenTx<'_> {
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
         let submission = proto::submission::ProvenTransactionSubmission {
             transaction: Some(self.transaction.into()),
-            sealed_transaction_inputs: Some(self.sealed_transaction_inputs.clone().into()),
+            sealed_transaction_inputs: Some((&self.sealed_transaction_inputs).into()),
         };
 
         let request = proto::node::v1::SubmitProvenTxRequest { submission: Some(submission) };

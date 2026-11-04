@@ -27,7 +27,6 @@ impl RpcMethod for SubmitProvenTxBatch<'_> {
             sealed_transaction_inputs: self
                 .sealed_transaction_inputs
                 .iter()
-                .cloned()
                 .map(Into::into)
                 .collect(),
         };

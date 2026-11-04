@@ -26,6 +26,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
+* [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][removal][rust] Removed the deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded` and `NoteTransportError::PaginationDidNotTerminate`. Use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][removal][rust] Removed the deprecated `TransactionRequestBuilder::auth_arg`; use `TransactionRequestBuilder::auth_args`, which also adds the auth arg preimage to the advice map ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).

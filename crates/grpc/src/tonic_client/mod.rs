@@ -53,8 +53,8 @@ use tracing::{info, warn};
 
 use crate::Endpoint;
 use crate::conversions::{storage_map_fetch_to_proto, vault_fetch_to_proto};
-use crate::generated::rpc::get_account_request::AccountDetailRequest;
-use crate::generated::rpc::{BlockRange, GetAccountRequest as ProtoGetAccountRequest};
+use crate::generated::node::v1::get_account_request::AccountDetailRequest;
+use crate::generated::node::v1::{BlockRange, GetAccountRequest as ProtoGetAccountRequest};
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
 
@@ -293,8 +293,8 @@ impl GrpcClient {
         block_num: Option<BlockNumber>,
         include_mmr_proof: bool,
         include_protocol_config: bool,
-    ) -> Result<(BlockHeader, proto::rpc::GetBlockHeaderByNumberResponse), RpcError> {
-        let request = proto::rpc::GetBlockHeaderByNumberRequest {
+    ) -> Result<(BlockHeader, proto::node::v1::GetBlockHeaderByNumberResponse), RpcError> {
+        let request = proto::node::v1::GetBlockHeaderByNumberRequest {
             block_num: block_num.as_ref().map(BlockNumber::as_u32),
             include_mmr_proof: Some(include_mmr_proof),
             include_protocol_config: Some(include_protocol_config),
@@ -350,10 +350,7 @@ impl GrpcClient {
             .genesis_commitment
             .as_ref()
             .map_or_else(|| "none".to_string(), Word::to_hex);
-        let context = AcceptHeaderContext {
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            genesis_commitment,
-        };
+        let context = AcceptHeaderContext { genesis_commitment };
 
         if let Some(accept_error) =
             AcceptHeaderError::try_from_message_with_context(status.message(), context)
@@ -422,7 +419,7 @@ impl GrpcClient {
         )
         .await?;
         rpc_api
-            .status(proto::rpc::StatusRequest {})
+            .status(proto::node::v1::StatusRequest {})
             .await
             .map_err(|status| self.rpc_error_from_status(RpcEndpoint::Status, status))
             .map(tonic::Response::into_inner)
@@ -450,7 +447,7 @@ impl NodeRpcClient for GrpcClient {
                 Box::pin(async move {
                     rpc_api
                         .get_transaction_encryption_key(
-                            proto::rpc::GetTransactionEncryptionKeyRequest {},
+                            proto::node::v1::GetTransactionEncryptionKeyRequest {},
                         )
                         .await
                 })
@@ -522,7 +519,7 @@ impl NodeRpcClient for GrpcClient {
             sealed_transaction_inputs: Some(sealed_transaction_inputs.into()),
         };
 
-        let request = proto::rpc::SubmitProvenTxRequest { submission: Some(request) };
+        let request = proto::node::v1::SubmitProvenTxRequest { submission: Some(request) };
         let api_response = self
             .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
                 let request = request.clone();
@@ -548,7 +545,7 @@ impl NodeRpcClient for GrpcClient {
                 .collect(),
         };
 
-        let request = proto::rpc::SubmitProvenTxBatchRequest { submission: Some(request) };
+        let request = proto::node::v1::SubmitProvenTxBatchRequest { submission: Some(request) };
         let api_response = self
             .call_with_retry(RpcEndpoint::SubmitProvenBatch, |mut rpc_api| {
                 let request = request.clone();
@@ -617,7 +614,7 @@ impl NodeRpcClient for GrpcClient {
         let limits = self.get_rpc_limits().await?;
         let mut notes = Vec::with_capacity(note_ids.len());
         for chunk in note_ids.chunks(limits.note_ids_limit as usize) {
-            let request = proto::rpc::GetNotesByIdRequest {
+            let request = proto::node::v1::GetNotesByIdRequest {
                 note_ids: chunk.iter().map(proto::note::NoteId::from).collect(),
             };
 
@@ -645,9 +642,9 @@ impl NodeRpcClient for GrpcClient {
         current_block_height: BlockNumber,
         upper_bound: SyncTarget,
     ) -> Result<ChainMmrInfo, RpcError> {
-        let finality_level: proto::rpc::FinalityLevel = upper_bound.into();
+        let finality_level: proto::node::v1::FinalityLevel = upper_bound.into();
 
-        let request = proto::rpc::SyncChainMmrRequest {
+        let request = proto::node::v1::SyncChainMmrRequest {
             current_client_block_height: current_block_height.as_u32(),
             finality_level: finality_level.into(),
         };
@@ -750,7 +747,7 @@ impl NodeRpcClient for GrpcClient {
         account_id: AccountId,
     ) -> Result<(), RpcError> {
         // The invitation code is a secret. Keep it out of logs and out of error messages.
-        let request = proto::rpc::RegisterAccountRequest {
+        let request = proto::node::v1::RegisterAccountRequest {
             invitation_code: invitation_code.to_string(),
             account_id: Some(account_id.into()),
         };
@@ -765,7 +762,8 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn is_account_allowed(&self, account_id: AccountId) -> Result<bool, RpcError> {
-        let request = proto::rpc::IsAccountAllowedRequest { account_id: Some(account_id.into()) };
+        let request =
+            proto::node::v1::IsAccountAllowedRequest { account_id: Some(account_id.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::IsAccountAllowed, |mut rpc_api| {
@@ -777,8 +775,9 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn is_invitation_code_valid(&self, invitation_code: &str) -> Result<bool, RpcError> {
-        let request =
-            proto::rpc::IsInvitationCodeValidRequest { invitation_code: invitation_code.into() };
+        let request = proto::node::v1::IsInvitationCodeValidRequest {
+            invitation_code: invitation_code.into(),
+        };
 
         let response = self
             .call_with_retry(RpcEndpoint::IsInvitationCodeValid, |mut rpc_api| {
@@ -817,7 +816,7 @@ impl NodeRpcClient for GrpcClient {
             let mut pagination = BlockPagination::new(block_from, block_to);
 
             loop {
-                let request = proto::rpc::SyncNotesRequest {
+                let request = proto::node::v1::SyncNotesRequest {
                     block_range: Some(BlockRange {
                         block_from: pagination.current_block_from().as_u32(),
                         block_to: block_to.as_u32(),
@@ -877,7 +876,7 @@ impl NodeRpcClient for GrpcClient {
             let mut pagination = BlockPagination::new(block_from, block_to);
 
             loop {
-                let request = proto::rpc::SyncNullifiersRequest {
+                let request = proto::node::v1::SyncNullifiersRequest {
                     nullifiers: proto_prefixes.clone(),
                     prefix_len: 16,
                     block_range: Some(BlockRange {
@@ -921,7 +920,7 @@ impl NodeRpcClient for GrpcClient {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
-        let request = proto::rpc::GetBlockByNumberRequest {
+        let request = proto::node::v1::GetBlockByNumberRequest {
             block_num: block_num.as_u32(),
             include_proof: Some(include_proof),
         };
@@ -936,7 +935,7 @@ impl NodeRpcClient for GrpcClient {
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
-        let request = proto::rpc::GetNoteScriptByRootRequest { root: Some(root.into()) };
+        let request = proto::node::v1::GetNoteScriptByRootRequest { root: Some(root.into()) };
 
         let response = self
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
@@ -964,7 +963,7 @@ impl NodeRpcClient for GrpcClient {
         let mut map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries> = BTreeMap::new();
 
         let (chain_tip, block_number) = loop {
-            let request = proto::rpc::SyncAccountStorageMapsRequest {
+            let request = proto::node::v1::SyncAccountStorageMapsRequest {
                 block_range: Some(BlockRange {
                     block_from: pagination.current_block_from().as_u32(),
                     block_to: block_to.as_u32(),
@@ -1008,7 +1007,7 @@ impl NodeRpcClient for GrpcClient {
         let mut vault_patch = AccountVaultPatch::default();
 
         let (chain_tip, block_number) = loop {
-            let request = proto::rpc::SyncAccountVaultRequest {
+            let request = proto::node::v1::SyncAccountVaultRequest {
                 block_range: Some(BlockRange {
                     block_from: pagination.current_block_from().as_u32(),
                     block_to: block_to.as_u32(),
@@ -1059,7 +1058,7 @@ impl NodeRpcClient for GrpcClient {
             let mut pagination = BlockPagination::new(block_from, block_to);
 
             loop {
-                let request = proto::rpc::SyncTransactionsRequest {
+                let request = proto::node::v1::SyncTransactionsRequest {
                     block_range: Some(BlockRange {
                         block_from: pagination.current_block_from().as_u32(),
                         block_to: block_to.as_u32(),
@@ -1108,7 +1107,9 @@ impl NodeRpcClient for GrpcClient {
 
         let response = self
             .call_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_limits(proto::rpc::GetLimitsRequest {}).await })
+                Box::pin(
+                    async move { rpc_api.get_limits(proto::node::v1::GetLimitsRequest {}).await },
+                )
             })
             .await?;
         let limits = RpcLimits::try_from(response.into_inner()).map_err(RpcError::from)?;
@@ -1134,7 +1135,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError> {
-        let request = proto::rpc::GetNetworkNoteStatusRequest {
+        let request = proto::node::v1::GetNetworkNoteStatusRequest {
             note_id: Some(proto::note::NoteId::from(&note_id)),
         };
 
@@ -1165,7 +1166,7 @@ fn grpc_error_from_status(status: &Status) -> GrpcError {
 /// decode as a [`SignedBlock`] and never as a `ProvenBlock`. The node omits the proof when it is
 /// not requested, and also when the block is not proven yet, so an absent proof is not an error.
 fn decode_block_response(
-    response: proto::rpc::GetBlockByNumberResponse,
+    response: proto::node::v1::GetBlockByNumberResponse,
 ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError> {
     // The response carries the block and its proof in separate fields, so the block message holds a
     // signed block and never a proven one.
@@ -1214,7 +1215,7 @@ mod tests {
     #[test]
     fn decode_block_response_reads_a_requested_proof() {
         let (block, proof_message) = genesis_block_messages();
-        let response = proto::rpc::GetBlockByNumberResponse {
+        let response = proto::node::v1::GetBlockByNumberResponse {
             block: Some(block),
             proof: Some(proof_message.clone()),
         };
@@ -1229,7 +1230,8 @@ mod tests {
     #[test]
     fn decode_block_response_omits_an_absent_proof() {
         let (block, _) = genesis_block_messages();
-        let response = proto::rpc::GetBlockByNumberResponse { block: Some(block), proof: None };
+        let response =
+            proto::node::v1::GetBlockByNumberResponse { block: Some(block), proof: None };
 
         let (_block, proof) = decode_block_response(response).unwrap();
 
@@ -1239,7 +1241,7 @@ mod tests {
     #[test]
     fn decode_block_response_rejects_malformed_proof_bytes() {
         let (block, _) = genesis_block_messages();
-        let response = proto::rpc::GetBlockByNumberResponse {
+        let response = proto::node::v1::GetBlockByNumberResponse {
             block: Some(block),
             proof: Some(proto::primitives::ExecutionProof { encoded: vec![0xff; 32] }),
         };
@@ -1251,7 +1253,7 @@ mod tests {
 
     #[test]
     fn decode_block_response_rejects_an_absent_block() {
-        let response = proto::rpc::GetBlockByNumberResponse { block: None, proof: None };
+        let response = proto::node::v1::GetBlockByNumberResponse { block: None, proof: None };
 
         let res = decode_block_response(response);
 
@@ -1415,11 +1417,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             headers.get("accept").unwrap().to_str().unwrap(),
-            format!(
-                "application/vnd.miden; version={}; genesis={}",
-                env!("CARGO_PKG_VERSION"),
-                commitment.to_hex(),
-            ),
+            format!("application/vnd.miden; genesis={}", commitment.to_hex()),
         );
         assert_eq!(headers.get("authorization").unwrap(), "Bearer token");
         server.abort();

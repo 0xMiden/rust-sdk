@@ -23,7 +23,7 @@ impl RpcMethod for GetAccount {
     type Output = (BlockNumber, AccountProof);
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
-        let GetAccountRequest { account_id, fetch, at, known_code } = self.request.clone();
+        let GetAccountRequest { account_id, fetch, at, known_code } = &self.request;
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
 
@@ -39,7 +39,7 @@ impl RpcMethod for GetAccount {
             None
         };
 
-        let block_num = match at {
+        let block_num = match *at {
             AccountStateAt::Block(number) => Some(number.into()),
             AccountStateAt::ChainTip => None,
         };
@@ -74,7 +74,7 @@ impl RpcMethod for GetAccount {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(known_code.as_ref(), &fetch)?;
+                .into_domain(known_code.as_ref(), fetch)?;
 
             Some(details)
         } else {

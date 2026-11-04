@@ -16,8 +16,6 @@ pub struct SubmitProvenTxBatch<'a> {
     pub sealed_transaction_inputs: Vec<SealedTransactionInputs>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SubmitProvenTxBatch<'_> {
     /// The block number of the node's chain tip when it accepts the batch.
     type Output = BlockNumber;

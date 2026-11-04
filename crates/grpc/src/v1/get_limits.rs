@@ -6,8 +6,6 @@ use crate::{GrpcClient, RpcMethod, generated as proto};
 /// Fetches the request limits of the node.
 pub struct GetLimits;
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetLimits {
     type Output = RpcLimits;
 

@@ -12,8 +12,6 @@ pub struct GetNoteScriptByRoot {
     pub root: Word,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetNoteScriptByRoot {
     /// The script, or `None` if the node has no script registered for the root.
     type Output = Option<NoteScript>;

@@ -25,8 +25,6 @@ pub struct SyncNotes<'a> {
     pub note_tags: &'a BTreeSet<NoteTag>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SyncNotes<'_> {
     type Output = Vec<SyncNotesBlock>;
 

@@ -9,8 +9,6 @@ pub struct IsInvitationCodeValid<'a> {
     pub invitation_code: &'a str,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for IsInvitationCodeValid<'_> {
     type Output = bool;
 

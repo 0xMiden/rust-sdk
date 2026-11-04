@@ -15,8 +15,6 @@ pub struct GetBlockByNumber {
     pub include_proof: bool,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetBlockByNumber {
     /// The block, and its proof if it was requested and the block is proven.
     type Output = (SignedBlock, Option<ExecutionProof>);

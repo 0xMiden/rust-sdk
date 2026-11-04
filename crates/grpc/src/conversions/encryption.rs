@@ -4,8 +4,8 @@ use miden_client_core::rpc::encryption::SealedTransactionInputs;
 
 use crate::generated as proto;
 
-impl From<SealedTransactionInputs> for proto::submission::SealedTransactionInputs {
-    fn from(sealed: SealedTransactionInputs) -> Self {
+impl From<&SealedTransactionInputs> for proto::submission::SealedTransactionInputs {
+    fn from(sealed: &SealedTransactionInputs) -> Self {
         Self {
             key_id: sealed.key_id().to_vec(),
             ciphertext: sealed.ciphertext().to_vec(),

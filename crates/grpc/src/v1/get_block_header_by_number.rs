@@ -30,8 +30,6 @@ pub struct BlockHeaderResponse {
     pub protocol_config: Option<ProtocolConfig>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetBlockHeaderByNumber {
     type Output = BlockHeaderResponse;
 
@@ -45,8 +43,8 @@ impl RpcMethod for GetBlockHeaderByNumber {
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetBlockHeaderByNumber, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_block_header_by_number(request).await })
+            .send_with_retry(RpcEndpoint::GetBlockHeaderByNumber, |mut rpc_api| async move {
+                rpc_api.get_block_header_by_number(request).await
             })
             .await?
             .into_inner();

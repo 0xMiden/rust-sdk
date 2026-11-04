@@ -9,8 +9,6 @@ pub struct IsInvitationCodeValid<'a> {
     pub invitation_code: &'a str,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for IsInvitationCodeValid<'_> {
     type Output = bool;
 
@@ -20,9 +18,9 @@ impl RpcMethod for IsInvitationCodeValid<'_> {
         };
 
         let response = client
-            .call_with_retry(RpcEndpoint::IsInvitationCodeValid, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::IsInvitationCodeValid, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.is_invitation_code_valid(request).await })
+                async move { rpc_api.is_invitation_code_valid(request).await }
             })
             .await?;
 

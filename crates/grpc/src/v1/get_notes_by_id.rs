@@ -17,8 +17,6 @@ pub struct GetNotesById<'a> {
     pub note_ids: &'a [NoteId],
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetNotesById<'_> {
     type Output = Vec<FetchedNote>;
 
@@ -31,9 +29,9 @@ impl RpcMethod for GetNotesById<'_> {
             };
 
             let response = client
-                .call_with_retry(RpcEndpoint::GetNotesById, |mut rpc_api| {
+                .send_with_retry(RpcEndpoint::GetNotesById, |mut rpc_api| {
                     let request = request.clone();
-                    Box::pin(async move { rpc_api.get_notes_by_id(request).await })
+                    async move { rpc_api.get_notes_by_id(request).await }
                 })
                 .await?;
 

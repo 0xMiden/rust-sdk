@@ -132,32 +132,6 @@ impl NoteStateHandler for ProcessingAuthenticatedNoteState {
     }
 }
 
-impl miden_protocol::utils::serde::Serializable for ProcessingAuthenticatedNoteState {
-    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.inclusion_proof.write_into(target);
-        self.block_note_root.write_into(target);
-        self.submission_data.write_into(target);
-    }
-}
-
-impl miden_protocol::utils::serde::Deserializable for ProcessingAuthenticatedNoteState {
-    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let inclusion_proof = NoteInclusionProof::read_from(source)?;
-        let block_note_root = Word::read_from(source)?;
-        let submission_data = NoteSubmissionData::read_from(source)?;
-        Ok(ProcessingAuthenticatedNoteState {
-            metadata,
-            inclusion_proof,
-            block_note_root,
-            submission_data,
-        })
-    }
-}
-
 impl From<ProcessingAuthenticatedNoteState> for InputNoteState {
     fn from(state: ProcessingAuthenticatedNoteState) -> Self {
         InputNoteState::ProcessingAuthenticated(state)

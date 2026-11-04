@@ -20,8 +20,6 @@ pub struct SyncAccountStorageMaps {
     pub account_id: AccountId,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SyncAccountStorageMaps {
     type Output = StorageMapInfo;
 
@@ -38,8 +36,8 @@ impl RpcMethod for SyncAccountStorageMaps {
                 account_id: Some(self.account_id.into()),
             };
             let response = client
-                .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| {
-                    Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
+                .send_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| async move {
+                    rpc_api.sync_account_storage_maps(request).await
                 })
                 .await?;
             let page = StorageMapInfo::try_from(response.into_inner())?;

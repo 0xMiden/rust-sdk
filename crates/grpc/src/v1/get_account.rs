@@ -1,13 +1,11 @@
-use std::collections::BTreeMap;
-
 use miden_client_core::errors::RpcError;
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::{AccountStateAt, RpcEndpoint};
 use miden_objects::DecodeMessageExt;
+use miden_protocol::EMPTY_WORD;
 use miden_protocol::account::AccountCode;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
-use miden_protocol::{EMPTY_WORD, Word};
 
 use crate::conversions::{storage_map_fetch_to_proto, vault_fetch_to_proto};
 use crate::generated::node::v1::get_account_request::AccountDetailRequest;
@@ -20,20 +18,14 @@ pub struct GetAccount {
     pub request: GetAccountRequest,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetAccount {
     /// The block that the proof is for, and the proof.
     type Output = (BlockNumber, AccountProof);
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
-        let GetAccountRequest { account_id, fetch, at, known_code } = self.request.clone();
+        let GetAccountRequest { account_id, fetch, at, known_code } = &self.request;
 
         let known_code_commitment = known_code.as_ref().map_or(EMPTY_WORD, AccountCode::commitment);
-        let mut known_codes_by_commitment: BTreeMap<Word, AccountCode> = BTreeMap::new();
-        if let Some(account_code) = known_code {
-            known_codes_by_commitment.insert(account_code.commitment(), account_code);
-        }
 
         // Only request details for accounts with public state (Public or Network), passing the
         // known code commitment so the node can skip re-sending code we already hold.
@@ -47,7 +39,7 @@ impl RpcMethod for GetAccount {
             None
         };
 
-        let block_num = match at {
+        let block_num = match *at {
             AccountStateAt::Block(number) => Some(number.into()),
             AccountStateAt::ChainTip => None,
         };
@@ -59,9 +51,9 @@ impl RpcMethod for GetAccount {
         };
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.get_account(request).await })
+                async move { rpc_api.get_account(request).await }
             })
             .await?
             .into_inner();
@@ -82,7 +74,7 @@ impl RpcMethod for GetAccount {
             let details = response
                 .details
                 .ok_or(RpcError::ExpectedDataMissing("Account.Details".to_string()))?
-                .into_domain(&known_codes_by_commitment, &fetch)?;
+                .into_domain(known_code.as_ref(), fetch)?;
 
             Some(details)
         } else {

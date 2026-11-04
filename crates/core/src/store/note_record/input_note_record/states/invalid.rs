@@ -117,29 +117,6 @@ impl NoteStateHandler for InvalidNoteState {
     }
 }
 
-impl miden_protocol::utils::serde::Serializable for InvalidNoteState {
-    fn write_into<W: miden_protocol::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.metadata.write_into(target);
-        self.invalid_inclusion_proof.write_into(target);
-        self.block_note_root.write_into(target);
-    }
-}
-
-impl miden_protocol::utils::serde::Deserializable for InvalidNoteState {
-    fn read_from<R: miden_protocol::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, miden_protocol::utils::serde::DeserializationError> {
-        let metadata = NoteMetadata::read_from(source)?;
-        let invalid_inclusion_proof = NoteInclusionProof::read_from(source)?;
-        let block_note_root = Word::read_from(source)?;
-        Ok(InvalidNoteState {
-            metadata,
-            invalid_inclusion_proof,
-            block_note_root,
-        })
-    }
-}
-
 impl From<InvalidNoteState> for InputNoteState {
     fn from(state: InvalidNoteState) -> Self {
         InputNoteState::Invalid(state)

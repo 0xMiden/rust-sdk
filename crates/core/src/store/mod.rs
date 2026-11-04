@@ -39,7 +39,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::{Felt, Word};
 
 use crate::errors::StoreError;
-use crate::note_transport::{NoteTransportCursor, NoteTransportSyncState};
+use crate::note_transport::NoteTransportSyncState;
 use crate::pswap::{PswapLineageFilter, PswapLineageRecord};
 use crate::rpc::RpcLimits;
 use crate::rpc::encryption::TransactionEncryptionKey;
@@ -610,21 +610,6 @@ pub trait Store: Send + Sync {
 
     // TRANSPORT
     // --------------------------------------------------------------------------------------------
-
-    /// Returns the legacy note transport cursor of each tag. A `None` cursor starts from the first
-    /// retained note. Returns an empty map if no cursors are stored.
-    ///
-    /// The client reads this value only to migrate it to the sync state.
-    async fn get_note_transport_cursors(
-        &self,
-    ) -> Result<BTreeMap<NoteTag, Option<NoteTransportCursor>>, StoreError>;
-
-    /// Replaces the legacy note transport cursor of each tag. An empty map removes the stored
-    /// cursors.
-    async fn set_note_transport_cursors(
-        &self,
-        cursors: &BTreeMap<NoteTag, Option<NoteTransportCursor>>,
-    ) -> Result<(), StoreError>;
 
     /// Returns the note transport sync state, or `None` if no state is stored.
     async fn get_note_transport_sync_state(

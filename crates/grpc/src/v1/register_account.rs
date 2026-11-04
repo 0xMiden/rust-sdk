@@ -12,8 +12,6 @@ pub struct RegisterAccount<'a> {
     pub account_id: AccountId,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for RegisterAccount<'_> {
     type Output = ();
 
@@ -25,9 +23,9 @@ impl RpcMethod for RegisterAccount<'_> {
         };
 
         client
-            .call_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.register_account(request).await })
+                async move { rpc_api.register_account(request).await }
             })
             .await?;
 

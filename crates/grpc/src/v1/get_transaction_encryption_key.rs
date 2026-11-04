@@ -13,21 +13,17 @@ use crate::{GrpcClient, RpcMethod, generated as proto};
 /// Fetches the key that encrypts transaction inputs for the node, with its validator attestations.
 pub struct GetTransactionEncryptionKey;
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for GetTransactionEncryptionKey {
     type Output = AttestedTransactionEncryptionKey;
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
         let response = client
-            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
-                Box::pin(async move {
-                    rpc_api
-                        .get_transaction_encryption_key(
-                            proto::node::v1::GetTransactionEncryptionKeyRequest {},
-                        )
-                        .await
-                })
+            .send_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| async move {
+                rpc_api
+                    .get_transaction_encryption_key(
+                        proto::node::v1::GetTransactionEncryptionKeyRequest {},
+                    )
+                    .await
             })
             .await?
             .into_inner()

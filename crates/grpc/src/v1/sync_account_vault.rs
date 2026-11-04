@@ -18,8 +18,6 @@ pub struct SyncAccountVault {
     pub account_id: AccountId,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SyncAccountVault {
     type Output = AccountVaultInfo;
 
@@ -36,8 +34,8 @@ impl RpcMethod for SyncAccountVault {
                 account_id: Some(self.account_id.into()),
             };
             let response = client
-                .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| {
-                    Box::pin(async move { rpc_api.sync_account_vault(request).await })
+                .send_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| async move {
+                    rpc_api.sync_account_vault(request).await
                 })
                 .await?;
             let page = AccountVaultInfo::try_from(response.into_inner())?;

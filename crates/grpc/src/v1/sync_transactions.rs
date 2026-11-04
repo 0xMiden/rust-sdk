@@ -25,8 +25,6 @@ pub struct SyncTransactions {
     pub account_ids: Vec<AccountId>,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SyncTransactions {
     type Output = Vec<TransactionRecord>;
 
@@ -52,9 +50,9 @@ impl RpcMethod for SyncTransactions {
                 };
 
                 let response = client
-                    .call_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
+                    .send_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
                         let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_transactions(request).await })
+                        async move { rpc_api.sync_transactions(request).await }
                     })
                     .await?
                     .into_inner();

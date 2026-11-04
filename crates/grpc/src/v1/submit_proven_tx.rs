@@ -14,8 +14,6 @@ pub struct SubmitProvenTx<'a> {
     pub sealed_transaction_inputs: SealedTransactionInputs,
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl RpcMethod for SubmitProvenTx<'_> {
     /// The block number of the node's chain tip when it accepts the transaction.
     type Output = BlockNumber;
@@ -23,14 +21,14 @@ impl RpcMethod for SubmitProvenTx<'_> {
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
         let submission = proto::submission::ProvenTransactionSubmission {
             transaction: Some(self.transaction.into()),
-            sealed_transaction_inputs: Some(self.sealed_transaction_inputs.clone().into()),
+            sealed_transaction_inputs: Some((&self.sealed_transaction_inputs).into()),
         };
 
         let request = proto::node::v1::SubmitProvenTxRequest { submission: Some(submission) };
         let response = client
-            .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.submit_proven_tx(request).await })
+                async move { rpc_api.submit_proven_tx(request).await }
             })
             .await?;
 

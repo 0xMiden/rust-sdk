@@ -1,11 +1,13 @@
 #![allow(clippy::items_after_statements)]
 
+use std::collections::BTreeSet;
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
+use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteTag;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -37,6 +39,44 @@ impl SqliteStore {
                 })
             })
             .collect::<Result<Vec<NoteTagRecord>, _>>()
+    }
+
+    /// Returns the note tags of the native accounts, derived from their addresses. Two addresses of
+    /// one account with the same tag give one record.
+    pub(crate) fn get_account_note_tags(
+        conn: &mut Connection,
+    ) -> Result<Vec<NoteTagRecord>, StoreError> {
+        const QUERY: &str = "SELECT addresses.address, addresses.account_id FROM addresses \
+             JOIN latest_account_headers ON latest_account_headers.id = addresses.account_id \
+             WHERE latest_account_headers.watched = FALSE";
+
+        let tags = conn
+            .prepare_cached(QUERY)
+            .into_store_error()?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("no binding parameters used in query")
+            .map(|result| {
+                let (address, account_id): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+                let address = Address::read_from_bytes(&address)?;
+                let account_id = AccountId::read_from_bytes(&account_id)?;
+                Ok((address.to_note_tag(), account_id))
+            })
+            .collect::<Result<BTreeSet<(NoteTag, AccountId)>, StoreError>>()?;
+
+        Ok(tags
+            .into_iter()
+            .map(|(tag, account_id)| NoteTagRecord::with_account_source(tag, account_id))
+            .collect())
+    }
+
+    /// Returns the stored tags and the account tags as one set.
+    pub(crate) fn get_unique_note_tags(
+        conn: &mut Connection,
+    ) -> Result<BTreeSet<NoteTag>, StoreError> {
+        let mut tags: BTreeSet<NoteTag> =
+            Self::get_note_tags(conn)?.into_iter().map(|record| record.tag).collect();
+        tags.extend(Self::get_account_note_tags(conn)?.into_iter().map(|record| record.tag));
+        Ok(tags)
     }
 
     pub(super) fn add_note_tag(

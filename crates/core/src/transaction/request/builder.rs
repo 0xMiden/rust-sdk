@@ -335,27 +335,11 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Sets the raw word passed to the authentication procedure during transaction execution.
-    ///
-    /// This method does not add an advice-map preimage. Use [`Self::auth_args`] for auth components
-    /// that resolve committed auth args from the advice map.
-    #[deprecated(
-        since = "0.17.4",
-        note = "use `auth_args` to set the auth args commitment and its advice-map preimage together"
-    )]
-    #[must_use]
-    pub fn auth_arg(mut self, auth_arg: Word) -> Self {
-        self.auth_arg = Some(auth_arg);
-        self.fee_conversion_salt = None;
-        self
-    }
-
     /// Sets the auth arg to the commitment of `auth_args` and adds their preimage to the advice
     /// map.
     ///
     /// Use this method for auth components that load their auth args from the advice map, for
-    /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs). Use
-    /// [`Self::auth_arg`] for auth components that read the auth arg directly.
+    /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
     /// of multisig auth args.

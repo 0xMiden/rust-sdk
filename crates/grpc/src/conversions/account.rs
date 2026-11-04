@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 
 use miden_client_core::errors::RpcError;
@@ -17,8 +16,8 @@ use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::{EMPTY_WORD, Word};
 
 use super::MissingFieldHelper;
-use crate::generated::rpc::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
-use crate::generated::rpc::get_account_request::account_detail_request::{
+use crate::generated::node::v1::get_account_request::account_detail_request::storage_map_detail_request::{MapKeys, SlotData};
+use crate::generated::node::v1::get_account_request::account_detail_request::{
     StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest, VaultAssetIds, VaultRequest,
 };
 use crate::generated::{self as proto};
@@ -27,7 +26,7 @@ use crate::generated::{self as proto};
 // ================================================================================================
 
 /// Hides the invitation code, which is a secret that must not reach logs or error messages.
-impl Debug for proto::rpc::RegisterAccountRequest {
+impl Debug for proto::node::v1::RegisterAccountRequest {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RegisterAccountRequest")
             .field("account_id", &self.account_id)
@@ -36,7 +35,7 @@ impl Debug for proto::rpc::RegisterAccountRequest {
 }
 
 /// Hides the invitation code, which is a secret that must not reach logs or error messages.
-impl Debug for proto::rpc::IsInvitationCodeValidRequest {
+impl Debug for proto::node::v1::IsInvitationCodeValidRequest {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("IsInvitationCodeValidRequest").finish_non_exhaustive()
     }
@@ -45,46 +44,46 @@ impl Debug for proto::rpc::IsInvitationCodeValidRequest {
 // FROM PROTO ACCOUNT HEADERS
 // ================================================================================================
 
-impl proto::rpc::get_account_response::AccountDetails {
+impl proto::node::v1::get_account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
-    /// The RPC response may omit unchanged account codes. If so, this function uses
-    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
-    /// response or `known_account_codes`, an error is returned.
+    /// The RPC response may omit an unchanged account code. If so, this function uses `known_code`
+    /// to fill in the missing code. If the response omits the code and `known_code` does not match
+    /// the code commitment of the account header, an error is returned.
     ///
     /// `fetch` specifies the requested storage keys and vault assets. The proofs must cover these
     /// keys and assets and verify against the account's roots.
     ///
     /// # Errors
-    /// - If account code is missing both on `self` and `known_account_codes`
+    /// - If the response omits the account code and `known_code` does not match the header
     /// - If data cannot be correctly deserialized
     /// - If a partial map does not cover exactly the keys requested for its slot
     /// - If the vault details do not answer `fetch` for the account's vault root
     pub fn into_domain(
         self,
-        known_account_codes: &BTreeMap<Word, AccountCode>,
+        known_code: Option<&AccountCode>,
         fetch: &AccountFetch,
     ) -> Result<AccountDetails, miden_client_core::errors::RpcError> {
         use miden_client_core::errors::RpcError;
 
         use super::MissingFieldHelper;
 
-        let proto::rpc::get_account_response::AccountDetails {
+        let proto::node::v1::get_account_response::AccountDetails {
             header,
             storage_details,
             code,
             vault_details,
         } = self;
         let header: AccountHeader = header
-            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
-                header
-            )))?
+            .ok_or(proto::node::v1::get_account_response::AccountDetails::missing_field(
+                stringify!(header),
+            ))?
             .decode_and_verify()?;
 
         let storage_details: AccountStorageDetails = storage_details
-            .ok_or(proto::rpc::get_account_response::AccountDetails::missing_field(stringify!(
-                storage_details
-            )))?
+            .ok_or(proto::node::v1::get_account_response::AccountDetails::missing_field(
+                stringify!(storage_details),
+            ))?
             .try_into()?;
 
         storage_details.validate_against_request(fetch.storage())?;
@@ -97,8 +96,8 @@ impl proto::rpc::get_account_response::AccountDetails {
                 code.map(DecodeMessageExt::decode_and_verify).transpose()?;
             match received_code {
                 Some(code) => code,
-                None => known_account_codes
-                    .get(&header.code_commitment())
+                None => known_code
+                    .filter(|code| code.commitment() == header.code_commitment())
                     .ok_or(RpcError::InvalidResponse(
                         "Account code was not provided, but the response did not contain it either"
                             .into(),
@@ -107,10 +106,9 @@ impl proto::rpc::get_account_response::AccountDetails {
             }
         };
 
-        let vault_details = AccountVaultDetails::try_from(
-            vault_details
-                .ok_or(proto::rpc::AccountVaultDetails::missing_field(stringify!(vault_details)))?,
-        )?
+        let vault_details = AccountVaultDetails::try_from(vault_details.ok_or(
+            proto::node::v1::AccountVaultDetails::missing_field(stringify!(vault_details)),
+        )?)?
         .validate_against_request(header.vault_root(), fetch.vault())?;
 
         Ok(AccountDetails {
@@ -125,10 +123,10 @@ impl proto::rpc::get_account_response::AccountDetails {
 // ACCOUNT STORAGE DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
+impl TryFrom<proto::node::v1::AccountStorageDetails> for AccountStorageDetails {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::AccountStorageDetails) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::AccountStorageDetails) -> Result<Self, Self::Error> {
         let header: AccountStorageHeader = value
             .header
             .ok_or(proto::account::AccountStorageHeader::missing_field(stringify!(header)))?
@@ -181,15 +179,15 @@ impl TryFrom<proto::rpc::AccountStorageDetails> for AccountStorageDetails {
 // ACCOUNT MAP DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
+impl TryFrom<proto::node::v1::account_storage_details::AccountStorageMapDetails>
     for AccountStorageMapDetails
 {
     type Error = RpcError;
 
     fn try_from(
-        value: proto::rpc::account_storage_details::AccountStorageMapDetails,
+        value: proto::node::v1::account_storage_details::AccountStorageMapDetails,
     ) -> Result<Self, Self::Error> {
-        use proto::rpc::account_storage_details::account_storage_map_details::Result as ProtoResult;
+        use proto::node::v1::account_storage_details::account_storage_map_details::Result as ProtoResult;
 
         let slot_name = StorageSlotName::new(value.slot_name)
             .map_err(|err| RpcError::ExpectedDataMissing(err.to_string()))?;
@@ -233,7 +231,7 @@ impl TryFrom<proto::rpc::account_storage_details::AccountStorageMapDetails>
 
                 let partial_smt: PartialSmt = partial_map
                         .partial_smt
-                        .ok_or(proto::rpc::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
+                        .ok_or(proto::node::v1::account_storage_details::account_storage_map_details::PartialStorageMap::missing_field(
                             stringify!(partial_smt),
                         ))?
                         .decode_and_verify()?;
@@ -275,12 +273,12 @@ fn first_duplicate_key(keys: &[StorageMapKey]) -> Option<&StorageMapKey> {
 // STORAGE MAP ENTRY
 // ================================================================================================
 
-impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry>
+impl TryFrom<proto::node::v1::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry>
     for StorageMapEntry
 {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::account_storage_details::account_storage_map_details::all_map_entries::StorageMapEntry) -> Result<Self, Self::Error> {
         let key = Word::try_from(value.key.ok_or(RpcError::ExpectedDataMissing("key".into()))?)
             .map(StorageMapKey::new)?;
         let value = value.value.ok_or(RpcError::ExpectedDataMissing("value".into()))?.try_into()?;
@@ -291,15 +289,15 @@ impl TryFrom<proto::rpc::account_storage_details::account_storage_map_details::a
 // ACCOUNT VAULT DETAILS
 // ================================================================================================
 
-impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
+impl TryFrom<proto::node::v1::AccountVaultDetails> for AccountVaultDetails {
     type Error = RpcError;
 
     /// Converts the vault details of a `/GetAccount` response.
     ///
     /// The response must set only one of the asset list, the vault proofs, and the too many assets
     /// flag. A response that sets none of them converts to an empty asset list.
-    fn try_from(value: proto::rpc::AccountVaultDetails) -> Result<Self, Self::Error> {
-        let proto::rpc::AccountVaultDetails { too_many_assets, assets, partial_vault } = value;
+    fn try_from(value: proto::node::v1::AccountVaultDetails) -> Result<Self, Self::Error> {
+        let proto::node::v1::AccountVaultDetails { too_many_assets, assets, partial_vault } = value;
 
         match (too_many_assets, assets.is_empty(), partial_vault) {
             (false, _, None) => Ok(Self::Assets(
@@ -319,7 +317,7 @@ impl TryFrom<proto::rpc::AccountVaultDetails> for AccountVaultDetails {
     }
 }
 
-impl TryFrom<proto::rpc::account_vault_details::PartialVault> for PartialVault {
+impl TryFrom<proto::node::v1::account_vault_details::PartialVault> for PartialVault {
     type Error = RpcError;
 
     /// Converts the vault proofs of a `/GetAccount` response.
@@ -327,7 +325,7 @@ impl TryFrom<proto::rpc::account_vault_details::PartialVault> for PartialVault {
     /// [`PartialVault::try_from_parts`] rejects duplicate asset IDs and asset IDs that the partial
     /// SMT does not track.
     fn try_from(
-        value: proto::rpc::account_vault_details::PartialVault,
+        value: proto::node::v1::account_vault_details::PartialVault,
     ) -> Result<Self, Self::Error> {
         let asset_ids = value
             .asset_ids
@@ -337,9 +335,9 @@ impl TryFrom<proto::rpc::account_vault_details::PartialVault> for PartialVault {
 
         let partial_smt: PartialSmt = value
             .partial_smt
-            .ok_or(proto::rpc::account_vault_details::PartialVault::missing_field(stringify!(
-                partial_smt
-            )))?
+            .ok_or(proto::node::v1::account_vault_details::PartialVault::missing_field(
+                stringify!(partial_smt),
+            ))?
             .decode_and_verify()?;
 
         PartialVault::try_from_parts(partial_smt, asset_ids).map_err(|err| {
@@ -426,7 +424,7 @@ mod tests {
     fn invitation_code_validation_request_debug_hides_code() {
         let code = "secret-invitation-code";
         let request =
-            proto::rpc::IsInvitationCodeValidRequest { invitation_code: code.to_string() };
+            proto::node::v1::IsInvitationCodeValidRequest { invitation_code: code.to_string() };
 
         let debug = format!("{request:?}");
         assert!(debug.contains("IsInvitationCodeValidRequest"));
@@ -464,10 +462,10 @@ mod tests {
     fn partial_vault_round_trips_through_proto() {
         let (vault, asset, absent) = vault_with_one_asset();
         let expected = partial_vault(&vault, &[asset.id(), absent]);
-        let response = proto::rpc::AccountVaultDetails {
+        let response = proto::node::v1::AccountVaultDetails {
             too_many_assets: false,
             assets: Vec::new(),
-            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+            partial_vault: Some(proto::node::v1::account_vault_details::PartialVault {
                 asset_ids: vec![asset.id().into(), absent.into()],
                 partial_smt: Some(expected.partial_smt().clone().into()),
             }),
@@ -482,10 +480,10 @@ mod tests {
     fn partial_vault_with_an_asset_list_is_rejected() {
         let (vault, asset, _) = vault_with_one_asset();
         let partial_vault = partial_vault(&vault, &[asset.id()]);
-        let response = proto::rpc::AccountVaultDetails {
+        let response = proto::node::v1::AccountVaultDetails {
             too_many_assets: false,
             assets: vec![asset.into()],
-            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+            partial_vault: Some(proto::node::v1::account_vault_details::PartialVault {
                 asset_ids: vec![asset.id().into()],
                 partial_smt: Some(partial_vault.partial_smt().clone().into()),
             }),
@@ -496,7 +494,7 @@ mod tests {
 
     #[test]
     fn too_many_assets_flag_converts_to_its_variant() {
-        let response = proto::rpc::AccountVaultDetails {
+        let response = proto::node::v1::AccountVaultDetails {
             too_many_assets: true,
             assets: Vec::new(),
             partial_vault: None,
@@ -510,7 +508,7 @@ mod tests {
     #[test]
     fn too_many_assets_flag_with_an_asset_list_is_rejected() {
         let (_, asset, _) = vault_with_one_asset();
-        let response = proto::rpc::AccountVaultDetails {
+        let response = proto::node::v1::AccountVaultDetails {
             too_many_assets: true,
             assets: vec![asset.into()],
             partial_vault: None,
@@ -523,10 +521,10 @@ mod tests {
     fn partial_vault_with_the_too_many_assets_flag_is_rejected() {
         let (vault, asset, _) = vault_with_one_asset();
         let partial_vault = partial_vault(&vault, &[asset.id()]);
-        let response = proto::rpc::AccountVaultDetails {
+        let response = proto::node::v1::AccountVaultDetails {
             too_many_assets: true,
             assets: Vec::new(),
-            partial_vault: Some(proto::rpc::account_vault_details::PartialVault {
+            partial_vault: Some(proto::node::v1::account_vault_details::PartialVault {
                 asset_ids: vec![asset.id().into()],
                 partial_smt: Some(partial_vault.partial_smt().clone().into()),
             }),

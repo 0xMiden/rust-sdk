@@ -16,7 +16,7 @@ use miden_client::account::{
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
 use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
 use miden_client::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
-use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
+use miden_client::rpc::{GrpcClient, NodeRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::utils::{Deserializable, Serializable};
 use miden_client::vm::{Package, PackageExport};
@@ -515,10 +515,7 @@ async fn resolve_account_code<AUTH>(
 
     println!("Account {account_id} is not tracked by the client. Fetching from the network...");
 
-    let rpc_client = VerifyingRpcClient::new(GrpcClient::new(
-        &rpc_config.endpoint.clone().into(),
-        rpc_config.timeout_ms,
-    ));
+    let rpc_client = GrpcClient::new(&rpc_config.endpoint.clone().into(), rpc_config.timeout_ms);
 
     let (_, account_proof) = rpc_client
         .get_account(GetAccountRequest::new(account_id))
@@ -560,10 +557,7 @@ async fn load_partial_account<AUTH>(
 
     println!("Account {account_id} is not tracked by the client. Fetching from the network...");
 
-    let rpc_client = VerifyingRpcClient::new(GrpcClient::new(
-        &rpc_config.endpoint.clone().into(),
-        rpc_config.timeout_ms,
-    ));
+    let rpc_client = GrpcClient::new(&rpc_config.endpoint.clone().into(), rpc_config.timeout_ms);
 
     let fetch_error = |err| {
         CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))

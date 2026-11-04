@@ -11,12 +11,14 @@
 
 ### Enhancements
 
+* Added the standard note name, type, tag, storage and assets of each input and output note to the transaction summary. For an input note it also shows whether the note is authenticated. The summary loads the token map only when it shows notes or vault changes ([#2760](https://github.com/0xMiden/rust-sdk/pull/2760)).
 * `account --show`, `notes --show` and the transaction summary show non-fungible assets in a separate table with their faucet ID and asset ID. The fungible asset tables no longer have an asset type column. `tx --show` shows the asset ID of a non-fungible asset, and `account --list` and `account --show` label a non-fungible faucet as `Non-fungible faucet` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 
 ### Features
 
+* [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version ([#2763](https://github.com/0xMiden/rust-sdk/pull/2763)).
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource` and `NoteInfo`. `miden-client` encodes `TransactionResult`, `SyncSummary` and `ChainAnchor` with `miden-client-proto`, and `MockNoteTransportNode` under its `testing` feature ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
@@ -27,6 +29,12 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
+* [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
+* [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.
+* [BREAKING][removal][rust] Removed `VerifyingRpcClient`. Use `GrpcClient` directly, since it already rejects mismatched responses. `NodeRpcClient` implementations that talk to a remote node must check responses against requests themselves.
+* [BREAKING][removal][rust] Removed the deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded` and `NoteTransportError::PaginationDidNotTerminate`. Use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
+* [BREAKING][removal][rust] Removed the deprecated `TransactionRequestBuilder::auth_arg`; use `TransactionRequestBuilder::auth_args`, which also adds the auth arg preimage to the advice map ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][param][rust] The `rng` parameter of the `TransactionRequestBuilder` helpers (`build_mint_fungible_asset`, `build_mint_non_fungible_asset`, `build_burn_non_fungible_asset`, `build_pay_to_id`, `build_swap`, `build_register_note_scripts` and the `build_pswap_*` helpers) takes `&mut impl FeltRng` instead of `&mut ClientRng`. Passing `client.rng()` still works ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [BREAKING][removal][rust] Removed `TransactionRequestError::error_hint`. `ClientError::error_hint` still returns the hints of a `TransactionRequestError` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
@@ -92,6 +100,7 @@
 * [FIX][rust] Transaction requests from a non-fungible faucet skip the vault balance check, as requests from a fungible faucet do, so minting a non-fungible asset no longer fails with `MissingNonFungibleAsset` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [FIX][rust] Note screening treats an account whose trial execution fails in the transaction prologue as unable to consume the note, instead of failing. Before, submitting a transaction that sends a non-fungible asset in a BURN note failed after the node accepted it, because the stored vault of the sender still held the asset ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [FIX][rust] Implemented `TryFrom` for the `InputNoteRecord` conversions to `Note`, `InputNote`, and `NoteTagRecord`. Existing `.try_into()` calls remain supported ([#2618](https://github.com/0xMiden/rust-sdk/pull/2618)).
+* [FIX][store] The SQLite store answers `get_unique_note_tags` and `get_account_note_tags` with one query each instead of the `Store` default, which read a partial account per tracked account on every sync. Storage map witness reads, partial account reads and account header updates no longer read rows they discard ([#2770](https://github.com/0xMiden/rust-sdk/pull/2770)).
 * [FIX][rust] `TransactionRequestBuilder::expected_output_recipients` adds to the expected recipients instead of replacing them, so own output notes added before it keep their recipients and `execute_transaction` no longer panics ([#2670](https://github.com/0xMiden/rust-sdk/pull/2670)).
 * [FIX][rust] `IdPrefixFetchError::NoMatch` names the kind of entry that was looked up, instead of always saying "notes" ([#2589](https://github.com/0xMiden/rust-sdk/pull/2589)).
 * [FIX][rust] Submitting a transaction batch calls the registered `TransactionObserver`s for each of its transactions, as `submit_new_transaction` does ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).

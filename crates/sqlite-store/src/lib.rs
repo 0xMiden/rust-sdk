@@ -53,7 +53,7 @@ use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
-use miden_protocol::note::{NoteId, NoteScript, Nullifier};
+use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
@@ -207,6 +207,14 @@ impl Store for SqliteStore {
 
     async fn get_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
         self.interact_with_connection(SqliteStore::get_note_tags).await
+    }
+
+    async fn get_account_note_tags(&self) -> Result<Vec<NoteTagRecord>, StoreError> {
+        self.interact_with_connection(SqliteStore::get_account_note_tags).await
+    }
+
+    async fn get_unique_note_tags(&self) -> Result<BTreeSet<NoteTag>, StoreError> {
+        self.interact_with_connection(SqliteStore::get_unique_note_tags).await
     }
 
     async fn add_note_tag(&self, tag: NoteTagRecord) -> Result<bool, StoreError> {

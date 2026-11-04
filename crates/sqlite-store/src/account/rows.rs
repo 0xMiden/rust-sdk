@@ -8,9 +8,11 @@ use miden_protocol::account::{
     AccountCode,
     AccountHeader,
     AccountId,
+    AccountStorageHeader,
     StorageMap,
     StorageMapKey,
     StorageSlot,
+    StorageSlotHeader,
     StorageSlotName,
     StorageSlotType,
 };
@@ -79,6 +81,22 @@ fn parse_header_row(row: &rusqlite::Row<'_>) -> Result<SerializedHeaderData, rus
     })
 }
 
+/// The latest stored state of an account: the header plus the per-account data that an
+/// [`AccountHeader`] does not carry.
+pub(crate) struct StoredAccountHeader {
+    pub header: AccountHeader,
+    pub status: AccountStatus,
+    pub account_type: ClientAccountType,
+}
+
+/// Fetches the latest header of one account, or `None` if the store does not track it.
+pub(crate) fn query_latest_account_header(
+    conn: &Connection,
+    account_id: AccountId,
+) -> Result<Option<StoredAccountHeader>, StoreError> {
+    Ok(query_latest_account_headers(conn, "id = ?", params![account_id.to_bytes()])?.pop())
+}
+
 /// Fetches rows from `latest_account_headers`. Each row includes the [`ClientAccountType`], which
 /// `historical_account_headers` doesn't carry — that's why this query lives separately from
 /// [`query_historical_account_headers`].
@@ -86,7 +104,7 @@ pub(crate) fn query_latest_account_headers(
     conn: &Connection,
     where_clause: &str,
     params: impl Params,
-) -> Result<Vec<(AccountHeader, AccountStatus, ClientAccountType)>, StoreError> {
+) -> Result<Vec<StoredAccountHeader>, StoreError> {
     let query = format!(
         "SELECT {ACCOUNT_HEADER_COLUMNS}, watched \
          FROM latest_account_headers WHERE {where_clause}"
@@ -103,12 +121,12 @@ pub(crate) fn query_latest_account_headers(
         .map(|result| {
             let (parts, watched) = result.into_store_error()?;
             let (header, status) = parse_accounts(parts)?;
-            let client_type = if watched {
+            let account_type = if watched {
                 ClientAccountType::Watched
             } else {
                 ClientAccountType::Native
             };
-            Ok((header, status, client_type))
+            Ok(StoredAccountHeader { header, status, account_type })
         })
         .collect::<Result<Vec<_>, StoreError>>()
 }
@@ -199,23 +217,13 @@ pub(crate) fn query_storage_slots(
 ) -> Result<BTreeMap<StorageSlotName, StorageSlot>, StoreError> {
     let storage_values = query_filtered_storage_values(conn, account_id, filter)?;
 
-    // Restrict the map entries query by slot name when the filter narrows by name, so that entries
-    // the result discards are not read.
-    let map_filter: Option<Vec<String>> = match filter {
-        AccountStorageFilter::SlotName(name) => Some(vec![name.to_string()]),
-        AccountStorageFilter::SlotNames(names) => {
-            Some(names.iter().map(StorageSlotName::to_string).collect())
-        },
-        AccountStorageFilter::All | AccountStorageFilter::Root(_) => None,
-    };
-
-    let has_map_slots =
-        storage_values.values().any(|(slot_type, _)| *slot_type == StorageSlotType::Map);
-    let mut storage_maps = if has_map_slots {
-        query_storage_maps(conn, account_id, map_filter.as_deref())?
-    } else {
-        BTreeMap::new()
-    };
+    // Read the entries of the map slots the filter selected and no others.
+    let map_slot_names: Vec<String> = storage_values
+        .iter()
+        .filter(|(_, (slot_type, _))| *slot_type == StorageSlotType::Map)
+        .map(|(slot_name, _)| slot_name.to_string())
+        .collect();
+    let mut storage_maps = query_storage_maps(conn, account_id, &map_slot_names)?;
 
     Ok(storage_values
         .into_iter()
@@ -232,28 +240,22 @@ pub(crate) fn query_storage_slots(
         .collect())
 }
 
+/// Reads the entries of the given map slots of an account, keyed by slot name.
 pub(crate) fn query_storage_maps(
     conn: &Connection,
     account_id: AccountId,
-    slot_name_filter: Option<&[String]>,
+    slot_names: &[String],
 ) -> Result<BTreeMap<StorageSlotName, StorageMap>, StoreError> {
-    let base_query =
-        "SELECT slot_name, key, value FROM latest_storage_map_entries WHERE account_id = ?1";
-    let mut map_params: Vec<ToSqlOutput<'static>> =
-        vec![ToSqlOutput::Owned(Value::Blob(account_id.to_bytes()))];
-    let query = match slot_name_filter {
-        Some(names) => {
-            if names.is_empty() {
-                return Ok(BTreeMap::new());
-            }
-            map_params.push(ToSqlOutput::Array(text_array(names.iter().cloned())));
-            format!("{base_query} AND slot_name IN rarray(?2)")
-        },
-        None => base_query.to_string(),
-    };
+    if slot_names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
 
-    let mut stmt = conn.prepare(&query).into_store_error()?;
-    let mut rows = stmt.query(params_from_iter(map_params.iter())).into_store_error()?;
+    const QUERY: &str = "SELECT slot_name, key, value FROM latest_storage_map_entries \
+         WHERE account_id = ?1 AND slot_name IN rarray(?2)";
+    let mut stmt = conn.prepare_cached(QUERY).into_store_error()?;
+    let mut rows = stmt
+        .query(params![account_id.to_bytes(), text_array(slot_names.iter().cloned())])
+        .into_store_error()?;
     let mut maps = BTreeMap::new();
     while let Some(row) = rows.next().into_store_error()? {
         let slot_name: String = row.get("slot_name").into_store_error()?;
@@ -268,6 +270,31 @@ pub(crate) fn query_storage_maps(
     }
 
     Ok(maps)
+}
+
+/// Reads the storage header of the account: the type and the top-level value of every slot, sorted
+/// by slot id as [`AccountStorageHeader::new`] requires.
+pub(crate) fn query_storage_header(
+    conn: &Connection,
+    account_id: AccountId,
+) -> Result<AccountStorageHeader, StoreError> {
+    let mut slot_headers: Vec<StorageSlotHeader> = query_storage_values(conn, account_id)?
+        .into_iter()
+        .map(|(slot_name, (slot_type, value))| StorageSlotHeader::new(slot_name, slot_type, value))
+        .collect();
+    slot_headers.sort_by_key(StorageSlotHeader::id);
+    AccountStorageHeader::new(slot_headers).map_err(StoreError::AccountError)
+}
+
+/// Reads the type and the top-level value of one storage slot, or `None` if the account has no slot
+/// with that name.
+pub(crate) fn query_storage_value(
+    conn: &Connection,
+    account_id: AccountId,
+    slot_name: &StorageSlotName,
+) -> Result<Option<(StorageSlotType, Word)>, StoreError> {
+    let filter = AccountStorageFilter::SlotName(slot_name.clone());
+    Ok(query_filtered_storage_values(conn, account_id, &filter)?.remove(slot_name))
 }
 
 /// Reads the type and the top-level value of every storage slot of the account. The value of a map

@@ -13,7 +13,7 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT,
     NOTE_TRANSPORT_TESTNET_ENDPOINT,
 };
-use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
+use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client::testing::common::{FilesystemKeyStore, TestClient, create_test_store_path};
 use miden_client::testing::fee::FeeFunder;
 use miden_client_sqlite_store::SqliteStore;
@@ -138,10 +138,7 @@ impl ClientConfig {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
         })?;
 
-        let rpc_client = Arc::new(VerifyingRpcClient::new(GrpcClient::new(
-            &self.rpc_endpoint,
-            self.rpc_timeout_ms,
-        )));
+        let rpc_client = Arc::new(GrpcClient::new(&self.rpc_endpoint, self.rpc_timeout_ms));
 
         let store = SqliteStore::new(store_config).await?;
 

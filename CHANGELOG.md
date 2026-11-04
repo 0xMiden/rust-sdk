@@ -19,7 +19,7 @@
 
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
-* [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource`. `miden-client` encodes `TransactionResult`, `SyncSummary`, `ChainAnchor` and `NoteInfo` with `miden-client-proto`, and `MockNoteTransportNode` under its `testing` feature ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource` and `NoteInfo`. `miden-client` encodes `TransactionResult`, `SyncSummary` and `ChainAnchor` with `miden-client-proto`, and `MockNoteTransportNode` under its `testing` feature ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
 * [FEATURE][rust] Added `NodeRpcClient::get_account_details_at`, which fetches a public account at a given block and also returns the witness that commits to it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [FEATURE][rust] Added `Client::prune_chain_anchors`, which deletes the stored MMR peaks at the past sync heights up to a block number ([#2740](https://github.com/0xMiden/rust-sdk/pull/2740)).
@@ -67,6 +67,7 @@
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of the remaining client types, among them `TransactionResult`, `SyncSummary`, `ChainAnchor`, `NoteTagSource`, `FaucetMetadata` and `MockNoteTransportNode` ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [BREAKING][param][rust] `Client::set_setting` takes the value as `Vec<u8>` and `Client::get_setting` returns `Option<Vec<u8>>`, so the caller encodes the value ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [BREAKING][removal][rust] Removed `ClientError::DataDeserializationError`. The client no longer decodes setting values, so nothing produced it ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [BREAKING][arch][rust] Moved the `NoteTransportClient` trait, `NoteTransportPage`, `NoteInfo`, `TransportNote` and `NoteTransportError` to `miden-client-core`. `miden_client::note_transport` re-exports them, so their paths keep working. Removed the `miden_client::note_transport::errors` module ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 
 ### Features
 

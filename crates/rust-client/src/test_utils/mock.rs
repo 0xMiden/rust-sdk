@@ -745,6 +745,18 @@ impl NodeRpcClient for MockRpcApi {
             return Err(error);
         }
 
+        // Mirror the node, which rejects a request for more assets than its limit.
+        if let VaultFetch::Assets(asset_ids) = request.fetch.vault()
+            && asset_ids.len() > crate::rpc::RpcLimits::default().vault_assets_limit as usize
+        {
+            return Err(RpcError::RequestError {
+                endpoint: RpcEndpoint::GetAccount,
+                error_kind: crate::rpc::GrpcError::OutOfRange,
+                endpoint_error: None,
+                source: None,
+            });
+        }
+
         let current_chain = self.mock_chain.read();
         let current_block_number = current_chain.latest_block_header().block_num();
         let block_number = match request.at {

@@ -167,23 +167,27 @@ pub async fn print_executed_transaction<AUTH: Keystore + Sync>(
     println!("The transaction will have the following effects:\n");
 
     let patch = executed_tx.account_patch();
-    let resolver = load_faucet_metadata_resolver()?;
+    let input_notes = executed_tx.input_notes();
+    let output_notes = executed_tx.output_notes();
+    let needs_metadata =
+        !input_notes.is_empty() || !output_notes.is_empty() || !patch.vault().is_empty();
+    let resolver = needs_metadata.then(load_faucet_metadata_resolver).transpose()?;
 
     // INPUT NOTES
-    let input_notes = executed_tx.input_notes();
     if input_notes.is_empty() {
         println!("No notes will be consumed.");
     } else {
-        print_consumed_notes(client, &resolver, input_notes).await?;
+        let resolver = resolver.as_ref().expect("input notes require a metadata resolver");
+        print_consumed_notes(client, resolver, input_notes).await?;
     }
 
     // OUTPUT NOTES
-    let output_notes = executed_tx.output_notes();
     if output_notes.is_empty() {
         // The table of output notes starts with a blank line. This message does the same.
         println!("\nNo notes will be created as a result of this transaction.");
     } else {
-        print_output_notes(client, &resolver, output_notes, false).await?;
+        let resolver = resolver.as_ref().expect("output notes require a metadata resolver");
+        print_output_notes(client, resolver, output_notes, false).await?;
     }
     println!();
 
@@ -220,6 +224,7 @@ pub async fn print_executed_transaction<AUTH: Keystore + Sync>(
     if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
+        let resolver = resolver.as_ref().expect("vault changes require a metadata resolver");
         let mut fungible_table = create_dynamic_table(&["Faucet ID", "New Amount"]);
         let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 

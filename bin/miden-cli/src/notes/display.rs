@@ -53,7 +53,7 @@ struct NoteCells {
 /// Builds the cells that the tables of input notes and output notes share.
 ///
 /// `contents` is the script and the storage items of the note. A partial output note has none.
-async fn note_cells<AUTH: Keystore + Sync>(
+async fn note_cells<AUTH>(
     client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     contents: Option<(&NoteScript, &[Felt])>,
@@ -178,7 +178,7 @@ fn input_note_row(
 }
 
 /// Prints the table of the notes that an executed transaction consumes.
-pub(crate) async fn print_consumed_notes<AUTH: Keystore + Sync>(
+pub(crate) async fn print_consumed_notes<AUTH>(
     client: &Client<AUTH>,
     resolver: &FaucetMetadataResolver,
     input_notes: &InputNotes<InputNote>,

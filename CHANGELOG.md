@@ -15,7 +15,7 @@
 
 ### Features
 
-* [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version.
+* [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version ([#2763](https://github.com/0xMiden/rust-sdk/pull/2763)).
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).

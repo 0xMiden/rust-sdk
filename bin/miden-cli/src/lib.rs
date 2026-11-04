@@ -423,6 +423,7 @@ impl Cli {
             return keys.execute(&keystore);
         }
 
+        let cache_fee_faucet = cli_config.cache_fee_faucet;
         let cli_client = CliClient::from_config(cli_config).await?;
 
         let client = cli_client.into_inner();
@@ -440,7 +441,7 @@ impl Cli {
             | Command::Keys(_) => Ok(()), /* Already handled earlier */
             Command::Info(info_cmd) => info::print_client_info(&client, info_cmd.rpc_status).await,
             Command::Notes(notes) => Box::pin(notes.execute(client)).await,
-            Command::Sync(sync) => sync.execute(client).await,
+            Command::Sync(sync) => sync.execute(client, cache_fee_faucet).await,
             Command::Tags(tags) => tags.execute(client).await,
             Command::Address(addresses) => addresses.execute(client).await,
             Command::Transaction(transaction) => transaction.execute(client).await,
@@ -451,7 +452,9 @@ impl Cli {
             Command::Transfer(transfer) => Box::pin(transfer.execute(client)).await,
             Command::Pswap(pswap) => Box::pin(pswap.execute(client)).await,
             Command::Swap(swap) => Box::pin(swap.execute(client)).await,
-            Command::ConsumeNotes(consume_notes) => Box::pin(consume_notes.execute(client)).await,
+            Command::ConsumeNotes(consume_notes) => {
+                Box::pin(consume_notes.execute(client, cache_fee_faucet)).await
+            },
         }
     }
 }

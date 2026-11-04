@@ -33,6 +33,7 @@ use miden_client::transaction::{
 use miden_client::{Client, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word};
 use tracing::info;
 
+use crate::commands::sync::sync_state;
 use crate::config::CliConfig;
 use crate::create_dynamic_table;
 use crate::errors::CliError;
@@ -349,9 +350,12 @@ pub struct ConsumeNotesCmd {
 }
 
 impl ConsumeNotesCmd {
+    /// Runs the command. If `cache_fee_faucet` is true, each sync between the transactions keeps
+    /// the fee token faucet up to date.
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,
+        cache_fee_faucet: bool,
     ) -> Result<(), CliError> {
         let force = self.force;
 
@@ -421,6 +425,7 @@ impl ConsumeNotesCmd {
                 account_id,
                 &input_notes,
                 self.notes_per_tx,
+                cache_fee_faucet,
                 prover,
             )
             .await;
@@ -526,14 +531,15 @@ fn consume_notes_request(input_notes: &[Note]) -> Result<TransactionRequest, Cli
 ///
 /// Each transaction starts from the account state that the previous transaction leaves. The client
 /// syncs before each transaction after the first, to keep the reference block of the transaction
-/// recent during a long run. The function stops at the first transaction that fails. The notes of
-/// that transaction and of the transactions after it stay unconsumed, so a new run of the command
-/// can consume them.
+/// recent during a long run. Each sync passes `cache_fee_faucet` to `sync_state`. The function
+/// stops at the first transaction that fails. The notes of that transaction and of the transactions
+/// after it stay unconsumed, so a new run of the command can consume them.
 async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
     input_notes: &[Note],
     notes_per_tx: usize,
+    cache_fee_faucet: bool,
     prover: Arc<dyn TransactionProver + Send + Sync>,
 ) -> Result<(), CliError> {
     let num_transactions = input_notes.len().div_ceil(notes_per_tx);
@@ -548,7 +554,7 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
 
         let result = async {
             if index > 0 {
-                client.sync_state().await?;
+                sync_state(client, cache_fee_faucet).await?;
             }
             let transaction_request = consume_notes_request(notes)?;
             Ok::<_, CliError>(
@@ -1121,7 +1127,7 @@ mod tests {
         let account_id = wallet.id().to_hex();
         let args = ["consume-notes", "--force", "--account", account_id.as_str()];
         let cmd = ConsumeNotesCmd::try_parse_from(args.iter().chain(extra_args)).unwrap();
-        Box::pin(cmd.execute(client)).await
+        Box::pin(cmd.execute(client, true)).await
     }
 
     async fn num_input_notes(client: &Client<FilesystemKeyStore>, filter: NoteFilter) -> usize {

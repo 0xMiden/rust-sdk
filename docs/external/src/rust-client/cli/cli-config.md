@@ -26,6 +26,7 @@ token_symbol_map_filepath = "token_symbol_map.toml"
 remote_prover_endpoint = "http://localhost:8080"
 package_directory = "packages"
 max_block_number_delta = 256
+cache_fee_faucet = true
 
 [rpc]
 endpoint = "http://localhost:57291"
@@ -173,6 +174,12 @@ If not set, the default behavior is to ignore the block difference between the c
 ```sh
 miden-client init --block-delta 256
 ```
+
+### Fee token faucet cache
+
+The `cache_fee_faucet` field is optional and its default value is `true`. It applies when the faucet of the network's fee token has asset callbacks. Each transaction that pays a fee then calls the faucet, so the transaction needs the faucet state and its account witness. With `cache_fee_faucet = true`, each sync keeps them up to date and a transaction reads them from the store. Otherwise each transaction fetches the faucet from the node.
+
+The first sync adds the faucet as a watched account, so it shows in `miden-client account --list`. The next sync fetches its witness. Set the field to `false` to stop keeping the witness.
 
 ### Environment variables
 

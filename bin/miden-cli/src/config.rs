@@ -93,6 +93,19 @@ pub struct CliConfig {
     pub note_transport: Option<NoteTransportConfig>,
     /// Timeout for the remote prover requests.
     pub remote_prover_timeout: Duration,
+    /// Keep the state and the account witness of the fee token faucet up to date at each sync.
+    ///
+    /// This applies only when the faucet has asset callbacks. Then each transaction that pays a fee
+    /// calls the faucet, and without this cache it fetches the faucet from the node.
+    ///
+    /// A configuration file without this field enables the cache.
+    #[serde(default = "default_cache_fee_faucet")]
+    pub cache_fee_faucet: bool,
+}
+
+/// Returns the value of [`CliConfig::cache_fee_faucet`] for a configuration file without the field.
+fn default_cache_fee_faucet() -> bool {
+    true
 }
 
 // Make `ClientConfig` a provider itself for composability.
@@ -133,6 +146,7 @@ impl Default for CliConfig {
             max_block_number_delta: None,
             note_transport: None,
             remote_prover_timeout: DEFAULT_REMOTE_PROVER_TIMEOUT,
+            cache_fee_faucet: default_cache_fee_faucet(),
         }
     }
 }
@@ -588,5 +602,41 @@ impl Network {
             Network::Mainnet => Endpoint::mainnet().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CliConfig;
+
+    /// Writes `toml` to a new file and loads it as a configuration.
+    fn load_toml(toml: &str) -> CliConfig {
+        let path =
+            std::env::temp_dir().join(format!("miden-cli-config-{}.toml", rand::random::<u64>()));
+        std::fs::write(&path, toml).unwrap();
+        let config = CliConfig::load_from_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        config.unwrap()
+    }
+
+    /// A configuration file from before `cache_fee_faucet` existed still loads, with the cache
+    /// enabled.
+    #[test]
+    fn config_without_cache_fee_faucet_enables_the_cache() {
+        let toml = toml::to_string(&CliConfig::default()).unwrap();
+        let toml_without_field = toml.replace("cache_fee_faucet = true\n", "");
+        assert_ne!(toml, toml_without_field);
+
+        assert!(load_toml(&toml_without_field).cache_fee_faucet);
+    }
+
+    /// The configuration file can disable the cache.
+    #[test]
+    fn config_can_disable_the_cache_of_the_fee_faucet() {
+        let toml = toml::to_string(&CliConfig::default())
+            .unwrap()
+            .replace("cache_fee_faucet = true", "cache_fee_faucet = false");
+
+        assert!(!load_toml(&toml).cache_fee_faucet);
     }
 }

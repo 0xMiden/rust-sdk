@@ -50,7 +50,7 @@ impl RpcMethod for SyncNullifiers<'_> {
                 let response = client
                     .call_with_retry(RpcEndpoint::SyncNullifiers, |mut rpc_api| {
                         let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_nullifiers(request).await })
+                        async move { rpc_api.sync_nullifiers(request).await }
                     })
                     .await?
                     .into_inner();

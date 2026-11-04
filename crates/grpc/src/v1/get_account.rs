@@ -59,7 +59,7 @@ impl RpcMethod for GetAccount {
         let response = client
             .call_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.get_account(request).await })
+                async move { rpc_api.get_account(request).await }
             })
             .await?
             .into_inner();

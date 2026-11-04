@@ -25,7 +25,7 @@ impl RpcMethod for RegisterAccount<'_> {
         client
             .call_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.register_account(request).await })
+                async move { rpc_api.register_account(request).await }
             })
             .await?;
 

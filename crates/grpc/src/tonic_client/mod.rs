@@ -1,10 +1,5 @@
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::pin::Pin;
-
-use miden_protocol::vm::FutureMaybeSend;
-
-type RpcFuture<T> = Pin<Box<dyn FutureMaybeSend<T>>>;
 
 use miden_client_core::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcError};
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
@@ -265,11 +260,14 @@ impl GrpcClient {
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`] for
     /// the provided [`RpcEndpoint`].
-    pub(crate) async fn call_with_retry<T: Send + 'static>(
+    pub(crate) async fn call_with_retry<T, Fut>(
         &self,
         endpoint: RpcEndpoint,
-        mut call: impl FnMut(ApiClient) -> RpcFuture<Result<tonic::Response<T>, Status>>,
-    ) -> Result<tonic::Response<T>, RpcError> {
+        mut call: impl FnMut(ApiClient) -> Fut,
+    ) -> Result<tonic::Response<T>, RpcError>
+    where
+        Fut: Future<Output = Result<tonic::Response<T>, Status>>,
+    {
         let mut retry_state =
             retry::RetryState::new(endpoint, self.max_retries, self.retry_interval_ms);
 

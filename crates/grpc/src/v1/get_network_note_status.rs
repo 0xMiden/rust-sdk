@@ -22,7 +22,7 @@ impl RpcMethod for GetNetworkNoteStatus {
         let response = client
             .call_with_retry(RpcEndpoint::GetNetworkNoteStatus, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.get_network_note_status(request).await })
+                async move { rpc_api.get_network_note_status(request).await }
             })
             .await?;
 

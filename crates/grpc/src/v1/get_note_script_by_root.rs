@@ -22,7 +22,7 @@ impl RpcMethod for GetNoteScriptByRoot {
         let response = client
             .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.get_note_script_by_root(request).await })
+                async move { rpc_api.get_note_script_by_root(request).await }
             })
             .await?;
 

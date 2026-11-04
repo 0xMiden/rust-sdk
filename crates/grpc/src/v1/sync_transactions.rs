@@ -52,7 +52,7 @@ impl RpcMethod for SyncTransactions {
                 let response = client
                     .call_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
                         let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_transactions(request).await })
+                        async move { rpc_api.sync_transactions(request).await }
                     })
                     .await?
                     .into_inner();

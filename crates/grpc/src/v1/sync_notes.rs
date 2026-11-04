@@ -56,7 +56,7 @@ impl RpcMethod for SyncNotes<'_> {
                 let response = client
                     .call_with_retry(RpcEndpoint::SyncNotes, |mut rpc_api| {
                         let request = request.clone();
-                        Box::pin(async move { rpc_api.sync_notes(request).await })
+                        async move { rpc_api.sync_notes(request).await }
                     })
                     .await?
                     .into_inner();

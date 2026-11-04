@@ -31,7 +31,7 @@ impl RpcMethod for GetNotesById<'_> {
             let response = client
                 .call_with_retry(RpcEndpoint::GetNotesById, |mut rpc_api| {
                     let request = request.clone();
-                    Box::pin(async move { rpc_api.get_notes_by_id(request).await })
+                    async move { rpc_api.get_notes_by_id(request).await }
                 })
                 .await?;
 

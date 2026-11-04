@@ -18,14 +18,12 @@ impl RpcMethod for GetTransactionEncryptionKey {
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
         let response = client
-            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| {
-                Box::pin(async move {
-                    rpc_api
-                        .get_transaction_encryption_key(
-                            proto::node::v1::GetTransactionEncryptionKeyRequest {},
-                        )
-                        .await
-                })
+            .call_with_retry(RpcEndpoint::GetTransactionEncryptionKey, |mut rpc_api| async move {
+                rpc_api
+                    .get_transaction_encryption_key(
+                        proto::node::v1::GetTransactionEncryptionKeyRequest {},
+                    )
+                    .await
             })
             .await?
             .into_inner()

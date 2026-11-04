@@ -34,8 +34,8 @@ impl RpcMethod for SyncAccountVault {
                 account_id: Some(self.account_id.into()),
             };
             let response = client
-                .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| {
-                    Box::pin(async move { rpc_api.sync_account_vault(request).await })
+                .call_with_retry(RpcEndpoint::SyncAccountVault, |mut rpc_api| async move {
+                    rpc_api.sync_account_vault(request).await
                 })
                 .await?;
             let page = AccountVaultInfo::try_from(response.into_inner())?;

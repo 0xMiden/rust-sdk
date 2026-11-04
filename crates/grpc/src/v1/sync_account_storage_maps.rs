@@ -36,8 +36,8 @@ impl RpcMethod for SyncAccountStorageMaps {
                 account_id: Some(self.account_id.into()),
             };
             let response = client
-                .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| {
-                    Box::pin(async move { rpc_api.sync_account_storage_maps(request).await })
+                .call_with_retry(RpcEndpoint::SyncStorageMaps, |mut rpc_api| async move {
+                    rpc_api.sync_account_storage_maps(request).await
                 })
                 .await?;
             let page = StorageMapInfo::try_from(response.into_inner())?;

@@ -18,8 +18,8 @@ impl RpcMethod for IsAccountAllowed {
             proto::node::v1::IsAccountAllowedRequest { account_id: Some(self.account_id.into()) };
 
         let response = client
-            .call_with_retry(RpcEndpoint::IsAccountAllowed, |mut rpc_api| {
-                Box::pin(async move { rpc_api.is_account_allowed(request).await })
+            .call_with_retry(RpcEndpoint::IsAccountAllowed, |mut rpc_api| async move {
+                rpc_api.is_account_allowed(request).await
             })
             .await?;
 

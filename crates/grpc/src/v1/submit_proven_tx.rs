@@ -28,7 +28,7 @@ impl RpcMethod for SubmitProvenTx<'_> {
         let response = client
             .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
                 let request = request.clone();
-                Box::pin(async move { rpc_api.submit_proven_tx(request).await })
+                async move { rpc_api.submit_proven_tx(request).await }
             })
             .await?;
 

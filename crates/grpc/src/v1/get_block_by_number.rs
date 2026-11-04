@@ -26,8 +26,8 @@ impl RpcMethod for GetBlockByNumber {
         };
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetBlockByNumber, |mut rpc_api| {
-                Box::pin(async move { rpc_api.get_block_by_number(request).await })
+            .call_with_retry(RpcEndpoint::GetBlockByNumber, |mut rpc_api| async move {
+                rpc_api.get_block_by_number(request).await
             })
             .await?;
 

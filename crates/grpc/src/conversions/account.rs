@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 
 use miden_client_core::errors::RpcError;
@@ -48,21 +47,21 @@ impl Debug for proto::node::v1::IsInvitationCodeValidRequest {
 impl proto::node::v1::get_account_response::AccountDetails {
     /// Converts the RPC response into `AccountDetails`.
     ///
-    /// The RPC response may omit unchanged account codes. If so, this function uses
-    /// `known_account_codes` to fill in the missing code. If a required code cannot be found in the
-    /// response or `known_account_codes`, an error is returned.
+    /// The RPC response may omit an unchanged account code. If so, this function uses `known_code`
+    /// to fill in the missing code. If the response omits the code and `known_code` does not match
+    /// the code commitment of the account header, an error is returned.
     ///
     /// `fetch` specifies the requested storage keys and vault assets. The proofs must cover these
     /// keys and assets and verify against the account's roots.
     ///
     /// # Errors
-    /// - If account code is missing both on `self` and `known_account_codes`
+    /// - If the response omits the account code and `known_code` does not match the header
     /// - If data cannot be correctly deserialized
     /// - If a partial map does not cover exactly the keys requested for its slot
     /// - If the vault details do not answer `fetch` for the account's vault root
     pub fn into_domain(
         self,
-        known_account_codes: &BTreeMap<Word, AccountCode>,
+        known_code: Option<&AccountCode>,
         fetch: &AccountFetch,
     ) -> Result<AccountDetails, miden_client_core::errors::RpcError> {
         use miden_client_core::errors::RpcError;
@@ -97,8 +96,8 @@ impl proto::node::v1::get_account_response::AccountDetails {
                 code.map(DecodeMessageExt::decode_and_verify).transpose()?;
             match received_code {
                 Some(code) => code,
-                None => known_account_codes
-                    .get(&header.code_commitment())
+                None => known_code
+                    .filter(|code| code.commitment() == header.code_commitment())
                     .ok_or(RpcError::InvalidResponse(
                         "Account code was not provided, but the response did not contain it either"
                             .into(),

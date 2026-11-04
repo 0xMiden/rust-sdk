@@ -35,7 +35,6 @@ miden-protocol  = { default-features = false, features = ["testing"], workspace 
 miden-standards = { features = ["testing"], workspace = true }
 rand            = { workspace = true }
 rand_chacha     = { workspace = true }
-tokio           = { workspace = true }
 
 [lints]
 workspace = true

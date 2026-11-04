@@ -54,8 +54,8 @@ pub(crate) const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 enum PublicAccountSync {
     /// Node is newer — apply its state to the store.
     Apply(Box<PublicAccountUpdate>),
-    /// Same nonce but different state — the local transaction lost the race and must be discarded.
-    Superseded,
+    /// Discard the local transaction and apply the network state at the same nonce.
+    Superseded(Box<PublicAccountUpdate>),
     /// Node is behind the local (potentially optimistic) state — leave the local state untouched.
     Ignore,
 }
@@ -1155,16 +1155,15 @@ impl StateSync {
         {
             account_witnesses.push((*account_id, witness));
 
-            match synced_account {
-                PublicAccountSync::Apply(public_update) => {
-                    account_updates
-                        .extend(AccountUpdateTracker::new(vec![*public_update], Vec::new()));
-                },
-                PublicAccountSync::Superseded => {
+            let public_update = match synced_account {
+                PublicAccountSync::Apply(public_update) => public_update,
+                PublicAccountSync::Superseded(public_update) => {
                     superseded_states.push(local_header.to_commitment());
+                    public_update
                 },
-                PublicAccountSync::Ignore => {},
-            }
+                PublicAccountSync::Ignore => continue,
+            };
+            account_updates.extend(AccountUpdateTracker::new(vec![*public_update], Vec::new()));
         }
 
         account_updates
@@ -1182,7 +1181,9 @@ impl StateSync {
     /// The witness holds in every outcome, including the ones that leave the local state alone.
     ///
     /// Must only be called when the local commitment for the account is known to differ from the
-    /// network's, so an equal nonce always means a genuine fork.
+    /// network's, so an equal nonce always means a genuine fork. A fork returns the network state
+    /// as [`PublicAccountSync::Superseded`], so the sync discards the local transaction and adopts
+    /// the network state in one step.
     async fn sync_public_account(
         &self,
         account_id: AccountId,
@@ -1211,20 +1212,25 @@ impl StateSync {
         let (witness, details) =
             Self::validate_account_proof(proof, proof_block_num, account_id, chain_tip_header)?;
 
-        match details
+        let is_superseded = match details
             .header
             .nonce()
             .as_canonical_u64()
             .cmp(&local_header.nonce().as_canonical_u64())
         {
-            // Node is behind us: our own transaction was committed yet (will expire naturally
+            // Node is behind us: our own transaction was not committed yet (will expire naturally
             // eventually).
             Ordering::Less => return Ok((witness, PublicAccountSync::Ignore)),
-            // Same height but different state: our transaction definitively lost, drop it.
-            Ordering::Equal => return Ok((witness, PublicAccountSync::Superseded)),
+            // Same height but different state: our transaction definitively lost. Its state is
+            // discarded and the network state replaces it, built below.
+            Ordering::Equal => true,
             // Node moved past us: adopt its state, built below.
-            Ordering::Greater => {},
-        }
+            Ordering::Greater => false,
+        };
+
+        // The store rolls a superseded account back to its pre-transaction state before it applies
+        // the update. The code of that state is unknown here, so a patch must carry the code.
+        let local_code_commitment = (!is_superseded).then(|| local_header.code_commitment());
 
         let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
@@ -1238,15 +1244,27 @@ impl StateSync {
         // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_patch_update(account_id, local_header, &details, block_from, proof_block_num)
-                .await?
+            self.build_patch_update(
+                account_id,
+                local_code_commitment,
+                &details,
+                block_from,
+                proof_block_num,
+            )
+            .await?
         } else {
             // The single response carries the full vault and every map's entries.
             let account = Account::try_from(&details).map_err(ClientError::RpcError)?;
             PublicAccountUpdate::Full(account)
         };
 
-        Ok((witness, PublicAccountSync::Apply(Box::new(public_update))))
+        let public_update = Box::new(public_update);
+        let synced_account = if is_superseded {
+            PublicAccountSync::Superseded(public_update)
+        } else {
+            PublicAccountSync::Apply(public_update)
+        };
+        Ok((witness, synced_account))
     }
 
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
@@ -1308,7 +1326,7 @@ impl StateSync {
     async fn build_patch_update(
         &self,
         account_id: AccountId,
-        local_header: &AccountHeader,
+        local_code_commitment: Option<Word>,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1340,7 +1358,7 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
-            local_header.code_commitment(),
+            local_code_commitment,
         )
         .map_err(StoreError::AccountPatchError)?;
 
@@ -1866,7 +1884,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_public_accounts_marks_same_nonce_mismatch_as_superseded() {
+    async fn sync_public_accounts_recovers_same_nonce_mismatch() {
         let mut builder = MockChainBuilder::new();
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
@@ -1894,10 +1912,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            account_updates.updated_public_accounts().is_empty(),
-            "a same-nonce fork must not overwrite the account while its tx is still pending"
-        );
+        let [PublicAccountUpdate::Full(recovered)] = account_updates.updated_public_accounts()
+        else {
+            panic!("a same-nonce fork must produce the network account state");
+        };
+        assert_eq!(recovered.to_commitment(), account.to_commitment());
         assert_eq!(
             superseded,
             vec![local_header.to_commitment()],

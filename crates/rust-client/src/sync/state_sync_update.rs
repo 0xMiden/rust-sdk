@@ -110,7 +110,7 @@ pub(crate) fn build_account_patch(
     map_entries: BTreeMap<StorageSlotName, StorageMapPatchEntries>,
     vault_patch: AccountVaultPatch,
     code: AccountCode,
-    local_code_commitment: Word,
+    local_code_commitment: Option<Word>,
 ) -> Result<AccountPatch, AccountPatchError> {
     let is_new_account = new_header.nonce() == ONE;
 
@@ -134,7 +134,10 @@ pub(crate) fn build_account_patch(
 
     let storage = AccountStoragePatch::from_entries(value_entries.chain(map_entries))?;
 
-    let carries_code = is_new_account || code.commitment() != local_code_commitment;
+    // A patch without a known local code commitment carries the code. This happens when the store
+    // rolls the account back before it applies the patch, so the code it holds then is unknown
+    // here.
+    let carries_code = is_new_account || local_code_commitment != Some(code.commitment());
     let code = AccountCodePatch::new(carries_code.then_some(code));
 
     AccountPatch::new(new_header.id(), storage, vault_patch, code, Some(new_header.nonce()))
@@ -192,7 +195,7 @@ mod tests {
             map_entries,
             AccountVaultPatch::default(),
             AccountCode::mock(),
-            AccountCode::mock().commitment(),
+            Some(AccountCode::mock().commitment()),
         )
     }
 
@@ -262,13 +265,30 @@ mod tests {
             BTreeMap::new(),
             AccountVaultPatch::default(),
             AccountCode::mock(),
-            local_code_commitment,
+            Some(local_code_commitment),
         )
         .unwrap();
 
         assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
         assert_eq!(patch.storage().updated_value(&value_slot), Some(word(3)));
         assert!(patch.try_to_new_account().is_err());
+    }
+
+    /// Without a local code commitment the patch carries the code, even when the on-chain code is
+    /// the one the local header names.
+    #[test]
+    fn build_patch_without_local_code_commitment_carries_code() {
+        let patch = build_account_patch(
+            &header_with_nonce(3),
+            Vec::new(),
+            BTreeMap::new(),
+            AccountVaultPatch::default(),
+            AccountCode::mock(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(patch.code().as_code(), Some(&AccountCode::mock()));
     }
 
     /// An existing account whose code commitment did not change gets a patch without code.

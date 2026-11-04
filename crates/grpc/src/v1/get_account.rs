@@ -57,7 +57,7 @@ impl RpcMethod for GetAccount {
         };
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::GetAccount, |mut rpc_api| {
                 let request = request.clone();
                 async move { rpc_api.get_account(request).await }
             })

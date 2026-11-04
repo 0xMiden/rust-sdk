@@ -260,7 +260,7 @@ impl GrpcClient {
     /// Returns the first successful gRPC response. If the call keeps failing after retries are
     /// exhausted, or if the error is not retryable, this returns the corresponding [`RpcError`] for
     /// the provided [`RpcEndpoint`].
-    pub(crate) async fn call_with_retry<T, Fut>(
+    pub(crate) async fn send_with_retry<T, Fut>(
         &self,
         endpoint: RpcEndpoint,
         mut call: impl FnMut(ApiClient) -> Fut,

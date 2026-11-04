@@ -50,7 +50,7 @@ impl RpcMethod for SyncTransactions {
                 };
 
                 let response = client
-                    .call_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
+                    .send_with_retry(RpcEndpoint::SyncTransactions, |mut rpc_api| {
                         let request = request.clone();
                         async move { rpc_api.sync_transactions(request).await }
                     })

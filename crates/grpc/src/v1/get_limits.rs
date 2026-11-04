@@ -11,7 +11,7 @@ impl RpcMethod for GetLimits {
 
     async fn execute(&self, client: &GrpcClient) -> Result<Self::Output, RpcError> {
         let response = client
-            .call_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| async move {
+            .send_with_retry(RpcEndpoint::GetLimits, |mut rpc_api| async move {
                 rpc_api.get_limits(proto::node::v1::GetLimitsRequest {}).await
             })
             .await?;

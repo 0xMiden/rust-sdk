@@ -26,7 +26,7 @@ impl RpcMethod for SubmitProvenTx<'_> {
 
         let request = proto::node::v1::SubmitProvenTxRequest { submission: Some(submission) };
         let response = client
-            .call_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::SubmitProvenTx, |mut rpc_api| {
                 let request = request.clone();
                 async move { rpc_api.submit_proven_tx(request).await }
             })

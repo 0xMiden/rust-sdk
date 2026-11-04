@@ -20,7 +20,7 @@ impl RpcMethod for GetNoteScriptByRoot {
         let request = proto::node::v1::GetNoteScriptByRootRequest { root: Some(self.root.into()) };
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::GetNoteScriptByRoot, |mut rpc_api| {
                 let request = request.clone();
                 async move { rpc_api.get_note_script_by_root(request).await }
             })

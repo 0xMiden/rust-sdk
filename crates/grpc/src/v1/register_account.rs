@@ -23,7 +23,7 @@ impl RpcMethod for RegisterAccount<'_> {
         };
 
         client
-            .call_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::RegisterAccount, |mut rpc_api| {
                 let request = request.clone();
                 async move { rpc_api.register_account(request).await }
             })

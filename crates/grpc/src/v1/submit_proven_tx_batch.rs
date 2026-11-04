@@ -34,7 +34,7 @@ impl RpcMethod for SubmitProvenTxBatch<'_> {
 
         let request = proto::node::v1::SubmitProvenTxBatchRequest { submission: Some(submission) };
         let response = client
-            .call_with_retry(RpcEndpoint::SubmitProvenBatch, |mut rpc_api| {
+            .send_with_retry(RpcEndpoint::SubmitProvenBatch, |mut rpc_api| {
                 let request = request.clone();
                 async move { rpc_api.submit_proven_tx_batch(request).await }
             })

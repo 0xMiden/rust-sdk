@@ -25,7 +25,7 @@ impl RpcMethod for SyncChainMmr {
         };
 
         let response = client
-            .call_with_retry(RpcEndpoint::SyncChainMmr, |mut rpc_api| async move {
+            .send_with_retry(RpcEndpoint::SyncChainMmr, |mut rpc_api| async move {
                 rpc_api.sync_chain_mmr(request).await
             })
             .await?;

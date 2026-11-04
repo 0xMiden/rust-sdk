@@ -43,7 +43,7 @@ impl RpcMethod for GetBlockHeaderByNumber {
         info!("Calling GetBlockHeaderByNumber: {:?}", request);
 
         let response = client
-            .call_with_retry(RpcEndpoint::GetBlockHeaderByNumber, |mut rpc_api| async move {
+            .send_with_retry(RpcEndpoint::GetBlockHeaderByNumber, |mut rpc_api| async move {
                 rpc_api.get_block_header_by_number(request).await
             })
             .await?

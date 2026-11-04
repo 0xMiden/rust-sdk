@@ -48,7 +48,7 @@ impl RpcMethod for SyncNullifiers<'_> {
                 };
 
                 let response = client
-                    .call_with_retry(RpcEndpoint::SyncNullifiers, |mut rpc_api| {
+                    .send_with_retry(RpcEndpoint::SyncNullifiers, |mut rpc_api| {
                         let request = request.clone();
                         async move { rpc_api.sync_nullifiers(request).await }
                     })

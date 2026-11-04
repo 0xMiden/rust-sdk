@@ -4,30 +4,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::account::AccountId;
-use miden_client::note::{
-    BlockNumber,
-    NoteDetails,
-    NoteRecipient,
-    NoteScript,
-    NoteUpdateTracker,
-    NoteUpdateType,
-    Nullifier,
-    OutputNoteUpdate,
-};
-use miden_client::store::{
+use miden_client_core::errors::{StaleUpdate, StoreError};
+use miden_client_core::store::{
     InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
+    NoteUpdateType,
+    NoteUpdates,
     OutputNoteRecord,
     OutputNoteState,
-    StaleUpdate,
-    StoreError,
+    OutputNoteUpdate,
 };
-use miden_client::utils::{Deserializable, Serializable};
-use miden_protocol::note::NoteDetailsCommitment;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::{
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteRecipient,
+    NoteScript,
+    Nullifier,
+};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
@@ -259,7 +258,7 @@ impl SqliteStore {
             .into_store_error()?;
 
         match script_bytes {
-            Some(bytes) => Ok(proto::decode(&bytes)?),
+            Some(bytes) => Ok(proto::decode_unchecked(&bytes)?),
             None => Err(StoreError::NoteScriptNotFound(script_root.to_hex())),
         }
     }
@@ -296,15 +295,15 @@ fn parse_input_note(row: &rusqlite::Row<'_>) -> Result<InputNoteRecord, StoreErr
     let created_at = column_value_as_u64(row, "created_at").into_store_error()?;
     let attachments: Vec<u8> = row.get("attachments").into_store_error()?;
 
-    let assets = proto::decode(&assets)?;
+    let assets = proto::decode_unchecked(&assets)?;
     let serial_number = Word::read_from_bytes(&serial_number)?;
-    let script = proto::decode(&script)?;
-    let inputs = proto::decode(&inputs)?;
+    let script = proto::decode_unchecked(&script)?;
+    let inputs = proto::decode_unchecked(&inputs)?;
     let recipient = NoteRecipient::new(serial_number, script, inputs);
 
     let details = NoteDetails::new(assets, recipient);
-    let attachments = proto::decode(&attachments)?;
-    let state = proto::decode(&state)?;
+    let attachments = proto::decode_unchecked(&attachments)?;
+    let state = proto::decode_unchecked(&state)?;
 
     Ok(InputNoteRecord::new(details, attachments, Some(created_at), state))
 }
@@ -367,11 +366,11 @@ fn parse_output_note(row: &rusqlite::Row<'_>) -> Result<OutputNoteRecord, StoreE
     let script: Option<Vec<u8>> = row.get("serialized_note_script").into_store_error()?;
 
     let recipient_digest = Word::read_from_bytes(&recipient_digest)?;
-    let assets = proto::decode(&assets)?;
-    let metadata = proto::decode(&metadata)?;
-    let script = script.map(|script| proto::decode(&script)).transpose()?;
-    let state = proto::decode_output_note_state(&state, script)?;
-    let attachments = proto::decode(&attachments)?;
+    let assets = proto::decode_unchecked(&assets)?;
+    let metadata = proto::decode_unchecked(&metadata)?;
+    let script = script.map(|script| proto::decode_unchecked(&script)).transpose()?;
+    let state = proto::decode_output_note_state_without_script(&state, script)?;
+    let attachments = proto::decode_unchecked(&attachments)?;
 
     Ok(OutputNoteRecord::new(
         recipient_digest,
@@ -405,7 +404,7 @@ fn serialize_output_note_state(note: &OutputNoteRecord) -> SerializedOutputNoteS
     SerializedOutputNoteStateUpdate {
         details_commitment: note.details_commitment().to_bytes(),
         state_discriminant: note.state().discriminant(),
-        state: proto::encode_output_note_state(note.state()),
+        state: proto::encode_output_note_state_without_script(note.state()),
     }
 }
 
@@ -425,7 +424,7 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
     let script = note.recipient().map(|recipient| proto::encode(recipient.script()));
 
     let state_discriminant = note.state().discriminant();
-    let state = proto::encode_output_note_state(note.state());
+    let state = proto::encode_output_note_state_without_script(note.state());
 
     let attachments = proto::encode(note.attachments());
 
@@ -447,21 +446,15 @@ fn serialize_output_note(note: &OutputNoteRecord) -> SerializedOutputNoteData {
 
 pub(crate) fn apply_note_updates_tx(
     tx: &Transaction,
-    note_updates: &NoteUpdateTracker,
+    note_updates: &NoteUpdates,
 ) -> Result<(), StoreError> {
     // Reject the whole update if any note's stored state does not allow the write.
-    let input_notes: Vec<InputNoteRecord> = note_updates
-        .updated_input_notes()
-        .filter(|update| update.update_type().is_modified())
-        .map(|update| update.inner().clone())
-        .collect();
+    let input_notes: Vec<InputNoteRecord> =
+        note_updates.input_notes().iter().map(|update| update.inner().clone()).collect();
     check_input_note_transitions_against_stored_states(tx, &input_notes)?;
 
-    let output_notes: Vec<&OutputNoteRecord> = note_updates
-        .updated_output_notes()
-        .filter(|update| update.update_type().is_modified())
-        .map(OutputNoteUpdate::inner)
-        .collect();
+    let output_notes: Vec<&OutputNoteRecord> =
+        note_updates.output_notes().iter().map(OutputNoteUpdate::inner).collect();
     check_output_note_transitions_against_stored_states(tx, &output_notes)?;
 
     // Split input notes into inserts and updates, collecting scripts from new notes.
@@ -469,7 +462,7 @@ pub(crate) fn apply_note_updates_tx(
     let mut input_updates = Vec::new();
     let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
 
-    for input_note in note_updates.updated_input_notes() {
+    for input_note in note_updates.input_notes() {
         match input_note.update_type() {
             // `InsertCommitted` is a previously-expected note that just gained its metadata, so it
             // needs a full-row insert (to write `note_id`/`nullifier`), same as `Insert`.
@@ -481,7 +474,6 @@ pub(crate) fn apply_note_updates_tx(
             NoteUpdateType::Update => {
                 input_updates.push(serialize_input_note_state(input_note.inner()));
             },
-            NoteUpdateType::None => {},
         }
     }
 
@@ -490,7 +482,7 @@ pub(crate) fn apply_note_updates_tx(
     let mut output_inserts = Vec::new();
     let mut output_updates = Vec::new();
 
-    for output_note in note_updates.updated_output_notes() {
+    for output_note in note_updates.output_notes() {
         match output_note.update_type() {
             // Output notes are never assigned `InsertCommitted`, but it is insert-like for
             // exhaustiveness.
@@ -504,7 +496,6 @@ pub(crate) fn apply_note_updates_tx(
             NoteUpdateType::Update => {
                 output_updates.push(serialize_output_note_state(output_note.inner()));
             },
-            NoteUpdateType::None => {},
         }
     }
 

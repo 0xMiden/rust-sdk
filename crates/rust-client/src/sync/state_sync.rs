@@ -16,18 +16,20 @@ use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
-use super::state_sync_update::{TransactionUpdateTracker, build_account_patch};
+use super::state_sync_update::build_account_patch;
 use super::{
     AccountUpdates,
     NoteObserver,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
+    TransactionUpdateTracker,
 };
 use crate::ClientError;
 use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
     AccountDetails,
+    AccountFetch,
     AccountProof,
     AccountStorageMapDetails,
     GetAccountRequest,
@@ -446,11 +448,17 @@ impl StateSync {
         let ChainSyncData {
             block_from,
             advance,
-            note_updates,
+            mut note_updates,
             transaction_updates,
             account_updates,
             ..
         } = chain_sync_data;
+
+        // Release notes after the nullifier check. Keep notes consumed on chain in their consumed
+        // state.
+        for transaction in transaction_updates.discarded_transactions() {
+            note_updates.apply_transaction_discarded(transaction.id)?;
+        }
 
         let mut partial_blockchain_updates = PartialBlockchainUpdates::default();
 
@@ -467,7 +475,7 @@ impl StateSync {
             return Ok(StateSyncUpdate::from_parts(
                 block_from,
                 partial_blockchain_updates,
-                note_updates,
+                note_updates.into_note_updates(),
                 transaction_updates,
                 account_updates,
                 None,
@@ -500,7 +508,7 @@ impl StateSync {
         Ok(StateSyncUpdate::from_parts(
             chain_tip,
             partial_blockchain_updates,
-            note_updates,
+            note_updates.into_note_updates(),
             transaction_updates,
             account_updates,
             protocol_config,
@@ -938,8 +946,11 @@ impl StateSync {
         note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
 
         for record in transactions {
-            transaction_updates
-                .apply_transaction_inclusion(record, u64::from(chain_tip_header.timestamp())); //TODO: Change timestamps from u64 to u32
+            transaction_updates.apply_transaction_inclusion(
+                record.block_num,
+                &record.transaction_header,
+                u64::from(chain_tip_header.timestamp()),
+            ); //TODO: Change timestamps from u64 to u32
         }
         transaction_updates
             .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
@@ -1063,7 +1074,7 @@ impl StateSync {
         let chain_tip = chain_tip_header.block_num();
         let (proof_block_num, proof) = self
             .rpc_api
-            .get_account(account_id, GetAccountRequest::new().at(AccountStateAt::Block(chain_tip)))
+            .get_account(GetAccountRequest::new(account_id).at(AccountStateAt::Block(chain_tip)))
             .await?;
 
         if proof_block_num != chain_tip {
@@ -1182,11 +1193,13 @@ impl StateSync {
         let (proof_block_num, proof) = self
             .rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
+                GetAccountRequest::new(account_id)
                     .at(AccountStateAt::Block(target_block_num))
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                    .with_fetch(
+                        AccountFetch::new()
+                            .with_storage(StorageMapFetch::All)
+                            .with_vault(VaultFetch::Always),
+                    ),
             )
             .await
             .map_err(ClientError::RpcError)?;
@@ -1209,7 +1222,7 @@ impl StateSync {
             Ordering::Greater => {},
         }
 
-        let vault_oversized = details.vault_details.too_many_assets;
+        let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
             .storage_details
             .map_details
@@ -1680,7 +1693,15 @@ mod tests {
     use alloc::sync::Arc;
 
     use async_trait::async_trait;
-    use miden_protocol::account::Account;
+    use miden_protocol::account::{
+        Account,
+        AccountStorageHeader,
+        StorageMap,
+        StorageMapKey,
+        StorageSlot,
+        StorageSlotHeader,
+        StorageSlotName,
+    };
     use miden_protocol::assembly::DefaultSourceManager;
     use miden_protocol::asset::{Asset, FungibleAsset};
     use miden_protocol::block::{BlockNumber, BlockSignatures};
@@ -1715,6 +1736,7 @@ mod tests {
     use miden_testing::{MockChainBuilder, MockTransactionInput};
 
     use super::*;
+    use crate::rpc::domain::account::{AccountProofError, AccountVaultDetails};
     use crate::store::{OutputNoteRecord, OutputNoteState};
     use crate::test_utils::mock::MockRpcApi;
 
@@ -2074,10 +2096,11 @@ mod tests {
     ) -> (BlockNumber, AccountProof) {
         rpc_api
             .get_account(
-                account_id,
-                GetAccountRequest::new()
-                    .with_storage(StorageMapFetch::All)
-                    .with_vault(VaultFetch::Always),
+                GetAccountRequest::new(account_id).with_fetch(
+                    AccountFetch::new()
+                        .with_storage(StorageMapFetch::All)
+                        .with_vault(VaultFetch::Always),
+                ),
             )
             .await
             .unwrap()
@@ -2163,6 +2186,108 @@ mod tests {
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
+    /// Adds a public account with a value slot, a map slot and a fungible asset.
+    fn add_account_with_contents(builder: &mut MockChainBuilder) -> Account {
+        let mut map = StorageMap::new();
+        map.insert(StorageMapKey::new(word(1)), word(10)).unwrap();
+        let slots = [
+            StorageSlot::with_value(
+                StorageSlotName::new("miden::testing::value").unwrap(),
+                word(7),
+            ),
+            StorageSlot::with_map(StorageSlotName::new("miden::testing::map").unwrap(), map),
+        ];
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+        let assets = [FungibleAsset::new(faucet_id, 100).unwrap().into()];
+
+        builder
+            .add_existing_mock_account_with_storage_and_assets(
+                miden_testing::Auth::IncrNonce,
+                slots,
+                assets,
+            )
+            .unwrap()
+    }
+
+    /// A snapshot whose vault holds an asset the authenticated header does not commit to must not
+    /// be turned into an account.
+    #[tokio::test]
+    async fn account_from_details_rejects_contents_not_matching_header() {
+        let mut builder = MockChainBuilder::new();
+        let account = add_account_with_contents(&mut builder);
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+
+        // An honest proof with one extra asset slipped into the vault. The header and the witness
+        // are untouched, so every check on the proof itself still passes.
+        let (proof_block_num, proof) = get_account_proof(&rpc_api, account.id()).await;
+        let (_, mut details) = StateSync::validate_account_proof(
+            proof,
+            proof_block_num,
+            account.id(),
+            &chain_tip_header,
+        )
+        .unwrap();
+        assert_eq!(details.header.to_commitment(), account.to_commitment());
+        assert_eq!(
+            Account::try_from(&details).unwrap().to_commitment(),
+            account.to_commitment(),
+            "the honest snapshot must still convert"
+        );
+
+        let extra_faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let AccountVaultDetails::Assets(assets) = &mut details.vault_details else {
+            panic!("the honest snapshot must carry the asset list");
+        };
+        assert!(
+            assets.iter().all(|asset| asset.faucet_id() != extra_faucet),
+            "the extra asset must come from a faucet the account does not hold yet"
+        );
+        assets.push(FungibleAsset::new(extra_faucet, 1_000).unwrap().into());
+
+        let result = Account::try_from(&details);
+        assert!(
+            matches!(result, Err(RpcError::InvalidResponse(_))),
+            "contents committing to {:?} were accepted under a header committing to {}",
+            result.map(|account| account.to_commitment().to_hex()),
+            details.header.to_commitment(),
+        );
+    }
+
+    /// A storage header that does not hash to the account header's storage commitment must be
+    /// rejected when the proof is built.
+    #[tokio::test]
+    async fn account_proof_rejects_storage_header_not_matching_header() {
+        let mut builder = MockChainBuilder::new();
+        let account = add_account_with_contents(&mut builder);
+        let rpc_api = MockRpcApi::new(builder.build().unwrap());
+
+        let (_, proof) = get_account_proof(&rpc_api, account.id()).await;
+        let (witness, details) = proof.into_parts();
+        let mut details = details.expect("public accounts come with details");
+
+        // Rewrite the first value slot, leaving the account header as it was.
+        let mut slots: Vec<StorageSlotHeader> =
+            details.storage_details.header.slots().cloned().collect();
+        let slot = slots
+            .iter_mut()
+            .find(|slot| slot.slot_type() == StorageSlotType::Value)
+            .expect("the account has a value slot");
+        *slot = StorageSlotHeader::new(slot.name().clone(), StorageSlotType::Value, word(999));
+        details.storage_details.header = AccountStorageHeader::new(slots).unwrap();
+        assert_ne!(
+            details.storage_details.header.to_commitment(),
+            details.header.storage_commitment()
+        );
+
+        let result = AccountProof::new(witness, Some(details));
+        assert!(
+            matches!(result, Err(AccountProofError::InconsistentStorageCommitment)),
+            "a storage header not matching the account header was accepted: {:?}",
+            result.map(|proof| proof.account_id()),
+        );
+    }
+
     // COMPUTE NULLIFIER TX ORDER TESTS
     // --------------------------------------------------------------------------------------------
 
@@ -2194,9 +2319,9 @@ mod tests {
                     .collect(),
             );
 
-            RpcTransactionRecord {
-                block_num: BlockNumber::from(block_number),
-                transaction_header: TransactionHeader::new(
+            RpcTransactionRecord::new(
+                BlockNumber::from(block_number),
+                TransactionHeader::new(
                     account_id,
                     word(init_state),
                     word(final_state),
@@ -2204,10 +2329,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            }
+                vec![],
+                vec![],
+                vec![],
+            )
         }
 
         #[test]
@@ -2241,9 +2366,9 @@ mod tests {
             )
             .unwrap();
 
-            let tx_b1 = RpcTransactionRecord {
-                block_num: BlockNumber::from(5u32),
-                transaction_header: TransactionHeader::new(
+            let tx_b1 = RpcTransactionRecord::new(
+                BlockNumber::from(5u32),
+                TransactionHeader::new(
                     account_b,
                     word(100),
                     word(200),
@@ -2253,10 +2378,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            };
+                vec![],
+                vec![],
+                vec![],
+            );
 
             let result = super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]);
 
@@ -2306,9 +2431,9 @@ mod tests {
     #[test]
     fn derive_account_commitments_walks_chains_per_account() {
         let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
-            RpcTransactionRecord {
-                block_num: BlockNumber::from(block_num),
-                transaction_header: TransactionHeader::new(
+            RpcTransactionRecord::new(
+                BlockNumber::from(block_num),
+                TransactionHeader::new(
                     account,
                     word(init_state),
                     word(final_state),
@@ -2316,10 +2441,10 @@ mod tests {
                     vec![],
                 )
                 .unwrap(),
-                output_notes: vec![],
-                erased_output_notes: vec![],
-                consumed_note_refs: vec![],
-            }
+                vec![],
+                vec![],
+                vec![],
+            )
         };
 
         let account_a: AccountId =
@@ -2452,13 +2577,13 @@ mod tests {
 
         let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
 
-        let updated_notes: Vec<_> = update.note_updates().updated_input_notes().collect();
+        let updated_notes = update.note_updates().input_notes();
 
         let find_order = |details_commitment| -> Option<u32> {
             updated_notes
                 .iter()
                 .find(|n| n.inner().details_commitment() == details_commitment)
-                .and_then(|n| n.consumed_tx_order())
+                .and_then(crate::note::InputNoteUpdate::consumed_tx_order)
         };
 
         assert_eq!(find_order(note1.details_commitment()), Some(0), "note1 should have tx_order 0");
@@ -2467,7 +2592,7 @@ mod tests {
 
         // Since there are no uncommitted_transactions, these notes were consumed by a tracked
         // account via external transactions. Verify that consumer_account is populated.
-        for note in &updated_notes {
+        for note in updated_notes {
             let record = note.inner();
             assert!(record.is_consumed(), "note should be in a consumed state");
             assert_eq!(
@@ -2808,8 +2933,10 @@ mod tests {
             .mark_erased_note_as_consumed(&note_header, block_num)
             .expect("marking erased note should succeed");
 
+        let note_updates = note_updates.into_note_updates();
         let updated = note_updates
-            .updated_output_notes()
+            .output_notes()
+            .iter()
             .find(|n| n.id() == note_id)
             .expect("output note should be in the update");
 
@@ -2934,7 +3061,8 @@ mod tests {
         // The output note record should transition to consumed.
         let updated_output = update
             .note_updates()
-            .updated_output_notes()
+            .output_notes()
+            .iter()
             .find(|n| n.id() == erased_note_id)
             .expect("output note should be in the update");
         assert!(
@@ -2946,7 +3074,8 @@ mod tests {
         // A new input note record should be created with the network account as consumer.
         let input_note_update = update
             .note_updates()
-            .updated_input_notes()
+            .input_notes()
+            .iter()
             .find(|n| n.id() == Some(erased_note_id))
             .expect("input note should be created from the erased output note");
 
@@ -3101,9 +3230,9 @@ mod tests {
 
     /// Builds a minimal RPC transaction record at `block_num`, for range-validation tests.
     fn make_tx_record(account_id: AccountId, block_num: u32) -> RpcTransactionRecord {
-        RpcTransactionRecord {
-            block_num: BlockNumber::from(block_num),
-            transaction_header: TransactionHeader::new(
+        RpcTransactionRecord::new(
+            BlockNumber::from(block_num),
+            TransactionHeader::new(
                 account_id,
                 word(1),
                 word(2),
@@ -3111,9 +3240,9 @@ mod tests {
                 vec![],
             )
             .unwrap(),
-            output_notes: vec![],
-            erased_output_notes: vec![],
-            consumed_note_refs: vec![],
-        }
+            vec![],
+            vec![],
+            vec![],
+        )
     }
 }

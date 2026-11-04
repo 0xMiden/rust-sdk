@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use deadpool::Runtime;
 use deadpool::managed::{Manager, Metrics, RecycleError, RecycleResult};
-use rusqlite::Connection;
 use rusqlite::vtab::array;
+use rusqlite::{Connection, OpenFlags};
 
 use super::errors::SqliteStoreError;
 
@@ -21,19 +21,42 @@ const RUNTIME: Runtime = Runtime::Tokio1;
 // POOL MANAGER
 // ================================================================================================
 
+/// How the connections of a pool use the database.
+#[derive(Clone, Copy, Debug)]
+pub enum Access {
+    /// Reads and writes. Creates the database file if it does not exist.
+    ReadWrite,
+    /// Reads only. The database file must exist.
+    ReadOnly,
+}
+
+impl Access {
+    fn open_flags(self) -> OpenFlags {
+        match self {
+            Access::ReadWrite => OpenFlags::default(),
+            Access::ReadOnly => {
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_URI
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            },
+        }
+    }
+}
+
 /// `SQLite` connection pool manager
 pub struct SqlitePoolManager {
     database_path: PathBuf,
+    access: Access,
 }
 
 /// `SQLite` connection pool manager
 impl SqlitePoolManager {
-    pub fn new(database_path: PathBuf) -> Self {
-        Self { database_path }
+    pub fn new(database_path: PathBuf, access: Access) -> Self {
+        Self { database_path, access }
     }
 
     fn new_connection(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.database_path)?;
+        let conn = Connection::open_with_flags(&self.database_path, self.access.open_flags())?;
 
         // Restrict database file permissions to owner-only on Unix. Also covers WAL and SHM journal
         // files that SQLite may create.
@@ -119,8 +142,8 @@ impl Manager for SqlitePoolManager {
 
 #[cfg(test)]
 mod tests {
-    use miden_client::store::{SettingScope, Store};
     use miden_client::testing::common::create_test_store_path;
+    use miden_client_core::store::Store;
     use rusqlite::params;
 
     use crate::SqliteStore;
@@ -168,19 +191,14 @@ mod tests {
         let store = create_test_store().await;
 
         let panicked = store
-            .interact_with_connection(|_| -> Result<(), miden_client::store::StoreError> {
+            .interact_with_connection(|_| -> Result<(), miden_client_core::errors::StoreError> {
                 panic!("poisoning the connection on purpose")
             })
             .await;
         assert!(panicked.is_err());
 
-        store
-            .set_setting(SettingScope::User, "after-panic".to_string(), b"value".to_vec())
-            .await?;
-        assert_eq!(
-            store.get_setting(SettingScope::User, "after-panic".to_string()).await?,
-            Some(b"value".to_vec())
-        );
+        store.set_setting("after-panic".to_string(), b"value".to_vec()).await?;
+        assert_eq!(store.get_setting("after-panic".to_string()).await?, Some(b"value".to_vec()));
 
         Ok(())
     }
@@ -195,8 +213,8 @@ mod tests {
             .interact_with_connection(|conn| {
                 conn.execute_batch("BEGIN").into_store_error()?;
                 conn.execute(
-                    "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
-                    params![SettingScope::User.as_u8(), "leaked", b"\x00".as_slice()],
+                    "INSERT INTO user_settings (name, value) VALUES (?1, ?2)",
+                    params!["leaked", b"\x00".as_slice()],
                 )
                 .into_store_error()?;
                 Ok(())
@@ -205,34 +223,24 @@ mod tests {
 
         let autocommit = store.interact_with_connection(|conn| Ok(conn.is_autocommit())).await?;
         assert!(autocommit, "the leaked transaction was not rolled back");
-        assert_eq!(store.get_setting(SettingScope::User, "leaked".to_string()).await?, None);
+        assert_eq!(store.get_setting("leaked".to_string()).await?, None);
 
         Ok(())
     }
 
-    /// Two stores open on the same file must wait on each other's write locks rather than fail with
-    /// `SQLITE_BUSY`.
+    /// Concurrent writes through the connections of one store must wait on each other's write locks
+    /// rather than fail with `SQLITE_BUSY`.
     #[tokio::test]
     async fn overlapping_accessors_wait_instead_of_failing() -> anyhow::Result<()> {
-        let path = create_test_store_path();
-        let first = SqliteStore::new(path.clone()).await?;
-        let second = SqliteStore::new(path).await?;
+        let store = create_test_store().await;
 
-        first
-            .set_setting(SettingScope::User, "from-first".to_string(), b"1".to_vec())
-            .await?;
-        second
-            .set_setting(SettingScope::User, "from-second".to_string(), b"2".to_vec())
-            .await?;
+        tokio::try_join!(
+            store.set_setting("first".to_string(), b"1".to_vec()),
+            store.set_setting("second".to_string(), b"2".to_vec()),
+        )?;
 
-        assert_eq!(
-            second.get_setting(SettingScope::User, "from-first".to_string()).await?,
-            Some(b"1".to_vec())
-        );
-        assert_eq!(
-            first.get_setting(SettingScope::User, "from-second".to_string()).await?,
-            Some(b"2".to_vec())
-        );
+        assert_eq!(store.get_setting("first".to_string()).await?, Some(b"1".to_vec()));
+        assert_eq!(store.get_setting("second".to_string()).await?, Some(b"2".to_vec()));
 
         Ok(())
     }

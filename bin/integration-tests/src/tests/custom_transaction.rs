@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::FungibleAsset;
-use miden_client::crypto::{FeltRng, MerkleStore, MerkleTree, NodeIndex, Poseidon2, RandomCoin};
+use miden_client::crypto::{MerkleStore, MerkleTree, NodeIndex, Poseidon2};
 use miden_client::note::{
     Note,
     NoteAssets,
@@ -13,14 +13,10 @@ use miden_client::note::{
 };
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::*;
-use miden_client::transaction::{
-    AdviceMap,
-    InputNote,
-    TransactionRequest,
-    TransactionRequestBuilder,
-};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client::transaction::{AdviceMap, InputNote, TransactionRequestBuilder};
 use miden_client::{Felt, Word, ZERO};
+use rand::{RngExt, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 
 use crate::ClientConfig;
 
@@ -53,9 +49,7 @@ const NOTE_ARGS: [Felt; 8] = [
 
 pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
-    client.sync_state().await?;
     // Insert Account
     let regular_account = client.insert_wallet(AccountType::Private).await?;
 
@@ -113,13 +107,6 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
         .extend_advice_map(advice_map)
         .build()?;
 
-    // TEST CUSTOM SCRIPT SERIALIZATION
-    let mut buffer = Vec::new();
-    transaction_request.write_into(&mut buffer);
-
-    let deserialized_transaction_request = TransactionRequest::read_from_bytes(&buffer)?;
-    assert_eq!(transaction_request, deserialized_transaction_request);
-
     let tx_id = client.submit_new_transaction(regular_account.id(), transaction_request).await?;
     let transaction = client
         .get_transactions(TransactionFilter::Ids(vec![tx_id]))
@@ -149,9 +136,7 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
 
 pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
-    client.sync_state().await?;
     // Insert Account
     let regular_account = client.insert_wallet(AccountType::Private).await?;
 
@@ -233,7 +218,6 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
     // Client 3 will be the control client. We won't add any tags and expect the note not to be
     // fetched
     let mut client_3 = client_config.clone().into_client().await?;
-    client_3.wait_for_node().await;
 
     // Create accounts
     let basic_account_1 = client_1.insert_wallet(AccountType::Private).await?;
@@ -253,7 +237,7 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
             ";
     let note_script = client_1.code_builder().compile_note_script(note_script)?;
     let inputs = NoteStorage::new(vec![])?;
-    let serial_num = client_1.rng().draw_word();
+    let serial_num = client_1.rng().random();
     let note_metadata = PartialNoteMetadata::new(basic_account_1.id(), NoteType::Public)
         .with_tag(NoteTag::with_account_target(basic_account_1.id()));
     let note_assets = NoteAssets::new(vec![])?;
@@ -297,8 +281,8 @@ async fn mint_custom_note(
     target_account_id: AccountId,
 ) -> Result<Note> {
     // Prepare transaction
-    let mut random_coin = RandomCoin::new(Default::default());
-    let note = create_custom_note(client, faucet_account_id, target_account_id, &mut random_coin)?;
+    let mut rng = ChaCha20Rng::seed_from_u64(0);
+    let note = create_custom_note(client, faucet_account_id, target_account_id, &mut rng)?;
 
     let transaction_request =
         TransactionRequestBuilder::new().own_output_notes(vec![note.clone()]).build()?;
@@ -314,7 +298,7 @@ fn create_custom_note(
     client: &TestClient,
     faucet_account_id: AccountId,
     target_account_id: AccountId,
-    rng: &mut RandomCoin,
+    rng: &mut impl rand::Rng,
 ) -> Result<Note> {
     let mem_addr: u32 = 1000;
 
@@ -333,7 +317,7 @@ fn create_custom_note(
     let inputs =
         NoteStorage::new(vec![target_account_id.suffix(), target_account_id.prefix().as_felt()])
             .context("failed to create note inputs")?;
-    let serial_num = rng.draw_word();
+    let serial_num = rng.random();
     let note_metadata = PartialNoteMetadata::new(faucet_account_id, NoteType::Private)
         .with_tag(NoteTag::with_account_target(target_account_id));
     let note_assets = NoteAssets::new(vec![

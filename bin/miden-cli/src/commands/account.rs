@@ -1,28 +1,29 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 use comfy_table::{Cell, ContentArrangement, presets};
-use miden_client::account::component::{FungibleFaucet, MIDEN_PACKAGE_EXTENSION};
+use miden_client::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
 use miden_client::account::{
-    Account,
     AccountCode,
     AccountId,
     AccountInterfaceExt,
-    StorageSlotContent,
+    PartialAccount,
+    PartialStorage,
+    StorageSlotType,
 };
 use miden_client::address::{Address, AddressInterface, NetworkId, RoutingParameters};
-use miden_client::asset::TokenSymbol;
-use miden_client::rpc::domain::account::GetAccountRequest;
+use miden_client::asset::{AssetVault, PartialVault, TokenSymbol};
+use miden_client::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use miden_client::rpc::{GrpcClient, NodeRpcClient, VerifyingRpcClient};
 use miden_client::transaction::{AccountComponentInterface, AccountInterface};
 use miden_client::vm::{Package, PackageExport};
 use miden_client::{Client, PrettyPrint, Word, ZERO};
 
-use crate::commands::new_account::load_packages;
 use crate::config::{CliConfig, RpcConfig};
 use crate::errors::CliError;
+use crate::packages::{load_packages, load_packages_from_directory};
 use crate::utils::{base_units_to_tokens, parse_account_id, split_procedure_target};
 use crate::{client_binary_name, create_dynamic_table};
 
@@ -52,7 +53,10 @@ pub struct AccountCmd {
     /// signatures, on top of the packages in the configured packages directory.
     ///
     /// May be passed multiple times. On a duplicate MAST root, the passed packages take precedence.
-    #[arg(short, long, value_name = "FILE", requires = "inspect")]
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
+    #[arg(short, long, value_name = "PACKAGE", requires = "inspect")]
     package: Vec<PathBuf>,
     /// When using --inspect, also print the MASM disassembly of each procedure.
     #[arg(short, long, requires = "inspect")]
@@ -74,12 +78,22 @@ pub struct AccountCmd {
     /// Invitation code that registers the account named by --register.
     #[arg(long, value_name = "CODE", requires = "register")]
     invitation_code: Option<String>,
+    /// Checks whether an invitation code can still be used without consuming it.
+    #[arg(long, group = "action", value_name = "CODE")]
+    check_invitation_code: Option<String>,
 }
 
 impl AccountCmd {
     pub async fn execute<AUTH>(&self, client: Client<AUTH>) -> Result<(), CliError> {
         let cli_config = CliConfig::load()?;
         match self {
+            AccountCmd { check_invitation_code: Some(code), .. } => {
+                if client.is_invitation_code_valid(code).await? {
+                    println!("The invitation code can be used.");
+                } else {
+                    println!("The invitation code cannot be used.");
+                }
+            },
             AccountCmd {
                 list: false,
                 show: Some(id),
@@ -193,14 +207,17 @@ async fn list_accounts<AUTH>(client: Client<AUTH>) -> Result<(), CliError> {
     for (acc, _acc_seed) in &accounts {
         let reader = client.account_reader(acc.id());
         let status = reader.status().await?.to_string();
-        let token_symbol = get_faucet_token_info(&client, acc.id())
-            .await
-            .ok()
-            .map(|(symbol, _)| symbol.to_string());
+        let kind = if let Ok((symbol, _)) = get_faucet_token_info(&client, acc.id()).await {
+            AccountKind::FungibleFaucet(symbol)
+        } else if let Ok(symbol) = get_non_fungible_faucet_symbol(&client, acc.id()).await {
+            AccountKind::NonFungibleFaucet(symbol)
+        } else {
+            AccountKind::Regular
+        };
 
         table.add_row(vec![
             acc.id().to_hex(),
-            account_kind_display_name(token_symbol.as_deref()),
+            kind.to_string(),
             acc.id().account_type().to_string(),
             acc.nonce().as_canonical_u64().to_string(),
             status,
@@ -219,22 +236,18 @@ async fn show_account<AUTH>(
     account_id: AccountId,
     cli_config: &CliConfig,
 ) -> Result<(), CliError> {
-    let account = load_account(client, account_id, &cli_config.rpc).await?;
+    let account = load_partial_account(client, account_id, &cli_config.rpc).await?;
 
     let network_id = cli_config.network_id()?;
-    let token_symbol = faucet_component_from_account(&account)
-        .ok()
-        .map(|faucet| faucet.symbol().to_string());
-    print_summary_table(&account, network_id, token_symbol.as_deref());
+    let kind = get_account_kind_from_partial_account(&account);
+    print_summary_table(&account, network_id, &kind);
 
-    // Vault Table
+    // Vault Tables
     {
-        let assets = account.vault().assets();
-        println!("Assets: ");
-
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet", "Amount"]);
-        for asset in assets {
-            let (asset_type, faucet, amount) = match asset.as_fungible() {
+        let mut fungible_table = create_dynamic_table(&["Faucet", "Amount"]);
+        let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID"]);
+        for asset in account.vault().assets() {
+            match asset.as_fungible() {
                 Some(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
                     let asset_amount = fungible_asset.amount();
@@ -244,44 +257,42 @@ async fn show_account<AUTH>(
                         },
                         Err(_) => (faucet_id.prefix().to_hex(), asset_amount.as_u64().to_string()),
                     };
-                    ("Fungible Asset", faucet, amount)
+                    fungible_table.add_row(vec![faucet, amount]);
                 },
                 None => {
-                    // TODO: Display non-fungible assets more clearly.
-                    ("Non Fungible Asset", asset.faucet_id().prefix().to_hex(), 1.0.to_string())
+                    non_fungible_table
+                        .add_row(vec![asset.faucet_id().to_hex(), asset.id().to_string()]);
                 },
-            };
-            table.add_row(vec![asset_type, &faucet, &amount.clone()]);
+            }
         }
 
-        println!("{table}\n");
+        println!("Fungible assets: ");
+        println!("{fungible_table}\n");
+        println!("Non fungible assets: ");
+        println!("{non_fungible_table}\n");
     }
 
     // Storage Table
     {
-        let account_storage = account.storage();
-
         println!("Storage: \n");
 
         let mut table = create_dynamic_table(&["Slot Name", "Slot Type", "Value/Commitment"]);
 
-        for entry in account_storage.slots() {
-            let item = account_storage.get_item(entry.name()).map_err(|err| {
-                CliError::Account(err, format!("failed to fetch slot {}", entry.name()))
-            })?;
+        for slot in account.storage().header().slots() {
+            let item = slot.value();
 
             // Last entry is reserved so I don't think the user cares about it. Also, to keep the
             // output smaller, if the [StorageSlot] is a value and it's 0 we assume it's not
             // initialized and skip it
-            if matches!(entry.content(), StorageSlotContent::Value(_)) && item == [ZERO; 4].into() {
+            if slot.slot_type() == StorageSlotType::Value && item == [ZERO; 4].into() {
                 continue;
             }
 
-            let slot_type = match entry.content() {
-                StorageSlotContent::Value(_) => "Value",
-                StorageSlotContent::Map(_) => "Map",
+            let slot_type = match slot.slot_type() {
+                StorageSlotType::Value => "Value",
+                StorageSlotType::Map => "Map",
             };
-            table.add_row(vec![entry.name().as_str(), slot_type, &item.to_hex()]);
+            table.add_row(vec![slot.name().as_str(), slot_type, &item.to_hex()]);
         }
         println!("{table}\n");
     }
@@ -376,7 +387,7 @@ async fn inspect_account<AUTH>(
 
     if !unresolved.is_empty() {
         println!(
-            "\nUnresolved ({}) — pass --package <FILE.masp> to resolve names:",
+            "\nUnresolved ({}) — pass --package <PACKAGE> to resolve names:",
             unresolved.len()
         );
         for proc in &unresolved {
@@ -463,48 +474,6 @@ fn collect_package_procedure_exports(packages: &[Package]) -> HashMap<Word, Proc
     exports
 }
 
-/// Reads every `.masp` package found recursively under `dir`. A missing directory yields no
-/// packages rather than an error, so inspection still falls back to bare MAST roots.
-fn load_packages_from_directory(dir: &Path) -> Result<Vec<Package>, CliError> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut package_paths = Vec::new();
-    collect_masp_files(dir, &mut package_paths)?;
-
-    // Paths already carry the `.masp` extension, so `load_packages` uses them as-is and never
-    // consults the config's packages directory.
-    load_packages(&CliConfig::default(), &package_paths)
-}
-
-/// Recursively collects the paths of all `.masp` files under `dir` into `paths`.
-fn collect_masp_files(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CliError> {
-    let entries = std::fs::read_dir(dir).map_err(|err| {
-        CliError::Config(
-            Box::new(err),
-            format!("failed to read packages directory {}", dir.display()),
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|err| {
-            CliError::Config(
-                Box::new(err),
-                format!("failed to read entry in packages directory {}", dir.display()),
-            )
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_masp_files(&path, paths)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some(MIDEN_PACKAGE_EXTENSION) {
-            paths.push(path);
-        }
-    }
-
-    Ok(())
-}
-
 // HELPERS
 // ================================================================================================
 
@@ -528,7 +497,7 @@ async fn resolve_account_code<AUTH>(
     ));
 
     let (_, account_proof) = rpc_client
-        .get_account(account_id, GetAccountRequest::new())
+        .get_account(GetAccountRequest::new(account_id))
         .await
         .map_err(|err| {
             CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))
@@ -539,15 +508,30 @@ async fn resolve_account_code<AUTH>(
     )))
 }
 
-/// Loads the account for `account_id`, falling back to fetching it from the network when the client
-/// does not track it locally.
-async fn load_account<AUTH>(
+/// Loads `account_id` as a [`PartialAccount`], falling back to fetching it from the network when
+/// the client does not track it locally.
+///
+/// The partial account holds the full vault and only the storage slot headers. Storage map entries
+/// are not loaded because `account show` shows only the map roots.
+async fn load_partial_account<AUTH>(
     client: &Client<AUTH>,
     account_id: AccountId,
     rpc_config: &RpcConfig,
-) -> Result<Account, CliError> {
+) -> Result<PartialAccount, CliError> {
+    let account_error =
+        |err| CliError::Account(err, format!("failed to build partial account {account_id}"));
+
     if let Some(account) = client.get_account(account_id).await? {
-        return Ok(account);
+        let (id, vault, storage, code, nonce, seed) = account.into_parts();
+        return PartialAccount::new(
+            id,
+            nonce,
+            code,
+            PartialStorage::new_minimal(&storage),
+            PartialVault::new_full(vault),
+            seed,
+        )
+        .map_err(account_error);
     }
 
     println!("Account {account_id} is not tracked by the client. Fetching from the network...");
@@ -557,29 +541,64 @@ async fn load_account<AUTH>(
         rpc_config.timeout_ms,
     ));
 
-    let fetched_account = rpc_client.get_account_details(account_id).await.map_err(|err| {
+    let fetch_error = |err| {
         CliError::Input(format!("Unable to fetch account {account_id} from the network: {err}"))
-    })?;
+    };
 
-    fetched_account.ok_or(CliError::Input(format!(
+    let (block_number, mut account_proof) = rpc_client
+        .get_account(
+            GetAccountRequest::new(account_id)
+                .with_fetch(AccountFetch::new().with_vault(VaultFetch::Always)),
+        )
+        .await
+        .map_err(fetch_error)?;
+
+    if let Some(details) = account_proof.details_mut() {
+        rpc_client
+            .resolve_oversize_vault(account_id, block_number, details)
+            .await
+            .map_err(fetch_error)?;
+    }
+
+    let details = account_proof.into_details().ok_or(CliError::Input(format!(
         "Account {account_id} is private and not tracked by the client",
-    )))
+    )))?;
+
+    let assets = details.vault_details.assets().ok_or(CliError::Input(format!(
+        "The node returned no asset list for account {account_id}",
+    )))?;
+    let vault = AssetVault::new(assets)
+        .map_err(|err| CliError::Input(format!("Invalid vault for account {account_id}: {err}")))?;
+    let storage = PartialStorage::new(details.storage_details.header, []).map_err(account_error)?;
+
+    PartialAccount::new(
+        account_id,
+        details.header.nonce(),
+        details.code,
+        storage,
+        PartialVault::new_full(vault),
+        None,
+    )
+    .map_err(account_error)
 }
 
 /// Prints a summary table with account information.
-fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: Option<&str>) {
+fn print_summary_table(account: &PartialAccount, network_id: NetworkId, kind: &AccountKind) {
     let mut table = create_dynamic_table(&["Account Information"]);
     table
         .load_preset(presets::UTF8_HORIZONTAL_ONLY)
         .set_content_arrangement(ContentArrangement::DynamicFullWidth);
 
-    table.add_row(vec![Cell::new("Address"), Cell::new(account_bech_32(account, network_id))]);
+    table.add_row(vec![
+        Cell::new("Address"),
+        Cell::new(account_bech_32(account.id(), account.code(), network_id)),
+    ]);
     table.add_row(vec![Cell::new("Account ID (hex)"), Cell::new(account.id().to_string())]);
     table.add_row(vec![
         Cell::new("Account Commitment"),
         Cell::new(account.to_commitment().to_string()),
     ]);
-    table.add_row(vec![Cell::new("Kind"), Cell::new(account_kind_display_name(token_symbol))]);
+    table.add_row(vec![Cell::new("Kind"), Cell::new(kind.to_string())]);
     table.add_row(vec![Cell::new("Type"), Cell::new(account.id().account_type().to_string())]);
     table.add_row(vec![
         Cell::new("Code Commitment"),
@@ -588,7 +607,7 @@ fn print_summary_table(account: &Account, network_id: NetworkId, token_symbol: O
     table.add_row(vec![Cell::new("Vault Root"), Cell::new(account.vault().root().to_string())]);
     table.add_row(vec![
         Cell::new("Storage Root"),
-        Cell::new(account.storage().to_commitment().to_string()),
+        Cell::new(account.storage().commitment().to_string()),
     ]);
     table.add_row(vec![
         Cell::new("Nonce"),
@@ -612,6 +631,17 @@ async fn get_faucet_token_info<AUTH>(
         .get_storage_item(FungibleFaucet::token_config_slot().clone())
         .await?;
 
+    decode_token_config(account_id, token_config)
+}
+
+/// Decodes the token symbol and decimals from the token config word of a faucet.
+///
+/// # Errors
+/// Returns an error if the symbol or the decimals can't be decoded.
+fn decode_token_config(
+    account_id: AccountId,
+    token_config: Word,
+) -> Result<(TokenSymbol, u8), CliError> {
     // Token config word layout: `[token_supply, max_supply, decimals, symbol]` (see
     // `FungibleFaucet::token_config_slot_value`).
     let [_token_supply, _max_supply, decimals, symbol] = *token_config;
@@ -625,27 +655,76 @@ async fn get_faucet_token_info<AUTH>(
     Ok((symbol, decimals))
 }
 
-/// Reconstructs the [`FungibleFaucet`] component from a materialized [`Account`].
+/// Reads the token symbol of a non-fungible faucet from its symbol storage slot.
 ///
 /// # Errors
-/// Returns an error if the account's faucet metadata can't be read.
-fn faucet_component_from_account(account: &Account) -> Result<FungibleFaucet, CliError> {
-    let account_id = account.id();
-    FungibleFaucet::try_from(account).map_err(|err| {
-        CliError::Faucet(err.into(), format!("Failed to read faucet metadata for {account_id}"))
+/// Returns an error if the account is not tracked by the client, has no symbol slot (i.e. is not a
+/// non-fungible faucet), or the symbol can't be decoded.
+pub(crate) async fn get_non_fungible_faucet_symbol<AUTH>(
+    client: &Client<AUTH>,
+    account_id: AccountId,
+) -> Result<TokenSymbol, CliError> {
+    let symbol_word = client
+        .account_reader(account_id)
+        .get_storage_item(NonFungibleFaucet::symbol_slot().clone())
+        .await?;
+
+    decode_non_fungible_symbol(account_id, symbol_word)
+}
+
+/// Decodes the token symbol from the symbol slot word of a non-fungible faucet.
+///
+/// # Errors
+/// Returns an error if the symbol can't be decoded.
+fn decode_non_fungible_symbol(
+    account_id: AccountId,
+    symbol_word: Word,
+) -> Result<TokenSymbol, CliError> {
+    // Symbol slot word layout: `[symbol, 0, 0, 0]` (see `NonFungibleFaucet::symbol_slot_value`).
+    TokenSymbol::try_from(symbol_word[0]).map_err(|err| {
+        CliError::Input(format!("failed to decode token symbol of faucet {account_id}: {err}"))
     })
 }
 
-/// Returns the account's kind for display. If `token_symbol` is provided the account is rendered as
-/// a fungible faucet (the symbol is appended); otherwise it's labelled "Regular".
+/// Returns the kind of `account`, read from the storage header. A faucet's symbol is in a value
+/// slot, so the storage maps are not needed.
+fn get_account_kind_from_partial_account(account: &PartialAccount) -> AccountKind {
+    let header = account.storage().header();
+
+    if let Some(slot) = header.find_slot_header_by_name(FungibleFaucet::token_config_slot())
+        && let Ok((symbol, _)) = decode_token_config(account.id(), slot.value())
+    {
+        return AccountKind::FungibleFaucet(symbol);
+    }
+
+    if let Some(slot) = header.find_slot_header_by_name(NonFungibleFaucet::symbol_slot())
+        && let Ok(symbol) = decode_non_fungible_symbol(account.id(), slot.value())
+    {
+        return AccountKind::NonFungibleFaucet(symbol);
+    }
+
+    AccountKind::Regular
+}
+
+/// The kind of an account for display.
 ///
-/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so
-/// faucet-vs-wallet has to be inferred by the caller from the attached components.
-fn account_kind_display_name(token_symbol: Option<&str>) -> String {
-    if let Some(symbol) = token_symbol {
-        format!("Fungible faucet (token symbol: {symbol})")
-    } else {
-        "Regular".to_string()
+/// The on-chain `AccountType` only encodes account visibility (`public` / `private`), so the kind
+/// is inferred from the components of the account.
+enum AccountKind {
+    FungibleFaucet(TokenSymbol),
+    NonFungibleFaucet(TokenSymbol),
+    Regular,
+}
+
+impl core::fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FungibleFaucet(symbol) => write!(f, "Fungible faucet (token symbol: {symbol})"),
+            Self::NonFungibleFaucet(symbol) => {
+                write!(f, "Non-fungible faucet (token symbol: {symbol})")
+            },
+            Self::Regular => f.write_str("Regular"),
+        }
     }
 }
 
@@ -684,16 +763,9 @@ pub(crate) async fn set_default_account_if_unset<AUTH>(
     Ok(())
 }
 
-fn account_bech_32(account: &Account, network_id: NetworkId) -> String {
-    let account_id = account.id();
-    let account_interface = AccountInterface::from_account(account);
-
+fn account_bech_32(account_id: AccountId, code: &AccountCode, network_id: NetworkId) -> String {
     let mut address = Address::new(account_id);
-    if account_interface
-        .components()
-        .iter()
-        .any(|c| matches!(c, AccountComponentInterface::BasicWallet))
-    {
+    if account_code_has_basic_wallet(account_id, code) {
         address =
             address.with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
     }

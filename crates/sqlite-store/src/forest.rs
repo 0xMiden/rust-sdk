@@ -17,7 +17,6 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use miden_client::utils::{Deserializable, Serializable};
 use miden_protocol::crypto::merkle::smt::{
     AppliedLineageMutation,
     Backend,
@@ -42,6 +41,7 @@ use miden_protocol::crypto::merkle::smt::{
     VersionId,
 };
 use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError, NodeIndex, SparseMerklePath};
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Word};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -52,7 +52,7 @@ type SmtMutationSet = MutationSet<SMT_DEPTH, Word, Word>;
 
 /// An account SMT forest scoped to a rusqlite transaction.
 pub(crate) type ScopedAccountForest<'a, 'conn> =
-    miden_client::store::AccountSmtForest<SqliteForestBackend<'a, 'conn>>;
+    miden_client_core::store::AccountSmtForest<SqliteForestBackend<'a, 'conn>>;
 
 // FOREST REVISION
 // ================================================================================================

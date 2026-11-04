@@ -27,6 +27,10 @@ pub enum SqliteStoreError {
     )]
     SchemaTooNew { found: usize, supported: usize },
     #[error(
+        "store is at schema version {found}, but this client needs version {latest}; open the store with `SqliteStore::new` to migrate it"
+    )]
+    SchemaBehind { found: usize, latest: usize },
+    #[error(
         "migrating to schema version {version} produced a schema this client does not expect (expected {expected}, found {actual})"
     )]
     MigratedSchemaMismatch {

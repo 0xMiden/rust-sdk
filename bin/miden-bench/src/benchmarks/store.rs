@@ -15,14 +15,15 @@ use anyhow::Context;
 use miden_client::ONE;
 use miden_client::account::{Account, AccountId, Address};
 use miden_client::block::BlockNumber;
-use miden_client::note::{InputNoteReader, NoteUpdateTracker};
-use miden_client::store::{ClientAccountType, InputNoteCursor, NoteFilter, Store};
+use miden_client::note::{InputNoteReader, NoteUpdates};
+use miden_client::store::{NoteFilter, Store};
 use miden_client::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
+use miden_client_core::store::{ClientAccountType, InputNoteCursor};
 use miden_client_sqlite_store::SqliteStore;
 
 use crate::generators::store_data;
@@ -217,7 +218,7 @@ async fn note_write_measurements(
                 let update = StateSyncUpdate::from_parts(
                     sync_block,
                     PartialBlockchainUpdates::default(),
-                    NoteUpdateTracker::for_transaction_updates(notes, [], []),
+                    NoteUpdates::from_records(notes, [], []),
                     TransactionUpdateTracker::default(),
                     AccountUpdates::default(),
                     None,
@@ -264,12 +265,17 @@ async fn bench_account_methods(
     let last = accounts.last().context("an account benchmark needs at least one account")?;
     let last_id = last.id();
 
+    // Release the writer lock before measuring fresh stores.
+    drop(store);
+    let open = measure("SqliteStore::new [open]", iterations, async |_| {
+        SqliteStore::new(store_path.clone()).await?;
+        Ok(())
+    })
+    .await?;
+    let store = SqliteStore::new(store_path.clone()).await?;
+
     let mut results = vec![
-        measure("SqliteStore::new [open]", iterations, async |_| {
-            SqliteStore::new(store_path.clone()).await?;
-            Ok(())
-        })
-        .await?,
+        open,
         measure("get_account_headers", iterations, async |_| {
             store.get_account_headers().await?;
             Ok(())

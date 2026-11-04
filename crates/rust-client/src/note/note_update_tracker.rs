@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 
+use miden_client_core::store::{InputNoteUpdate, NoteUpdateType, NoteUpdates, OutputNoteUpdate};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::{
@@ -11,18 +12,12 @@ use miden_protocol::note::{
     NoteMetadata,
     Nullifier,
 };
+use miden_protocol::transaction::TransactionId;
 use miden_standards::note::NetworkAccountTarget;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 
 use crate::ClientError;
 use crate::rpc::domain::note::CommittedNote;
-use crate::store::{InputNoteRecord, OutputNoteRecord};
+use crate::store::{InputNoteRecord, NoteRecordError, OutputNoteRecord};
 use crate::transaction::{TransactionRecord, TransactionStatus};
 
 // NOTE CONSUMPTION
@@ -40,203 +35,51 @@ pub struct NoteConsumption {
     pub external_consumer: Option<AccountId>,
 }
 
-// NOTE UPDATE
+// TRACKED NOTE
 // ================================================================================================
 
-/// Represents the possible types of updates that can be applied to a note in a
-/// [`NoteUpdateTracker`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum NoteUpdateType {
-    /// Indicates that the note was already tracked but it was not updated.
-    None = 0,
-    /// Indicates that the note is new and should be inserted in the store.
-    Insert = 1,
-    /// Indicates that the note was already tracked and should be updated.
-    Update = 2,
-    /// Indicates that a previously-tracked metadata-less (`Expected`) note has just been committed.
-    /// It must be persisted as a full-row insert (like [`Self::Insert`]) so its now-known `note_id`
-    /// and `nullifier` columns are written, but for reporting it is a *committed* tracked note —
-    /// not a newly-discovered one — so it is summarized under committed notes, not new notes.
-    InsertCommitted = 3,
+/// A note record held by the [`NoteUpdateTracker`] and the store write it needs. The update type is
+/// `None` when the record is loaded from the store and has no change to write.
+#[derive(Clone, Debug)]
+struct TrackedNote<R> {
+    record: R,
+    update_type: Option<NoteUpdateType>,
 }
 
-impl NoteUpdateType {
-    /// Whether this update carries a pending store write, as opposed to a note that was merely
-    /// loaded as already-tracked context ([`Self::None`]). True for [`Self::Insert`],
-    /// [`Self::Update`], and [`Self::InsertCommitted`].
-    pub fn is_modified(self) -> bool {
-        matches!(self, Self::Insert | Self::Update | Self::InsertCommitted)
-    }
-}
-
-impl TryFrom<u8> for NoteUpdateType {
-    type Error = u8;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(NoteUpdateType::None),
-            1 => Ok(NoteUpdateType::Insert),
-            2 => Ok(NoteUpdateType::Update),
-            3 => Ok(NoteUpdateType::InsertCommitted),
-            other => Err(other),
-        }
-    }
-}
-
-/// Represents the possible states of an input note record in a [`NoteUpdateTracker`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct InputNoteUpdate {
-    /// Input note being updated.
-    note: InputNoteRecord,
-    /// Type of the note update.
-    update_type: NoteUpdateType,
-}
-
-impl InputNoteUpdate {
-    /// Creates a new [`InputNoteUpdate`] with the provided note with a `None` update type.
-    fn new_none(note: InputNoteRecord) -> Self {
-        Self { note, update_type: NoteUpdateType::None }
+impl<R> TrackedNote<R> {
+    fn new(record: R, update_type: Option<NoteUpdateType>) -> Self {
+        Self { record, update_type }
     }
 
-    /// Creates a new [`InputNoteUpdate`] with the provided note with an `Insert` update type.
-    fn new_insert(note: InputNoteRecord) -> Self {
-        Self {
-            note,
-            update_type: NoteUpdateType::Insert,
-        }
+    fn inner(&self) -> &R {
+        &self.record
     }
 
-    /// Creates a new [`InputNoteUpdate`] with the provided note with an `Update` update type.
-    fn new_update(note: InputNoteRecord) -> Self {
-        Self {
-            note,
-            update_type: NoteUpdateType::Update,
-        }
-    }
-
-    /// Creates a new [`InputNoteUpdate`] for a previously-tracked expected note that has just been
-    /// committed (see [`NoteUpdateType::InsertCommitted`]).
-    fn new_insert_committed(note: InputNoteRecord) -> Self {
-        Self {
-            note,
-            update_type: NoteUpdateType::InsertCommitted,
-        }
-    }
-
-    /// Returns a reference the inner note record.
-    pub fn inner(&self) -> &InputNoteRecord {
-        &self.note
-    }
-
-    /// Returns a mutable reference to the inner note record. If the update type is `None` or
-    /// `Update`, it will be set to `Update`; insert-typed updates keep their type.
-    fn inner_mut(&mut self) -> &mut InputNoteRecord {
-        self.update_type = match self.update_type {
-            NoteUpdateType::None | NoteUpdateType::Update => NoteUpdateType::Update,
-            NoteUpdateType::Insert => NoteUpdateType::Insert,
-            NoteUpdateType::InsertCommitted => NoteUpdateType::InsertCommitted,
-        };
-
-        &mut self.note
-    }
-
-    /// Returns the type of the note update.
-    pub fn update_type(&self) -> &NoteUpdateType {
-        &self.update_type
-    }
-
-    /// Returns the identifier of the inner note. Returns `None` when the underlying
-    /// [`InputNoteRecord`] has no metadata (see [`InputNoteRecord::id`]).
-    pub fn id(&self) -> Option<NoteId> {
-        self.note.id()
-    }
-
-    /// Returns the per-account position of the consuming transaction within the account's execution
-    /// chain for the block. `None` for non-consumed notes or when the order has not been determined
-    /// yet.
-    pub fn consumed_tx_order(&self) -> Option<u32> {
-        self.note.state().consumed_tx_order()
-    }
-}
-
-/// Represents the possible states of an output note record in a [`NoteUpdateTracker`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct OutputNoteUpdate {
-    /// Output note being updated.
-    note: OutputNoteRecord,
-    /// Type of the note update.
-    update_type: NoteUpdateType,
-}
-
-impl OutputNoteUpdate {
-    /// Creates a new [`OutputNoteUpdate`] with the provided note with a `None` update type.
-    fn new_none(note: OutputNoteRecord) -> Self {
-        Self { note, update_type: NoteUpdateType::None }
-    }
-
-    /// Creates a new [`OutputNoteUpdate`] with the provided note with an `Insert` update type.
-    fn new_insert(note: OutputNoteRecord) -> Self {
-        Self {
-            note,
-            update_type: NoteUpdateType::Insert,
-        }
-    }
-
-    /// Creates a new [`OutputNoteUpdate`] with the provided note with an `Update` update type.
-    fn new_update(note: OutputNoteRecord) -> Self {
-        Self {
-            note,
-            update_type: NoteUpdateType::Update,
-        }
-    }
-
-    /// Returns a reference the inner note record.
-    pub fn inner(&self) -> &OutputNoteRecord {
-        &self.note
-    }
-
-    /// Returns a mutable reference to the inner note record. If the update type is `None` or
-    /// `Update`, it will be set to `Update`.
-    fn inner_mut(&mut self) -> &mut OutputNoteRecord {
-        self.update_type = match self.update_type {
-            NoteUpdateType::None | NoteUpdateType::Update => NoteUpdateType::Update,
-            // Output notes are never assigned `InsertCommitted` (it is input-note specific), but
-            // the match must be exhaustive; treat it as an insert.
-            NoteUpdateType::Insert | NoteUpdateType::InsertCommitted => NoteUpdateType::Insert,
-        };
-
-        &mut self.note
-    }
-
-    /// Returns the type of the note update.
-    pub fn update_type(&self) -> &NoteUpdateType {
-        &self.update_type
-    }
-
-    /// Returns the identifier of the inner note.
-    pub fn id(&self) -> NoteId {
-        self.note.id()
+    /// Returns a mutable reference to the record. A record without an update type becomes an
+    /// `Update`. A record with an update type keeps it.
+    fn inner_mut(&mut self) -> &mut R {
+        self.update_type.get_or_insert(NoteUpdateType::Update);
+        &mut self.record
     }
 }
 
 // NOTE UPDATE TRACKER
 // ================================================================================================
 
-/// Contains note changes to apply to the store.
+/// Tracks the note changes that a sync derives, before they become [`NoteUpdates`].
 ///
-/// This includes new notes that have been created and existing notes that have been updated. The
-/// tracker also lets state changes be applied to the contained notes, this allows for already
-/// updated notes to be further updated as new information is received.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NoteUpdateTracker {
-    /// All new and updated input note records to be upserted in the store, keyed by their details
-    /// commitment. The details commitment is metadata-independent and therefore always available,
-    /// including for metadata-less notes (e.g. expected notes imported from bare details, or future
-    /// notes created by a transaction) that do not yet have a `NoteId`.
-    input_notes: BTreeMap<NoteDetailsCommitment, InputNoteUpdate>,
-    /// A map of updated output note records to be upserted in the store.
-    output_notes: BTreeMap<NoteId, OutputNoteUpdate>,
+/// The tracker holds the notes that the client already stores and the new notes that the sync
+/// finds. It lets state changes be applied to these notes, so a note that is already updated can be
+/// updated again as new information is received.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NoteUpdateTracker {
+    /// All tracked input note records, keyed by their details commitment. The details commitment is
+    /// metadata-independent and therefore always available, including for metadata-less notes (e.g.
+    /// expected notes imported from bare details, or future notes created by a transaction) that do
+    /// not yet have a `NoteId`.
+    input_notes: BTreeMap<NoteDetailsCommitment, TrackedNote<InputNoteRecord>>,
+    /// All tracked output note records.
+    output_notes: BTreeMap<NoteId, TrackedNote<OutputNoteRecord>>,
     /// Lookup index from nullifier to the details commitment of the input note. Only populated for
     /// metadata-bearing notes, as a metadata-less note has no nullifier.
     input_notes_by_nullifier: BTreeMap<Nullifier, NoteDetailsCommitment>,
@@ -254,101 +97,42 @@ pub struct NoteUpdateTracker {
 
 impl NoteUpdateTracker {
     /// Creates a [`NoteUpdateTracker`] with already-tracked notes.
-    pub fn new(
+    pub(crate) fn new(
         input_notes: impl IntoIterator<Item = InputNoteRecord>,
         output_notes: impl IntoIterator<Item = OutputNoteRecord>,
     ) -> Self {
         let mut tracker = Self::default();
         for note in input_notes {
-            tracker.insert_input_note(note, NoteUpdateType::None);
+            tracker.insert_input_note(note, None);
         }
         for note in output_notes {
-            tracker.insert_output_note(note, NoteUpdateType::None);
+            tracker.insert_output_note(note);
         }
 
         tracker
     }
 
-    /// Creates a [`NoteUpdateTracker`] for updates related to transactions.
-    ///
-    /// A transaction can:
-    ///
-    /// - Create input notes
-    /// - Update existing input notes (by consuming them)
-    /// - Create output notes
-    pub fn for_transaction_updates(
-        new_input_notes: impl IntoIterator<Item = InputNoteRecord>,
-        updated_input_notes: impl IntoIterator<Item = InputNoteRecord>,
-        new_output_notes: impl IntoIterator<Item = OutputNoteRecord>,
-    ) -> Self {
-        let mut tracker = Self::default();
+    /// Consumes the tracker and returns the notes that need a store write.
+    pub(crate) fn into_note_updates(self) -> NoteUpdates {
+        let input_notes = self
+            .input_notes
+            .into_values()
+            .filter_map(|note| Some(InputNoteUpdate::new(note.record, note.update_type?)))
+            .collect();
+        let output_notes = self
+            .output_notes
+            .into_values()
+            .filter_map(|note| Some(OutputNoteUpdate::new(note.record, note.update_type?)))
+            .collect();
 
-        for note in new_input_notes {
-            tracker.insert_input_note(note, NoteUpdateType::Insert);
-        }
-
-        for note in updated_input_notes {
-            tracker.insert_input_note(note, NoteUpdateType::Update);
-        }
-
-        for note in new_output_notes {
-            tracker.insert_output_note(note, NoteUpdateType::Insert);
-        }
-
-        tracker
+        NoteUpdates::new(input_notes, output_notes)
     }
 
     // GETTERS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns all input note records that have been updated.
-    ///
-    /// This may include:
-    /// - New notes that have been created that should be inserted.
-    /// - Existing tracked notes that should be updated.
-    ///
-    /// Metadata-less expected notes (e.g. future notes created by a transaction, such as swap
-    /// payback notes) are included as well: they have no `NoteId` yet but must still be persisted
-    /// and have their tags registered. The `update_type` filter ensures notes merely loaded as
-    /// already-tracked context (`NoteUpdateType::None`) are not re-emitted.
-    pub fn updated_input_notes(&self) -> impl Iterator<Item = &InputNoteUpdate> {
-        self.input_notes.values().filter(|note| note.update_type.is_modified())
-    }
-
-    /// Returns the ids of updated input notes that are now consumed. `input_notes` is keyed by
-    /// details commitment, so the `input_notes_by_id` index provides each note's `NoteId`.
-    pub fn consumed_input_note_ids(&self) -> impl Iterator<Item = NoteId> + '_ {
-        self.input_notes_by_id.iter().filter_map(|(note_id, commitment)| {
-            let update = self.input_notes.get(commitment)?;
-            (update.update_type.is_modified() && update.inner().is_consumed()).then_some(*note_id)
-        })
-    }
-
-    /// `NoteId`s of every input + output note that transitioned to a consumed state this sync.
-    /// These are confirmed consumptions reflected in the tracker, not raw nullifier-prefix hits.
-    pub fn consumed_note_ids(&self) -> impl Iterator<Item = NoteId> + '_ {
-        let output = self.output_notes.iter().filter_map(|(note_id, update)| {
-            (update.update_type.is_modified() && update.inner().is_consumed()).then_some(*note_id)
-        });
-        self.consumed_input_note_ids().chain(output)
-    }
-
-    /// Returns all output note records that have been updated.
-    ///
-    /// This may include:
-    /// - New notes that have been created that should be inserted.
-    /// - Existing tracked notes that should be updated.
-    pub fn updated_output_notes(&self) -> impl Iterator<Item = &OutputNoteUpdate> {
-        self.output_notes.values().filter(|note| note.update_type.is_modified())
-    }
-
-    /// Returns whether no new note-related information has been retrieved.
-    pub fn is_empty(&self) -> bool {
-        self.input_notes.is_empty() && self.output_notes.is_empty()
-    }
-
     /// Returns input and output note unspent nullifiers.
-    pub fn unspent_nullifiers(&self) -> impl Iterator<Item = Nullifier> {
+    pub(crate) fn unspent_nullifiers(&self) -> impl Iterator<Item = Nullifier> {
         let input_note_unspent_nullifiers = self
             .input_notes
             .values()
@@ -370,11 +154,73 @@ impl NoteUpdateTracker {
     ) -> impl Iterator<Item = BlockNumber> + '_ {
         self.input_notes
             .values()
-            .filter(|update| !update.inner().is_consumed())
-            .filter_map(|update| {
-                update.inner().inclusion_proof().map(|proof| proof.location().block_num())
+            .filter(|note| !note.inner().is_consumed())
+            .filter_map(|note| {
+                note.inner().inclusion_proof().map(|proof| proof.location().block_num())
             })
     }
+
+    /// Returns whether the note is already tracked as an input or output record.
+    pub(crate) fn tracks_note(&self, note_id: NoteId) -> bool {
+        self.input_notes_by_id.contains_key(&note_id) || self.output_notes.contains_key(&note_id)
+    }
+
+    /// Returns whether an input note with the provided ID is tracked.
+    fn has_input_note_with_id(&self, note_id: NoteId) -> bool {
+        self.input_notes_by_id.contains_key(&note_id)
+    }
+
+    /// Returns whether an input note with the provided nullifier is tracked.
+    fn has_input_note_with_nullifier(&self, nullifier: Nullifier) -> bool {
+        self.input_notes_by_nullifier.contains_key(&nullifier)
+    }
+
+    /// Returns the input note record with the provided ID if it exists.
+    fn input_note_by_id(&self, note_id: NoteId) -> Option<&InputNoteRecord> {
+        let commitment = self.input_notes_by_id.get(&note_id)?;
+        self.input_notes.get(commitment).map(TrackedNote::inner)
+    }
+
+    /// Returns the input note record with the provided details commitment if it exists.
+    fn input_note_by_commitment(
+        &self,
+        commitment: NoteDetailsCommitment,
+    ) -> Option<&InputNoteRecord> {
+        self.input_notes.get(&commitment).map(TrackedNote::inner)
+    }
+
+    /// Returns the output note record with the provided ID if it exists.
+    fn output_note_by_id(&self, note_id: NoteId) -> Option<&OutputNoteRecord> {
+        self.output_notes.get(&note_id).map(TrackedNote::inner)
+    }
+
+    /// Returns the ID of the output note with the provided nullifier if it exists.
+    fn output_note_id_by_nullifier(&self, nullifier: Nullifier) -> Option<NoteId> {
+        self.output_notes_by_nullifier.get(&nullifier).copied()
+    }
+
+    /// Returns the position of the given nullifier in the consuming transaction order, or `None` if
+    /// it is not present.
+    fn get_nullifier_order(&self, nullifier: Nullifier) -> Option<u32> {
+        self.nullifier_order.get(&nullifier).copied()
+    }
+
+    /// Returns the details commitment of a tracked metadata-less note whose id, combined with
+    /// `metadata`, equals `note_id`, i.e. the committed note is that imported note.
+    fn expected_note_matching(
+        &self,
+        note_id: NoteId,
+        metadata: &NoteMetadata,
+    ) -> Option<NoteDetailsCommitment> {
+        self.input_notes
+            .iter()
+            .filter(|(_, note)| note.inner().metadata().is_none())
+            .map(|(commitment, _)| *commitment)
+            .find(|commitment| NoteId::new(*commitment, metadata) == note_id)
+    }
+
+    // UPDATE METHODS
+    // --------------------------------------------------------------------------------------------
 
     /// Refreshes the tracker with persisted input notes.
     ///
@@ -386,7 +232,7 @@ impl NoteUpdateTracker {
         notes: impl IntoIterator<Item = InputNoteRecord>,
     ) {
         for note in notes {
-            self.insert_input_note(note, NoteUpdateType::None);
+            self.insert_input_note(note, None);
         }
     }
 
@@ -394,7 +240,7 @@ impl NoteUpdateTracker {
     ///
     /// Nullifiers from the same account must be in execution order; ordering across different
     /// accounts is not guaranteed.
-    pub fn extend_nullifiers(&mut self, nullifiers: impl IntoIterator<Item = Nullifier>) {
+    pub(crate) fn extend_nullifiers(&mut self, nullifiers: impl IntoIterator<Item = Nullifier>) {
         for nullifier in nullifiers {
             let next_pos =
                 u32::try_from(self.nullifier_order.len()).expect("nullifier count exceeds u32");
@@ -402,8 +248,81 @@ impl NoteUpdateTracker {
         }
     }
 
-    // UPDATE METHODS
-    // --------------------------------------------------------------------------------------------
+    /// Releases notes that the discarded transaction was processing. Leaves all other notes
+    /// unchanged.
+    pub(crate) fn apply_transaction_discarded(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Result<(), NoteRecordError> {
+        for note in self.input_notes.values_mut() {
+            if note.record.transaction_discarded(transaction_id)? {
+                // Mark the changed note for storage.
+                note.inner_mut();
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns a mutable reference to the input note record with the provided ID if it exists.
+    fn get_input_note_by_id(&mut self, note_id: NoteId) -> Option<&mut InputNoteRecord> {
+        let commitment = self.input_notes_by_id.get(&note_id).copied()?;
+        self.input_notes.get_mut(&commitment).map(TrackedNote::inner_mut)
+    }
+
+    /// Returns a mutable reference to the output note record with the provided ID if it exists.
+    fn get_output_note_by_id(&mut self, note_id: NoteId) -> Option<&mut OutputNoteRecord> {
+        self.output_notes.get_mut(&note_id).map(TrackedNote::inner_mut)
+    }
+
+    /// Returns a mutable reference to the tracked input note with the provided nullifier if it
+    /// exists.
+    fn get_input_note_update_by_nullifier(
+        &mut self,
+        nullifier: Nullifier,
+    ) -> Option<&mut TrackedNote<InputNoteRecord>> {
+        let commitment = self.input_notes_by_nullifier.get(&nullifier).copied()?;
+        self.input_notes.get_mut(&commitment)
+    }
+
+    /// Returns a mutable reference to the output note record with the provided nullifier if it
+    /// exists.
+    fn get_output_note_by_nullifier(
+        &mut self,
+        nullifier: Nullifier,
+    ) -> Option<&mut OutputNoteRecord> {
+        let note_id = self.output_notes_by_nullifier.get(&nullifier).copied()?;
+        self.output_notes.get_mut(&note_id).map(TrackedNote::inner_mut)
+    }
+
+    /// Inserts an input note. An update type of `None` means the note is already stored and has no
+    /// change to write.
+    fn insert_input_note(&mut self, note: InputNoteRecord, update_type: Option<NoteUpdateType>) {
+        let tracked = TrackedNote::new(note, update_type);
+
+        let commitment = tracked.inner().details_commitment();
+        if let Some(note_id) = tracked.inner().id() {
+            // A note with metadata supersedes any metadata-less record for the same commitment.
+            let nullifier = tracked.inner().nullifier().expect("note with an id has metadata");
+            self.input_notes_by_nullifier.insert(nullifier, commitment);
+            self.input_notes_by_id.insert(note_id, commitment);
+            self.input_notes.insert(commitment, tracked);
+        } else if self.input_notes.get(&commitment).is_none_or(|n| n.inner().id().is_none()) {
+            // No metadata yet means no `NoteId` and no computable nullifier. Track by details
+            // commitment until a committed note supplies the metadata to evolve it, but do not
+            // overwrite a metadata-bearing record that already supersedes it.
+            self.input_notes.insert(commitment, tracked);
+        }
+    }
+
+    /// Inserts an output note that is already stored.
+    fn insert_output_note(&mut self, note: OutputNoteRecord) {
+        let note_id = note.id();
+        if let Some(nullifier) = note.nullifier() {
+            self.output_notes_by_nullifier.insert(nullifier, note_id);
+        }
+        self.output_notes.insert(note_id, TrackedNote::new(note, None));
+    }
 
     /// Inserts the new public note data into the tracker. This method doesn't check the relevance
     /// of the note, so it should only be used for notes that are guaranteed to be relevant to the
@@ -414,7 +333,7 @@ impl NoteUpdateTracker {
         block_header: &BlockHeader,
     ) -> Result<(), ClientError> {
         public_note_data.block_header_received(block_header)?;
-        self.insert_input_note(public_note_data, NoteUpdateType::Insert);
+        self.insert_input_note(public_note_data, Some(NoteUpdateType::Insert));
 
         Ok(())
     }
@@ -434,8 +353,11 @@ impl NoteUpdateTracker {
 
         let is_tracked_as_input_note =
             if let Some(input_note_record) = self.get_input_note_by_id(note_id) {
-                input_note_record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                input_note_record.block_header_received(block_header)?;
+                input_note_record.inclusion_received(
+                    inclusion_proof.clone(),
+                    metadata,
+                    block_header,
+                )?;
                 if let Some(attachments) = attachments {
                     input_note_record.attachments_received(attachments.clone());
                 }
@@ -443,29 +365,21 @@ impl NoteUpdateTracker {
                 true
             } else if let Some(commitment) = self.expected_note_matching(note_id, &metadata) {
                 // A metadata-less note whose id, with the committed metadata, equals this note id:
-                // evolve it into a full record in place (its details commitment key is unchanged).
-                let nullifier = {
-                    let update = self
-                        .input_notes
-                        .get_mut(&commitment)
-                        .expect("commitment was just matched against the tracked notes");
-                    let record = &mut update.note;
-                    record.inclusion_proof_received(inclusion_proof.clone(), metadata)?;
-                    record.block_header_received(block_header)?;
-                    if let Some(attachments) = attachments {
-                        record.attachments_received(attachments.clone());
-                    }
+                // evolve it into a full record (its details commitment key is unchanged).
+                let mut record = self
+                    .input_note_by_commitment(commitment)
+                    .expect("commitment was just matched against the tracked notes")
+                    .clone();
+                record.inclusion_received(inclusion_proof.clone(), metadata, block_header)?;
+                if let Some(attachments) = attachments {
+                    record.attachments_received(attachments.clone());
+                }
 
-                    // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are
-                    // persisted (a full-row insert), while still being reported as a committed
-                    // tracked note rather than a newly-discovered one.
-                    update.update_type = NoteUpdateType::InsertCommitted;
-                    record.nullifier().expect("note with an id has metadata")
-                };
-
-                // The note now has metadata, so register it in the id and nullifier indices.
-                self.input_notes_by_nullifier.insert(nullifier, commitment);
-                self.input_notes_by_id.insert(note_id, commitment);
+                // `InsertCommitted` so the now-known `note_id`/`nullifier` columns are persisted (a
+                // full-row insert), while still being reported as a committed tracked note rather
+                // than a newly-discovered one. The insert also registers the note in the id and
+                // nullifier indices.
+                self.insert_input_note(record, Some(NoteUpdateType::InsertCommitted));
 
                 true
             } else {
@@ -517,29 +431,26 @@ impl NoteUpdateTracker {
             output_note.nullifier_received(nullifier, block_num)?;
         }
 
-        if let Some(commitment) = self.input_notes_by_id.get(&note_id).copied()
-            && let Some(input_note_update) = self.input_notes.get_mut(&commitment)
-            && !input_note_update.inner().is_consumed()
-            && let Some(nullifier) = input_note_update.inner().nullifier()
-        {
-            let consumer_account =
-                NetworkAccountTarget::try_from(input_note_update.inner().attachments())
+        // Read first, so that the record is marked as updated only when it changes.
+        let unconsumed_input = self
+            .input_note_by_id(note_id)
+            .filter(|input_note| !input_note.is_consumed())
+            .and_then(|input_note| {
+                let consumer_account = NetworkAccountTarget::try_from(input_note.attachments())
                     .ok()
                     .map(|target| target.target_id());
-            input_note_update.inner_mut().consumed_externally(
-                nullifier,
-                block_num,
-                consumer_account,
-            )?;
-            input_note_update.inner_mut().set_consumed_tx_order(Some(0));
+                input_note.nullifier().map(|nullifier| (nullifier, consumer_account))
+            });
+
+        if let Some((nullifier, consumer_account)) = unconsumed_input {
+            let input_note = self
+                .get_input_note_by_id(note_id)
+                .expect("input note was just found in the tracker");
+            input_note.consumed_externally(nullifier, block_num, consumer_account)?;
+            input_note.set_consumed_tx_order(Some(0));
         }
 
         Ok(())
-    }
-
-    /// Returns whether the note is already tracked as an input or output record.
-    pub(crate) fn tracks_note(&self, note_id: NoteId) -> bool {
-        self.input_notes_by_id.contains_key(&note_id) || self.output_notes.contains_key(&note_id)
     }
 
     /// Records `note` as consumed by `consumer`, as a
@@ -568,52 +479,7 @@ impl NoteUpdateTracker {
         let mut record = InputNoteRecord::from(note);
         record.consumed_externally(nullifier, block_num, Some(consumer))?;
         record.set_consumed_tx_order(Some(order));
-        self.insert_input_note(record, NoteUpdateType::Insert);
-        Ok(())
-    }
-
-    /// Builds a consumed input note record from a tracked output note and inserts it.
-    ///
-    /// Used when an output note is consumed externally and the client should also surface it as a
-    /// consumed input — for example, when the same client tracks both the sender and the consumer
-    /// of the note. No-op if the input is already tracked, the output is not tracked, or the output
-    /// cannot be converted to a [`Note`].
-    fn try_insert_consumed_input_from_output(
-        &mut self,
-        note_id: NoteId,
-        consumer: AccountId,
-        block_num: BlockNumber,
-        consumed_tx_order: Option<u32>,
-    ) -> Result<(), ClientError> {
-        if self.input_notes_by_id.contains_key(&note_id) {
-            return Ok(());
-        }
-        let Some(output_note) = self.output_notes.get(&note_id) else {
-            return Ok(());
-        };
-        let Ok(note) = Note::try_from(output_note.inner().clone()) else {
-            return Ok(());
-        };
-
-        let mut input_record = InputNoteRecord::from(note);
-        let nullifier =
-            input_record.nullifier().expect("record built from a full note has metadata");
-        input_record.consumed_externally(nullifier, block_num, Some(consumer))?;
-        input_record.set_consumed_tx_order(consumed_tx_order);
-        self.insert_input_note(input_record, NoteUpdateType::Insert);
-        Ok(())
-    }
-
-    /// If the note is tracked as an output note, transitions it to `Committed` with the given
-    /// inclusion proof. No-op if the note is not tracked.
-    fn try_commit_output_note(
-        &mut self,
-        note_id: NoteId,
-        inclusion_proof: NoteInclusionProof,
-    ) -> Result<(), ClientError> {
-        if let Some(output_note) = self.get_output_note_by_id(note_id) {
-            output_note.inclusion_proof_received(inclusion_proof)?;
-        }
+        self.insert_input_note(record, Some(NoteUpdateType::Insert));
         Ok(())
     }
 
@@ -639,7 +505,7 @@ impl NoteUpdateTracker {
         let block_num = consumption.block_num;
         let external_consumer = consumption.external_consumer;
         let order = self.get_nullifier_order(nullifier);
-        let input_present = self.input_notes_by_nullifier.contains_key(&nullifier);
+        let input_present = self.has_input_note_with_nullifier(nullifier);
 
         if let Some(input_note_update) = self.get_input_note_update_by_nullifier(nullifier) {
             if let Some(consumer_transaction) = committed_transactions
@@ -671,7 +537,7 @@ impl NoteUpdateTracker {
 
         if !input_present
             && let Some(consumer) = external_consumer
-            && let Some(note_id) = self.output_notes_by_nullifier.get(&nullifier).copied()
+            && let Some(note_id) = self.output_note_id_by_nullifier(nullifier)
         {
             self.try_insert_consumed_input_from_output(note_id, consumer, block_num, order)?;
         }
@@ -682,184 +548,49 @@ impl NoteUpdateTracker {
     // PRIVATE HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Returns the position of the given nullifier in the consuming transaction order, or `None` if
-    /// it is not present.
-    fn get_nullifier_order(&self, nullifier: Nullifier) -> Option<u32> {
-        self.nullifier_order.get(&nullifier).copied()
-    }
-
-    /// Returns a mutable reference to the input note record with the provided ID if it exists.
-    fn get_input_note_by_id(&mut self, note_id: NoteId) -> Option<&mut InputNoteRecord> {
-        let commitment = self.input_notes_by_id.get(&note_id).copied()?;
-        self.input_notes.get_mut(&commitment).map(InputNoteUpdate::inner_mut)
-    }
-
-    /// Returns the details commitment of a tracked metadata-less note whose id, combined with
-    /// `metadata`, equals `note_id`, i.e. the committed note is that imported note.
-    fn expected_note_matching(
-        &self,
+    /// Builds a consumed input note record from a tracked output note and inserts it.
+    ///
+    /// Used when an output note is consumed externally and the client should also surface it as a
+    /// consumed input — for example, when the same client tracks both the sender and the consumer
+    /// of the note. No-op if the input is already tracked, the output is not tracked, or the output
+    /// cannot be converted to a [`Note`].
+    fn try_insert_consumed_input_from_output(
+        &mut self,
         note_id: NoteId,
-        metadata: &NoteMetadata,
-    ) -> Option<NoteDetailsCommitment> {
-        self.input_notes
-            .iter()
-            .filter(|(_, update)| update.inner().metadata().is_none())
-            .map(|(commitment, _)| *commitment)
-            .find(|commitment| NoteId::new(*commitment, metadata) == note_id)
-    }
-
-    /// Returns a mutable reference to the output note record with the provided ID if it exists.
-    fn get_output_note_by_id(&mut self, note_id: NoteId) -> Option<&mut OutputNoteRecord> {
-        self.output_notes.get_mut(&note_id).map(OutputNoteUpdate::inner_mut)
-    }
-
-    /// Returns a mutable reference to the input note update with the provided nullifier if it
-    /// exists.
-    fn get_input_note_update_by_nullifier(
-        &mut self,
-        nullifier: Nullifier,
-    ) -> Option<&mut InputNoteUpdate> {
-        let commitment = self.input_notes_by_nullifier.get(&nullifier).copied()?;
-        self.input_notes.get_mut(&commitment)
-    }
-
-    /// Returns a mutable reference to the output note record with the provided nullifier if it
-    /// exists.
-    fn get_output_note_by_nullifier(
-        &mut self,
-        nullifier: Nullifier,
-    ) -> Option<&mut OutputNoteRecord> {
-        let note_id = self.output_notes_by_nullifier.get(&nullifier).copied()?;
-        self.output_notes.get_mut(&note_id).map(OutputNoteUpdate::inner_mut)
-    }
-
-    /// Insert an input note update
-    fn insert_input_note(&mut self, note: InputNoteRecord, update_type: NoteUpdateType) {
-        let update = match update_type {
-            NoteUpdateType::None => InputNoteUpdate::new_none(note),
-            NoteUpdateType::Insert => InputNoteUpdate::new_insert(note),
-            NoteUpdateType::Update => InputNoteUpdate::new_update(note),
-            NoteUpdateType::InsertCommitted => InputNoteUpdate::new_insert_committed(note),
+        consumer: AccountId,
+        block_num: BlockNumber,
+        consumed_tx_order: Option<u32>,
+    ) -> Result<(), ClientError> {
+        if self.has_input_note_with_id(note_id) {
+            return Ok(());
+        }
+        let Some(output_note) = self.output_note_by_id(note_id) else {
+            return Ok(());
+        };
+        let Ok(note) = Note::try_from(output_note.clone()) else {
+            return Ok(());
         };
 
-        let commitment = update.inner().details_commitment();
-        if let Some(note_id) = update.inner().id() {
-            // A note with metadata supersedes any metadata-less record for the same commitment.
-            let nullifier = update.inner().nullifier().expect("note with an id has metadata");
-            self.input_notes_by_nullifier.insert(nullifier, commitment);
-            self.input_notes_by_id.insert(note_id, commitment);
-            self.input_notes.insert(commitment, update);
-        } else if self.input_notes.get(&commitment).is_none_or(|u| u.inner().id().is_none()) {
-            // No metadata yet means no `NoteId` and no computable nullifier. Track by details
-            // commitment until a committed note supplies the metadata to evolve it, but do not
-            // overwrite a metadata-bearing record that already supersedes it.
-            self.input_notes.insert(commitment, update);
+        let mut input_record = InputNoteRecord::from(note);
+        let nullifier =
+            input_record.nullifier().expect("record built from a full note has metadata");
+        input_record.consumed_externally(nullifier, block_num, Some(consumer))?;
+        input_record.set_consumed_tx_order(consumed_tx_order);
+        self.insert_input_note(input_record, Some(NoteUpdateType::Insert));
+        Ok(())
+    }
+
+    /// If the note is tracked as an output note, transitions it to `Committed` with the given
+    /// inclusion proof. No-op if the note is not tracked.
+    fn try_commit_output_note(
+        &mut self,
+        note_id: NoteId,
+        inclusion_proof: NoteInclusionProof,
+    ) -> Result<(), ClientError> {
+        if let Some(output_note) = self.get_output_note_by_id(note_id) {
+            output_note.inclusion_proof_received(inclusion_proof)?;
         }
-    }
-
-    /// Insert an output note update
-    fn insert_output_note(&mut self, note: OutputNoteRecord, update_type: NoteUpdateType) {
-        let note_id = note.id();
-        if let Some(nullifier) = note.nullifier() {
-            self.output_notes_by_nullifier.insert(nullifier, note_id);
-        }
-        let update = match update_type {
-            NoteUpdateType::None => OutputNoteUpdate::new_none(note),
-            NoteUpdateType::Update => OutputNoteUpdate::new_update(note),
-            // Output notes are never assigned `InsertCommitted`; treat it as an insert for
-            // exhaustiveness.
-            NoteUpdateType::Insert | NoteUpdateType::InsertCommitted => {
-                OutputNoteUpdate::new_insert(note)
-            },
-        };
-        self.output_notes.insert(note_id, update);
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for NoteUpdateType {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        target.write_u8(*self as u8);
-    }
-}
-
-impl Deserializable for NoteUpdateType {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        NoteUpdateType::try_from(source.read_u8()?).map_err(|val| {
-            DeserializationError::InvalidValue(format!("invalid note update type: {val}"))
-        })
-    }
-}
-
-impl Serializable for InputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for InputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = InputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for OutputNoteUpdate {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.note.write_into(target);
-        self.update_type.write_into(target);
-    }
-}
-
-impl Deserializable for OutputNoteUpdate {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let note = OutputNoteRecord::read_from(source)?;
-        let update_type = NoteUpdateType::read_from(source)?;
-        Ok(Self { note, update_type })
-    }
-}
-
-impl Serializable for NoteUpdateTracker {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        // The lookup indices are serialized alongside the records so the tracker round-trips to an
-        // identical state.
-        self.input_notes.write_into(target);
-        self.output_notes.write_into(target);
-        self.nullifier_order.write_into(target);
-        self.input_notes_by_id.write_into(target);
-        self.input_notes_by_nullifier.write_into(target);
-    }
-}
-
-impl Deserializable for NoteUpdateTracker {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let input_notes = BTreeMap::<NoteDetailsCommitment, InputNoteUpdate>::read_from(source)?;
-        let output_notes = BTreeMap::<NoteId, OutputNoteUpdate>::read_from(source)?;
-        let nullifier_order = BTreeMap::<Nullifier, u32>::read_from(source)?;
-        let input_notes_by_id = BTreeMap::<NoteId, NoteDetailsCommitment>::read_from(source)?;
-        let input_notes_by_nullifier =
-            BTreeMap::<Nullifier, NoteDetailsCommitment>::read_from(source)?;
-
-        // Output notes always carry metadata, so this index can be safely derived from the records.
-        let output_notes_by_nullifier = output_notes
-            .iter()
-            .filter_map(|(note_id, update)| {
-                update.inner().nullifier().map(|nullifier| (nullifier, *note_id))
-            })
-            .collect();
-
-        Ok(Self {
-            input_notes,
-            output_notes,
-            input_notes_by_nullifier,
-            input_notes_by_id,
-            output_notes_by_nullifier,
-            nullifier_order,
-        })
+        Ok(())
     }
 }
 
@@ -871,12 +602,14 @@ mod tests {
     use alloc::vec;
 
     use miden_protocol::account::AccountId;
-    use miden_protocol::block::BlockNumber;
+    use miden_protocol::block::{BlockHeader, BlockNumber};
+    use miden_protocol::crypto::merkle::SparseMerklePath;
     use miden_protocol::note::{
         NoteAssets,
         NoteAttachments,
         NoteDetails,
         NoteId,
+        NoteInclusionProof,
         NoteMetadata,
         NoteRecipient,
         NoteStorage,
@@ -885,19 +618,12 @@ mod tests {
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
     use miden_protocol::transaction::TransactionId;
-    use miden_protocol::utils::serde::{Deserializable, Serializable};
     use miden_protocol::{Felt, Word, ZERO};
     use miden_standards::note::StandardNote;
 
-    use super::{NoteConsumption, NoteUpdateTracker};
-    use crate::store::InputNoteRecord;
-    use crate::store::input_note_states::{
-        ConsumedExternalNoteState,
-        ConsumedUnauthenticatedLocalNoteState,
-        ExpectedNoteState,
-        NoteSubmissionData,
-        ProcessingUnauthenticatedNoteState,
-    };
+    use super::{NoteConsumption, NoteUpdateTracker, NoteUpdateType};
+    use crate::store::input_note_states::{NoteSubmissionData, ProcessingUnauthenticatedNoteState};
+    use crate::store::{InputNoteRecord, InputNoteState};
     use crate::transaction::TransactionRecord;
 
     // HELPERS
@@ -920,16 +646,6 @@ mod tests {
         )
     }
 
-    /// A metadata-less expected note. It has no `NoteId` and is tracked by its details commitment.
-    fn expected_note(seed: u64) -> InputNoteRecord {
-        let state = ExpectedNoteState {
-            metadata: None,
-            after_block_num: BlockNumber::from(0u32),
-            tag: None,
-        };
-        InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
-    }
-
     /// A metadata-bearing, not-yet-consumed note that can be externally consumed.
     fn processing_note(seed: u64, sender: AccountId) -> InputNoteRecord {
         let state = ProcessingUnauthenticatedNoteState {
@@ -944,28 +660,20 @@ mod tests {
         InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
     }
 
-    /// A metadata-bearing note that is already consumed by a local transaction.
-    fn consumed_local_note(seed: u64, sender: AccountId) -> InputNoteRecord {
-        let state = ConsumedUnauthenticatedLocalNoteState {
+    /// A metadata-bearing note being processed by the local transaction `consumer_transaction`.
+    fn processing_note_for(
+        seed: u64,
+        sender: AccountId,
+        consumer_transaction: TransactionId,
+    ) -> InputNoteRecord {
+        let state = ProcessingUnauthenticatedNoteState {
             metadata: note_metadata(sender),
-            nullifier_block_height: BlockNumber::from(1u32),
+            after_block_num: BlockNumber::from(3u32),
             submission_data: NoteSubmissionData {
                 submitted_at: Some(0),
                 consumer_account: sender,
-                consumer_transaction: TransactionId::from_raw(Word::default()),
+                consumer_transaction,
             },
-            consumed_tx_order: Some(0),
-        };
-        InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
-    }
-
-    /// A metadata-less note that is already externally consumed. It never carried a `NoteId`.
-    fn consumed_external_note(seed: u64) -> InputNoteRecord {
-        let state = ConsumedExternalNoteState {
-            nullifier_block_height: BlockNumber::from(1u32),
-            consumer_account: None,
-            consumed_tx_order: None,
-            metadata: None,
         };
         InputNoteRecord::new(note_details(seed), NoteAttachments::empty(), Some(0), state.into())
     }
@@ -974,39 +682,14 @@ mod tests {
     // --------------------------------------------------------------------------------------------
 
     #[test]
-    fn consumed_input_note_ids_reports_metadata_bearing_consumed_note() {
-        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
-        let note = consumed_local_note(1, sender);
-        let id = note.id().expect("consumed-local note has metadata");
-
-        let tracker = NoteUpdateTracker::for_transaction_updates(vec![], vec![note], vec![]);
-
-        let consumed: alloc::vec::Vec<NoteId> = tracker.consumed_input_note_ids().collect();
-        assert_eq!(consumed, vec![id]);
-    }
-
-    #[test]
-    fn consumed_input_note_ids_omits_note_that_never_had_an_id() {
-        // A note inserted already in the externally-consumed (metadata-less) state never had an id
-        // in the tracker, so it is persisted but is not reported by id.
-        let note = consumed_external_note(2);
-        assert!(note.id().is_none());
-
-        let tracker = NoteUpdateTracker::for_transaction_updates(vec![note], vec![], vec![]);
-
-        assert_eq!(tracker.consumed_input_note_ids().count(), 0);
-        assert_eq!(tracker.updated_input_notes().count(), 1);
-    }
-
-    #[test]
     fn external_consumption_retains_note_id() {
         let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
         let note = processing_note(3, sender);
         let id = note.id().expect("processing note has metadata");
         let nullifier = note.nullifier().expect("processing note has metadata");
 
-        let mut tracker = NoteUpdateTracker::for_transaction_updates(vec![], vec![note], vec![]);
-        assert_eq!(tracker.consumed_input_note_ids().count(), 0);
+        let mut tracker = NoteUpdateTracker::new(vec![note], vec![]);
+        assert_eq!(tracker.clone().into_note_updates().consumed_input_note_ids().count(), 0);
 
         // After external consumption the note must still be reported as consumed by its id.
         tracker
@@ -1020,7 +703,8 @@ mod tests {
             )
             .expect("external consumption should apply");
 
-        let consumed: alloc::vec::Vec<NoteId> = tracker.consumed_input_note_ids().collect();
+        let consumed: alloc::vec::Vec<NoteId> =
+            tracker.into_note_updates().consumed_input_note_ids().collect();
         assert_eq!(
             consumed,
             vec![id],
@@ -1029,68 +713,106 @@ mod tests {
     }
 
     #[test]
-    fn externally_consumed_note_id_survives_round_trip() {
+    fn discarded_transaction_releases_only_the_notes_it_was_processing() {
         let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
-        let note = processing_note(12, sender);
-        let id = note.id().expect("processing note has metadata");
-        let nullifier = note.nullifier().expect("processing note has metadata");
+        let discarded_tx =
+            TransactionId::from_raw([Felt::new_unchecked(1), ZERO, ZERO, ZERO].into());
+        let other_tx = TransactionId::from_raw([Felt::new_unchecked(2), ZERO, ZERO, ZERO].into());
 
-        let mut tracker = NoteUpdateTracker::for_transaction_updates(vec![], vec![note], vec![]);
+        let released = processing_note_for(20, sender, discarded_tx);
+        let released_id = released.id().unwrap();
+        let released_nullifier = released.nullifier().unwrap();
+        let expected_metadata = released.metadata().copied();
+        let still_processing = processing_note_for(21, sender, other_tx);
+        let still_processing_id = still_processing.id().unwrap();
+        let consumed = processing_note_for(22, sender, discarded_tx);
+        let consumed_id = consumed.id().unwrap();
+        let consumed_nullifier = consumed.nullifier().unwrap();
 
-        // After external consumption the note must still be reported as consumed by its id via
-        // `input_notes_by_id`, both in memory and after a serialization round trip.
+        let mut tracker =
+            NoteUpdateTracker::new(vec![released, still_processing, consumed], vec![]);
+
+        // One of the discarded transaction's notes was consumed on chain by someone else.
         tracker
             .apply_note_consumption(
                 &NoteConsumption {
-                    nullifier,
+                    nullifier: consumed_nullifier,
                     block_num: BlockNumber::from(5u32),
                     external_consumer: None,
                 },
                 core::iter::empty::<&TransactionRecord>(),
             )
-            .expect("external consumption should apply");
+            .unwrap();
 
-        // In memory the id is reported correctly.
-        let before: alloc::vec::Vec<NoteId> = tracker.consumed_input_note_ids().collect();
-        assert_eq!(before, vec![id]);
+        tracker.apply_transaction_discarded(discarded_tx).unwrap();
 
-        // The retained id must survive a serialize/deserialize round trip.
-        let bytes = tracker.to_bytes();
-        let restored = NoteUpdateTracker::read_from_bytes(&bytes).expect("round-trip should work");
-        let after: alloc::vec::Vec<NoteId> = restored.consumed_input_note_ids().collect();
+        let state_of = |tracker: &NoteUpdateTracker, id: NoteId| {
+            tracker.input_note_by_id(id).map(|note| note.state().clone()).unwrap()
+        };
+
+        // The released note is expected again, keeps its metadata and its nullifier index, and is
+        // flagged as a pending store write.
+        let InputNoteState::Expected(state) = state_of(&tracker, released_id) else {
+            panic!("the released note should be expected again");
+        };
+        assert_eq!(state.metadata, expected_metadata);
+        assert_eq!(state.after_block_num, BlockNumber::from(3u32));
+        assert_eq!(state.tag, expected_metadata.map(|metadata| metadata.tag()));
+        assert!(tracker.unspent_nullifiers().any(|nullifier| nullifier == released_nullifier));
+
+        // A note held by another transaction and a note consumed on chain are left alone.
+        assert!(matches!(
+            state_of(&tracker, still_processing_id),
+            InputNoteState::ProcessingUnauthenticated(_)
+        ));
+        assert!(matches!(state_of(&tracker, consumed_id), InputNoteState::ConsumedExternal(_)));
+
+        let note_updates = tracker.into_note_updates();
         assert_eq!(
-            after,
-            vec![id],
-            "the retained id of an externally consumed note must survive serialization"
+            note_updates
+                .input_notes()
+                .iter()
+                .find(|update| update.id() == Some(released_id))
+                .map(|update| *update.update_type()),
+            Some(NoteUpdateType::Update)
         );
+        assert_eq!(note_updates.input_notes().len(), 2);
     }
 
     #[test]
-    fn serialize_round_trip_preserves_lookup_indices() {
+    fn inclusion_received_preserves_processing_transaction() {
         let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
-        let expected = expected_note(10);
-        let processing = processing_note(11, sender);
-        let processing_id = processing.id().expect("processing note has metadata");
-        let processing_commitment = processing.details_commitment();
-        let processing_nullifier = processing.nullifier().expect("processing note has metadata");
-
-        let tracker =
-            NoteUpdateTracker::for_transaction_updates(vec![expected], vec![processing], vec![]);
-
-        let bytes = tracker.to_bytes();
-        let restored = NoteUpdateTracker::read_from_bytes(&bytes).expect("round-trip should work");
-
-        // The records and lookup indices round-trip unchanged, including the metadata-less note
-        // that is keyed only by its details commitment.
-        assert_eq!(tracker, restored);
-        assert_eq!(restored.updated_input_notes().count(), 2);
-        assert_eq!(
-            restored.input_notes_by_id.get(&processing_id).copied(),
-            Some(processing_commitment)
+        let mut note = processing_note(23, sender);
+        let original = note.clone();
+        let metadata = *note.metadata().unwrap();
+        let root = note.id().unwrap().as_word();
+        let proof =
+            NoteInclusionProof::new(4.into(), 0, SparseMerklePath::from_parts(0, vec![]).unwrap())
+                .unwrap();
+        let header = BlockHeader::mock(4, None, Some(root), &[]);
+        let wrong_metadata = NoteMetadata::new(
+            PartialNoteMetadata::new(sender, NoteType::Private),
+            &NoteAttachments::empty(),
         );
-        assert_eq!(
-            restored.input_notes_by_nullifier.get(&processing_nullifier).copied(),
-            Some(processing_commitment)
-        );
+
+        for (header, metadata) in [
+            (BlockHeader::mock(5, None, Some(root), &[]), metadata),
+            (BlockHeader::mock(4, None, Some(Word::default()), &[]), metadata),
+            (header.clone(), wrong_metadata),
+        ] {
+            assert!(note.inclusion_received(proof.clone(), metadata, &header).is_err());
+            assert_eq!(note, original);
+        }
+
+        assert!(note.inclusion_received(proof.clone(), metadata, &header).unwrap());
+        let InputNoteState::ProcessingAuthenticated(state) = note.state() else {
+            panic!("the note must remain processing");
+        };
+        let InputNoteState::ProcessingUnauthenticated(original_state) = original.state() else {
+            unreachable!();
+        };
+        assert_eq!(state.submission_data, original_state.submission_data);
+        assert_eq!(state.inclusion_proof, proof);
+        assert!(!note.inclusion_received(proof, metadata, &header).unwrap());
     }
 }

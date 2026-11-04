@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::Felt;
-use miden_client::account::AccountType;
+use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::note::NoteType;
 use miden_client::store::TransactionFilter;
@@ -13,6 +13,41 @@ use miden_client::transaction::{
 use tracing::info;
 
 use crate::ClientConfig;
+
+/// Polls until every account has at least the given number of committed transactions, returning the
+/// counts reached.
+///
+/// A batch commits when the node packs it into a block, so the counts are read again after each
+/// block rather than once. Returns the last counts seen when the window runs out, which lets the
+/// caller assert on them and report what was actually reached.
+async fn poll_committed_counts<const N: usize>(
+    client: &mut TestClient,
+    expected: [(AccountId, usize); N],
+    what: &str,
+) -> Result<[usize; N]> {
+    let mut counts = [0usize; N];
+
+    for attempt in 0..30 {
+        client.wait_for_blocks(1).await?;
+        client.sync_state().await?;
+        let transactions = client.get_transactions(TransactionFilter::All).await?;
+
+        for (index, (account_id, _)) in expected.iter().enumerate() {
+            counts[index] = transactions
+                .iter()
+                .filter(|tx| tx.details.account_id == *account_id)
+                .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
+                .count();
+        }
+
+        info!(attempt, ?counts, what, "polling for batch txs to commit");
+        if counts.iter().zip(expected.iter()).all(|(got, (_, want))| got >= want) {
+            break;
+        }
+    }
+
+    Ok(counts)
+}
 
 /// Real-node integration test for the `BatchBuilder` end-to-end path.
 ///
@@ -28,7 +63,6 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
         client.setup_two_wallets_and_faucet(AccountType::Private).await?;
@@ -74,12 +108,10 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
     );
 
     // Submit both requests as a single batch.
-    let tx_request_1 = client.fund_request(from_account_id, tx_request_1);
-    let tx_request_2 = client.fund_request(from_account_id, tx_request_2);
     let mut batch = client.new_transaction_batch();
-    batch.push(from_account_id, tx_request_1).await?;
-    batch.push(from_account_id, tx_request_2).await?;
-    let block_num = batch.submit().await?;
+    client.push_to_batch(&mut batch, from_account_id, tx_request_1).await?;
+    client.push_to_batch(&mut batch, from_account_id, tx_request_2).await?;
+    let block_num = client.submit_transaction_batch(batch).await?;
 
     info!(block_num = block_num.as_u32(), "Batch submitted successfully");
 
@@ -87,21 +119,8 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 
     // Poll until at least 3 sender-account transactions are committed (1 from mint-and-consume + 2
     // from the batch). Give the node a reasonable window to finalize the batch's block.
-    let mut committed_count = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        committed_count = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == from_account_id)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, committed_count, "polling for batch txs to commit");
-        if committed_count >= 3 {
-            break;
-        }
-    }
+    let [committed_count] =
+        poll_committed_counts(&mut client, [(from_account_id, 3)], "single account").await?;
     assert!(
         committed_count >= 3,
         "expected at least 3 committed transactions from the sender account \
@@ -148,7 +167,6 @@ pub async fn test_batch_builder_submits_two_p2id_on_one_account(
 /// batch.
 pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
         client.setup_two_wallets_and_faucet(AccountType::Private).await?;
@@ -199,40 +217,19 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
         "Submitting cross-account batch (A→B P2ID + B consume)"
     );
 
-    let req_send = client.fund_request(account_id_a, req_send);
-    let req_consume = client.fund_request(account_id_b, req_consume);
     let mut batch = client.new_transaction_batch();
-    batch.push(account_id_a, req_send).await?;
-    batch.push(account_id_b, req_consume).await?;
-    let block_num = batch.submit().await?;
+    client.push_to_batch(&mut batch, account_id_a, req_send).await?;
+    client.push_to_batch(&mut batch, account_id_b, req_consume).await?;
+    let block_num = client.submit_transaction_batch(batch).await?;
 
     info!(block_num = block_num.as_u32(), "Cross-account batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
 
-    // Poll until both txs are committed.
-    let mut a_committed = 0;
-    let mut b_committed = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        a_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_a)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        b_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_b)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, a_committed, b_committed, "polling for cross-account batch txs");
-        // A needs ≥ 2 commits (mint-and-consume + batch send); B needs ≥ 2 (mint-and-consume +
-        // batch consume).
-        if a_committed >= 2 && b_committed >= 2 {
-            break;
-        }
-    }
+    // Poll until both txs are committed. A needs >= 2 commits (mint-and-consume + batch send), B
+    // likewise (mint-and-consume + batch consume).
+    let [a_committed, b_committed] =
+        poll_committed_counts(&mut client, [(account_id_a, 2), (account_id_b, 2)], "cross-account")
+            .await?;
     assert!(a_committed >= 2, "expected ≥ 2 committed txs for A, got {a_committed}");
     assert!(b_committed >= 2, "expected ≥ 2 committed txs for B, got {b_committed}");
 
@@ -286,7 +283,6 @@ pub async fn test_batch_builder_multiple_accounts(client_config: ClientConfig) -
 /// reflects one outbound note (all output notes remain pending consumption).
 pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.wait_for_node().await;
 
     let (first_regular_account, second_regular_account, faucet_account_header) =
         client.setup_two_wallets_and_faucet(AccountType::Private).await?;
@@ -336,40 +332,20 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
 
     info!("Submitting A→B→A interleaved batch");
 
-    let req_a_to_b_first = client.fund_request(account_id_a, req_a_to_b_first);
-    let req_b_to_a = client.fund_request(account_id_b, req_b_to_a);
     let mut batch = client.new_transaction_batch();
-    batch.push(account_id_a, req_a_to_b_first).await?;
-    batch.push(account_id_b, req_b_to_a).await?;
-    batch.push(account_id_a, req_a_to_b_second).await?;
-    let block_num = batch.submit().await?;
+    client.push_to_batch(&mut batch, account_id_a, req_a_to_b_first).await?;
+    client.push_to_batch(&mut batch, account_id_b, req_b_to_a).await?;
+    client.push_to_batch(&mut batch, account_id_a, req_a_to_b_second).await?;
+    let block_num = client.submit_transaction_batch(batch).await?;
 
     info!(block_num = block_num.as_u32(), "Interleaved batch submitted");
     assert!(block_num.as_u32() > 0, "expected a positive block number");
 
     // Poll until both accounts have their batch txs committed (A: mint+consume + 2 batch = 3, B:
     // mint+consume + 1 batch = 2).
-    let mut a_committed = 0;
-    let mut b_committed = 0;
-    for attempt in 0..30 {
-        client.wait_for_blocks(1).await?;
-        client.sync_state().await.unwrap();
-        let all_transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
-        a_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_a)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        b_committed = all_transactions
-            .iter()
-            .filter(|tx| tx.details.account_id == account_id_b)
-            .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
-            .count();
-        info!(attempt, a_committed, b_committed, "polling for interleaved batch txs");
-        if a_committed >= 3 && b_committed >= 2 {
-            break;
-        }
-    }
+    let [a_committed, b_committed] =
+        poll_committed_counts(&mut client, [(account_id_a, 3), (account_id_b, 2)], "interleaved")
+            .await?;
     assert!(a_committed >= 3, "expected ≥ 3 committed txs for A, got {a_committed}");
     assert!(b_committed >= 2, "expected ≥ 2 committed txs for B, got {b_committed}");
 
@@ -408,6 +384,91 @@ pub async fn test_batch_builder_interleaved_pushes(client_config: ClientConfig) 
         AssetAmount::new(MINT_AMOUNT - TRANSFER_AMOUNT).unwrap(),
         "B's balance should reflect one outbound P2ID note"
     );
+
+    Ok(())
+}
+
+/// Integration test for a batch that carries a transaction of another party.
+///
+/// Client A pushes a P2ID transfer from its wallet to the wallet of client B. Client B executes and
+/// proves a transaction that consumes that note, and gives the proven transaction with its inputs
+/// to client A. Client A does not track the wallet of client B. It pushes the proven transaction
+/// after its own transaction and submits the batch.
+///
+/// Asserts that both transactions commit, that client A records only its own transaction, and that
+/// the wallet of client B holds the transferred amount.
+pub async fn test_batch_builder_pushes_transaction_of_another_party(
+    client_config: ClientConfig,
+) -> Result<()> {
+    let mut client_a = client_config.clone().into_client().await?;
+    let mut client_b = client_config.into_client().await?;
+
+    let (wallet_a, faucet_account) = client_a.setup_wallet_and_faucet(AccountType::Private).await?;
+    let wallet_a_id = wallet_a.id();
+    let faucet_account_id = faucet_account.id();
+
+    let tx_id = client_a
+        .mint_and_consume(wallet_a_id, faucet_account_id, NoteType::Private)
+        .await?;
+    client_a.wait_for_tx(tx_id).await?;
+
+    let wallet_b_id = client_b.insert_wallet(AccountType::Private).await?.id();
+    client_b.sync_state().await?;
+
+    let asset = FungibleAsset::new(faucet_account_id, TRANSFER_AMOUNT).unwrap();
+    let req_send = TransactionRequestBuilder::new()
+        .build_pay_to_id(
+            PaymentNoteDescription::new(vec![Asset::from(asset)], wallet_a_id, wallet_b_id),
+            NoteType::Private,
+            client_a.rng(),
+        )
+        .unwrap();
+    let in_batch_note = req_send
+        .expected_output_own_notes()
+        .pop()
+        .expect("pay_to_id should produce exactly one note");
+
+    // Client B consumes the note before it exists on chain, and proves the transaction itself.
+    let req_consume = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![in_batch_note])
+        .unwrap();
+    let tx_result_b = client_b.execute_transaction(wallet_b_id, req_consume).await?;
+    let proven_b = client_b.prove_transaction(&tx_result_b).await?;
+
+    // The batch references the sync height of client A, so client A syncs up to the reference block
+    // of client B first.
+    client_a.sync_state().await?;
+    let mut batch = client_a.new_transaction_batch();
+    client_a.push_to_batch(&mut batch, wallet_a_id, req_send).await?;
+    client_a
+        .push_proven_transaction(&mut batch, proven_b, tx_result_b.clone())
+        .await?;
+    let block_num = client_a.submit_transaction_batch(batch).await?;
+    info!(
+        block_num = block_num.as_u32(),
+        "Batch with a transaction of another party submitted"
+    );
+
+    // Client A does not record the transaction of client B, so client B records it.
+    client_b.apply_transaction(&tx_result_b, block_num).await?;
+
+    let [a_committed] =
+        poll_committed_counts(&mut client_a, [(wallet_a_id, 2)], "another party").await?;
+    assert!(a_committed >= 2, "expected ≥ 2 committed txs for wallet A, got {a_committed}");
+    assert!(client_a.get_account(wallet_b_id).await?.is_none());
+    let a_transactions = client_a.get_transactions(TransactionFilter::All).await?;
+    assert!(
+        a_transactions.iter().all(|tx| tx.details.account_id != wallet_b_id),
+        "client A must not record the transaction of client B"
+    );
+
+    client_b.wait_for_tx(tx_result_b.id()).await?;
+    let b_balance = client_b
+        .account_reader(wallet_b_id)
+        .get_balance(faucet_account_id)
+        .await
+        .context("failed to find the balance of wallet B after the batch")?;
+    assert_eq!(b_balance, AssetAmount::new(TRANSFER_AMOUNT).unwrap());
 
     Ok(())
 }

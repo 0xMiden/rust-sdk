@@ -1,21 +1,18 @@
-use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, ValueEnum};
 use miden_client::Client;
 use miden_client::account::component::{
     AccountComponent,
     AccountComponentMetadata,
-    BurnPolicy,
-    FungibleFaucet,
     InitStorageData,
-    MIDEN_PACKAGE_EXTENSION,
-    MintPolicy,
-    TokenName,
-    TokenPolicyManager,
+    InitStorageDataError,
 };
+use miden_client::account::standards::auth::AuthSingleSig;
+use miden_client::account::standards::faucets::{FungibleFaucet, TokenName};
+use miden_client::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -23,10 +20,9 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::asset::{AssetAmount, TokenSymbol};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::keystore::Keystore;
-use miden_client::utils::Deserializable;
 use miden_client::vm::{Package, TargetType};
 use rand::{CryptoRng, Rng};
 use serde::Deserialize;
@@ -36,6 +32,7 @@ use crate::commands::account::set_default_account_if_unset;
 use crate::commands::keys::{ECDSA_SCHEME_NAME, FALCON_SCHEME_NAME, scheme_name};
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::packages::load_packages;
 use crate::utils::parse_ecdsa_public_key;
 use crate::{CliKeyStore, client_binary_name};
 
@@ -100,6 +97,105 @@ impl AuthArgs {
     }
 }
 
+/// Inputs for the init storage data of a new account.
+struct InitStorageInputs {
+    /// The optional TOML file, given with `--init-storage-data-path`.
+    path: Option<PathBuf>,
+    /// The parsed `--init-slot` entries. Each entry holds the data of one flag.
+    values: Vec<InitStorageData>,
+}
+
+impl InitStorageInputs {
+    /// Creates the init storage inputs from the command arguments.
+    fn new(path: Option<&PathBuf>, values: &[InitStorageData]) -> Self {
+        Self {
+            path: path.cloned(),
+            values: values.to_vec(),
+        }
+    }
+
+    /// Loads the init storage data and the optional fungible faucet metadata.
+    ///
+    /// The `--init-slot` entries override the entries of the TOML file. A value entry replaces the
+    /// file value with the same name. Map entries for a slot replace all the map entries of that
+    /// slot in the file. Only a TOML file can supply fungible faucet metadata.
+    fn load(self) -> Result<(InitStorageData, Option<FungibleFaucetMetadata>), CliError> {
+        let (mut init_data, faucet_metadata) = match &self.path {
+            Some(path) => load_init_storage_data(path)?,
+            None => (InitStorageData::default(), None),
+        };
+
+        let overrides = merge_init_storage_values(&self.values).map_err(|err| {
+            CliError::InitDataError(Box::new(err), "conflicting --init-slot entries".to_string())
+        })?;
+        override_init_storage_data(&mut init_data, &overrides).map_err(|err| {
+            CliError::InitDataError(
+                Box::new(err),
+                "--init-slot entries conflict with the init storage data file".to_string(),
+            )
+        })?;
+
+        Ok((init_data, faucet_metadata))
+    }
+}
+
+/// Writes the entries of `overrides` into `init_data` and replaces the existing entries.
+fn override_init_storage_data(
+    init_data: &mut InitStorageData,
+    overrides: &InitStorageData,
+) -> Result<(), InitStorageDataError> {
+    for (name, value) in overrides.values() {
+        init_data.set_value(name.clone(), value.clone())?;
+    }
+    for (slot_name, entries) in overrides.maps() {
+        init_data.set_map_values(slot_name.clone(), entries.clone())?;
+    }
+    Ok(())
+}
+
+/// Merges the init storage data of several `--init-slot` entries into one.
+fn merge_init_storage_values(
+    values: &[InitStorageData],
+) -> Result<InitStorageData, InitStorageDataError> {
+    let mut init_data = InitStorageData::default();
+
+    values
+        .iter()
+        .flat_map(InitStorageData::values)
+        .try_for_each(|(name, value)| init_data.insert_value(name.clone(), value.clone()))?;
+
+    values
+        .iter()
+        .flat_map(InitStorageData::maps)
+        .flat_map(|(slot_name, entries)| entries.iter().map(move |entry| (slot_name, entry)))
+        .try_for_each(|(slot_name, (key, value))| {
+            init_data.insert_map_entry(slot_name.clone(), key.clone(), value.clone())
+        })?;
+
+    Ok(init_data)
+}
+
+/// Parses an `--init-slot` entry in the form `<slot::name>=<value>` into init storage data.
+///
+/// The entry is split at the first `=`. Storage value names cannot contain `=`, so the value can
+/// contain it. The value must be a TOML value in the same form as in an init storage data file: a
+/// quoted string, a 4-element array of quoted strings, an inline table of fields, or a list of `{
+/// key, value }` map entries. Unquoted values are rejected.
+fn parse_init_slot(entry: &str) -> Result<InitStorageData, String> {
+    let (name, value) = entry
+        .split_once('=')
+        .ok_or_else(|| format!("expected `<slot::name>=<value>`, got `{entry}`"))?;
+    let error_message =
+        |err: &dyn std::fmt::Display| format!("invalid --init-slot entry for `{name}`: {err}");
+
+    // Parse the value as TOML
+    let value = value.parse::<toml::Value>().map_err(|err| error_message(&err))?;
+    let toml_str = toml::to_string(&toml::Table::from_iter([(name.to_string(), value)]))
+        .map_err(|err| error_message(&err))?;
+
+    InitStorageData::from_toml(&toml_str).map_err(|err| error_message(&err))
+}
+
 // NEW WALLET
 // ================================================================================================
 
@@ -115,6 +211,9 @@ pub struct NewWalletCmd {
     pub account_type: CliAccountType,
     /// Optional list of paths specifying additional components in the form of packages to add to
     /// the account.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long)]
     pub extra_packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -123,6 +222,16 @@ pub struct NewWalletCmd {
     /// present in the init storage data file.
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
+    /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
+    /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
+    /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
+    /// the flag to set more values. The values override the entries of `--init-storage-data-path`.
+    #[arg(
+        long = "init-slot",
+        value_name = "SLOT=VALUE",
+        value_parser = parse_init_slot
+    )]
+    pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the wallet can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
@@ -148,7 +257,7 @@ impl NewWalletCmd {
             &keystore,
             self.account_type.into(),
             &package_paths,
-            self.init_storage_data_path.clone(),
+            InitStorageInputs::new(self.init_storage_data_path.as_ref(), &self.init_storage_values),
             self.offline,
             self.auth.choice()?,
         )
@@ -208,6 +317,11 @@ impl NewWalletCmd {
 /// ```bash
 /// miden-client new-account -p basic-fungible-faucet -i init_data.toml
 /// ```
+///
+/// Set init storage values on the command line instead of in a file:
+/// ```bash
+/// miden-client new-account -p my-component --init-slot 'my::component::slot="0x1234"'
+/// ```
 #[derive(Debug, Parser, Clone)]
 pub struct NewAccountCmd {
     /// Account type (`private` or `public`).
@@ -217,6 +331,9 @@ pub struct NewAccountCmd {
     /// any package contributes a `FungibleFaucet` component, the resulting account is treated as a
     /// fungible faucet (and an implicit `TokenPolicyManager` is installed when not already
     /// provided).
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(short, long, required = true)]
     pub packages: Vec<PathBuf>,
     /// Optional file path to a TOML file containing a list of key/values used for initializing
@@ -225,6 +342,16 @@ pub struct NewAccountCmd {
     /// present in the init storage data file.
     #[arg(short, long)]
     pub init_storage_data_path: Option<PathBuf>,
+    /// Sets one init storage value in the form `<slot::name>=<value>`. The name is a storage slot
+    /// name, or a slot name with a `.field` suffix. The value must be a quoted string, a 4-element
+    /// string array, an inline table of fields, or a list of `{ key, value }` map entries. Repeat
+    /// the flag to set more values. The values override the entries of `--init-storage-data-path`.
+    #[arg(
+        long = "init-slot",
+        value_name = "SLOT=VALUE",
+        value_parser = parse_init_slot
+    )]
+    pub init_storage_values: Vec<InitStorageData>,
     /// Seed local-only state so the account can be created and used for execution without a node.
     /// Only available when built with the `testing` feature.
     #[cfg_attr(feature = "testing", arg(long, default_value_t = false))]
@@ -245,7 +372,7 @@ impl NewAccountCmd {
             &keystore,
             self.account_type.into(),
             &self.packages,
-            self.init_storage_data_path.clone(),
+            InitStorageInputs::new(self.init_storage_data_path.as_ref(), &self.init_storage_values),
             self.offline,
             self.auth.choice()?,
         )
@@ -264,72 +391,6 @@ impl NewAccountCmd {
 
 // HELPERS
 // ================================================================================================
-
-/// Reads [[`miden_core::vm::Package`]]s from the given file paths.
-///
-/// A bare name resolves to a package in the configured package directory. The CLI writes those
-/// packages itself, so they are read as trusted. A path with the `.masp` extension is used as is
-/// and is read as untrusted, so its MAST forest is validated.
-pub(crate) fn load_packages(
-    cli_config: &CliConfig,
-    package_paths: &[PathBuf],
-) -> Result<Vec<Package>, CliError> {
-    let mut packages = Vec::with_capacity(package_paths.len());
-
-    let packages_dir = &cli_config.package_directory;
-    for path in package_paths {
-        // If a user passes in a file with the `.masp` file extension, then we leave the path as is;
-        // since it probably is a full path (this is the case with cargo-miden for instance).
-        let (path, trusted) = match path.extension() {
-            None => {
-                let path = path.with_extension(MIDEN_PACKAGE_EXTENSION);
-                Ok((packages_dir.join(path), true))
-            },
-            Some(extension) => {
-                if extension == OsStr::new(MIDEN_PACKAGE_EXTENSION) {
-                    Ok((path.clone(), false))
-                } else {
-                    let error = std::io::Error::new(
-                        std::io::ErrorKind::InvalidFilename,
-                        format!(
-                            "{} has an invalid file extension: '{}'. \
-                            Expected: {MIDEN_PACKAGE_EXTENSION}",
-                            path.display(),
-                            extension.display()
-                        ),
-                    );
-                    Err(CliError::AccountComponentError(
-                        Box::new(error),
-                        format!("refuesed to read {}", path.display()),
-                    ))
-                }
-            },
-        }?;
-
-        let bytes = fs::read(&path).map_err(|e| {
-            CliError::AccountComponentError(
-                Box::new(e),
-                format!("failed to read Package file from {}", path.display()),
-            )
-        })?;
-
-        let package = if trusted {
-            Package::read_from_bytes_trusted(&bytes)
-        } else {
-            Package::read_from_bytes(&bytes)
-        }
-        .map_err(|e| {
-            CliError::AccountComponentError(
-                Box::new(e),
-                format!("failed to deserialize Package in {}", path.display()),
-            )
-        })?;
-
-        packages.push(package);
-    }
-
-    Ok(packages)
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -390,15 +451,10 @@ fn drop_basic_fungible_faucet_packages(packages: &mut Vec<Package>) -> bool {
     packages.len() != before
 }
 
-/// Loads the initialization storage data from an optional TOML file. If None is passed, an empty
-/// object is returned.
+/// Loads the initialization storage data from a TOML file.
 fn load_init_storage_data(
-    path: Option<&PathBuf>,
+    path: &Path,
 ) -> Result<(InitStorageData, Option<FungibleFaucetMetadata>), CliError> {
-    let Some(path) = path else {
-        return Ok((InitStorageData::default(), None));
-    };
-
     let mut contents = String::new();
     File::open(path)
         .and_then(|mut f| f.read_to_string(&mut contents))
@@ -546,7 +602,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     keystore: &CliKeyStore,
     account_type: AccountType,
     package_paths: &[PathBuf],
-    init_storage_data_path: Option<PathBuf>,
+    init_storage_inputs: InitStorageInputs,
     offline: bool,
     auth_choice: AuthChoice,
 ) -> Result<Account, CliError> {
@@ -562,8 +618,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let packages = load_packages(&cli_config, package_paths)?;
     debug!("Loaded {} packages", packages.len());
     debug!("Loading initialization storage data...");
-    let (init_storage_data, faucet_metadata) =
-        load_init_storage_data(init_storage_data_path.as_ref())?;
+    let (init_storage_data, faucet_metadata) = init_storage_inputs.load()?;
     debug!("Loaded initialization storage data");
 
     // `FungibleFaucet` requires every storage slot to be initialized. When the user provides a
@@ -735,15 +790,16 @@ fn process_packages(
 mod tests {
     use miden_client::account::StorageSlotName;
     use miden_client::account::component::{
-        BasicWallet,
         FeltSchema,
         SchemaType,
         StorageSchema,
         StorageSlotSchema,
-        TokenName,
         ValueSlotSchema,
         WordSchema,
+        WordValue,
     };
+    use miden_client::account::standards::faucets::TokenName;
+    use miden_client::account::standards::wallets::BasicWallet;
     use miden_client::assembly::CodeBuilder;
     use miden_client::asset::{AssetAmount, TokenSymbol};
     use miden_client::utils::Serializable;
@@ -849,6 +905,122 @@ mod tests {
             err.to_string().contains("failed to read account component metadata"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn parse_init_slot_accepts_toml_values() {
+        let init_data = parse_init_slot(r#"my::slot.field="0x1234""#).unwrap();
+        assert_eq!(
+            init_data.value_entry(&"my::slot.field".parse().unwrap()),
+            Some(&WordValue::Atomic("0x1234".into()))
+        );
+
+        let init_data = parse_init_slot(r#"my::slot=["1", "2", "3", "4"]"#).unwrap();
+        assert_eq!(
+            init_data.value_entry(&"my::slot".parse().unwrap()),
+            Some(&WordValue::Elements(["1", "2", "3", "4"].map(String::from)))
+        );
+
+        let init_data = parse_init_slot(r#"my::map=[{ key = "0x01", value = "0x10" }]"#).unwrap();
+        assert_eq!(init_data.map_entries(&"my::map".parse().unwrap()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_init_slot_rejects_invalid_entries() {
+        for entry in [
+            "my::slot",               // no `=`
+            r#"token_metadata="1""#,  // slot name with one component
+            "my::slot=0x1234",        // unquoted value
+            r#"my::slot=["1", "2"]"#, // array without 4 elements
+        ] {
+            assert!(parse_init_slot(entry).is_err(), "`{entry}` should be rejected");
+        }
+    }
+
+    #[test]
+    fn init_storage_values_override_init_storage_data_file() {
+        let mut init_data = InitStorageData::from_toml(
+            r#"
+            "my::slot" = "1"
+            "my::other" = "2"
+            "my::map" = [{ key = "0x01", value = "0x10" }, { key = "0x02", value = "0x20" }]
+            "#,
+        )
+        .unwrap();
+        let overrides = load_init_storage_values(&[
+            r#"my::slot="3""#,
+            r#"my::map=[{ key = "0x03", value = "0x30" }]"#,
+        ])
+        .unwrap();
+
+        override_init_storage_data(&mut init_data, &overrides).unwrap();
+
+        let value = |name: &str| init_data.value_entry(&name.parse().unwrap()).cloned();
+        // Check my::slot has the override value
+        assert_eq!(value("my::slot"), Some(WordValue::Atomic("3".into())));
+        // Check my::other keeps the original value from the file
+        assert_eq!(value("my::other"), Some(WordValue::Atomic("2".into())));
+        // Check my::map has the override value
+        assert_eq!(
+            init_data.map_entries(&"my::map".parse().unwrap()).unwrap(),
+            &vec![(WordValue::Atomic("0x03".into()), WordValue::Atomic("0x30".into()))]
+        );
+    }
+
+    #[test]
+    fn init_storage_values_append_map_entries_and_reject_conflicts() {
+        let init_data = load_init_storage_values(&[
+            r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
+            r#"my::map=[{ key = "0x02", value = "0x20" }]"#,
+        ])
+        .unwrap();
+        assert_eq!(init_data.map_entries(&"my::map".parse().unwrap()).unwrap().len(), 2);
+
+        for entries in [
+            // The same value name twice.
+            [r#"my::slot="1""#, r#"my::slot="2""#],
+            // The same map key twice.
+            [
+                r#"my::map=[{ key = "0x01", value = "0x10" }]"#,
+                r#"my::map=[{ key = "0x01", value = "0x20" }]"#,
+            ],
+            // A value and map entries for the same slot.
+            [r#"my::map="1""#, r#"my::map=[{ key = "0x01", value = "0x10" }]"#],
+        ] {
+            assert!(load_init_storage_values(&entries).is_err(), "{entries:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn init_storage_values_initialize_storage_without_prompting() {
+        let package = test_component_package_with_schema(
+            "@account_procedure pub proc marked nop end",
+            composite_slot_schema(None),
+        );
+        let entries = [r#"a="1""#, r#"b="2""#, r#"c="3""#, r#"d="4""#]
+            .map(|field| format!("{TEST_SLOT}.{field}"));
+        let init_data = load_init_storage_values(&entries.each_ref().map(String::as_str)).unwrap();
+
+        // Stdin is empty under the test runner. A prompt would read empty values and fail.
+        let components = process_packages(vec![package], &init_data)
+            .expect("the --init-slot values should satisfy every field of the slot");
+
+        assert_eq!(components[0].storage_slots()[0].value(), Word::from([1u32, 2, 3, 4]));
+    }
+
+    /// Parses `new-account` arguments with one package and the given extra arguments.
+    fn parse_new_account(extra_args: &[&str]) -> Result<NewAccountCmd, clap::Error> {
+        let args = ["new-account", "-p", "basic-wallet"].iter().chain(extra_args);
+        NewAccountCmd::try_parse_from(args)
+    }
+
+    /// Loads the init storage data from the given `--init-slot` entries.
+    fn load_init_storage_values(entries: &[&str]) -> Result<InitStorageData, CliError> {
+        let args: Vec<&str> = entries.iter().flat_map(|entry| ["--init-slot", entry]).collect();
+        let cmd = parse_new_account(&args).unwrap();
+        InitStorageInputs::new(None, &cmd.init_storage_values)
+            .load()
+            .map(|(data, _)| data)
     }
 
     fn test_fungible_faucet_component() -> AccountComponent {

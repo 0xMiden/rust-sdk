@@ -12,8 +12,8 @@ persistence layer for std environments using SQLite (via `rusqlite`).
 Add to `Cargo.toml`:
 
 ```toml
-miden-client              = { version = "0.16.0-alpha.1", features = ["tonic"] }
-miden-client-sqlite-store = { version = "0.16.0-alpha.1" }
+miden-client              = { version = "0.18", features = ["tonic"] }
+miden-client-sqlite-store = { version = "0.18" }
 ```
 
 The `tonic` feature is what pulls in the gRPC client used to talk to a node. It is not enabled by

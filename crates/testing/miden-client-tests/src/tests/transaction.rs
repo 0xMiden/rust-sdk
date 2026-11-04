@@ -4,11 +4,16 @@ use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::time::Duration;
 
+use miden_client::account::standards::auth::AuthSingleSig;
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, AuthSingleSig};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
 use miden_client::note::{Note, P2idNote};
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::{
+    AccountFetch,
+    AccountStorageRequirements,
+    StorageMapFetch,
+};
 use miden_client::rpc::{GrpcError, RpcEndpoint, RpcError};
 use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::TestClient;
@@ -16,6 +21,7 @@ use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     ChainAnchor,
     ChainAnchorError,
+    DiscardCause,
     ForeignAccount,
     InputNote,
     LocalTransactionProver,
@@ -28,6 +34,7 @@ use miden_client::transaction::{
     TransactionRequestBuilder,
     TransactionRequestError,
     TransactionScript,
+    TransactionStatus,
 };
 use miden_client::{ClientError, Deserializable, Serializable, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
@@ -61,7 +68,7 @@ use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
 
 use super::PaymentNoteDescription;
-use crate::tests::create_test_client;
+use crate::tests::{TX_DISCARD_DELTA, create_test_client, mock_client_builder, prebuilt_rpc_api};
 
 #[tokio::test]
 async fn dap_transaction_execution_records_replay_data() {
@@ -456,13 +463,29 @@ async fn prover_fallback_pattern_allows_retry_with_different_prover() {
 // LAZY FOREIGN ACCOUNT LOADING TESTS
 // ================================================================================================
 
-/// Tests that the `ClientDataStore` lazy-loads foreign account inputs via RPC when the foreign
-/// account is not specified in the `TransactionRequestBuilder`.
-#[tokio::test]
-async fn lazy_foreign_account_loading() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+/// A deployed public account with a storage map, and a transaction script that reads one entry of
+/// that map through foreign procedure invocation.
+struct FpiFixture {
+    account_id: AccountId,
+    map_slot_name: StorageSlotName,
+    map_key: Word,
+    /// Calls the account's map getter through FPI and asserts the stored value.
+    tx_script: TransactionScript,
+}
 
-    // Setup: Create and deploy a public foreign account with a storage map.
+impl FpiFixture {
+    /// Returns the storage requirements that cover the one map entry the script reads.
+    fn storage_requirements(&self) -> AccountStorageRequirements {
+        AccountStorageRequirements::new([(
+            self.map_slot_name.clone(),
+            &[StorageMapKey::new(self.map_key)],
+        )])
+    }
+}
+
+/// Deploys a public account whose storage map holds one entry, commits the deployment to a block,
+/// and syncs the client.
+async fn deploy_fpi_fixture(client: &mut TestClient, rpc_api: &MockRpcApi) -> FpiFixture {
     let map_key: Word =
         [Felt::from(15u32), Felt::from(15u32), Felt::from(15u32), Felt::from(15u32)].into();
     let map_value: Word =
@@ -471,7 +494,7 @@ async fn lazy_foreign_account_loading() {
 
     let mut storage_map = StorageMap::new();
     storage_map.insert(StorageMapKey::new(map_key), map_value).unwrap();
-    let map_slot = StorageSlot::with_map(map_slot_name, storage_map);
+    let map_slot = StorageSlot::with_map(map_slot_name.clone(), storage_map);
 
     let component_code = CodeBuilder::default()
         .compile_component_code(
@@ -522,24 +545,8 @@ async fn lazy_foreign_account_loading() {
     rpc_api.prove_block();
     client.sync_state().await.unwrap();
 
-    // Setup: Create a local wallet to execute the FPI transaction.
-    let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
-
-    // Execute FPI transaction WITHOUT specifying foreign account.
-
-    // Verify no foreign account code is cached before the transaction.
-    let cached = client
-        .test_store()
-        .get_foreign_account_code(vec![foreign_account_id])
-        .await
-        .unwrap();
-    assert!(
-        cached.is_empty(),
-        "foreign account code should not be cached before lazy loading"
-    );
-
-    // Build a transaction script that calls the foreign procedure via FPI. The procedure reads from
-    // the storage map, triggering lazy loading of map entries.
+    // The procedure reads from the storage map, so an execution without prefetched inputs triggers
+    // lazy loading of the map entry.
     let tx_script = client
         .code_builder()
         .compile_tx_script(format!(
@@ -558,23 +565,169 @@ async fn lazy_foreign_account_loading() {
         ))
         .unwrap();
 
-    // Build request WITHOUT specifying foreign accounts, lazy loading should handle it.
-    let tx_request = TransactionRequestBuilder::new().custom_script(tx_script).build().unwrap();
+    FpiFixture {
+        account_id: foreign_account_id,
+        map_slot_name,
+        map_key,
+        tx_script,
+    }
+}
 
-    // Execute the transaction. This should succeed because the data store will lazy-load the
-    // foreign account via RPC, and then lazy-load the storage map entries when the procedure reads
-    // from the map.
+/// Tests that the `ClientDataStore` lazy-loads foreign account inputs when the foreign account is
+/// not specified in the `TransactionRequestBuilder`, and that a foreign account declared as
+/// [`ForeignAccount::Prefetched`] is served without any RPC call.
+#[tokio::test]
+async fn lazy_foreign_account_loading() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let fpi = deploy_fpi_fixture(&mut client, &rpc_api).await;
+    let foreign_account_id = fpi.account_id;
+
+    // Setup: Create a local wallet to execute the FPI transaction.
+    let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
+
+    // Build request WITHOUT specifying foreign accounts, lazy loading should handle it.
+    let tx_request = TransactionRequestBuilder::new()
+        .custom_script(fpi.tx_script.clone())
+        .build()
+        .unwrap();
+
+    // Execute the transaction. The data store lazy-loads the foreign account: the client tracks it,
+    // so the store serves its state and the node serves only its witness. The storage map entries
+    // come from the store when the procedure reads from the map.
+    let calls_before = rpc_api.get_account_call_count();
     Box::pin(client.submit_new_transaction(local_wallet.id(), tx_request))
         .await
         .unwrap();
+    assert_eq!(
+        rpc_api.get_account_call_count() - calls_before,
+        1,
+        "a tracked foreign account is fetched once, for its witness"
+    );
 
-    // Verify the foreign account code is now cached in the store.
+    // The code of a tracked account lives in the account tables, so the foreign code cache stays
+    // empty.
     let cached = client
         .test_store()
         .get_foreign_account_code(vec![foreign_account_id])
         .await
         .unwrap();
-    assert_eq!(cached.len(), 1, "foreign account code should be cached after lazy loading");
+    assert!(cached.is_empty(), "a tracked account's code is not cached as foreign code");
+
+    // A prefetched foreign account is served from the request, so the node is never asked for it:
+    // the staged failure would abort the transaction if any account fetch happened.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let inputs = client
+        .get_foreign_account_inputs(
+            [ForeignAccount::public(
+                foreign_account_id,
+                AccountFetch::new()
+                    .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
+            )
+            .unwrap()],
+            client.get_sync_height().await.unwrap(),
+        )
+        .await
+        .unwrap();
+    rpc_api.fail_next_call(
+        RpcEndpoint::GetAccount,
+        RpcError::InvalidResponse("unexpected account fetch".into()),
+    );
+    let tx_request = TransactionRequestBuilder::new()
+        .custom_script(fpi.tx_script.clone())
+        .foreign_accounts(inputs.clone())
+        .build()
+        .unwrap();
+    Box::pin(client.submit_new_transaction(local_wallet.id(), tx_request))
+        .await
+        .unwrap();
+
+    // The same inputs are stale once the reference block moves, and are rejected before execution.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let tx_request = TransactionRequestBuilder::new()
+        .custom_script(fpi.tx_script)
+        .foreign_accounts(inputs)
+        .build()
+        .unwrap();
+    let error = Box::pin(client.execute_transaction(local_wallet.id(), tx_request))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ClientError::TransactionRequestError(
+            TransactionRequestError::ForeignAccountNotAtReferenceBlock { account_id, .. }
+        ) if account_id == foreign_account_id
+    ));
+}
+
+/// A proposer captures the anchor and the foreign account inputs at the same block. After the chain
+/// moves on, the anchored execution must succeed even when the node no longer serves account state
+/// at that block.
+#[tokio::test]
+async fn chain_anchor_execution_with_prefetched_foreign_account() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let fpi = deploy_fpi_fixture(&mut client, &rpc_api).await;
+    let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
+
+    // Capture the anchor and the foreign account inputs at the same block.
+    let lazy_request = TransactionRequestBuilder::new()
+        .custom_script(fpi.tx_script.clone())
+        .build()
+        .unwrap();
+    let anchor = client.chain_anchor_for_request(&lazy_request).await.unwrap();
+    let anchor_block = anchor.block_num();
+    let inputs = client
+        .get_foreign_account_inputs(
+            [ForeignAccount::public(
+                fpi.account_id,
+                AccountFetch::new()
+                    .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
+            )
+            .unwrap()],
+            anchor_block,
+        )
+        .await
+        .unwrap();
+    let prefetched_request = TransactionRequestBuilder::new()
+        .custom_script(fpi.tx_script.clone())
+        .foreign_accounts(inputs)
+        .build()
+        .unwrap();
+
+    // Advance the chain past the anchor, so the reference block is no longer the tip.
+    for _ in 0..3 {
+        rpc_api.prove_block();
+    }
+    client.sync_state().await.unwrap();
+    let tip = client.get_sync_height().await.unwrap();
+    assert!(tip > anchor_block, "the chain must have advanced past the anchor");
+
+    // A node that pruned the anchor block's account state fails every account fetch at that block.
+    // Without prefetched inputs the executor has to fetch the foreign account there.
+    let pruned = || RpcError::InvalidResponse("account state at the anchor block is pruned".into());
+    rpc_api.fail_next_call(RpcEndpoint::GetAccount, pruned());
+    let error =
+        Box::pin(client.execute_transaction_at(local_wallet.id(), lazy_request, anchor.clone()))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(error, ClientError::TransactionExecutorError(_)),
+        "lazy loading must fail when the node cannot serve the anchor block, got {error:?}"
+    );
+
+    // Prefetched inputs are served from the request, so the staged failure is never reached and the
+    // transaction executes against the anchor block.
+    rpc_api.fail_next_call(RpcEndpoint::GetAccount, pruned());
+    let result =
+        Box::pin(client.execute_transaction_at(local_wallet.id(), prefetched_request, anchor))
+            .await
+            .unwrap();
+    assert_eq!(
+        result.executed_transaction().block_header().block_num(),
+        anchor_block,
+        "anchored execution must reference the anchor block"
+    );
 }
 
 // ACCOUNT WITNESS PREFETCHING TESTS
@@ -702,7 +855,11 @@ fn fpi_request(setup: &FpiSetup) -> TransactionRequest {
             setup.map_slot_name.clone(),
             core::slice::from_ref(&setup.map_key),
         )]);
-        ForeignAccount::public(setup.foreign_account.id(), requirements).unwrap()
+        ForeignAccount::public(
+            setup.foreign_account.id(),
+            AccountFetch::new().with_storage(StorageMapFetch::Slots(requirements)),
+        )
+        .unwrap()
     } else {
         let (id, _vault, storage, code, nonce, seed) = setup.foreign_account.clone().into_parts();
         let partial_account = PartialAccount::new(
@@ -889,10 +1046,10 @@ async fn public_account_state_ahead_of_its_witness_reaches_the_node() {
     );
 }
 
-/// Without a cached witness the inputs cannot be built locally, so the account is fetched with its
-/// details. Isolates the witness as the one piece the store cannot supply on its own.
+/// Without a cached witness the store supplies everything but the witness, which is fetched from
+/// the node once. Isolates the witness as the one piece the store cannot supply on its own.
 #[tokio::test]
-async fn public_account_without_a_cached_witness_reaches_the_node() {
+async fn public_account_without_a_cached_witness_fetches_only_the_witness() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     let setup = Box::pin(deploy_fpi_account(&mut client, &rpc_api, AccountType::Public)).await;
 
@@ -907,7 +1064,7 @@ async fn public_account_without_a_cached_witness_reaches_the_node() {
     assert_eq!(
         rpc_api.get_account_call_count(),
         calls_before + 1,
-        "without a cached witness the account must be fetched from the node"
+        "without a cached witness the transaction must ask the node for the witness, once"
     );
 }
 
@@ -1437,4 +1594,86 @@ async fn consuming_a_processing_note_is_rejected_before_submission() {
         .pop()
         .unwrap();
     assert_eq!(record.consumer_transaction_id(), Some(&first_tx_id));
+}
+
+/// A discarded transaction releases its notes. The notes retain proofs received while processing.
+#[rstest::rstest]
+#[case::already_authenticated(true)]
+#[case::authenticated_while_processing(false)]
+#[tokio::test]
+async fn discarded_transaction_releases_its_input_notes(#[case] authenticated: bool) {
+    let rpc_api = prebuilt_rpc_api().await;
+    let mut client = TestClient::from(
+        mock_client_builder(Arc::new(rpc_api.clone()))
+            .await
+            .tx_discard_delta(Some(TX_DISCARD_DELTA))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+
+    let note = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    if authenticated {
+        rpc_api.prove_block();
+        client.sync_state().await.unwrap();
+    }
+
+    // Consume the note with a transaction that is applied locally but never reaches the node, so it
+    // goes stale once the chain moves past the discard delta.
+    let request = TransactionRequestBuilder::new()
+        .build_consume_notes(vec![note.clone()])
+        .unwrap();
+    let tx_result = Box::pin(client.execute_transaction(wallet.id(), request)).await.unwrap();
+    let tx_id = tx_result.id();
+    let submission_height = client.get_sync_height().await.unwrap();
+    Box::pin(client.apply_transaction(&tx_result, submission_height)).await.unwrap();
+
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_processing());
+    assert_eq!(record.consumer_transaction_id(), Some(&tx_id));
+
+    if !authenticated {
+        rpc_api.prove_block();
+        client.sync_state().await.unwrap();
+        let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+        assert!(record.is_processing());
+        assert!(record.inclusion_proof().is_some());
+        assert_eq!(record.consumer_transaction_id(), Some(&tx_id));
+    }
+
+    // Move past the discard delta: the sync discards the transaction.
+    rpc_api.advance_blocks(TX_DISCARD_DELTA + 1);
+    client.sync_state().await.unwrap();
+    let tx_record = client
+        .get_transactions(TransactionFilter::Ids(vec![tx_id]))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        matches!(tx_record.status, TransactionStatus::Discarded(DiscardCause::Stale)),
+        "the transaction should have been discarded, got: {:?}",
+        tx_record.status
+    );
+
+    // The note is back to committed and is listed as consumable again.
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(
+        record.is_committed(),
+        "the note should be released by the discarded transaction, got: {}",
+        record.state()
+    );
+    let consumable = client.get_consumable_notes(Some(wallet.id())).await.unwrap();
+    assert!(consumable.iter().any(|(record, _)| record.id() == Some(note.id())));
+
+    // Consuming it again works and is confirmed by the network.
+    let second_tx_id =
+        client.consume_notes(wallet.id(), std::slice::from_ref(&note)).await.unwrap();
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let record = client.get_input_note(note.id()).await.unwrap().unwrap();
+    assert!(record.is_consumed(), "the note should be consumed, got: {}", record.state());
+    assert_eq!(record.consumer_transaction_id(), Some(&second_tx_id));
 }

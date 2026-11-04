@@ -1,8 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::vec::Vec;
 
 use anyhow::Context;
-use miden_client::account::component::{AccountComponent, BasicWallet};
+use miden_client::account::component::AccountComponent;
+use miden_client::account::standards::auth::AuthSingleSig;
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -16,25 +18,19 @@ use miden_client::account::{
     AccountType,
     AccountVaultPatch,
     Address,
+    AddressInterface,
     StorageMap,
     StorageMapKey,
     StorageSlot,
     StorageSlotContent,
     StorageSlotName,
 };
+use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
-use miden_client::auth::{AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::{AccountWitness, BlockNumber};
-use miden_client::note::NoteUpdateTracker;
-use miden_client::store::{AccountUpdate, ClientAccountType, StaleUpdate, Store, StoreError};
-use miden_client::sync::{
-    AccountUpdates,
-    PartialBlockchainUpdates,
-    PublicAccountUpdate,
-    StateSyncUpdate,
-    TransactionUpdateTracker,
-};
+use miden_client::note::NoteTag;
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::transaction::{
     DiscardCause,
@@ -45,6 +41,17 @@ use miden_client::transaction::{
     TransactionStatus,
 };
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
+use miden_client_core::errors::{StaleUpdate, StoreError};
+use miden_client_core::store::{AccountUpdate, ClientAccountType, NoteUpdates, Store};
+use miden_client_core::sync::{
+    AccountUpdates,
+    NoteTagRecord,
+    NoteTagSource,
+    PartialBlockchainUpdates,
+    PublicAccountUpdate,
+    StateSyncUpdate,
+    TransactionUpdateTracker,
+};
 use miden_protocol::account::{
     AccountComponentMetadata,
     StorageMapPatch,
@@ -66,6 +73,67 @@ use crate::SqliteStore;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend, allocate_forest_revision};
 use crate::sql_error::SqlResultExt;
 use crate::tests::create_test_store;
+
+#[tokio::test]
+async fn get_account_uses_one_snapshot_during_concurrent_updates() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let (store, account, value_slot, map_slot) =
+        insert_account_with_storage_for_forest_test().await?;
+    let (_, updated_account) =
+        build_patch_for_forest_rollback_test(&account, value_slot, map_slot)?;
+    let account_id = account.id();
+    let (header_read_tx, header_read_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+
+    let reader = store.interact_with_connection(move |conn| {
+        let mut pause = Some((header_read_tx, resume_rx));
+        conn.authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Read { table_name: "latest_account_assets", .. }
+            ) && let Some((header_read_tx, resume_rx)) = pause.take()
+            {
+                // Pause after the header query so the writer can commit before the vault query.
+                header_read_tx.send(()).expect("writer waits for the header query");
+                resume_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("writer must release the account read");
+            }
+            Authorization::Allow
+        }));
+
+        let record = SqliteStore::get_account(conn, account_id);
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        record
+    });
+    let writer = async {
+        tokio::time::timeout(Duration::from_secs(10), header_read_rx).await??;
+        let result = store.update_account(&updated_account).await;
+        resume_tx.send(())?;
+        result.map_err(anyhow::Error::from)
+    };
+
+    let (record, update) = tokio::join!(reader, writer);
+    update?;
+    let actual = Account::try_from(record?.context("account must exist")?)?;
+    assert_eq!(
+        actual.to_commitment(),
+        account.to_commitment(),
+        "the account must use the snapshot of its header"
+    );
+    let latest =
+        Account::try_from(store.get_account(account_id).await?.context("account exists")?)?;
+    assert_eq!(
+        latest.to_commitment(),
+        updated_account.to_commitment(),
+        "later reads must observe the committed update"
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn account_code_insertion_no_duplicates() -> anyhow::Result<()> {
@@ -790,6 +858,199 @@ async fn account_reader_addresses_access() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ACCOUNT NOTE TAG TESTS
+// ================================================================================================
+
+/// Builds an existing private wallet from `seed`, so that each seed gives a different account.
+fn build_wallet(seed: [u8; 32]) -> anyhow::Result<Account> {
+    Ok(AccountBuilder::new(seed)
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(AccountComponent::new(
+            BasicWallet::code().as_package().clone(),
+            vec![],
+            AccountComponentMetadata::new("miden::testing::account_note_tags"),
+        )?)
+        .build_existing()?)
+}
+
+/// Returns an address of `account_id` whose tag is longer than the tag of the default address.
+fn long_tag_address(account_id: AccountId) -> anyhow::Result<Address> {
+    let routing_params = RoutingParameters::new(AddressInterface::BasicWallet)
+        .with_note_tag_len(NoteTag::MAX_ACCOUNT_TARGET_TAG_LENGTH)?;
+    Ok(Address::new(account_id).with_routing_parameters(routing_params))
+}
+
+async fn account_note_tag_set(
+    store: &SqliteStore,
+) -> anyhow::Result<BTreeSet<(NoteTag, AccountId)>> {
+    Ok(store
+        .get_account_note_tags()
+        .await?
+        .into_iter()
+        .map(|record| match record.source {
+            NoteTagSource::Account(account_id) => (record.tag, account_id),
+            source => panic!("account note tags must have an account source, got {source:?}"),
+        })
+        .collect())
+}
+
+#[tokio::test]
+async fn account_note_tags_come_from_native_account_addresses() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let native = build_wallet([1; 32])?;
+    let native_id = native.id();
+    let default_address = Address::new(native_id);
+    store
+        .insert_account(&native, default_address.clone(), ClientAccountType::Native)
+        .await?;
+
+    // This address has the same tag as the default address.
+    let wallet_address = Address::new(native_id)
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    assert_eq!(wallet_address.to_note_tag(), default_address.to_note_tag());
+    store.insert_address(wallet_address, native_id).await?;
+
+    let long_address = long_tag_address(native_id)?;
+    assert_ne!(long_address.to_note_tag(), default_address.to_note_tag());
+    store.insert_address(long_address.clone(), native_id).await?;
+
+    let watched = build_wallet([2; 32])?;
+    let watched_id = watched.id();
+    store
+        .insert_account(&watched, Address::new(watched_id), ClientAccountType::Watched)
+        .await?;
+    store.insert_address(long_tag_address(watched_id)?, watched_id).await?;
+
+    let expected = BTreeSet::from([
+        (default_address.to_note_tag(), native_id),
+        (long_address.to_note_tag(), native_id),
+    ]);
+    assert_eq!(account_note_tag_set(&store).await?, expected);
+    assert_eq!(store.get_account_note_tags().await?.len(), expected.len());
+
+    // The store does not keep the account note tags.
+    assert!(store.get_note_tags().await?.is_empty());
+    assert_eq!(
+        store.get_unique_note_tags().await?,
+        expected.iter().map(|(tag, _)| *tag).collect::<BTreeSet<_>>()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_note_tags_follow_address_removal() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([3; 32])?;
+    let account_id = account.id();
+    let default_address = Address::new(account_id);
+    store
+        .insert_account(&account, default_address.clone(), ClientAccountType::Native)
+        .await?;
+    let wallet_address = Address::new(account_id)
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    store.insert_address(wallet_address.clone(), account_id).await?;
+    let long_address = long_tag_address(account_id)?;
+    store.insert_address(long_address.clone(), account_id).await?;
+
+    assert!(store.remove_address(long_address).await?);
+    assert_eq!(
+        account_note_tag_set(&store).await?,
+        BTreeSet::from([(default_address.to_note_tag(), account_id)])
+    );
+
+    // The wallet address keeps the tag of the default address.
+    assert!(store.remove_address(default_address.clone()).await?);
+    assert_eq!(
+        account_note_tag_set(&store).await?,
+        BTreeSet::from([(default_address.to_note_tag(), account_id)])
+    );
+
+    assert!(store.remove_address(wallet_address.clone()).await?);
+    assert!(store.get_account_note_tags().await?.is_empty());
+    assert!(store.get_unique_note_tags().await?.is_empty());
+
+    // A second removal of the same address finds nothing.
+    assert!(!store.remove_address(wallet_address).await?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn unique_note_tags_merge_stored_and_account_tags() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([4; 32])?;
+    let account_id = account.id();
+    let account_tag = Address::new(account_id).to_note_tag();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    // A user tag with the same value as the account tag.
+    let user_record = NoteTagRecord {
+        tag: account_tag,
+        source: NoteTagSource::User,
+    };
+    assert!(store.add_note_tag(user_record).await?);
+    let other_tag = NoteTag::new(7);
+    let subscription_record = NoteTagRecord {
+        tag: other_tag,
+        source: NoteTagSource::Subscription(Word::from([ONE, ZERO, ZERO, ZERO])),
+    };
+    assert!(store.add_note_tag(subscription_record).await?);
+
+    let stored = store.get_note_tags().await?;
+    assert_eq!(stored.len(), 2);
+    assert!(stored.contains(&user_record));
+    assert!(stored.contains(&subscription_record));
+    assert_eq!(store.get_unique_note_tags().await?, BTreeSet::from([account_tag, other_tag]));
+
+    // The account tag stays after the user tag with the same value is removed.
+    assert_eq!(store.remove_note_tag(user_record).await?, 1);
+    assert_eq!(store.get_unique_note_tags().await?, BTreeSet::from([account_tag, other_tag]));
+    assert_eq!(account_note_tag_set(&store).await?, BTreeSet::from([(account_tag, account_id)]));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_note_tag_rejects_account_source() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let account = build_wallet([5; 32])?;
+    let account_id = account.id();
+    let account_tag = Address::new(account_id).to_note_tag();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    let err = store
+        .add_note_tag(NoteTagRecord::with_account_source(account_tag, account_id))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AccountNoteTagNotStorable(id) if id == account_id));
+
+    // The store also rejects the record of an account that it does not track.
+    let untracked_id = AccountId::try_from(ACCOUNT_ID_REGULAR)?;
+    let err = store
+        .add_note_tag(NoteTagRecord::with_account_source(NoteTag::new(7), untracked_id))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AccountNoteTagNotStorable(id) if id == untracked_id));
+
+    assert!(store.get_note_tags().await?.is_empty());
+    assert_eq!(account_note_tag_set(&store).await?, BTreeSet::from([(account_tag, account_id)]));
+
+    Ok(())
+}
+
 // ACCOUNT HISTORY PRUNE TESTS
 // ================================================================================================
 
@@ -1024,6 +1285,38 @@ async fn prune_removes_orphaned_account_code() -> anyhow::Result<()> {
         })
         .await?;
     assert_eq!(code_count_after, code_count_before - 1);
+
+    Ok(())
+}
+
+/// Pruning must compare nonces as unsigned values, also above `i64::MAX`.
+#[tokio::test]
+async fn prune_account_history_with_large_nonces() -> anyhow::Result<()> {
+    const HIGH_BIT: u64 = 1 << 63;
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::prune_large::map").expect("valid slot name");
+
+    let mut account = setup_account_with_map(&store, 1, &map_slot_name).await?;
+    let account_id = account.id();
+    apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT - 1).await?;
+    apply_single_entry_update(&store, &mut account, &map_slot_name, HIGH_BIT).await?;
+
+    // A boundary below `i64::MAX` keeps the states replaced at larger nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::from(2u32))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 2);
+
+    // A boundary above `i64::MAX` also removes the states replaced at smaller nonces.
+    store
+        .interact_with_connection(move |conn| {
+            SqliteStore::prune_account_history(conn, account_id, Felt::new_unchecked(HIGH_BIT))
+        })
+        .await?;
+    assert_eq!(get_storage_metrics(&store).await.historical_account_headers, 0);
 
     Ok(())
 }
@@ -3375,7 +3668,7 @@ async fn apply_state_sync_patches_account_with_discarded_state() -> anyhow::Resu
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::default(),
+        NoteUpdates::default(),
         TransactionUpdateTracker::new(vec![discarded_transaction]),
         AccountUpdates::new(vec![account_update], Vec::new()),
         None,

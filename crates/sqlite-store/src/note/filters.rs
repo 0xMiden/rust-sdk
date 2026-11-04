@@ -3,10 +3,11 @@
 
 use std::rc::Rc;
 
-use miden_client::account::AccountId;
-use miden_client::note::{BlockNumber, NoteId};
-use miden_client::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
-use miden_client::utils::Serializable;
+use miden_client_core::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
+use miden_protocol::account::AccountId;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteId;
+use miden_protocol::utils::serde::Serializable;
 use rusqlite::types::{ToSqlOutput, Value};
 
 use crate::blob_array;

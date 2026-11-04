@@ -9,10 +9,12 @@ use miden_client::note::{
     NoteStorage,
     NoteTag,
     NoteType,
-    NoteUpdateTracker,
     PartialNoteMetadata,
 };
-use miden_client::store::input_note_states::{
+use miden_client::utils::Serializable;
+use miden_client::{Felt, ZERO};
+use miden_client_core::errors::{StaleUpdate, StoreError};
+use miden_client_core::store::input_note_states::{
     CommittedNoteState,
     ConsumedExternalNoteState,
     ConsumedUnauthenticatedLocalNoteState,
@@ -21,25 +23,22 @@ use miden_client::store::input_note_states::{
     NoteSubmissionData,
     ProcessingAuthenticatedNoteState,
 };
-use miden_client::store::{
+use miden_client_core::store::{
     InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
     NoteFilter,
+    NoteUpdates,
     OutputNoteRecord,
     OutputNoteState,
-    StaleUpdate,
     Store,
-    StoreError,
 };
-use miden_client::sync::{
+use miden_client_core::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };
-use miden_client::utils::{Deserializable, DeserializationError, Serializable};
-use miden_client::{Felt, ZERO};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -793,11 +792,7 @@ async fn output_notes_filtered_by_script_root() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates(
-            [],
-            [],
-            [swap_note.clone(), partial_note.clone()],
-        ),
+        NoteUpdates::from_records([], [], [swap_note.clone(), partial_note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -840,7 +835,7 @@ async fn get_note_script_by_root() {
 
     let missing_root = Word::default();
     let err = store.get_note_script(missing_root).await.unwrap_err();
-    assert!(matches!(err, miden_client::store::StoreError::NoteScriptNotFound(_)));
+    assert!(matches!(err, StoreError::NoteScriptNotFound(_)));
 }
 
 #[tokio::test]
@@ -851,7 +846,7 @@ async fn output_note_state_blob_does_not_embed_script() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -886,7 +881,7 @@ async fn consumed_output_note_round_trips() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [], [note.clone()]),
+        NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -918,7 +913,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
         let state_sync_update = StateSyncUpdate::from_parts(
             BlockNumber::from(0u32),
             PartialBlockchainUpdates::default(),
-            NoteUpdateTracker::for_transaction_updates(notes.clone(), [], []),
+            NoteUpdates::from_records(notes.clone(), [], []),
             TransactionUpdateTracker::default(),
             AccountUpdates::default(),
             None,
@@ -999,18 +994,9 @@ fn unspent_states_classify_every_note_state() {
         InputNoteState::STATE_CONSUMED_EXTERNAL,
     ];
 
-    for discriminant in 0..=u8::MAX {
-        // The deserializer decides which bytes are real discriminants: an unused one hits the
-        // catch-all arm and returns `InvalidValue`, while a real one gets past the discriminant
-        // match and fails later on the payload a one-byte input doesn't carry. A new state whose
-        // payload also reports `InvalidValue` would be skipped here instead of checked.
-        if matches!(
-            InputNoteState::read_from_bytes(&[discriminant]),
-            Err(DeserializationError::InvalidValue(_))
-        ) {
-            continue;
-        }
-
+    // The state discriminants are consecutive, from the expected state to the consumed external
+    // state. A new state must extend this range.
+    for discriminant in InputNoteState::STATE_EXPECTED..=InputNoteState::STATE_CONSUMED_EXTERNAL {
         assert!(
             InputNoteState::UNSPENT_STATES.contains(&discriminant)
                 != SPENT_OR_UNCONSUMABLE.contains(&discriminant),
@@ -1053,7 +1039,7 @@ async fn input_note_state_update_persists_attachments() {
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [updated], []),
+        NoteUpdates::from_records([], [updated], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -1250,7 +1236,7 @@ fn input_note_sync_update(note: InputNoteRecord) -> StateSyncUpdate {
     StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [note], []),
+        NoteUpdates::from_records([], [note], []),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,
@@ -1288,7 +1274,7 @@ fn output_note_sync_update(note: OutputNoteRecord) -> StateSyncUpdate {
     StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
-        NoteUpdateTracker::for_transaction_updates([], [], [note]),
+        NoteUpdates::from_records([], [], [note]),
         TransactionUpdateTracker::default(),
         AccountUpdates::default(),
         None,

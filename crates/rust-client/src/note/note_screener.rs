@@ -4,17 +4,21 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use async_trait::async_trait;
+use miden_processor::ExecutionError;
+use miden_processor::mast::error_code_from_msg;
+use miden_processor::operation::OperationError;
 use miden_protocol::Word;
 use miden_protocol::account::{AccountCode, AccountId};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{Note, NoteId};
-use miden_standards::account::auth::commit_fee_conversion_info;
 use miden_standards::note::NoteConsumptionStatus;
 use miden_tx::{
     NoteCheckerError,
     NoteConsumptionChecker,
     NoteConsumptionInfo,
     TransactionExecutor,
+    TransactionExecutorError,
+    TransactionMastStore,
 };
 use thiserror::Error;
 
@@ -23,14 +27,15 @@ use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::CommittedNote;
 use crate::store::data_store::ClientDataStore;
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
-use crate::sync::{NoteUpdateAction, OnNoteReceived};
+use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use crate::transaction::{
     AdviceMap,
+    AuthArgsLayout,
     InputNote,
     NATIVE_FEE_CONVERSION_SALT,
     TransactionArgs,
-    native_fee_conversion_info,
 };
+use crate::utils::LazyLock;
 
 /// Represents the consumability of a note by a specific account.
 ///
@@ -54,6 +59,8 @@ fn is_relevant(consumption_status: &NoteConsumptionStatus) -> bool {
 /// tracked in the provided `store`. This can be derived in a number of ways, such as looking at the
 /// combination of script root and note inputs. For example, a P2ID note is relevant for a specific
 /// account ID if this ID is its first note input.
+///
+/// Screening calls share the MAST store. Each call reads current execution inputs from the store.
 #[derive(Clone)]
 pub struct NoteScreener {
     /// A reference to the client's store, used to fetch necessary data to check consumability.
@@ -62,11 +69,18 @@ pub struct NoteScreener {
     tx_args: Option<TransactionArgs>,
     /// RPC client used for lazy-loading foreign account data during note screening.
     rpc_api: Arc<dyn NodeRpcClient>,
+    /// Shared code loaded when the first screening pass needs it.
+    mast_store: Arc<LazyLock<Arc<TransactionMastStore>>>,
 }
 
 impl NoteScreener {
     pub fn new(store: Arc<dyn Store>, rpc_api: Arc<dyn NodeRpcClient>) -> Self {
-        Self { store, tx_args: None, rpc_api }
+        Self {
+            store,
+            tx_args: None,
+            rpc_api,
+            mast_store: Arc::new(LazyLock::new(|| Arc::new(TransactionMastStore::new()))),
+        }
     }
 
     /// Sets the transaction arguments to use when checking note consumability. If not set, a
@@ -81,6 +95,15 @@ impl NoteScreener {
         self.tx_args
             .clone()
             .unwrap_or_else(|| TransactionArgs::new(AdviceMap::default()))
+    }
+
+    fn data_store(&self) -> ClientDataStore {
+        ClientDataStore::new_with_mast_store(
+            self.store.clone(),
+            self.rpc_api.clone(),
+            LazyLock::force(&self.mast_store).clone(),
+        )
+        .with_execution_input_cache()
     }
 
     /// Checks whether the provided note could be consumed by any of the accounts tracked by this
@@ -141,8 +164,7 @@ impl NoteScreener {
         let mut relevant_notes: BTreeMap<NoteId, Vec<NoteConsumability>> = BTreeMap::new();
         let tx_args = self.tx_args();
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
-            .with_execution_input_cache();
+        let data_store = self.data_store();
         // Don't attach the real authenticator for consumability checks. The NoteConsumptionChecker
         // gracefully handles a missing authenticator by returning `ConsumableWithAuthorization`
         // instead of calling `get_signature()`. Attaching the real authenticator here causes the
@@ -157,23 +179,23 @@ impl NoteScreener {
             data_store.mast_store().load_account_code(&account_code);
 
             let account_tx_args = self
-                .with_native_fee_conversion_info(
-                    tx_args.clone(),
-                    account_id,
-                    &account_code,
-                    block_ref,
-                )
+                .with_default_auth_args(tx_args.clone(), account_id, &account_code, block_ref)
                 .await?;
 
             for note in notes {
-                let consumption_status = consumption_checker
+                let consumption_status = match consumption_checker
                     .can_consume(
                         account_id,
                         block_ref,
                         InputNote::unauthenticated(note.clone()),
                         account_tx_args.clone(),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(status) => status,
+                    Err(err) if adds_existing_non_fungible_asset(&err) => continue,
+                    Err(err) => return Err(err.into()),
+                };
 
                 if is_relevant(&consumption_status) {
                     relevant_notes
@@ -201,11 +223,10 @@ impl NoteScreener {
         let block_ref = self.store.get_sync_height().await?;
         let account_code = self.get_account_code(account_id).await?;
         let tx_args = self
-            .with_native_fee_conversion_info(self.tx_args(), account_id, &account_code, block_ref)
+            .with_default_auth_args(self.tx_args(), account_id, &account_code, block_ref)
             .await?;
 
-        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone())
-            .with_execution_input_cache();
+        let data_store = self.data_store();
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
             TransactionExecutor::new(&data_store);
 
@@ -224,14 +245,14 @@ impl NoteScreener {
     /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
     /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
     /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
-    /// standard ones are answered without it. The info comes from [`native_fee_conversion_info`],
-    /// so screening measures the fee execution would pay.
+    /// standard ones are answered without it. The auth args come from
+    /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
     ///
     /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
     /// make the fee irrelevant to screening rather than something to satisfy:
     /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
     /// cannot: an account whose vault is too empty to pay even with the info attached.
-    async fn with_native_fee_conversion_info(
+    async fn with_default_auth_args(
         &self,
         tx_args: TransactionArgs,
         account_id: AccountId,
@@ -248,20 +269,33 @@ impl NoteScreener {
             return Ok(tx_args);
         };
 
-        let Some(conversion_info) = native_fee_conversion_info(
-            &account_code.interface(account_id),
-            header.fee_parameters(),
-            &crate::protocol_config::load_protocol_config(
-                self.store.as_ref(),
-                header.protocol_config_commitment(),
-            )
-            .await?,
-        ) else {
+        let layout = AuthArgsLayout::of(&account_code.interface(account_id));
+        let multisig = matches!(layout, AuthArgsLayout::Multisig(_));
+
+        // Without a fee, only multisig components read auth args. Returning here also skips loading
+        // the protocol configuration.
+        if header.fee_parameters().verification_base_fee() == 0 && !multisig {
+            return Ok(tx_args);
+        }
+
+        let protocol_config = crate::protocol_config::load_protocol_config(
+            self.store.as_ref(),
+            header.protocol_config_commitment(),
+        )
+        .await?;
+
+        // A multisig component requires a declared salt. The trial is never submitted, so any salt
+        // works. With auth args, the trial reaches the signature check, and the checker reports the
+        // note as consumable with authorization.
+        //
+        // TODO: find a way to screen notes for multisig accounts without placeholder auth args.
+        let salt = multisig.then_some(NATIVE_FEE_CONVERSION_SALT);
+        let Ok(Some((auth_arg, preimage))) =
+            layout.default_auth_args(salt, &header, &protocol_config)
+        else {
             return Ok(tx_args);
         };
 
-        let (auth_arg, preimage) =
-            commit_fee_conversion_info(conversion_info, NATIVE_FEE_CONVERSION_SALT);
         let mut tx_args = tx_args.with_auth_args(auth_arg);
         tx_args.extend_advice_map([(auth_arg, preimage)]);
 
@@ -324,9 +358,12 @@ impl OnNoteReceived for NoteScreener {
 
         match public_note {
             Some(public_note) => {
-                // If tracked by the user, keep note regardless of inputs and extra checks
+                // If its tag was added by the user, keep note regardless of inputs and extra
+                // checks.
                 if let Some(metadata) = public_note.metadata()
-                    && self.store.get_unique_note_tags().await?.contains(&metadata.tag())
+                    && self.store.get_note_tags().await?.iter().any(|record| {
+                        record.source == NoteTagSource::User && record.tag == metadata.tag()
+                    })
                 {
                     return Ok(NoteUpdateAction::Insert(public_note));
                 }
@@ -368,4 +405,27 @@ pub enum NoteScreenerError {
     StoreError(#[from] StoreError),
     #[error("note consumption check failed")]
     NoteCheckerError(#[from] NoteCheckerError),
+}
+
+/// The message of the transaction kernel error that the prologue returns when an input note holds a
+/// non-fungible asset that is already in the account vault.
+const NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS: &str =
+    "failed to add non-fungible asset that already exists in the vault";
+
+/// Returns `true` if the consumption check failed in the prologue because an input note holds a
+/// non-fungible asset that is already in the account vault.
+fn adds_existing_non_fungible_asset(err: &NoteCheckerError) -> bool {
+    let NoteCheckerError::PrologueExecution(
+        TransactionExecutorError::TransactionProgramExecutionFailed(
+            ExecutionError::OperationError {
+                err: OperationError::FailedAssertion { err_code, .. },
+                ..
+            },
+        ),
+    ) = err
+    else {
+        return false;
+    };
+
+    *err_code == error_code_from_msg(NON_FUNGIBLE_ASSET_TO_ADD_ALREADY_EXISTS)
 }

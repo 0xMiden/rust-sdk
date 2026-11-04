@@ -7,7 +7,7 @@ use clap::Parser;
 use miden_client::account::AccountId;
 use miden_client::assembly::CodeBuilder;
 use miden_client::keystore::Keystore;
-use miden_client::rpc::domain::account::AccountStorageRequirements;
+use miden_client::rpc::domain::account::AccountFetch;
 use miden_client::transaction::{
     AdviceInputs,
     ForeignAccount,
@@ -17,25 +17,19 @@ use miden_client::transaction::{
     build_fpi_script,
 };
 use miden_client::vm::typed::TypedProcInfo;
-use miden_client::vm::{
-    ExecutionError,
-    MIN_STACK_DEPTH,
-    OperationError,
-    PackageExport,
-    PackageManifest,
-    ProcedureExport,
-    error_code_from_msg,
-};
-use miden_client::{Client, ClientError, Felt, TransactionExecutorError, Word};
+use miden_client::vm::{MIN_STACK_DEPTH, PackageExport, PackageManifest, ProcedureExport};
+use miden_client::{Client, ClientError, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::codecs::with_cli_codecs;
 use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
-use crate::commands::new_account::load_packages;
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::packages::load_packages;
 use crate::utils::{
+    is_empty_transaction_error,
     parse_account_id,
+    print_empty_transaction_report,
     print_executed_program_stack,
     print_executed_transaction,
     split_procedure_target,
@@ -43,14 +37,6 @@ use crate::utils::{
 
 // CALL COMMAND
 // ================================================================================================
-
-/// The transaction kernel's assertion message for a transaction that changes nothing.
-///
-/// The message is hashed into the error code the assertion carries, and compared against it. It
-/// only decides whether an explanatory line is printed: if the kernel ever rewords it, the line
-/// stops appearing and nothing else changes.
-const EMPTY_TRANSACTION_ASSERTION: &str =
-    "executed transaction neither changed the account state, nor consumed any notes";
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -74,6 +60,9 @@ pub struct CallCmd {
 
     /// Path to the package (.masp) file containing the procedure. If omitted, `<PROCEDURE>` must be
     /// a hex digest and the output stack is shown as raw felts.
+    ///
+    /// A `<NAME>@<VERSION>` reference resolves through the local package registry (`miden
+    /// registry`). `<NAME>@` or `<NAME>@latest` selects the highest version.
     #[arg(long, short)]
     package: Option<PathBuf>,
 
@@ -228,14 +217,14 @@ impl CallCmd {
     ) -> Result<CallCode, CliError> {
         let digest = Word::try_from(procedure).map_err(|_| {
             CliError::InvalidArgument(format!(
-                "'{procedure}' is not a hex digest. Pass `--package <FILE>.masp` to \
+                "'{procedure}' is not a hex digest. Pass `--package <PACKAGE>` to \
                  call a procedure by name, or give its hex digest to call without a \
                  package."
             ))
         })?;
         println!(
             "No `--package` provided; output will be raw felts. Pass \
-             `--package <FILE>.masp` for typed output."
+             `--package <PACKAGE>` for typed output."
         );
 
         Ok(CallCode {
@@ -387,8 +376,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
         return Ok(CallTarget::Local(target_id));
     }
 
-    let foreign_account = ForeignAccount::public(target_id, AccountStorageRequirements::default())
-        .map_err(|err| match err {
+    let foreign_account =
+        ForeignAccount::public(target_id, AccountFetch::default()).map_err(|err| match err {
             TransactionRequestError::InvalidForeignAccountId(_) => {
                 CliError::InvalidArgument(format!(
                     "Account {target_id} isn't tracked locally and its state isn't public, so it \
@@ -502,32 +491,12 @@ fn resolve_procedure_export<'a>(
 /// The read-only execution has already printed the result by this point, so this never fails the
 /// command: the call itself succeeded, only its effects could not be reported.
 fn report_failed_delta(error: &ClientError) {
-    let is_empty_transaction = matches!(
-        error,
-        ClientError::TransactionExecutorError(
-            TransactionExecutorError::TransactionProgramExecutionFailed(
-                ExecutionError::OperationError {
-                    err: OperationError::FailedAssertion { err_code, .. },
-                    ..
-                },
-            ),
-        ) if *err_code == error_code_from_msg(EMPTY_TRANSACTION_ASSERTION)
-    );
-
-    if is_empty_transaction {
+    if is_empty_transaction_error(error) {
         // A procedure that only reads, on an account whose components write nothing, leaves the
         // transaction with no effects at all, and the kernel refuses those. For a read-only call
         // that is the expected outcome rather than a fault, so it is reported instead of dumping
-        // the assertion chain. The kernel rejects only when the account was left unchanged and
-        // nothing was consumed, so that is all this can report; it says nothing about created
-        // notes.
-        println!();
-        println!("The transaction was rejected because it had no effects:\n");
-        println!("No notes were consumed.");
-        println!();
-        println!("Account Storage was not changed.");
-        println!("Account Vault was not changed.");
-        println!("Account nonce was not changed.");
+        // the assertion chain.
+        print_empty_transaction_report();
         return;
     }
 
@@ -697,16 +666,13 @@ mod tests {
         }
     }
 
-    /// The Goldilocks field modulus, `2^64 - 2^32 + 1`. The first value with no felt of its own.
-    const FIELD_MODULUS: u64 = 18_446_744_069_414_584_321;
-
     #[test]
     fn raw_arguments_are_read_as_decimal_felts() {
-        let args = ["0", "10", (FIELD_MODULUS - 1).to_string().as_str()].map(String::from);
+        let args = ["0", "10", (Felt::ORDER - 1).to_string().as_str()].map(String::from);
 
         let encoded = encode_raw_args(&args).unwrap();
 
-        let expected = [0, 10, FIELD_MODULUS - 1].map(|v| Felt::new(v).unwrap());
+        let expected = [0, 10, Felt::ORDER - 1].map(|v| Felt::new(v).unwrap());
         assert_eq!(encoded, expected);
     }
 
@@ -715,8 +681,8 @@ mod tests {
         let cases = [
             // What an unchecked `u64` argument would silently wrap around to.
             (
-                FIELD_MODULUS.to_string(),
-                format!("invalid argument: Argument '{FIELD_MODULUS}' is too large for a felt."),
+                Felt::ORDER.to_string(),
+                format!("invalid argument: Argument '{}' is too large for a felt.", Felt::ORDER),
             ),
             // The typed path writes a `felt` in decimal and reserves `0x` for wider values, so the
             // untyped path cannot take hex either: it would work only until the procedure is given

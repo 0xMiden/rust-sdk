@@ -44,22 +44,45 @@ impl<AUTH> Client<AUTH> {
         Ok(self.get_latest_block_header().await?.validator_config().clone())
     }
 
-    /// Ensures that the genesis block is available. If the genesis commitment is already cached in
-    /// the RPC client, returns early. Otherwise, fetches the genesis block from the node, stores
-    /// it, and sets the commitment in the RPC client.
+    /// Prunes the chain MMR peaks at the past sync heights up to the given block number.
+    ///
+    /// The store keeps the peaks at each past sync height. This method deletes the peaks at each
+    /// past sync height `<= up_to_block`. The genesis peaks and the current sync height peaks are
+    /// always kept.
+    ///
+    /// Returns the number of deleted entries.
+    pub async fn prune_chain_anchors(
+        &self,
+        up_to_block: BlockNumber,
+    ) -> Result<usize, ClientError> {
+        Ok(self.store.prune_chain_anchors(up_to_block).await?)
+    }
+
+    /// Ensures that the genesis block header and the protocol configuration it commits to are in
+    /// the store, and sets the genesis commitment in the RPC client.
+    ///
+    /// Fetches the genesis block header and its protocol configuration from the node when the store
+    /// does not have both.
     pub async fn ensure_genesis_in_place(&mut self) -> Result<(), ClientError> {
-        if self.rpc_api.has_genesis_commitment().is_some() {
+        if let Some((genesis, _)) = self.store.get_block_header_by_num(BlockNumber::GENESIS).await?
+            && self
+                .store
+                .get_protocol_config(genesis.protocol_config_commitment())
+                .await?
+                .is_some()
+        {
+            self.rpc_api.set_genesis_commitment(genesis.commitment()).await?;
             return Ok(());
         }
 
-        let (genesis, _) = self
-            .rpc_api
-            .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
-            .await?;
+        let (genesis, protocol_config) = self.rpc_api.get_genesis_block_header().await?;
 
-        // Genesis is untracked since there are no client notes associated with it, so we fetch no
-        // MMR proof and pass no nodes.
-        self.store.insert_block_header(&genesis, &[], false).await?;
+        // Note screening on the first sync executes against the genesis block, so it needs the
+        // genesis protocol configuration before the sync stores any configuration.
+        self.store.insert_protocol_config(&protocol_config).await?;
+
+        // The first sync from genesis stores the protocol configuration.
+        self.store.insert_genesis(&genesis, None).await?;
         self.rpc_api.set_genesis_commitment(genesis.commitment()).await?;
         Ok(())
     }
@@ -81,9 +104,7 @@ impl<AUTH> Client<AUTH> {
             return Ok(());
         }
 
-        let rpc = MockRpcApi::default();
-        self.seed_protocol_config(rpc.protocol_config()).await?;
-        *self.test_rpc_api() = Arc::new(rpc);
+        *self.test_rpc_api() = Arc::new(MockRpcApi::default());
         self.ensure_genesis_in_place().await?;
         Ok(())
     }

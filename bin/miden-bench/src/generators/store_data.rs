@@ -4,9 +4,10 @@
 //! real client would produce, and the measurements below it stay honest about what the store has to
 //! do.
 
-use miden_client::account::component::BasicWallet;
+use miden_client::account::standards::auth::{Approver, AuthSingleSig};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{Account, AccountBuilder, AccountId, AccountType};
-use miden_client::auth::{Approver, AuthSchemeId, AuthSingleSig, PublicKeyCommitment};
+use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::BlockHeader;
 use miden_client::note::{
     BlockNumber,

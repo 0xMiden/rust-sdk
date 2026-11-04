@@ -22,7 +22,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 
 #### `TransactionExecutorError::TransactionProgramExecutionFailed`
 - Cause: The MASM kernel failed during execution (e.g., failed assertion or constraint violation).
-- Fix: Re-run with the debug mode, capture VM diagnostics and inspect the source manager output to understand why execution failed.
+- Fix: Build the CLI with the `dap` feature and re-run `exec` or `consume-notes` with `--start-debug-adapter <ADDR>`. Step through the transaction in a DAP client to find the failing instruction. See the [debugging guide](./rust-client/debugging.md).
 
 #### `ClientError::NoteNotFoundOnChain(Note ID)`/`RpcError::NoteNotFound(Note ID)`
 - Cause: The note has not been found on chain, or the input ID is incorrect.

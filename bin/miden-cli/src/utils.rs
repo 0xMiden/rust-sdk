@@ -1,22 +1,34 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::ParseIntError;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-use miden_client::account::component::FungibleFaucet;
+use miden_client::account::standards::faucets::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
-use miden_client::asset::{AssetAmount, FungibleAsset};
+use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::transaction::{ExecutedTransaction, InputNote};
 use miden_client::utils::{Deserializable, hex_to_bytes};
-use miden_client::vm::MIN_STACK_DEPTH;
-use miden_client::{AssetError, Client, Felt, WORD_SIZE, Word};
+use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
+use miden_client::{
+    AssetError,
+    Client,
+    ClientError,
+    Felt,
+    TransactionExecutorError,
+    WORD_SIZE,
+    Word,
+};
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
-use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
+use crate::commands::account::{DEFAULT_ACCOUNT_ID_KEY, get_non_fungible_faucet_symbol};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+
+/// Placeholder for a value that is not available or not set.
+pub(crate) const NO_VALUE: &str = "-";
 
 pub(crate) const SHARED_TOKEN_DOCUMENTATION: &str = "There are two accepted formats for the asset:
 - `<AMOUNT>::<FAUCET_ID>` where `<AMOUNT>` is in the faucet base units.
@@ -212,35 +224,50 @@ pub async fn print_executed_transaction<AUTH>(
         println!("Account Vault will not be changed.");
     } else {
         let resolver = load_faucet_metadata_resolver()?;
-        let mut table = create_dynamic_table(&["Asset Type", "Faucet ID", "New Amount"]);
+        let mut fungible_table = create_dynamic_table(&["Faucet ID", "New Amount"]);
+        let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 
         for asset in patch.vault().updated_assets() {
             match asset.as_fungible() {
                 Some(fungible) => {
-                    let (faucet_fmt, amount_fmt) =
-                        resolver.format_fungible_asset(client, &fungible).await?;
-                    table.add_row(vec!["Fungible Asset", &faucet_fmt, &amount_fmt]);
+                    let metadata = resolver.resolve(client, fungible.faucet_id()).await?;
+                    let (faucet, amount) = FormattedAsset::fungible_parts(
+                        &fungible,
+                        metadata.as_ref(),
+                        resolver.network_id(),
+                    );
+                    fungible_table.add_row(vec![faucet, amount]);
                 },
                 None => {
-                    table.add_row(vec![
-                        "Non Fungible Asset",
-                        &asset.faucet_id().prefix().to_hex(),
-                        "1",
+                    non_fungible_table.add_row(vec![
+                        asset.faucet_id().to_hex(),
+                        asset.id().to_string(),
+                        "added".to_string(),
                     ]);
                 },
             }
         }
 
         for asset_id in patch.vault().removed_asset_ids() {
-            table.add_row(vec![
-                "Removed Asset",
-                &asset_id.faucet_id().prefix().to_hex(),
-                "removed",
-            ]);
+            if asset_id.composition().is_none() {
+                non_fungible_table.add_row(vec![
+                    asset_id.faucet_id().to_hex(),
+                    asset_id.to_string(),
+                    "removed".to_string(),
+                ]);
+            } else {
+                fungible_table.add_row(vec![asset_id.faucet_id().to_hex(), "removed".to_string()]);
+            }
         }
 
-        println!("Vault changes:");
-        println!("{table}");
+        if !fungible_table.is_empty() {
+            println!("Fungible asset changes:");
+            println!("{fungible_table}");
+        }
+        if !non_fungible_table.is_empty() {
+            println!("Non fungible asset changes:");
+            println!("{non_fungible_table}");
+        }
     }
 
     // NONCE
@@ -415,6 +442,97 @@ struct FaucetTomlEntry {
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
     toml: BTreeMap<String, FaucetTomlEntry>,
+    /// Holds the outcome of every faucet lookup for the lifetime of the resolver. It caches misses
+    /// as well as hits, so several assets from the same untracked faucet cause at most one RPC
+    /// fetch.
+    cache: Mutex<BTreeMap<AccountId, Option<FaucetMetadata>>>,
+    /// Holds the outcome of every non-fungible faucet symbol lookup, misses included, for the
+    /// lifetime of the resolver.
+    non_fungible_symbol_cache: Mutex<BTreeMap<AccountId, Option<String>>>,
+    network_id: NetworkId,
+}
+
+/// The faucet details found for an asset. A fungible asset has `metadata`. A non-fungible asset has
+/// `non_fungible_symbol`. A value is `None` when the lookup finds nothing.
+#[derive(Debug, Default)]
+pub struct ResolvedFaucet {
+    pub metadata: Option<FaucetMetadata>,
+    pub non_fungible_symbol: Option<String>,
+}
+
+/// An asset formatted for display in a CLI table.
+pub enum FormattedAsset {
+    Fungible {
+        /// The token symbol when it is known. Otherwise, the faucet address.
+        faucet: String,
+        /// The token amount.
+        amount: String,
+    },
+    NonFungible {
+        /// The bech32 address of the faucet.
+        address: String,
+        /// The token symbol of the faucet when it is known.
+        symbol: Option<String>,
+        /// The asset ID.
+        asset_id: AssetId,
+    },
+}
+
+impl FormattedAsset {
+    /// Formats an asset with the faucet details found for it. It does not look up anything.
+    ///
+    /// A fungible asset without `metadata` shows the bech32 faucet address and the amount in base
+    /// units.
+    pub fn new(asset: &Asset, resolved: &ResolvedFaucet, network_id: &NetworkId) -> Self {
+        match asset.as_fungible() {
+            Some(fungible) => {
+                let (faucet, amount) =
+                    Self::fungible_parts(&fungible, resolved.metadata.as_ref(), network_id);
+                Self::Fungible { faucet, amount }
+            },
+            None => Self::NonFungible {
+                address: Address::new(asset.faucet_id()).encode(network_id.clone()),
+                symbol: resolved.non_fungible_symbol.clone(),
+                asset_id: asset.id(),
+            },
+        }
+    }
+
+    /// Returns `(<faucet>, <amount>)` for a fungible asset. See [`Self::new`].
+    pub fn fungible_parts(
+        asset: &FungibleAsset,
+        metadata: Option<&FaucetMetadata>,
+        network_id: &NetworkId,
+    ) -> (String, String) {
+        match metadata {
+            Some(meta) => {
+                (meta.symbol.clone(), base_units_to_tokens(asset.amount(), meta.decimals))
+            },
+            None => (
+                Address::new(asset.faucet_id()).encode(network_id.clone()),
+                asset.amount().to_string(),
+            ),
+        }
+    }
+}
+
+/// Renders a fungible asset as its amount and faucet, and a non-fungible asset as its faucet and
+/// asset ID, on one line. A non-fungible asset shows its token symbol when it is known. Otherwise,
+/// it shows the faucet address.
+impl core::fmt::Display for FormattedAsset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Fungible { faucet, amount } => write!(f, "{amount} {faucet}"),
+            Self::NonFungible {
+                symbol: Some(symbol), address, asset_id, ..
+            } => {
+                write!(f, "{symbol} (non-fungible, faucet {address}, asset ID {asset_id})")
+            },
+            Self::NonFungible { symbol: None, address, asset_id, .. } => {
+                write!(f, "{address} (non-fungible, asset ID {asset_id})")
+            },
+        }
+    }
 }
 
 impl FaucetMetadataResolver {
@@ -467,7 +585,17 @@ impl FaucetMetadataResolver {
             parsed.insert(symbol, FaucetTomlEntry { account_id, decimals: entry.decimals });
         }
 
-        Ok(Self { toml: parsed })
+        Ok(Self {
+            toml: parsed,
+            cache: Mutex::new(BTreeMap::new()),
+            non_fungible_symbol_cache: Mutex::new(BTreeMap::new()),
+            network_id: network_id.clone(),
+        })
+    }
+
+    /// Returns the network of the token symbol map.
+    pub fn network_id(&self) -> &NetworkId {
+        &self.network_id
     }
 
     /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
@@ -493,43 +621,113 @@ impl FaucetMetadataResolver {
         client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
+        // 0) in-memory cache. It also holds misses, so an untracked faucet is fetched at most once.
+        // The lock is scoped so the guard drops before the `await` below.
+        {
+            let cache = self.cache.lock().expect("faucet metadata cache mutex is poisoned");
+            if let Some(cached) = cache.get(&faucet_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // A transient RPC error is not cached. A later lookup can then retry instead of reading a
+        // cached miss.
+        let resolved = match self.resolve_uncached(client, faucet_id).await {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
+                return Ok(None);
+            },
+        };
+
+        self.cache
+            .lock()
+            .expect("faucet metadata cache mutex is poisoned")
+            .insert(faucet_id, resolved.clone());
+        Ok(resolved)
+    }
+
+    /// Runs the full lookup without consulting the in-memory cache: TOML → settings store → RPC
+    /// fetch. On RPC success, the result is persisted to the settings store. A failed RPC fetch
+    /// returns an error, so the caller does not cache it as a miss.
+    async fn resolve_uncached<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        faucet_id: AccountId,
+    ) -> Result<Option<FaucetMetadata>, CliError> {
         // 1) & 2) local sources (TOML + settings store)
         if let Some(meta) = self.resolve_local(client, faucet_id).await? {
             return Ok(Some(meta));
         }
         // 3) RPC fetch
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        match client.fetch_remote_token_metadata(faucet_id).await {
-            Ok(Some(meta)) => {
-                if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
-                    tracing::warn!(
-                        "failed to persist faucet metadata for {}: {err}",
-                        faucet_id.to_hex(),
-                    );
-                }
-                Ok(Some(meta))
-            },
-            Ok(None) => Ok(None),
-            Err(err) => {
-                tracing::warn!("failed to fetch faucet metadata for {}: {err}", faucet_id.to_hex());
-                Ok(None)
-            },
+        let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
+            return Ok(None);
+        };
+        if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+            tracing::warn!("failed to persist faucet metadata for {}: {err}", faucet_id.to_hex());
+        }
+        Ok(Some(meta))
+    }
+
+    /// Looks up the faucet details of an asset. A fungible asset is resolved through
+    /// [`Self::resolve`]. A non-fungible asset is resolved through
+    /// [`Self::resolve_non_fungible_symbol`].
+    pub async fn resolve_asset<AUTH>(
+        &self,
+        client: &Client<AUTH>,
+        asset: &Asset,
+    ) -> Result<ResolvedFaucet, CliError> {
+        match asset.as_fungible() {
+            Some(fungible) => Ok(ResolvedFaucet {
+                metadata: self.resolve(client, fungible.faucet_id()).await?,
+                non_fungible_symbol: None,
+            }),
+            None => Ok(ResolvedFaucet {
+                metadata: None,
+                non_fungible_symbol: self
+                    .resolve_non_fungible_symbol(client, asset.faucet_id())
+                    .await,
+            }),
         }
     }
 
-    /// Formats a fungible asset using [`Self::resolve`]. On miss, returns `(<bech32 faucet
-    /// address>, <base-unit amount>)`.
-    pub async fn format_fungible_asset<AUTH>(
+    /// Looks up the token symbol of a non-fungible faucet. It reads the storage of a faucet that
+    /// the client tracks, and otherwise fetches the symbol of a public faucet from the network.
+    /// Returns `None` when the symbol is not found.
+    async fn resolve_non_fungible_symbol<AUTH>(
         &self,
         client: &Client<AUTH>,
-        asset: &FungibleAsset,
-    ) -> Result<(String, String), CliError> {
-        if let Some(meta) = self.resolve(client, asset.faucet_id()).await? {
-            return Ok((meta.symbol, base_units_to_tokens(asset.amount(), meta.decimals)));
+        faucet_id: AccountId,
+    ) -> Option<String> {
+        // The lock is scoped so the guard drops before the `await` below.
+        {
+            let cache = self
+                .non_fungible_symbol_cache
+                .lock()
+                .expect("non-fungible symbol cache mutex is poisoned");
+            if let Some(cached) = cache.get(&faucet_id) {
+                return cached.clone();
+            }
         }
-        let network_id = configured_network_id()?;
-        let address_str = Address::new(asset.faucet_id()).encode(network_id);
-        Ok((address_str, asset.amount().to_string()))
+
+        let symbol = if let Ok(symbol) = get_non_fungible_faucet_symbol(client, faucet_id).await {
+            Some(symbol.to_string())
+        } else {
+            // A transient RPC error is not cached. A later lookup can then retry.
+            match client.fetch_remote_non_fungible_faucet_symbol(faucet_id).await {
+                Ok(symbol) => symbol.map(|symbol| symbol.to_string()),
+                Err(_) => {
+                    return None;
+                },
+            }
+        };
+
+        self.non_fungible_symbol_cache
+            .lock()
+            .expect("non-fungible symbol cache mutex is poisoned")
+            .insert(faucet_id, symbol.clone());
+        symbol
     }
 
     /// Parses a string representing a [`FungibleAsset`]. There are two accepted formats for the
@@ -613,6 +811,104 @@ fn parse_address(address_str: &str, network_id: &NetworkId) -> Result<AccountId,
     Err(format!("address `{address_str}` does not encode an account ID"))
 }
 
+// EMPTY TRANSACTION
+// ================================================================================================
+
+/// The transaction kernel's assertion message for a transaction that changes nothing.
+///
+/// The message is hashed into the error code the assertion carries, and compared against it. It
+/// only decides whether an explanatory line is printed: if the kernel ever rewords it, the line
+/// stops appearing and nothing else changes.
+const EMPTY_TRANSACTION_ASSERTION: &str =
+    "executed transaction neither changed the account state, nor consumed any notes";
+
+/// The line printed for a transaction that the kernel rejected because it changed nothing.
+const EMPTY_TRANSACTION_REPORT: &str = "The transaction was rejected because it did not change the \
+     account state and did not consume any notes.";
+
+/// Returns true when `error` is the transaction kernel's rejection of a transaction that neither
+/// changed the account state nor consumed a note.
+pub(crate) fn is_empty_transaction_error(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(
+                ExecutionError::OperationError {
+                    err: OperationError::FailedAssertion { err_code, .. },
+                    ..
+                },
+            ),
+        ) if *err_code == error_code_from_msg(EMPTY_TRANSACTION_ASSERTION)
+    )
+}
+
+/// Builds the error the executor raises for a failed assertion with the message `msg`.
+#[cfg(test)]
+fn assertion_error(msg: &str) -> ClientError {
+    let assertion = OperationError::FailedAssertion {
+        err_code: error_code_from_msg(msg),
+        err_msg: None,
+    }
+    .with_context();
+    ClientError::TransactionExecutorError(
+        TransactionExecutorError::TransactionProgramExecutionFailed(assertion),
+    )
+}
+
+/// Builds the error the kernel raises for a transaction that changes nothing.
+#[cfg(test)]
+pub(crate) fn empty_transaction_error() -> ClientError {
+    assertion_error(EMPTY_TRANSACTION_ASSERTION)
+}
+
+/// Prints why the kernel rejected a transaction that changed nothing.
+pub(crate) fn print_empty_transaction_report() {
+    println!("\n{EMPTY_TRANSACTION_REPORT}");
+}
+
+// DEBUG ADAPTER HINT
+// ================================================================================================
+
+/// The help text for a transaction program that failed in `exec` or `consume-notes`.
+const DEBUG_ADAPTER_HINT: &str = "Re-run the command with `--start-debug-adapter <ADDR>` and \
+     connect a DAP client, such as `miden-debug`, to step through the transaction and find the \
+     instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// The help text for the same failure when the CLI is built without the `dap` feature.
+const DEBUG_ADAPTER_BUILD_HINT: &str = "Build the CLI with `--features dap`, re-run the command \
+     with `--start-debug-adapter <ADDR>` and connect a DAP client, such as `miden-debug`, to step \
+     through the transaction and find the instruction that failed. See \
+     https://docs.miden.xyz/builder/tools/clients/rust-client/debugging";
+
+/// Returns the debug adapter hint when the transaction program failed during execution.
+pub(crate) fn debug_adapter_hint(error: &ClientError) -> Option<String> {
+    match error {
+        ClientError::TransactionExecutorError(
+            TransactionExecutorError::TransactionProgramExecutionFailed(_),
+        ) => {
+            let hint = if cfg!(feature = "dap") {
+                DEBUG_ADAPTER_HINT
+            } else {
+                DEBUG_ADAPTER_BUILD_HINT
+            };
+            Some(hint.to_string())
+        },
+        _ => None,
+    }
+}
+
+/// Sets the debug adapter hint on a client error when the transaction program failed.
+pub(crate) fn with_debug_adapter_hint(error: CliError) -> CliError {
+    match error {
+        CliError::Client { error, help } => {
+            let help = debug_adapter_hint(&error).or(help);
+            CliError::Client { error, help }
+        },
+        other => other,
+    }
+}
+
 // ECDSA PUBLIC KEY PARSING
 // ================================================================================================
 
@@ -690,6 +986,7 @@ mod tests {
     use miden_client::asset::AssetAmount;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
     use miden_client::utils::Serializable;
+    use miden_client::{ClientError, ErrorHint};
 
     use super::{
         FaucetMetadataResolver,
@@ -700,6 +997,7 @@ mod tests {
         parse_ecdsa_public_key,
         tokens_to_base_units,
     };
+    use crate::errors::CliError;
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()
@@ -856,5 +1154,47 @@ mod tests {
 
         parse_ecdsa_public_key(&not_on_curve)
             .expect_err("an uncompressed point off the curve should be rejected");
+    }
+
+    #[test]
+    fn the_kernel_rejection_of_an_empty_transaction_is_recognized() {
+        assert!(super::is_empty_transaction_error(&super::empty_transaction_error()));
+    }
+
+    #[test]
+    fn another_failed_assertion_is_not_an_empty_transaction() {
+        let error = super::assertion_error("some other assertion");
+
+        assert!(!super::is_empty_transaction_error(&error));
+    }
+
+    #[test]
+    fn a_failed_program_gets_the_debug_adapter_hint() {
+        let error = super::with_debug_adapter_hint(super::assertion_error("any assertion").into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        let expected = if cfg!(feature = "dap") {
+            super::DEBUG_ADAPTER_HINT
+        } else {
+            super::DEBUG_ADAPTER_BUILD_HINT
+        };
+        assert_eq!(help.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn another_client_error_keeps_its_hint() {
+        let client_error = ClientError::AccountNonceTooLow;
+        let library_help =
+            Option::<ErrorHint>::from(&client_error).map(ErrorHint::into_help_message);
+
+        let error = super::with_debug_adapter_hint(client_error.into());
+
+        let CliError::Client { help, .. } = error else {
+            panic!("expected a client error, got {error:?}");
+        };
+        assert!(library_help.is_some());
+        assert_eq!(help, library_help);
     }
 }

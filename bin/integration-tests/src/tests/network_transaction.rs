@@ -3,23 +3,13 @@ use std::sync::{Arc, LazyLock};
 use std::vec;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use miden_client::account::component::{
-    AccessControl,
-    AccountComponent,
-    AccountComponentMetadata,
-    AuthNetworkAccount,
-    BasicConstantFeePolicy,
-    BasicWallet,
-    BurnPolicy,
-    FeePolicy,
-    FeePolicyManager,
-    FungibleFaucet,
-    MintPolicy,
-    NetworkAccount,
-    PausableManager,
-    TokenName,
-    TokenPolicyManager,
-};
+use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
+use miden_client::account::standards::access::{AccessControl, PausableManager};
+use miden_client::account::standards::auth::{AuthNetworkAccount, NetworkAccount};
+use miden_client::account::standards::faucets::{FungibleFaucet, TokenName};
+use miden_client::account::standards::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
+use miden_client::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use miden_client::account::standards::wallets::BasicWallet;
 use miden_client::account::{
     Account,
     AccountBuilder,
@@ -63,7 +53,6 @@ use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
 
 use crate::ClientConfig;
-use crate::fee_funding::fee_faucet_id;
 
 // HELPERS
 // ================================================================================================
@@ -215,7 +204,7 @@ pub(crate) async fn add_network_counter_contract(
         .chain([P2idNote::script_root()])
         .collect::<BTreeSet<NoteScriptRoot>>();
     let fee_policy_manager =
-        zero_fee_policy_manager(fee_faucet_id(client).await?, roots.iter().copied());
+        zero_fee_policy_manager(client.fee_faucet_id().await?, roots.iter().copied());
     let auth = AuthNetworkAccount::new(roots, fee_policy_manager)
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to build network account auth component")?;
@@ -343,7 +332,7 @@ async fn deploy_network_fungible_faucet(
         .active_burn_policy(BurnPolicy::allow_all())
         .build();
     let fee_policy_manager =
-        zero_fee_policy_manager(fee_faucet_id(client).await?, allowed_roots.iter().copied());
+        zero_fee_policy_manager(client.fee_faucet_id().await?, allowed_roots.iter().copied());
     let faucet = NetworkAccount::builder(init_seed, allowed_roots, fee_policy_manager)?
         .with_component(faucet_component)
         .with_component(BasicWallet)
@@ -461,7 +450,6 @@ fn build_non_standard_mint(
 pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()> {
     const BUMP_NOTE_NUMBER: u64 = 5;
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -520,7 +508,6 @@ pub async fn test_counter_contract_ntx(client_config: ClientConfig) -> Result<()
 
 pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -553,9 +540,10 @@ pub async fn test_recall_note_before_ntx_consumes_it(client_config: ClientConfig
     let bump_proven = client.prove_transaction(&bump_result).await?;
     let consume_proven = client.prove_transaction(&consume_result).await?;
 
-    // Submit both transactions
+    // Submit both transactions. The bump is the first transaction of the wallet, so it can consume
+    // a funding note the node does not know yet.
     let _bump_submission_height =
-        client.submit_proven_transaction(bump_proven, &bump_result).await?;
+        client.submit_proven_transaction_retrying(bump_proven, &bump_result).await?;
 
     let consume_submission_height =
         client.submit_proven_transaction(consume_proven, &consume_result).await?;
@@ -588,7 +576,6 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -610,8 +597,9 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
     client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    // Wait for the network account to consume the note (check counter increment).
-    let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
+    // Wait for the network account to consume the note: one bump note takes the counter from 0 to
+    // 1.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
     for _ in 0..15 {
         client.sync_state().await?;
         let account_details = client
@@ -657,7 +645,6 @@ pub async fn test_note_reader_finds_note_consumed_by_ntx(
 /// reaches a consumed state, not the consumer identity.
 pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    client.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client, &[incr_note_root]).await?;
@@ -679,8 +666,9 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
         TransactionRequestBuilder::new().own_output_notes(vec![network_note]).build()?;
     client.execute_tx_and_sync(sender_account.id(), tx_request).await?;
 
-    // Wait for the network account to consume the note (check counter increment).
-    let expected_counter = Word::from([Felt::from(2u32), ZERO, ZERO, ZERO]);
+    // Wait for the network account to consume the note: one bump note takes the counter from 0 to
+    // 1.
+    let expected_counter = Word::from([Felt::from(1u32), ZERO, ZERO, ZERO]);
     for _ in 0..15 {
         client.sync_state().await?;
         let account_details = client
@@ -810,6 +798,12 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
 
     // A mint cannot double as the account's deploy.
     client.deploy_account(alice.id()).await?;
+
+    // The note screener executes custom-script notes, and an execution fails if the account cannot
+    // pay the fee. Bob's deploy puts his funding in his vault, so his sync keeps the public note.
+    // TODO: remove once the note checker can detect consumable notes for accounts that cannot pay
+    // the fee (related: https://github.com/0xMiden/protocol/issues/3345).
+    client_2.deploy_account(bob.id()).await?;
     let amount = Felt::new_unchecked(100);
 
     // Registered case: pre-register a non-standard output script via `expected_ntx_scripts` on a
@@ -858,8 +852,7 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
         .pop()
         .context("expected the committed public note to be present on Bob's client")?
         .try_into()?;
-    let consume_tx_id = client_2.consume_notes(bob.id(), &[note]).await?;
-    client_2.wait_for_tx(consume_tx_id).await?;
+    client_2.consume_notes_and_wait(bob.id(), &[note]).await?;
 
     client_2
         .assert_account_has_single_asset(bob.id(), faucet.id(), amount.as_canonical_u64())
@@ -961,7 +954,6 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
 
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.clone().into_client().await?;
-    client_1.sync_state().await?;
 
     let incr_note_root = note_script_root(INCR_NOTE_SCRIPT_CODE, client_1.source_manager())?;
     let network_account = deploy_network_counter_contract(&mut client_1, &[incr_note_root]).await?;
@@ -975,7 +967,9 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
         .context("failed to find network account after deployment")?;
     assert_eq!(counter_value, Word::from([ZERO, ZERO, ZERO, ZERO]));
 
-    // client_2 starts watching the network account.
+    // client_2 starts watching the network account. The import reads the account at the sync
+    // height, so the client must sync past the block that created the account.
+    client_2.sync_state().await?;
     client_2.import_watched_account_by_id(network_account_id).await?;
 
     let watched_record = client_2
@@ -985,7 +979,7 @@ pub async fn test_watch_network_account(client_config: ClientConfig) -> Result<(
         .context("watched network account should be tracked in client_2's store")?;
     assert!(watched_record.is_watched(), "watched network account must be marked as watched");
 
-    let tags = client_2.test_store().get_note_tags().await?;
+    let tags = client_2.get_note_tags().await?;
     assert!(
         !tags
             .iter()

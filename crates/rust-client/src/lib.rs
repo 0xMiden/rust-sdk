@@ -156,6 +156,15 @@ pub mod agglayer {
     };
 }
 
+/// Provides the `USDCx` (Circle xReserve) faucet components, note constructors, and payload codecs.
+///
+/// The burn note that withdraws `USDCx` from Miden is
+/// [`usdcx::note::xreserve_burn::XReserveBurnNote`]. Its `(destDomain, destRecipient)` payload is
+/// [`usdcx::xreserve::encoding::XReserveBurnItems`].
+pub mod usdcx {
+    pub use miden_usdcx::*;
+}
+
 /// Provides types and utilities for working with Miden Assembly.
 pub mod assembly {
     pub use miden_protocol::MastForest;
@@ -195,31 +204,20 @@ pub mod asset {
     };
 }
 
-/// Provides authentication-related types and functionalities for the Miden network.
+/// Provides authentication keys, signature schemes, and transaction signing interfaces.
+///
+/// Use [`account::standards::auth`] for built-in authentication components.
 pub mod auth {
     pub use miden_protocol::account::auth::{
+        AuthScheme,
         AuthScheme as AuthSchemeId,
         AuthSecretKey,
         PublicKey,
         PublicKeyCommitment,
         Signature,
     };
-    pub use miden_standards::account::auth::{
-        Approver,
-        ApproverSet,
-        AuthGuardedMultisig,
-        AuthGuardedMultisigConfig,
-        AuthMultisig,
-        AuthMultisigConfig,
-        AuthMultisigSmart,
-        AuthMultisigSmartConfig,
-        AuthSingleSig,
-        GuardianConfig,
-        NoAuth,
-    };
+    pub use miden_protocol::errors::AuthSchemeError;
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
-
-    pub use crate::account::component::AuthScheme;
 
     pub const RPO_FALCON_SCHEME_ID: AuthSchemeId = AuthSchemeId::Falcon512Poseidon2;
     pub const ECDSA_K256_KECCAK_SCHEME_ID: AuthSchemeId = AuthSchemeId::EcdsaK256Keccak;
@@ -284,7 +282,7 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    pub use miden_protocol::crypto::rand::FeltRng;
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -366,7 +364,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{TryCryptoRng, TryRng};
+use rand::{CryptoRng, RngExt, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -550,21 +548,22 @@ impl<AUTH> Client<AUTH> {
 //   these bounds. (similar to TransactionAuthenticator)
 
 /// Marker trait for RNGs that can be shared across threads and used by the client.
-pub trait ClientFeltRng: FeltRng + Send + Sync {}
-impl<T> ClientFeltRng for T where T: FeltRng + Send + Sync {}
+pub trait ClientCryptoRng: CryptoRng + Send + Sync {}
+impl<T> ClientCryptoRng for T where T: CryptoRng + Send + Sync {}
 
 /// Boxed RNG trait object used by the client.
-pub type ClientRngBox = Box<dyn ClientFeltRng>;
+pub type ClientRngBox = Box<dyn ClientCryptoRng>;
 
-/// A wrapper around a [`FeltRng`] that implements the [`TryRng`] trait. This allows the user to
-/// pass their own generic RNG so that it's used by the client.
+/// A wrapper around a [`CryptoRng`] that implements the [`TryRng`] and [`FeltRng`] traits. This
+/// allows the user to pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
 impl ClientRng {
-    pub fn new(rng: ClientRngBox) -> Self {
+    pub(crate) fn new(rng: ClientRngBox) -> Self {
         Self(rng)
     }
 
+    #[cfg(feature = "testing")]
     pub fn inner_mut(&mut self) -> &mut ClientRngBox {
         &mut self.0
     }
@@ -587,18 +586,16 @@ impl TryRng for ClientRng {
     }
 }
 
-// The client's RNG already backs key and serial-number generation, so callers are required to
-// supply cryptographically secure randomness. Asserting it here lets the RNG drive primitives that
-// demand a `CryptoRng`, such as sealing transaction inputs.
+// Holds because the inner generator is a `CryptoRng` and the delegation above is infallible.
 impl TryCryptoRng for ClientRng {}
 
 impl FeltRng for ClientRng {
     fn draw_element(&mut self) -> Felt {
-        self.0.draw_element()
+        self.0.random()
     }
 
     fn draw_word(&mut self) -> Word {
-        self.0.draw_word()
+        self.0.random()
     }
 }
 

@@ -19,6 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  NODE_OPTIONS: --use-openssl-ca
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   RELEASE_TAG: ${{ inputs.version || github.event.release.tag_name }}
 
 jobs:
@@ -31,6 +33,17 @@ jobs:
       # (which happen from `target/package/...`) don't create nested `target/` dirs.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
+      - &update-ca-certificates
+        name: Update CA certificates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ca-certificates
+          ubuntu_version="$(awk -F= '$1 == "VERSION_ID" {gsub(/"/, "", $2); print $2}' /etc/os-release)"
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" \
+            ge "20260816ubuntu0.${ubuntu_version}.1"
       - name: Validate release tag
         run: |
           set -euo pipefail
@@ -138,6 +151,33 @@ jobs:
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
+      - *update-ca-certificates
+      - name: Distrust compromised CAs on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # macOS command-line tools can use a CA file without the platform revocation list.
+          # https://emudhra.we-have-a-problem.com/
+          ca_bundle="$RUNNER_TEMP/ca-certificates.crt"
+          awk '/^(###|===) / {skip=0}
+            /^=== .*\/CN=(AAA Certificate Services|emSign ECC Root CA - G3)$/ {skip=1}
+            !skip' /etc/ssl/cert.pem > "$ca_bundle"
+          grep -q '^-----BEGIN CERTIFICATE-----$' "$ca_bundle"
+          openssl crl2pkcs7 -nocrl -certfile "$ca_bundle" |
+            openssl pkcs7 -print_certs -noout > "$RUNNER_TEMP/ca-subjects.txt"
+          if grep -Eq 'CN[[:space:]]*=[[:space:]]*(AAA Certificate Services|emSign ECC Root CA - G3)' "$RUNNER_TEMP/ca-subjects.txt"; then
+            echo "::error::The CA bundle still trusts a compromised CA."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/empty-ca-directory"
+          {
+            echo "SSL_CERT_FILE=$ca_bundle"
+            echo "SSL_CERT_DIR=$RUNNER_TEMP/empty-ca-directory"
+            echo "CARGO_HTTP_CAINFO=$ca_bundle"
+            echo "GIT_SSL_CAINFO=$ca_bundle"
+            echo "CURL_CA_BUNDLE=$ca_bundle"
+          } >> "$GITHUB_ENV"
       - name: Check out code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

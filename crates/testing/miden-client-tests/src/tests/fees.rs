@@ -5,45 +5,49 @@
 //! against a `MockChain` with a non-zero `verification_base_fee`, which is the only switch that
 //! turns fee collection on.
 
-use std::env::temp_dir;
 use std::sync::Arc;
 
 use miden_client::ClientError;
-use miden_client::account::component::{FeeConversionInfo, commit_fee_conversion_info};
+use miden_client::account::standards::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
-use miden_client::builder::ClientBuilder;
-use miden_client::keystore::{FilesystemKeyStore, Keystore};
+use miden_client::keystore::Keystore;
 use miden_client::store::NoteFilter;
-use miden_client::testing::common::{TestClient, create_test_store_path};
+use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     TransactionExecutorError,
     TransactionRequestBuilder,
     TransactionRequestError,
 };
-use miden_client_sqlite_store::ClientBuilderSqliteExt;
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
-use miden_protocol::crypto::SequentialCommit;
-use miden_protocol::crypto::rand::RandomCoin;
+use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::{
     Approver,
     ApproverSet,
+    AuthGuardedMultisig,
+    AuthGuardedMultisigConfig,
     AuthMultisig,
     AuthMultisigConfig,
+    AuthMultisigSmart,
+    AuthMultisigSmartConfig,
     AuthSingleSig,
+    GuardianConfig,
     MultisigAuthArgs,
 };
 use miden_standards::account::wallets::BasicWallet;
+use miden_standards::note::P2idNote;
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
-use super::seed_mock_transaction_encryption_key;
+use super::mock_client_builder;
 
 /// Base fee used by the protocol's own fee-payment tests. Large enough that the computed fee is
 /// non-zero, which is what forces the conversion info to be present.
@@ -267,23 +271,10 @@ async fn fee_charging_client_with_auth_and_rpc(
     builder.add_account(account.clone()).unwrap();
     let chain = builder.build().unwrap();
 
-    let keystore = FilesystemKeyStore::new(temp_dir()).unwrap();
-    keystore.add_key(&key, account.id()).await.unwrap();
-
     let rpc_api = Arc::new(MockRpcApi::new(chain));
-    let mut client = TestClient::from(
-        ClientBuilder::new()
-            .rpc(rpc_api.clone())
-            .rng(Box::new(RandomCoin::new(Word::from([0xfeeu32, 1, 2, 3]))))
-            .sqlite_store(create_test_store_path())
-            .authenticator(Arc::new(keystore))
-            .tx_discard_delta(None)
-            .build()
-            .await
-            .unwrap(),
-    );
-    client.ensure_genesis_in_place().await.unwrap();
-    seed_mock_transaction_encryption_key(&mut client).await;
+    let mut client =
+        TestClient::from(mock_client_builder(rpc_api.clone()).await.build().await.unwrap());
+    client.keystore().add_key(&key, account.id()).await.unwrap();
     client.add_account(&account, false).await.unwrap();
     client.sync_state().await.unwrap();
 
@@ -345,7 +336,7 @@ async fn note_screening_finds_a_custom_script_note_consumable_on_a_fee_charging_
         .code_builder()
         .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
         .unwrap();
-    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([7u32, 7, 7, 7])))
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(7))
         .script(script)
         .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
         .unwrap()
@@ -358,6 +349,33 @@ async fn note_screening_finds_a_custom_script_note_consumable_on_a_fee_charging_
         consumability.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![account.id()],
         "the target account should be able to consume the note it is bound to"
+    );
+}
+
+/// A multisig auth component always loads its auth args preimage, so screening gives it auth args
+/// with a placeholder salt. The trial then reaches the signature check, and the note is consumable
+/// once the account authorizes it.
+#[tokio::test]
+async fn note_screening_finds_a_custom_script_note_consumable_by_a_multisig_account() {
+    let (client, _, account) = Box::pin(fee_charging_multisig_client()).await;
+
+    let script = client
+        .code_builder()
+        .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
+        .unwrap();
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(8))
+        .script(script)
+        .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let consumability = client.note_screener().get_consumability(&note).await.unwrap();
+
+    assert_eq!(
+        consumability.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![account.id()],
+        "the multisig account should be able to consume the note it is bound to"
     );
 }
 
@@ -379,7 +397,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .code_builder()
         .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
         .unwrap();
-    let note = NoteBuilder::new(account.id(), RandomCoin::new(Word::from([9u32, 9, 9, 9])))
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(9))
         .script(script)
         .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
         .unwrap()
@@ -434,6 +452,97 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
     }
 }
 
+/// A serialized request with a declared salt supports multisig preview and execution against the
+/// same anchor.
+#[rstest::rstest]
+#[case::multisig(AccountComponentInterface::AuthMultisig)]
+#[case::guarded_multisig(AccountComponentInterface::AuthGuardedMultisig)]
+#[case::smart_multisig(AccountComponentInterface::AuthMultisigSmart)]
+#[tokio::test]
+async fn serialized_multisig_request_uses_native_auth_args(
+    #[case] auth_component: AccountComponentInterface,
+) {
+    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let approvers = ApproverSet::new(
+        vec![Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )],
+        1,
+    )
+    .unwrap();
+    let guardian_key = AuthSecretKey::new_falcon512_poseidon2();
+    let auth: AccountComponent = match &auth_component {
+        AccountComponentInterface::AuthMultisig => {
+            AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap().into()
+        },
+        AccountComponentInterface::AuthGuardedMultisig => {
+            let guardian = GuardianConfig::new(Approver::new(
+                guardian_key.public_key().to_commitment(),
+                AuthSchemeId::Falcon512Poseidon2,
+            ));
+            AuthGuardedMultisig::new(AuthGuardedMultisigConfig::new(approvers, guardian).unwrap())
+                .unwrap()
+                .into()
+        },
+        AccountComponentInterface::AuthMultisigSmart => {
+            AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap().into()
+        },
+        _ => unreachable!(),
+    };
+    let (mut client, rpc_api, account) =
+        Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await;
+    if matches!(auth_component, AccountComponentInterface::AuthGuardedMultisig) {
+        client.keystore().add_key(&guardian_key, account.id()).await.unwrap();
+    }
+
+    let own_note = P2idNote::builder()
+        .sender(account.id())
+        .target(account.id())
+        .asset(FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), 100).unwrap())
+        .note_type(NoteType::Public)
+        .serial_number(Word::from([5u32, 6, 7, 8]))
+        .build()
+        .unwrap();
+    let mut request = TransactionRequestBuilder::new()
+        .fee_conversion_salt(Word::from([1u32, 2, 3, 4]))
+        .own_output_notes(vec![own_note.into()])
+        .build()
+        .unwrap();
+    let anchor = client.chain_anchor_for_request(&request).await.unwrap();
+
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    assert!(client.get_sync_height().await.unwrap() > anchor.block_num());
+
+    let summary = unauthorized_summary(
+        Box::pin(client.execute_transaction_at(account.id(), request.clone(), anchor.clone()))
+            .await
+            .expect_err("an unsigned multisig request should return its summary"),
+    );
+    assert_eq!(summary.block_number(), anchor.block_num());
+
+    let message = summary.to_commitment();
+    for key in client.keystore().get_keys_for_account(&account.id()).await.unwrap() {
+        let public_key: Word = key.public_key().to_commitment().into();
+        request.advice_map_mut().insert(
+            Hasher::merge(&[public_key, message]),
+            key.sign(message).to_encoded_signature(message),
+        );
+    }
+    let result = Box::pin(client.execute_transaction_at(account.id(), request, anchor))
+        .await
+        .expect("the signed request should execute");
+    // The smart multisig auth component does not create a fee note.
+    let expected_note_count =
+        if matches!(auth_component, AccountComponentInterface::AuthMultisigSmart) {
+            1
+        } else {
+            2
+        };
+    assert_eq!(result.executed_transaction().output_notes().num_notes(), expected_note_count);
+}
+
 /// A multisig proposal can bind its summary to an old block and execute against the current chain
 /// tip. The node does not need to retain account state for the bound block.
 #[tokio::test]
@@ -448,16 +557,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([21u32, 22, 23, 24]))
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
-    let auth_arg = auth_args.to_commitment();
-    let request = TransactionRequestBuilder::new()
-        .block_numbers([bound_block_num])
-        .auth_arg(auth_arg)
-        .extend_advice_map([(auth_arg, auth_args.to_elements())])
-        .build()
-        .unwrap();
-
-    let anchor = client.chain_anchor_for_request(&request).await.unwrap();
-    assert!(anchor.partial_blockchain().contains_block(bound_block_num));
+    // The executing party sets the auth args on a request that it received. The request does not
+    // declare the bound block, so the client must track it.
+    let request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
     let original_summary = unauthorized_summary(
         Box::pin(client.execute_transaction(account.id(), request.clone()))
@@ -490,4 +592,30 @@ fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
         },
         other => panic!("expected an unauthorized multisig summary, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn reused_screener_reads_current_account_state() {
+    let (mut client, account) = Box::pin(fee_charging_client()).await;
+    let script = client
+        .code_builder()
+        .compile_note_script(super::TARGET_BOUND_NOTE_SCRIPT)
+        .unwrap();
+    let note = NoteBuilder::new(account.id(), ChaCha20Rng::seed_from_u64(122))
+        .script(script)
+        .note_storage([account.id().suffix(), account.id().prefix().as_felt()])
+        .unwrap()
+        .build()
+        .unwrap();
+    let screener = client.note_screener();
+    assert_eq!(screener.get_consumability(&note).await.unwrap().len(), 1);
+    let mut updated = client.get_account(account.id()).await.unwrap().unwrap();
+    let asset =
+        FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), FEE_ASSET_BALANCE).unwrap();
+    updated.vault_mut().remove_asset(asset.into()).unwrap();
+    client.test_store().update_account(&updated).await.unwrap();
+    let fresh = client.note_screener().get_consumability(&note).await.unwrap();
+    assert!(fresh.is_empty(), "the account cannot pay a fee after its balance is removed");
+    let reused = screener.get_consumability(&note).await.unwrap();
+    assert!(reused.is_empty(), "reusing a screener must see the current account balance");
 }

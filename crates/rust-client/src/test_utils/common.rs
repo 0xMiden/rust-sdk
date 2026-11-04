@@ -14,28 +14,24 @@ use anyhow::{Context, Result};
 use miden_protocol::account::auth::AuthSecretKey;
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_protocol::note::NoteType;
+use miden_protocol::note::{NoteId, NoteType};
 use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE;
-use miden_protocol::transaction::TransactionId;
+use miden_protocol::transaction::{RawOutputNote, TransactionId};
 use miden_standards::account::auth::{Approver, AuthSingleSig};
 use miden_standards::account::faucets::TokenName;
 use rand::Rng;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::account::component::{
-    BasicWallet,
-    BurnPolicy,
-    FungibleFaucet,
-    MintPolicy,
-    TokenPolicyManager,
-};
-use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
+use crate::account::standards::access::{Authority, Pausable, PausableManager};
+use crate::account::standards::faucets::{FungibleFaucet, NonFungibleFaucet};
+use crate::account::standards::policies::{BurnPolicy, MintPolicy, TokenPolicyManager};
+use crate::account::standards::wallets::BasicWallet;
+use crate::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountFile, AccountType};
 use crate::auth::{AuthSchemeId, ECDSA_K256_KECCAK_SCHEME_ID};
 pub use crate::keystore::{FilesystemKeyStore, Keystore};
-use crate::note::{Note, NoteConsumability, P2idNote};
-use crate::rpc::RpcError;
-use crate::store::{InputNoteRecord, NoteFilter, TransactionFilter};
+use crate::note::{Note, P2idNote};
+use crate::store::{NoteFilter, TransactionFilter};
 use crate::sync::SyncSummary;
 use crate::test_utils::fee::FeeFunder;
 use crate::transaction::{
@@ -112,9 +108,39 @@ impl TestClient {
     ) -> Result<TransactionId, ClientError> {
         self.sync_state().await?;
 
-        let transaction_request = self.fund_request(account_id, transaction_request);
+        if !transaction_request.expected_ntx_scripts().is_empty() {
+            let prover = self.client.prover();
+            Box::pin(self.client.ensure_ntx_scripts_registered(
+                account_id,
+                transaction_request.expected_ntx_scripts(),
+                prover,
+            ))
+            .await?;
+        }
 
-        Box::pin(self.client.submit_new_transaction(account_id, transaction_request)).await
+        let transaction_request = self.fund_request(account_id, transaction_request);
+        info!(
+            %account_id,
+            input_note_ids = %format_note_ids(transaction_request.input_note_ids()),
+            "Submitting transaction"
+        );
+
+        let tx_result =
+            Box::pin(self.client.execute_transaction(account_id, transaction_request)).await?;
+        let proven_transaction = self.client.prove_transaction(&tx_result).await?;
+        let submission_height =
+            self.submit_proven_transaction_retrying(proven_transaction, &tx_result).await?;
+        self.client.apply_transaction(&tx_result, submission_height).await?;
+        info!(
+            tx_id = %tx_result.id(),
+            %account_id,
+            output_note_ids = %format_note_ids(
+                tx_result.created_notes().iter().map(RawOutputNote::id)
+            ),
+            "Transaction submitted"
+        );
+
+        Ok(tx_result.id())
     }
 
     /// Executes a transaction for `account_id`, folding in its funding note when it has one.
@@ -130,14 +156,32 @@ impl TestClient {
         self.sync_state().await?;
 
         let transaction_request = self.fund_request(account_id, transaction_request);
+        info!(
+            %account_id,
+            input_note_ids = %format_note_ids(transaction_request.input_note_ids()),
+            "Executing transaction"
+        );
 
-        Box::pin(self.client.execute_transaction(account_id, transaction_request)).await
+        let transaction_result =
+            Box::pin(self.client.execute_transaction(account_id, transaction_request)).await?;
+        info!(
+            tx_id = %transaction_result.id(),
+            %account_id,
+            output_note_ids = %format_note_ids(
+                transaction_result.created_notes().iter().map(RawOutputNote::id)
+            ),
+            "Transaction executed"
+        );
+
+        Ok(transaction_result)
     }
 
     /// Returns `transaction_request` with `account_id`'s funding note folded in.
     ///
-    /// Only needed for requests not going through [`Self::submit_new_transaction`] — notably a
-    /// batch, which borrows the client, so the note must be taken before the batch is created.
+    /// Only needed for requests not going through [`Self::submit_new_transaction`]. The node can
+    /// reject such a request until it knows the funding note, so submit it with
+    /// [`Self::submit_proven_transaction_retrying`]. Do not use it for a batch. A rejected batch
+    /// cannot be resubmitted.
     #[must_use]
     pub fn fund_request(
         &mut self,
@@ -373,6 +417,23 @@ impl TestClient {
         Ok((account, key_pair))
     }
 
+    /// Imports the account of `file` from the network and adds the keys of `file` to the keystore.
+    ///
+    /// The account state is fetched rather than read from the file, so repeated runs against the
+    /// same chain see the current state.
+    pub async fn import_account_file(&mut self, file: &AccountFile) -> Result<()> {
+        let account_id = file.account().id();
+        self.import_account_by_id(account_id)
+            .await
+            .with_context(|| format!("failed to import account {account_id} from the network"))?;
+        for secret_key in file.auth_secret_keys() {
+            self.keystore().add_key(secret_key, account_id).await.with_context(|| {
+                format!("failed to add a key of account {account_id} to the keystore")
+            })?;
+        }
+        Ok(())
+    }
+
     /// Inserts a new funded wallet account, signing with the default auth scheme.
     pub async fn insert_wallet(&mut self, account_type: AccountType) -> Result<Account> {
         let (account, _) = self.insert_account(AccountSetup::wallet(account_type)).await?;
@@ -382,6 +443,43 @@ impl TestClient {
     /// Inserts a new funded fungible faucet account, signing with the default auth scheme.
     pub async fn insert_faucet(&mut self, account_type: AccountType) -> Result<Account> {
         let (account, _) = self.insert_account(AccountSetup::faucet(account_type)).await?;
+        Ok(account)
+    }
+
+    /// Inserts a new funded non-fungible faucet account, signing with the default auth scheme. The
+    /// account has the components of `create_user_non_fungible_faucet`, plus a [`BasicWallet`] that
+    /// lets the faucet receive the note that funds its fees.
+    pub async fn insert_non_fungible_faucet(
+        &mut self,
+        account_type: AccountType,
+    ) -> Result<Account> {
+        let (auth, key) = auth_component(ECDSA_K256_KECCAK_SCHEME_ID)?;
+
+        let symbol = TokenSymbol::new("NFT")?;
+        let faucet = NonFungibleFaucet::builder()
+            .name(TokenName::new(&symbol.to_string())?)
+            .symbol(symbol)
+            .build();
+        let policy_manager = TokenPolicyManager::builder()
+            .active_mint_policy(MintPolicy::allow_all())
+            .active_burn_policy(BurnPolicy::allow_all())
+            .build();
+
+        let mut init_seed = [0u8; 32];
+        self.rng().fill_bytes(&mut init_seed);
+
+        let account = AccountBuilder::new(init_seed)
+            .account_type(account_type)
+            .with_component(auth)
+            .with_component(faucet)
+            .with_component(BasicWallet)
+            .with_component(Authority::AuthControlled)
+            .with_components(policy_manager)
+            .with_component(Pausable::unpaused())
+            .with_component(PausableManager)
+            .build_with_schema_commitment()?;
+
+        let (account, _) = self.insert_account(AccountSetup::prebuilt(account, key)).await?;
         Ok(account)
     }
 
@@ -499,7 +597,6 @@ impl TestClient {
         tx_request: TransactionRequest,
     ) -> Result<()> {
         let transaction_id = self.submit_new_transaction(account_id, tx_request).await?;
-        info!(tx_id = %transaction_id, account_id = %account_id, "Transaction submitted, waiting for commit");
         self.wait_for_tx(transaction_id).await?;
         Ok(())
     }
@@ -573,7 +670,7 @@ impl TestClient {
                 return Ok(summary);
             }
 
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -596,17 +693,17 @@ impl TestClient {
                 return Ok(());
             }
 
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
     /// Syncs repeatedly until the given account has at least one consumable note, or until
-    /// `max_blocks` have elapsed since the call. Returns the list of consumable notes once found.
+    /// `max_blocks` have elapsed since the call. Returns the consumable notes once found.
     pub async fn wait_for_consumable_notes(
         &mut self,
         account_id: AccountId,
         max_blocks: u32,
-    ) -> Result<Vec<(InputNoteRecord, Vec<NoteConsumability>)>> {
+    ) -> Result<Vec<Note>> {
         let start_block = self.get_sync_height().await?;
         let deadline_block = start_block + max_blocks;
         debug!(
@@ -618,24 +715,30 @@ impl TestClient {
 
         loop {
             self.sync_state().await?;
-            let notes = self.get_consumable_notes(Some(account_id)).await?;
-            if !notes.is_empty() {
-                let current_block = self.get_sync_height().await?;
+            let records = self.get_consumable_notes(Some(account_id)).await?;
+            let current_block = self.get_sync_height().await?;
+            if !records.is_empty() {
                 debug!(
                     %account_id,
-                    count = notes.len(),
+                    count = records.len(),
                     %current_block,
                     "Found consumable notes"
                 );
-                return Ok(notes);
+                return records
+                    .into_iter()
+                    .map(|(record, _)| {
+                        let note: Note = record.try_into()?;
+                        Ok(note)
+                    })
+                    .collect();
             }
 
-            let current_block = self.get_sync_height().await?;
-            assert!(
-                current_block < deadline_block,
-                "account {account_id} has no consumable notes after waiting {max_blocks} blocks \
-                 (from block {start_block} to {current_block})"
-            );
+            if current_block >= deadline_block {
+                anyhow::bail!(
+                    "account {account_id} has no consumable notes after waiting {max_blocks} \
+                     blocks (from block {start_block} to {current_block})"
+                );
+            }
 
             debug!(
                 %account_id,
@@ -643,32 +746,8 @@ impl TestClient {
                 %deadline_block,
                 "No consumable notes yet, waiting..."
             );
-            std::thread::sleep(Duration::from_secs(3));
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    }
-
-    /// Waits for node to be running.
-    pub async fn wait_for_node(&mut self) {
-        const NODE_TIME_BETWEEN_ATTEMPTS: u64 = 2;
-        const NUMBER_OF_NODE_ATTEMPTS: u64 = 60;
-        info!(
-            "Waiting for node to be up (checking every {NODE_TIME_BETWEEN_ATTEMPTS}s, max {NUMBER_OF_NODE_ATTEMPTS} tries)"
-        );
-        for _try_number in 0..NUMBER_OF_NODE_ATTEMPTS {
-            match self.sync_state().await {
-                Err(ClientError::RpcError(
-                    RpcError::ConnectionError(_) | RpcError::RequestError { .. },
-                )) => {
-                    tokio::time::sleep(Duration::from_secs(NODE_TIME_BETWEEN_ATTEMPTS)).await;
-                },
-                Err(other_error) => {
-                    panic!("Unexpected error: {other_error}");
-                },
-                _ => return,
-            }
-        }
-
-        panic!("Unable to connect to node");
     }
 
     /// Mints a note from `faucet_account_id` for `basic_account_id` and returns the executed
@@ -696,7 +775,6 @@ impl TestClient {
             .expected_output_own_notes()
             .pop()
             .context("the mint request should produce one output note")?;
-        info!(tx_id = %tx_id, note_id = %note.id(), "Mint transaction submitted");
         Ok((tx_id, note))
     }
 
@@ -707,12 +785,28 @@ impl TestClient {
         account_id: AccountId,
         input_notes: &[Note],
     ) -> Result<TransactionId> {
-        let note_ids: Vec<_> = input_notes.iter().map(|n| n.id().to_string()).collect();
-        info!(account_id = %account_id, note_ids = %note_ids.join(", "), "Consuming notes");
+        info!(
+            account_id = %account_id,
+            note_ids = %format_note_ids(input_notes.iter().map(Note::id)),
+            "Consuming notes"
+        );
         let tx_request =
             TransactionRequestBuilder::new().build_consume_notes(input_notes.to_vec())?;
-        let tx_id = self.submit_new_transaction(account_id, tx_request).await?;
-        info!(tx_id = %tx_id, "Consume transaction submitted");
+        Ok(self.submit_new_transaction(account_id, tx_request).await?)
+    }
+
+    /// Consumes `input_notes` with `account_id` and waits for the transaction to commit.
+    ///
+    /// Nearly every caller of [`Self::consume_notes`] needs the consumption to have landed before
+    /// it asserts anything, so this pairs the two.
+    pub async fn consume_notes_and_wait(
+        &mut self,
+        account_id: AccountId,
+        input_notes: &[Note],
+    ) -> Result<TransactionId> {
+        let tx_id = self.consume_notes(account_id, input_notes).await?;
+        self.wait_for_tx(tx_id).await?;
+
         Ok(tx_id)
     }
 
@@ -757,11 +851,8 @@ impl TestClient {
             self.rng(),
         )?;
 
-        let tx_id = self
-            .execute_tx_and_consume_output_notes(tx_request, faucet_account_id, basic_account_id)
-            .await?;
-        info!(tx_id = %tx_id, "Mint-and-consume transaction submitted");
-        Ok(tx_id)
+        self.execute_tx_and_consume_output_notes(tx_request, faucet_account_id, basic_account_id)
+            .await
     }
 
     /// Creates a transaction request that mints assets for each `target_id` account.
@@ -855,4 +946,13 @@ pub fn create_test_store_path() -> PathBuf {
     let mut temp_file = temp_dir();
     temp_file.push(format!("{}.sqlite3", Uuid::new_v4()));
     temp_file
+}
+
+/// Returns the note IDs as one comma-separated string for a trace field.
+fn format_note_ids(note_ids: impl IntoIterator<Item = NoteId>) -> String {
+    note_ids
+        .into_iter()
+        .map(|note_id| note_id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

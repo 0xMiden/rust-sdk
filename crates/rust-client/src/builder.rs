@@ -1,15 +1,16 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
-use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
-use rand::RngExt;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 #[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
@@ -17,9 +18,9 @@ use crate::alloc::string::ToString;
 use crate::keystore::FilesystemKeyStore;
 use crate::note_transport::NoteTransportClient;
 use crate::pswap::PswapTransactionObserver;
-use crate::rpc::{Endpoint, NodeRpcClient};
+use crate::rpc::NodeRpcClient;
 #[cfg(feature = "tonic")]
-use crate::rpc::{GrpcClient, VerifyingRpcClient};
+use crate::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
@@ -86,9 +87,10 @@ pub trait StoreFactory {
 /// - **Store** ([`Store`]): Provides persistence for accounts, notes, and transaction history.
 ///   Configure via [`store()`](Self::store).
 ///
-/// - **RNG** ([`FeltRng`](miden_protocol::crypto::rand::FeltRng)): Provides randomness for
-///   generating keys, serial numbers, and other cryptographic operations. If not provided, a random
-///   seed-based RNG is created automatically. Configure via [`rng()`](Self::rng).
+/// - **RNG** ([`ClientCryptoRng`](crate::ClientCryptoRng)): Provides randomness for generating
+///   keys, serial numbers, and other cryptographic operations. It is always created from a random
+///   seed, so that a caller cannot make the keys it generates predictable. Under the `testing`
+///   feature it can be overridden with `rng()`.
 ///
 /// - **Authenticator** ([`TransactionAuthenticator`]): Handles transaction signing when signatures
 ///   are requested from within the VM. Configure via [`authenticator()`](Self::authenticator).
@@ -115,7 +117,7 @@ pub struct ClientBuilder<AUTH> {
     rpc_api: Option<Arc<dyn NodeRpcClient>>,
     /// An optional store provided by the user.
     pub store: Option<StoreBuilder>,
-    /// An optional RNG provided by the user.
+    /// An optional RNG provided by the user. Only settable under the `testing` feature.
     rng: Option<ClientRngBox>,
     /// The authenticator provided by the user.
     authenticator: Option<Arc<AUTH>>,
@@ -138,9 +140,12 @@ pub struct ClientBuilder<AUTH> {
     /// An optional custom transaction prover.
     tx_prover: Option<Arc<dyn TransactionProver + Send + Sync>>,
     /// The endpoint used by the builder for network configuration.
+    #[cfg(feature = "tonic")]
     endpoint: Option<Endpoint>,
     /// An optional shared source manager for MASM source information.
     source_manager: Option<Arc<dyn SourceManagerSync>>,
+    /// An optional genesis block header and protocol configuration to store on build.
+    genesis: Option<(BlockHeader, ProtocolConfig)>,
 }
 
 impl<AUTH> Default for ClientBuilder<AUTH> {
@@ -157,8 +162,10 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             note_transport_api: None,
             note_transport_config: None,
             tx_prover: None,
+            #[cfg(feature = "tonic")]
             endpoint: None,
             source_manager: None,
+            genesis: None,
         }
     }
 }
@@ -382,6 +389,10 @@ where
     }
 
     /// Optionally provide a custom RNG.
+    ///
+    /// Restricted to the `testing` feature: the client's RNG generates secret keys and seals
+    /// transaction inputs, so outside of tests its output must not be predictable to a caller.
+    #[cfg(feature = "testing")]
     #[must_use]
     pub fn rng(mut self, rng: ClientRngBox) -> Self {
         self.rng = Some(rng);
@@ -451,17 +462,6 @@ where
         self
     }
 
-    /// Sets the number of blocks after which pending transactions are considered stale and
-    /// discarded.
-    ///
-    /// This is an alias for [`tx_discard_delta`](Self::tx_discard_delta).
-    #[deprecated(since = "0.10.0", note = "Use `tx_discard_delta` instead")]
-    #[must_use]
-    pub fn tx_graceful_blocks(mut self, delta: Option<u32>) -> Self {
-        self.tx_discard_delta = delta;
-        self
-    }
-
     /// Sets a custom note transport client directly.
     #[must_use]
     pub fn note_transport(mut self, client: Arc<dyn NoteTransportClient>) -> Self {
@@ -476,12 +476,25 @@ where
         self
     }
 
+    /// Sets the genesis block header and its protocol configuration, which are stored when the
+    /// client is built.
+    #[must_use]
+    pub fn seed_genesis(
+        mut self,
+        block_header: BlockHeader,
+        protocol_config: ProtocolConfig,
+    ) -> Self {
+        self.genesis = Some((block_header, protocol_config));
+        self
+    }
+
     /// Returns the endpoint configured for this builder, if any.
     ///
     /// This is set automatically when using network-specific constructors like
     /// [`for_mainnet()`](Self::for_mainnet), [`for_testnet()`](Self::for_testnet),
     /// [`for_devnet()`](Self::for_devnet), or [`for_localhost()`](Self::for_localhost).
     #[must_use]
+    #[cfg(feature = "tonic")]
     pub fn endpoint(&self) -> Option<&Endpoint> {
         self.endpoint.as_ref()
     }
@@ -516,12 +529,10 @@ where
         };
 
         // Use the provided RNG, or create a default one.
-        let rng = if let Some(user_rng) = self.rng {
+        let rng: ClientRngBox = if let Some(user_rng) = self.rng {
             user_rng
         } else {
-            let mut seed_rng = rand::rng();
-            let coin_seed: [u64; 4] = seed_rng.random();
-            Box::new(RandomCoin::new(coin_seed.map(Felt::new_unchecked).into()))
+            Box::new(ChaCha20Rng::from_rng(&mut rand::rng()))
         };
 
         let tx_prover: Arc<dyn TransactionProver + Send + Sync> =
@@ -529,6 +540,10 @@ where
 
         let source_manager: Arc<dyn SourceManagerSync> =
             self.source_manager.unwrap_or_else(|| Arc::new(DefaultSourceManager::default()));
+
+        if let Some((block_header, protocol_config)) = self.genesis {
+            store_genesis(store.as_ref(), block_header, protocol_config).await?;
+        }
 
         // Initialize genesis commitment in RPC client
         if let Some((genesis, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
@@ -584,6 +599,53 @@ where
         };
         Ok(client)
     }
+}
+
+// GENESIS SEEDING
+// ================================================================================================
+
+/// Stores `block_header` and `protocol_config` as the genesis of `store`. See
+/// [`ClientBuilder::seed_genesis`].
+async fn store_genesis(
+    store: &dyn Store,
+    block_header: BlockHeader,
+    protocol_config: ProtocolConfig,
+) -> Result<(), ClientError> {
+    validate_genesis(&block_header, &protocol_config)?;
+
+    if let Some((stored, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await?
+        && stored.commitment() != block_header.commitment()
+    {
+        return Err(ClientError::ChainValidationError(format!(
+            "stored genesis block commitment {} does not match {}",
+            stored.commitment(),
+            block_header.commitment()
+        )));
+    }
+
+    store.insert_genesis(&block_header, Some(&protocol_config)).await?;
+    Ok(())
+}
+
+/// Checks that `block_header` is the genesis block header and that it commits to `protocol_config`.
+fn validate_genesis(
+    block_header: &BlockHeader,
+    protocol_config: &ProtocolConfig,
+) -> Result<(), ClientError> {
+    if block_header.block_num() != BlockNumber::GENESIS {
+        return Err(ClientError::ChainValidationError(format!(
+            "expected genesis block header, got block {}",
+            block_header.block_num()
+        )));
+    }
+    let expected_commitment = block_header.protocol_config_commitment();
+    let actual_commitment = protocol_config.to_commitment();
+    if actual_commitment != expected_commitment {
+        return Err(ClientError::ChainValidationError(format!(
+            "genesis protocol configuration commitment mismatch: expected {expected_commitment}, got {actual_commitment}"
+        )));
+    }
+    Ok(())
 }
 
 // BUILDER AUTHENTICATOR

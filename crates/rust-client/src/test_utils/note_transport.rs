@@ -21,6 +21,7 @@ use crate::note_transport::{
     NoteTransportClient,
     NoteTransportCursor,
     NoteTransportError,
+    NoteTransportPage,
     TransportNote,
 };
 
@@ -54,25 +55,43 @@ impl MockNoteTransportNode {
     /// Build a mock that caps each `get_notes` response at `max_batch` entries.
     pub fn with_max_batch(max_batch: usize) -> Self {
         Self {
-            notes: BTreeMap::default(),
-            nonce: 1,
-            next_sequence: 1,
             max_batch: Some(max_batch),
-            proven_notes: BTreeMap::default(),
+            ..Self::new()
         }
+    }
+
+    /// Stores `info` under `tag` at the next cursor position.
+    fn push(&mut self, tag: NoteTag, info: NoteInfo) {
+        let cursor = NoteTransportCursor {
+            nonce: self.nonce,
+            sequence: self.next_sequence,
+        };
+        self.next_sequence += 1;
+        self.notes.entry(tag).or_default().push((info, cursor));
     }
 
     /// Seed a note relayed with its inclusion proof. The real service verifies the proof against
     /// its node; the mock only records the proof's block and serves it as the commitment block.
+    ///
+    /// The real service stores a note only once. The mock also ignores a note with an id that it
+    /// already stores.
     pub fn add_note_with_proof(
         &mut self,
         header: NoteHeader,
         details_bytes: Vec<u8>,
         inclusion_proof: &NoteInclusionProof,
     ) {
+        if self.contains_note(&header.id()) {
+            return;
+        }
         let block_num = inclusion_proof.location().block_num();
         self.proven_notes.insert(header.id(), block_num);
         self.add_note_after(header, details_bytes, Some(block_num));
+    }
+
+    /// Returns whether the mock stores a note with `note_id`.
+    fn contains_note(&self, note_id: &NoteId) -> bool {
+        self.notes.values().flatten().any(|(info, _)| info.header.id() == *note_id)
     }
 
     /// Returns the block named by the proof a note was stored with, or `None` when the note was not
@@ -94,10 +113,7 @@ impl MockNoteTransportNode {
         block_hint: Option<BlockNumber>,
     ) {
         let tag = header.metadata().tag();
-        let info = NoteInfo { header, details_bytes, block_hint };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
-        self.next_sequence += 1;
-        self.notes.entry(tag).or_default().push((info, cursor));
+        self.push(tag, NoteInfo { header, details_bytes, block_hint });
     }
 
     /// Seed a note under an arbitrary transport tag key, regardless of the note's own tag.
@@ -107,55 +123,57 @@ impl MockNoteTransportNode {
         header: NoteHeader,
         details_bytes: Vec<u8>,
     ) {
-        let info = NoteInfo { header, details_bytes, block_hint: None };
-        let cursor = NoteTransportCursor::from_parts(self.nonce, self.next_sequence);
-        self.next_sequence += 1;
-        self.notes.entry(tag).or_default().push((info, cursor));
+        self.push(tag, NoteInfo { header, details_bytes, block_hint: None });
     }
 
     pub fn get_notes(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
+        cursor: Option<NoteTransportCursor>,
     ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        // Start `rcursor` at the input — matches the real server's contract (`rcursor = max(cursor,
-        // max_seq_returned)`), so an empty batch returns the caller's own cursor rather than
-        // `init()`.
-        let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = vec![];
-        for tag in tags {
-            // Assumes stored notes are ordered by cursor
-            let tnotes = self
-                .notes
-                .get(tag)
-                .map(|pg_notes| {
-                    // Find first element after cursor
-                    if let Some(pos) = pg_notes.iter().position(|(_, tcursor)| *tcursor > cursor) {
-                        &pg_notes[pos..]
-                    } else {
-                        &[]
-                    }
-                })
-                .map(Vec::from)
-                .unwrap_or_default();
-            collected.extend(tnotes);
+        self.notes_up_to(tags, cursor, self.head())
+    }
+
+    /// Returns the position of the last stored note.
+    fn head(&self) -> NoteTransportCursor {
+        NoteTransportCursor {
+            nonce: self.nonce,
+            sequence: self.next_sequence - 1,
         }
+    }
+
+    /// Returns the notes after `cursor` and up to `sync_to`.
+    fn notes_up_to(
+        &self,
+        tags: &[NoteTag],
+        cursor: Option<NoteTransportCursor>,
+        sync_to: NoteTransportCursor,
+    ) -> (Vec<NoteInfo>, NoteTransportCursor) {
+        // A cursor from another database starts from the first retained note.
+        let after = cursor.filter(|cursor| cursor.nonce == self.nonce).map_or(0, |c| c.sequence);
+        let mut collected: Vec<(NoteInfo, NoteTransportCursor)> = tags
+            .iter()
+            .filter_map(|tag| self.notes.get(tag))
+            .flatten()
+            .filter(|(_, tcursor)| tcursor.sequence > after && tcursor.sequence <= sync_to.sequence)
+            .cloned()
+            .collect();
 
         // Deterministic ordering across tags: sort by cursor ascending so the client sees notes in
         // per-cursor order regardless of tag iteration order, matching the real server's `ORDER BY
         // seq ASC`.
-        collected.sort_by_key(|(_, c)| *c);
+        collected.sort_by_key(|(_, c)| c.sequence);
 
         // Apply the batch cap, if configured.
         if let Some(max) = self.max_batch {
             collected.truncate(max);
         }
 
-        let initial_cursor = cursor
-            .parts()
-            .map_or(NoteTransportCursor::from_parts(self.nonce, 0), |_| cursor);
-        let rcursor = collected.iter().map(|(_, c)| *c).max().unwrap_or(initial_cursor);
+        // Matches the real server's contract (`rcursor = max(cursor, max_seq_returned)`), so an
+        // empty batch returns the caller's own position.
+        let sequence = collected.last().map_or(after, |(_, c)| c.sequence);
         let notes = collected.into_iter().map(|(n, _)| n).collect();
-        (notes, rcursor)
+        (notes, NoteTransportCursor { nonce: self.nonce, sequence })
     }
 }
 
@@ -171,11 +189,27 @@ impl Default for MockNoteTransportNode {
 #[derive(Clone, Default)]
 pub struct MockNoteTransportApi {
     pub mock_node: Arc<RwLock<MockNoteTransportNode>>,
+    fetch_tag_counts: Arc<RwLock<Vec<usize>>>,
+    fetch_bounds: Arc<RwLock<Vec<Option<NoteTransportCursor>>>>,
 }
 
 impl MockNoteTransportApi {
     pub fn new(mock_node: Arc<RwLock<MockNoteTransportNode>>) -> Self {
-        Self { mock_node }
+        Self {
+            mock_node,
+            fetch_tag_counts: Arc::default(),
+            fetch_bounds: Arc::default(),
+        }
+    }
+
+    /// Returns the number of tags in each fetch request.
+    pub fn fetch_tag_counts(&self) -> Vec<usize> {
+        self.fetch_tag_counts.read().clone()
+    }
+
+    /// Returns the `sync_to` bound of each fetch request.
+    pub fn fetch_bounds(&self) -> Vec<Option<NoteTransportCursor>> {
+        self.fetch_bounds.read().clone()
     }
 }
 
@@ -186,14 +220,6 @@ impl MockNoteTransportApi {
         self.mock_node
             .write()
             .add_note_with_proof(header, details_bytes, inclusion_proof);
-    }
-
-    pub fn fetch_notes(
-        &self,
-        tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> (Vec<NoteInfo>, NoteTransportCursor) {
-        self.mock_node.read().get_notes(tags, cursor)
     }
 }
 
@@ -209,12 +235,19 @@ impl NoteTransportClient for MockNoteTransportApi {
         Ok(())
     }
 
-    async fn fetch_notes(
+    async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        Ok(self.fetch_notes(tags, cursor))
+        cursor: Option<NoteTransportCursor>,
+        sync_to: Option<NoteTransportCursor>,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        self.fetch_tag_counts.write().push(tags.len());
+        self.fetch_bounds.write().push(sync_to);
+        let node = self.mock_node.read();
+        let sync_to = sync_to.unwrap_or_else(|| node.head());
+        let (notes, cursor) = node.notes_up_to(tags, cursor, sync_to);
+        let has_more = !node.notes_up_to(tags, Some(cursor), sync_to).0.is_empty();
+        Ok(NoteTransportPage { notes, cursor, has_more, sync_to })
     }
 }
 
@@ -224,20 +257,20 @@ impl NoteTransportClient for MockNoteTransportApi {
 /// Test-only [`NoteTransportClient`] decorator that injects controlled failures into
 /// `send_note_with_proof` calls.
 ///
-/// Reproduces the failure mode where the NTL is reachable but rejects (or silently drops) a relay
-/// attempt, exercising the durable outbox in
-/// [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof): without
-/// retry/persistence a failed relay would leave the recipient unable to discover the note.
+/// Reproduces the failure mode where the NTL is reachable but rejects a send. Tests use it to check
+/// how [`Client::send_private_note_with_proof`](crate::Client::send_private_note_with_proof)
+/// reports the failure and how a later send by the caller delivers the note.
 ///
 /// The decorator counts attempts (`send_attempts`) and lets a test specify how many of the next
 /// `send_note_with_proof` calls should fail (`fail_next`); successful calls delegate to an inner
-/// [`MockNoteTransportApi`]. `fetch_notes` failures can be injected separately via
+/// [`MockNoteTransportApi`]. `fetch_notes_page` failures can be injected separately via
 /// [`FaultyNoteTransportApi::fail_next_n_fetches`].
 pub struct FaultyNoteTransportApi {
     inner: MockNoteTransportApi,
     fail_next: AtomicUsize,
     send_attempts: AtomicUsize,
     fail_next_fetches: AtomicUsize,
+    fail_on_fetch: AtomicUsize,
     fetch_attempts: AtomicUsize,
 }
 
@@ -250,14 +283,9 @@ impl FaultyNoteTransportApi {
             fail_next: AtomicUsize::new(fail_next),
             send_attempts: AtomicUsize::new(0),
             fail_next_fetches: AtomicUsize::new(0),
+            fail_on_fetch: AtomicUsize::new(0),
             fetch_attempts: AtomicUsize::new(0),
         }
-    }
-
-    /// Reset the fail-counter to `n`; subsequent `send_note_with_proof` calls fail until the
-    /// counter reaches zero.
-    pub fn fail_next_n(&self, n: usize) {
-        self.fail_next.store(n, Ordering::SeqCst);
     }
 
     /// Total `send_note_with_proof` calls observed (success + failure).
@@ -265,12 +293,17 @@ impl FaultyNoteTransportApi {
         self.send_attempts.load(Ordering::SeqCst)
     }
 
-    /// Fail the next `n` `fetch_notes` calls before delegating to the inner mock again.
+    /// Fail the next `n` `fetch_notes_page` calls before delegating to the inner mock again.
     pub fn fail_next_n_fetches(&self, n: usize) {
         self.fail_next_fetches.store(n, Ordering::SeqCst);
     }
 
-    /// Total `fetch_notes` calls observed (success + failure).
+    /// Fails one fetch attempt. Attempt numbers start at one.
+    pub fn fail_on_fetch_attempt(&self, attempt: usize) {
+        self.fail_on_fetch.store(attempt, Ordering::SeqCst);
+    }
+
+    /// Total `fetch_notes_page` calls observed (success + failure).
     pub fn fetch_attempts(&self) -> usize {
         self.fetch_attempts.load(Ordering::SeqCst)
     }
@@ -304,22 +337,23 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         Ok(())
     }
 
-    async fn fetch_notes(
+    async fn fetch_notes_page(
         &self,
         tags: &[NoteTag],
-        cursor: NoteTransportCursor,
-    ) -> Result<(Vec<NoteInfo>, NoteTransportCursor), NoteTransportError> {
-        self.fetch_attempts.fetch_add(1, Ordering::SeqCst);
+        cursor: Option<NoteTransportCursor>,
+        sync_to: Option<NoteTransportCursor>,
+    ) -> Result<NoteTransportPage, NoteTransportError> {
+        let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
-        if should_fail {
+        if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(
-                "FaultyNoteTransportApi: simulated fetch_notes failure".to_string(),
+                "FaultyNoteTransportApi: simulated fetch_notes_page failure".to_string(),
             ));
         }
-        Ok(self.inner.fetch_notes(tags, cursor))
+        self.inner.fetch_notes_page(tags, cursor, sync_to).await
     }
 }
 

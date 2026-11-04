@@ -3,18 +3,20 @@
 use std::collections::BTreeSet;
 use std::vec::Vec;
 
-use miden_client::Word;
-use miden_client::account::AccountId;
-use miden_client::note::{BlockNumber, NoteTag};
-use miden_client::protocol_config::protocol_config_setting_key;
-use miden_client::store::{SettingScope, StoreError};
-use miden_client::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
-use miden_client::utils::{Deserializable, Serializable};
+use miden_client_core::errors::StoreError;
+use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
+use miden_protocol::address::Address;
+use miden_protocol::block::BlockNumber;
+use miden_protocol::note::NoteTag;
+use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::{Connection, Transaction, params};
 
 use super::SqliteStore;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::note::apply_note_updates_tx;
+use crate::settings::protocol_config_key;
 use crate::sql_error::SqlResultExt;
 use crate::transaction::upsert_transaction_record;
 use crate::{insert_sql, proto, subst, with_write_tx};
@@ -39,20 +41,42 @@ impl SqliteStore {
             .collect::<Result<Vec<NoteTagRecord>, _>>()
     }
 
+    /// Returns the note tags of the native accounts, derived from their addresses. Two addresses of
+    /// one account with the same tag give one record.
+    pub(crate) fn get_account_note_tags(
+        conn: &mut Connection,
+    ) -> Result<Vec<NoteTagRecord>, StoreError> {
+        const QUERY: &str = "SELECT addresses.address, addresses.account_id FROM addresses \
+             JOIN latest_account_headers ON latest_account_headers.id = addresses.account_id \
+             WHERE latest_account_headers.watched = FALSE";
+
+        let tags = conn
+            .prepare_cached(QUERY)
+            .into_store_error()?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("no binding parameters used in query")
+            .map(|result| {
+                let (address, account_id): (Vec<u8>, Vec<u8>) = result.into_store_error()?;
+                let address = Address::read_from_bytes(&address)?;
+                let account_id = AccountId::read_from_bytes(&account_id)?;
+                Ok((address.to_note_tag(), account_id))
+            })
+            .collect::<Result<BTreeSet<(NoteTag, AccountId)>, StoreError>>()?;
+
+        Ok(tags
+            .into_iter()
+            .map(|(tag, account_id)| NoteTagRecord::with_account_source(tag, account_id))
+            .collect())
+    }
+
+    /// Returns the stored tags and the account tags as one set.
     pub(crate) fn get_unique_note_tags(
         conn: &mut Connection,
     ) -> Result<BTreeSet<NoteTag>, StoreError> {
-        const QUERY: &str = "SELECT DISTINCT tag FROM tags";
-
-        conn.prepare_cached(QUERY)
-            .into_store_error()?
-            .query_map([], |row| row.get(0))
-            .expect("no binding parameters used in query")
-            .map(|result| {
-                let tag: Vec<u8> = result.into_store_error()?;
-                NoteTag::read_from_bytes(&tag).map_err(StoreError::DataDeserializationError)
-            })
-            .collect::<Result<BTreeSet<NoteTag>, _>>()
+        let mut tags: BTreeSet<NoteTag> =
+            Self::get_note_tags(conn)?.into_iter().map(|record| record.tag).collect();
+        tags.extend(Self::get_account_note_tags(conn)?.into_iter().map(|record| record.tag));
+        Ok(tags)
     }
 
     pub(super) fn add_note_tag(
@@ -88,14 +112,14 @@ impl SqliteStore {
 
         with_write_tx(conn, |db_tx| {
             let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(db_tx))?;
-            // Update blockchain checkpoint (block number and peaks) only if moving forward.
+            // Insert the chain anchor (block number and peaks) only if moving forward.
             let new_peaks_bytes = proto::encode_mmr_peaks(&partial_blockchain_updates.new_peaks);
-            const BLOCKCHAIN_CHECKPOINT_QUERY: &str = "\
-                UPDATE blockchain_checkpoint \
-                SET block_num = ?1, partial_blockchain_peaks = ?2 \
-                WHERE block_num < ?1";
+            const CHAIN_ANCHOR_QUERY: &str = "\
+                INSERT INTO chain_anchors (block_num, peaks) \
+                SELECT ?1, ?2 \
+                WHERE ?1 > (SELECT MAX(block_num) FROM chain_anchors)";
             db_tx
-                .execute(BLOCKCHAIN_CHECKPOINT_QUERY, params![block_num.as_u32(), new_peaks_bytes])
+                .execute(CHAIN_ANCHOR_QUERY, params![block_num.as_u32(), new_peaks_bytes])
                 .into_store_error()?;
 
             for (block_header, is_relevant) in
@@ -117,7 +141,8 @@ impl SqliteStore {
             // during catch-up, or invalidated): their tag no longer drives note sync. Metadata-less
             // records are skipped; their tag (if any) cannot be reconstructed.
             let tags_to_remove = note_updates
-                .updated_input_notes()
+                .input_notes()
+                .iter()
                 .filter_map(|note_update| {
                     let note = note_update.inner();
                     if note.is_inclusion_pending() {
@@ -165,7 +190,7 @@ impl SqliteStore {
                         let previous_header = if discarded_states
                             .contains(&(account_id, previous_header.to_commitment()))
                         {
-                            Self::require_latest_account_header(db_tx, account_id)?
+                            Self::require_latest_account_header(db_tx, account_id)?.header
                         } else {
                             previous_header.clone()
                         };
@@ -192,11 +217,10 @@ impl SqliteStore {
             }
 
             if let Some(config) = &protocol_config {
-                Self::set_setting(
+                Self::set_client_config(
                     db_tx,
-                    SettingScope::Client,
-                    &protocol_config_setting_key(config.to_commitment()),
-                    &config.to_bytes(),
+                    &protocol_config_key(config.to_commitment()),
+                    config,
                 )?;
             }
 
@@ -207,10 +231,18 @@ impl SqliteStore {
 
 /// Inserts the tag record, relying on the `(tag, source)` primary key for idempotency across
 /// concurrent connections. Returns whether a new row was inserted.
+///
+/// Returns [`StoreError::AccountNoteTagNotStorable`] for a record with an account source. The store
+/// derives these records from the addresses of the native accounts. No operation removes a stored
+/// copy, so the client would track its tag forever.
 pub(super) fn add_note_tag_tx(
     tx: &Transaction<'_>,
     tag: &NoteTagRecord,
 ) -> Result<bool, StoreError> {
+    if let NoteTagSource::Account(account_id) = tag.source {
+        return Err(StoreError::AccountNoteTagNotStorable(account_id));
+    }
+
     const QUERY: &str = insert_sql!(tags { tag, source } | IGNORE);
     let inserted = tx
         .execute(QUERY, params![tag.tag.to_bytes(), tag.source.to_bytes()])
@@ -231,16 +263,15 @@ pub(super) fn remove_note_tag_tx(
     Ok(removed_tags)
 }
 
-/// Reads the sync height from the `blockchain_checkpoint` row.
+/// Reads the sync height, which is the highest block number in the `chain_anchors` table.
 ///
-/// The initial migration seeds the row, so a missing row is corruption and returns a
+/// The initial migration seeds the table, so an empty table is corruption and returns a
 /// [`StoreError::QueryError`].
 pub(crate) fn query_sync_height(conn: &Connection) -> Result<BlockNumber, StoreError> {
-    conn.query_row("SELECT block_num FROM blockchain_checkpoint LIMIT 1", [], |row| {
-        row.get::<_, u32>("block_num")
-    })
-    .into_store_error()
-    .map(BlockNumber::from)
+    const QUERY: &str = "SELECT block_num FROM chain_anchors ORDER BY block_num DESC LIMIT 1";
+    conn.query_row(QUERY, [], |row| row.get::<_, u32>("block_num"))
+        .into_store_error()
+        .map(BlockNumber::from)
 }
 
 #[cfg(test)]
@@ -250,15 +281,15 @@ mod tests {
     use crate::SqliteStore;
     use crate::db_management::migration::SqliteMigrator;
 
-    /// A missing checkpoint row is only reachable through corruption (the initial migration seeds
-    /// it); it must surface as an error, not a panic.
+    /// An empty chain anchors table is only reachable through corruption (the initial migration
+    /// seeds it); it must surface as an error, not a panic.
     #[test]
-    fn get_sync_height_errors_when_checkpoint_is_missing() {
+    fn get_sync_height_errors_when_chain_anchors_are_missing() {
         let mut conn = Connection::open_in_memory().unwrap();
         SqliteMigrator::client().apply(&mut conn).unwrap();
-        conn.execute("DELETE FROM blockchain_checkpoint", []).unwrap();
+        conn.execute("DELETE FROM chain_anchors", []).unwrap();
 
         let err = SqliteStore::get_sync_height(&mut conn).unwrap_err();
-        assert!(matches!(err, miden_client::store::StoreError::QueryError(_)));
+        assert!(matches!(err, miden_client_core::errors::StoreError::QueryError(_)));
     }
 }

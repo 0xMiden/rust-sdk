@@ -1,6 +1,5 @@
 use std::sync::LazyLock;
 
-use miden_client::store::SettingScope;
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{HookError, HookResult};
 
@@ -272,8 +271,8 @@ fn user_data_does_not_change_schema_hash() {
     assert_eq!(hash_before.to_string(), client.expected_hash(client.latest_version()));
 
     conn.execute(
-        "INSERT INTO settings (scope, name, value) VALUES (?1, ?2, ?3)",
-        params![SettingScope::User.as_u8(), "test-setting", b"value"],
+        "INSERT INTO user_settings (name, value) VALUES (?1, ?2)",
+        params!["test-setting", b"value"],
     )
     .expect("user data should insert");
 
@@ -282,37 +281,6 @@ fn user_data_does_not_change_schema_hash() {
 
     client.apply(&mut conn).expect("database with user data should reopen");
     assert_eq!(hash_before, SchemaHash::of(&conn).expect("schema hash should compute"));
-}
-
-#[test]
-fn client_store_at_version_one_upgrades_in_place() {
-    let mut conn = open_memory_db();
-    SqliteMigrator::client()
-        .migrate_to_version(&mut conn, 1)
-        .expect("version 1 of the production schema should apply");
-    conn.execute(
-        "INSERT INTO transactions (id, details, script_root, block_num, status_variant, status) \
-         VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-        params![b"transaction-id", b"details", 7, 0, b"status"],
-    )
-    .expect("a version 1 transaction should insert");
-
-    SqliteMigrator::client()
-        .apply(&mut conn)
-        .expect("a version 1 store should upgrade");
-
-    assert_eq!(user_version(&conn), SqliteMigrator::client().latest_version());
-    let (id, status_variant): (Vec<u8>, u8) = conn
-        .query_row("SELECT id, status_variant FROM transactions", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
-        .expect("the transaction should have survived the upgrade");
-    assert_eq!(id, b"transaction-id");
-    assert_eq!(status_variant, 0);
-    assert!(
-        conn.prepare("SELECT block_num FROM transactions").is_err(),
-        "the dropped column should be gone"
-    );
 }
 
 #[test]

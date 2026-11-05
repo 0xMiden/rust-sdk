@@ -14,6 +14,7 @@ use miden_client::account::{
     AccountHeader,
     AccountId,
     AccountPatch,
+    AccountStorage,
     AccountStoragePatch,
     AccountType,
     AccountVaultPatch,
@@ -27,7 +28,13 @@ use miden_client::account::{
 };
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
-use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
+use miden_client::asset::{
+    Asset,
+    AssetVault,
+    FungibleAsset,
+    NonFungibleAsset,
+    NonFungibleAssetDetails,
+};
 use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::AccountWitness;
 use miden_client::note::NoteTag;
@@ -3687,6 +3694,129 @@ async fn undo_code_upgrade_restores_previous_code() -> anyhow::Result<()> {
         .try_into()?;
     assert_eq!(stored, account);
     assert_eq!(stored.code(), account.code());
+
+    Ok(())
+}
+
+// FULL ACCOUNT UPDATES
+// ================================================================================================
+
+/// Returns a wallet account with the slots of `slots`, the assets of `assets` and `nonce`.
+fn account_with_state(
+    slots: Vec<StorageSlot>,
+    assets: &[Asset],
+    nonce: u32,
+) -> anyhow::Result<Account> {
+    let base = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .build_existing()?;
+    Ok(Account::new(
+        base.id(),
+        AssetVault::new(assets)?,
+        AccountStorage::new(slots)?,
+        base.code().clone(),
+        Felt::from(nonce),
+        None,
+    )?)
+}
+
+fn slot_name(name: &str) -> StorageSlotName {
+    StorageSlotName::new(format!("miden::testing::sqlite_store::{name}")).expect("valid slot name")
+}
+
+fn map_with_entry(key: u32, value: u32) -> anyhow::Result<StorageMap> {
+    let mut map = StorageMap::new();
+    map.insert(
+        StorageMapKey::new([Felt::from(key), ZERO, ZERO, ZERO].into()),
+        [Felt::from(value), ZERO, ZERO, ZERO].into(),
+    )?;
+    Ok(map)
+}
+
+async fn insert_native_account(store: &SqliteStore, account: &Account) -> anyhow::Result<()> {
+    store
+        .insert_account(account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+    Ok(())
+}
+
+async fn update_account_state(store: &SqliteStore, account: Account) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::update_account_state(&tx, &mut smt_forest, &account)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
+async fn undo_account_states(
+    store: &SqliteStore,
+    discarded_states: Vec<(AccountId, Word)>,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::undo_account_state(&tx, &mut smt_forest, &discarded_states)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
+async fn load_account(store: &SqliteStore, account_id: AccountId) -> anyhow::Result<Account> {
+    Ok(store
+        .get_account(account_id)
+        .await?
+        .context("failed to find the account")?
+        .try_into()?)
+}
+
+/// A full update that changes the type of slots removes the old map entries, and undo restores the
+/// old slots with their old types.
+#[tokio::test]
+async fn update_account_state_changes_slot_types_and_undo_restores_them() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let becomes_map = slot_name("becomes_map");
+    let becomes_value = slot_name("becomes_value");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_value(becomes_map.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+            StorageSlot::with_map(becomes_value.clone(), map_with_entry(1, 10)?),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(
+        vec![
+            StorageSlot::with_map(becomes_map, map_with_entry(2, 20)?),
+            StorageSlot::with_value(becomes_value, [ONE, ONE, ZERO, ZERO].into()),
+        ],
+        &[],
+        2,
+    )?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 1, "only the new map has entries");
+
+    undo_account_states(&store, vec![(updated.id(), updated.to_commitment())]).await?;
+
+    assert_eq!(load_account(&store, initial.id()).await?, initial);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 1, "only the old map has entries");
 
     Ok(())
 }

@@ -122,6 +122,7 @@ impl SqliteStore {
     ///
     /// The storage patch is the source of truth for slot type, value, and removal. Roots for map
     /// slots that remain present are read from the already-updated forest.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn write_storage_patch(
         tx: &Transaction<'_>,
         smt_forest: &ScopedAccountForest<'_, '_>,
@@ -157,8 +158,8 @@ impl SqliteStore {
                 old_value
             } | REPLACE
         );
-        const READ_OLD_SLOT: &str =
-            "SELECT slot_value FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
+        const READ_OLD_SLOT: &str = "SELECT slot_value, slot_type FROM latest_account_storage \
+                                     WHERE account_id = ? AND slot_name = ?";
         const DELETE_LATEST_SLOT: &str =
             "DELETE FROM latest_account_storage WHERE account_id = ? AND slot_name = ?";
 
@@ -190,23 +191,43 @@ impl SqliteStore {
             let slot_name_str = slot_name.to_string();
             let slot_type_val = slot_type as u8;
 
-            // Read old slot value from latest (NULL if slot is new)
-            let old_slot_value: Option<Vec<u8>> = read_slot_stmt
-                .query_row(params![&account_id_bytes, &slot_name_str], |row| row.get(0))
+            // Read the old slot from latest (`None` if the slot is new).
+            let old_slot: Option<(Vec<u8>, u8)> = read_slot_stmt
+                .query_row(params![&account_id_bytes, &slot_name_str], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .optional()
-                .into_store_error()?
-                .flatten();
+                .into_store_error()?;
+            let (old_slot_value, old_slot_type_val) = match old_slot {
+                Some((value, old_type)) => (Some(value), old_type),
+                None => (None, slot_type_val),
+            };
 
-            // Archive old value to historical (NULL old_slot_value = slot was new)
+            // Archive the old value with the old slot type, because undo restores both. A NULL
+            // old_slot_value shows that the slot was new.
             hist_slot_stmt
                 .execute(params![
                     &account_id_bytes,
                     &nonce_val,
                     &slot_name_str,
                     old_slot_value,
-                    slot_type_val,
+                    old_slot_type_val,
                 ])
                 .into_store_error()?;
+
+            // A map slot that becomes a value slot has no map patch. Its old entries must be
+            // archived and removed here.
+            if map_patch.is_none() && old_slot_type_val == StorageSlotType::Map as u8 {
+                Self::replace_map_entries(
+                    tx,
+                    &mut latest_map_stmt,
+                    &mut hist_map_stmt,
+                    &account_id_bytes,
+                    &nonce_val,
+                    &slot_name_str,
+                    &[],
+                )?;
+            }
 
             if let Some(value) = new_value {
                 latest_slot_stmt

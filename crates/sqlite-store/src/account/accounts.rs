@@ -546,6 +546,13 @@ impl SqliteStore {
         let mut forest_update = AccountUpdate::new();
         forest_update.vault_patch(account_id, vault_patch, final_account_state.vault_root());
         forest_update.storage_patch(account_id, storage_patch);
+        // A map slot that becomes a value slot has no map patch, so its tree is cleared here.
+        let stored_slots = query_storage_values(tx, account_id)?;
+        for (slot_name, _) in storage_patch.values() {
+            if matches!(stored_slots.get(slot_name), Some((StorageSlotType::Map, _))) {
+                forest_update.clear_map(account_id, slot_name);
+            }
+        }
         let revision = allocate_forest_revision(tx).into_store_error()?;
         smt_forest.apply(revision, forest_update)?;
 

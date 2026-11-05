@@ -22,10 +22,10 @@ use miden_client_core::transaction::{
     InputNoteAuthentication,
     NoteArgs,
     RequestInputNote,
+    RequestScript,
     TransactionDetails,
     TransactionRequest,
     TransactionRequestBuilder,
-    TransactionScriptTemplate,
     TransactionStatus,
     TransactionStoreUpdate,
 };
@@ -34,14 +34,7 @@ use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::note::{
-    Note,
-    NoteDetails,
-    NoteDetailsCommitment,
-    NoteRecipient,
-    NoteTag,
-    PartialNote,
-};
+use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteRecipient, NoteTag};
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, TransactionScript};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::AdviceMap;
@@ -195,7 +188,7 @@ impl ProtobufValue for TransactionRequest {
                 .map(|block_num| (*block_num).into())
                 .collect(),
             input_notes: self.input_notes().iter().map(Into::into).collect(),
-            script_template: self.script_template().as_ref().map(Into::into),
+            transaction_script: self.transaction_script().as_ref().map(Into::into),
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
             expected_future_notes: self
                 .expected_future_notes()
@@ -204,9 +197,7 @@ impl ProtobufValue for TransactionRequest {
             advice_map: Some(self.advice_map().into()),
             merkle_store: Some(self.merkle_store().into()),
             foreign_accounts: self.foreign_accounts().values().map(Into::into).collect(),
-            expiration_delta: self.expiration_delta().map(u32::from),
             ignore_invalid_input_notes: self.ignore_invalid_input_notes(),
-            script_arg: self.script_arg().map(Into::into),
             auth_arg: self.auth_arg().map(Into::into),
             fee_conversion_salt: self.fee_conversion_salt().map(Into::into),
             expected_ntx_scripts: self.expected_ntx_scripts().iter().map(Into::into).collect(),
@@ -252,8 +243,7 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(DecodeMessageExt::decode_and_verify)
         .collect::<Result<Vec<NoteRecipient>, _>>()?;
-    let (custom_script, own_output_notes) =
-        decode_script_template(request.script_template, &expected_output_recipients)?;
+    let script = decode_script(request.transaction_script)?;
     let expected_future_notes = request
         .expected_future_notes
         .into_iter()
@@ -268,17 +258,6 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(ForeignAccount::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    let expiration_delta = request
-        .expiration_delta
-        .map(|expiration_delta| {
-            u16::try_from(expiration_delta).map_err(|_| {
-                ProtoDecodeError::InvalidValue(format!(
-                    "expiration delta {expiration_delta} does not fit in 16 bits"
-                ))
-            })
-        })
-        .transpose()?;
-    let script_arg = request.script_arg.map(Word::try_from).transpose()?;
     let auth_arg = request.auth_arg.map(Word::try_from).transpose()?;
     let fee_conversion_salt = request.fee_conversion_salt.map(Word::try_from).transpose()?;
     let expected_ntx_scripts = request
@@ -306,26 +285,25 @@ fn decode_transaction_request_v1(
             },
         };
     }
-    if let Some(script) = custom_script {
-        builder = builder.custom_script(script);
+    if let Some(custom_script) = script.custom_script {
+        builder = builder.custom_script(custom_script);
     }
-    builder = builder.own_output_notes(own_output_notes);
-    // This call replaces the recipients that `own_output_notes` added, so it receives all of them.
+    if let Some(script_arg) = script.script_arg {
+        builder = builder.script_arg(script_arg);
+    }
+    if let Some(expiration_delta) = script.expiration_delta {
+        builder = builder.expiration_delta(expiration_delta);
+    }
     builder = builder
+        .own_output_notes(script.own_output_notes)
         .expected_output_recipients(expected_output_recipients)
         .expected_future_notes(expected_future_notes)
         .extend_advice_map(advice_map)
         .extend_merkle_store(merkle_store.inner_nodes())
         .foreign_accounts(foreign_accounts)
         .expected_ntx_scripts(expected_ntx_scripts);
-    if let Some(expiration_delta) = expiration_delta {
-        builder = builder.expiration_delta(expiration_delta);
-    }
     if request.ignore_invalid_input_notes {
         builder = builder.ignore_invalid_input_notes();
-    }
-    if let Some(script_arg) = script_arg {
-        builder = builder.script_arg(script_arg);
     }
     if let Some(salt) = fee_conversion_salt {
         builder = builder.fee_conversion_salt(salt);
@@ -401,73 +379,74 @@ impl From<&RequestInputNote> for proto::RequestInputNote {
     }
 }
 
-/// Decodes the transaction script template of a request into the custom script and the own output
-/// notes that the builder takes. At most one of the two is set, and neither is set when the request
-/// has no template.
-///
-/// The own output notes are built from their partial notes and from `expected_output_recipients`.
-fn decode_script_template(
-    template: Option<proto::TransactionScriptTemplate>,
-    expected_output_recipients: &[NoteRecipient],
-) -> Result<(Option<TransactionScript>, Vec<Note>), ProtoDecodeError> {
-    use proto::transaction_script_template::Template;
+/// The values of a request script that the builder takes.
+#[derive(Default)]
+struct DecodedScript {
+    custom_script: Option<TransactionScript>,
+    script_arg: Option<Word>,
+    own_output_notes: Vec<Note>,
+    expiration_delta: Option<u16>,
+}
 
-    let Some(template) = template else {
-        return Ok((None, Vec::new()));
+/// Decodes the script of a request into the values that the builder takes. Every value is empty
+/// when the request has no script.
+fn decode_script(script: Option<proto::RequestScript>) -> Result<DecodedScript, ProtoDecodeError> {
+    use proto::request_script::Script;
+
+    let Some(script) = script else {
+        return Ok(DecodedScript::default());
     };
 
-    match required(template.template, "transaction script template", "variant")? {
-        Template::CustomScript(script) => Ok((Some(script.decode_and_verify()?), Vec::new())),
-        Template::SendNotes(send_notes) => {
-            let notes = send_notes
-                .notes
+    match required(script.script, "request script", "variant")? {
+        Script::Generated(generated) => Ok(DecodedScript {
+            own_output_notes: generated
+                .own_output_notes
                 .into_iter()
-                .map(|note| own_output_note(note, expected_output_recipients))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((None, notes))
-        },
+                .map(DecodeMessageExt::decode_and_verify)
+                .collect::<Result<Vec<_>, _>>()?,
+            expiration_delta: generated
+                .expiration_delta
+                .map(decode_expiration_delta)
+                .transpose()?,
+            ..Default::default()
+        }),
+        Script::Custom(custom) => Ok(DecodedScript {
+            custom_script: Some(
+                required(custom.script, "custom script", "script")?.decode_and_verify()?,
+            ),
+            script_arg: custom.arg.map(Word::try_from).transpose()?,
+            ..Default::default()
+        }),
     }
 }
 
-/// Builds an own output note from its partial note and the recipient that the partial note commits
-/// to.
-fn own_output_note(
-    note: miden_objects::proto::note::PartialNote,
-    recipients: &[NoteRecipient],
-) -> Result<Note, ProtoDecodeError> {
-    let partial: PartialNote = note.decode_and_verify()?;
-    let recipient = recipients
-        .iter()
-        .find(|recipient| recipient.digest() == partial.recipient_digest())
-        .ok_or_else(|| {
-            ProtoDecodeError::InvalidValue(format!(
-                "own output note has no expected recipient with digest {}",
-                partial.recipient_digest()
-            ))
-        })?;
-
-    Ok(Note::with_attachments(
-        partial.assets().clone(),
-        *partial.partial_metadata(),
-        recipient.clone(),
-        partial.attachments().clone(),
-    ))
+/// Decodes an expiration delta, which the builder takes as a 16-bit value.
+fn decode_expiration_delta(expiration_delta: u32) -> Result<u16, ProtoDecodeError> {
+    u16::try_from(expiration_delta).map_err(|_| {
+        ProtoDecodeError::InvalidValue(format!(
+            "expiration delta {expiration_delta} does not fit in 16 bits"
+        ))
+    })
 }
 
-impl From<&TransactionScriptTemplate> for proto::TransactionScriptTemplate {
-    fn from(template: &TransactionScriptTemplate) -> Self {
-        use proto::transaction_script_template::{SendNotes, Template};
+impl From<&RequestScript> for proto::RequestScript {
+    fn from(script: &RequestScript) -> Self {
+        use proto::request_script::{Custom, Generated, Script};
 
-        let template = match template {
-            TransactionScriptTemplate::CustomScript(script) => {
-                Template::CustomScript(script.into())
+        let script = match script {
+            RequestScript::Generated { own_output_notes, expiration_delta } => {
+                Script::Generated(Generated {
+                    own_output_notes: own_output_notes.iter().map(Into::into).collect(),
+                    expiration_delta: expiration_delta.map(|delta| u32::from(delta.get())),
+                })
             },
-            TransactionScriptTemplate::SendNotes(notes) => Template::SendNotes(SendNotes {
-                notes: notes.iter().map(Into::into).collect(),
+            RequestScript::Custom { script, arg } => Script::Custom(Custom {
+                script: Some(script.into()),
+                arg: arg.map(Into::into),
             }),
         };
 
-        Self { template: Some(template) }
+        Self { script: Some(script) }
     }
 }
 
@@ -988,7 +967,6 @@ mod tests {
             ])
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
-            .script_arg(rng.draw_word())
             .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
@@ -1009,6 +987,7 @@ mod tests {
         let request = TransactionRequestBuilder::new()
             .input_notes(notes(2, &mut rng).into_iter().map(|note| (note, None)))
             .custom_script(script)
+            .script_arg(rng.draw_word())
             .ignore_invalid_input_notes()
             .fee_conversion_salt(rng.draw_word())
             .build()

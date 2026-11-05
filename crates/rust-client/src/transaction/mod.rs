@@ -147,11 +147,11 @@ pub use request::{
     PaymentNoteDescription,
     PswapTransactionData,
     RequestInputNote,
+    RequestScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
-    TransactionScriptTemplate,
     build_fpi_script,
 };
 
@@ -667,8 +667,12 @@ where
             }
         }
 
-        let output_recipients =
-            transaction_request.expected_output_recipients().cloned().collect::<Vec<_>>();
+        let output_recipients = transaction_request
+            .expected_output_own_notes()
+            .into_iter()
+            .map(|note| note.recipient().clone())
+            .chain(transaction_request.expected_output_recipients().cloned())
+            .collect::<Vec<_>>();
 
         let future_notes: Vec<(NoteDetails, NoteTag)> =
             transaction_request.expected_future_notes().cloned().collect();
@@ -1543,24 +1547,8 @@ impl PreparedTransaction {
 fn get_outgoing_assets(
     transaction_request: &TransactionRequest,
 ) -> (BTreeMap<AccountId, u64>, Vec<Asset>) {
-    let mut own_notes_assets = match transaction_request.script_template() {
-        Some(TransactionScriptTemplate::SendNotes(notes)) => notes
-            .iter()
-            .map(|note| (note.id(), note.assets().clone()))
-            .collect::<BTreeMap<_, _>>(),
-        _ => BTreeMap::default(),
-    };
-    let mut output_notes_assets = transaction_request
-        .expected_output_own_notes()
-        .into_iter()
-        .map(|note| (note.id(), note.assets().clone()))
-        .collect::<BTreeMap<_, _>>();
-
-    // Merge with own notes assets and delete duplicates
-    output_notes_assets.append(&mut own_notes_assets);
-
-    // Create a map of the fungible and non-fungible assets in the output notes
-    let outgoing_assets = output_notes_assets.values().flat_map(|note_assets| note_assets.iter());
+    let own_notes = transaction_request.expected_output_own_notes();
+    let outgoing_assets = own_notes.iter().flat_map(|note| note.assets().iter());
 
     miden_client_core::transaction::collect_assets(outgoing_assets)
 }

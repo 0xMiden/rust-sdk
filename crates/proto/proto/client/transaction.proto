@@ -86,22 +86,22 @@ message TransactionRequestV1 {
   repeated blockchain.BlockNumber block_numbers = 1;
   // Notes that the transaction consumes, in consumption order.
   repeated RequestInputNote input_notes = 2;
-  TransactionScriptTemplate script_template = 3;
+  // An absent value means that the transaction runs no transaction script.
+  RequestScript transaction_script = 3;
+  // Recipients of the notes that a custom script or the scripts of the input notes are expected to
+  // create.
   repeated note.NoteRecipient expected_output_recipients = 4;
   repeated ExpectedFutureNote expected_future_notes = 5;
   primitives.AdviceMap advice_map = 6;
   primitives.MerkleStore merkle_store = 7;
   repeated ForeignAccount foreign_accounts = 8;
-  optional uint32 expiration_delta = 9;
-  bool ignore_invalid_input_notes = 10;
-  // Word that the transaction script receives on the operand stack.
-  primitives.Word script_arg = 11;
+  bool ignore_invalid_input_notes = 9;
   // Word that the authentication procedure receives on the operand stack.
-  primitives.Word auth_arg = 12;
-  primitives.Word fee_conversion_salt = 13;
-  repeated note.NoteScript expected_ntx_scripts = 14;
+  primitives.Word auth_arg = 10;
+  primitives.Word fee_conversion_salt = 11;
+  repeated note.NoteScript expected_ntx_scripts = 12;
   // New code of the executing account.
-  account.AccountCodeUpgrade account_code_upgrade = 15;
+  account.AccountCodeUpgrade account_code_upgrade = 13;
 }
 
 // An input note of a transaction request, with its arguments.
@@ -116,17 +116,27 @@ message RequestInputNote {
   primitives.Word args = 3;
 }
 
-// Template from which the client builds the transaction script.
-message TransactionScriptTemplate {
-  // Notes that the transaction script must create.
-  message SendNotes {
-    repeated note.PartialNote notes = 1;
+// Transaction script of a transaction request.
+message RequestScript {
+  // A script that the executing client generates.
+  message Generated {
+    // Notes that the script creates.
+    repeated note.Note own_output_notes = 1;
+    // Number of blocks after the reference block at which the transaction expires. An absent
+    // value means that the transaction does not expire.
+    optional uint32 expiration_delta = 2;
   }
 
-  oneof template {
-    // The exact transaction script to execute.
-    .transaction.TransactionScript custom_script = 1;
-    SendNotes send_notes = 2;
+  // The exact transaction script to execute.
+  message Custom {
+    .transaction.TransactionScript script = 1;
+    // Word that the script receives on the operand stack. An absent value means an empty word.
+    primitives.Word arg = 2;
+  }
+
+  oneof script {
+    Generated generated = 1;
+    Custom custom = 2;
   }
 }
 

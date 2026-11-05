@@ -8,10 +8,10 @@ pub use miden_client_core::transaction::{
     PaymentNoteDescription,
     PswapTransactionData,
     RequestInputNote,
+    RequestScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
-    TransactionScriptTemplate,
     build_fpi_script,
 };

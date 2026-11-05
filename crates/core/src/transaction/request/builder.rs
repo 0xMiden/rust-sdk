@@ -3,6 +3,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
+use core::num::NonZeroU16;
 
 use miden_protocol::account::{AccountCode, AccountCodeUpgrade, AccountId};
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
@@ -23,7 +24,6 @@ use miden_protocol::note::{
     NoteStorage,
     NoteTag,
     NoteType,
-    PartialNote,
     PartialNoteMetadata,
 };
 use miden_protocol::transaction::{InputNote, TransactionScript};
@@ -37,9 +37,9 @@ use super::{
     InputNoteAuthentication,
     NoteArgs,
     RequestInputNote,
+    RequestScript,
     TransactionRequest,
     TransactionRequestError,
-    TransactionScriptTemplate,
 };
 
 // TRANSACTION REQUEST BUILDER
@@ -187,20 +187,13 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Specifies the output notes that should be created in the transaction script and will be used
-    /// as a transaction script template. These notes will also be added to the expected output
-    /// recipients of the transaction.
+    /// Specifies the output notes that the generated transaction script creates.
     ///
-    /// If a transaction script template is already set (e.g. by calling `with_custom_script`), the
-    /// [`TransactionRequestBuilder::build`] method will return an error.
+    /// If a custom script is also set, the [`TransactionRequestBuilder::build`] method will return
+    /// an error.
     #[must_use]
     pub fn own_output_notes(mut self, notes: impl IntoIterator<Item = Note>) -> Self {
-        for note in notes {
-            self.expected_output_recipients
-                .insert(note.recipient().digest(), note.recipient().clone());
-            self.own_output_notes.push(note);
-        }
-
+        self.own_output_notes.extend(notes);
         self
     }
 
@@ -318,9 +311,12 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Sets an optional [`Word`] that will be pushed to the operand stack before the transaction
-    /// script execution. If the advice map is extended with some user defined entries, this script
+    /// Sets an optional [`Word`] that will be pushed to the operand stack before the custom script
+    /// execution. If the advice map is extended with some user defined entries, this script
     /// argument could be used as a key to access the corresponding value.
+    ///
+    /// The argument applies only to a script set with [`Self::custom_script`]. Without a custom
+    /// script, [`TransactionRequestBuilder::build`] returns an error.
     #[must_use]
     pub fn script_arg(mut self, script_arg: Word) -> Self {
         self.script_arg = Some(script_arg);
@@ -788,24 +784,28 @@ impl TransactionRequestBuilder {
     /// - If the expiration delta is zero.
     /// - If an expiration delta is set when a custom script is set.
     /// - If both a custom script and own output notes are set.
+    /// - If a script argument is set without a custom script.
     /// - If a note appears more than once among the input notes.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
         check_expiration_delta(self.expiration_delta, self.custom_script.as_ref())?;
-        let script_template = build_script_template(self.custom_script, self.own_output_notes)?;
+        let transaction_script = build_transaction_script(
+            self.custom_script,
+            self.script_arg,
+            self.own_output_notes,
+            self.expiration_delta.and_then(NonZeroU16::new),
+        )?;
         check_no_duplicate_input_notes(&self.input_notes)?;
 
         Ok(TransactionRequest {
             block_numbers: self.block_numbers,
             input_notes: self.input_notes,
-            script_template,
+            transaction_script,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,
             foreign_accounts: self.foreign_accounts,
-            expiration_delta: self.expiration_delta,
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
-            script_arg: self.script_arg,
             auth_arg: self.auth_arg,
             fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
@@ -847,24 +847,28 @@ fn check_no_duplicate_input_notes(
     Ok(())
 }
 
-/// Builds the transaction script template from the custom script and the own output notes. At most
-/// one of the two can be set.
-fn build_script_template(
+/// Builds the transaction script of the request. At most one of the custom script and the own
+/// output notes can be set, and the script argument applies only to the custom script. Without own
+/// output notes and without an expiration delta, the request runs no script.
+///
+/// [`check_expiration_delta`] must run first: it rejects an expiration delta together with a custom
+/// script.
+fn build_transaction_script(
     custom_script: Option<TransactionScript>,
+    script_arg: Option<Word>,
     own_output_notes: Vec<Note>,
-) -> Result<Option<TransactionScriptTemplate>, TransactionRequestError> {
+    expiration_delta: Option<NonZeroU16>,
+) -> Result<Option<RequestScript>, TransactionRequestError> {
     match (custom_script, own_output_notes.is_empty()) {
         (Some(_), false) => Err(TransactionRequestError::ScriptTemplateError(
             "Cannot set both a custom script and own output notes".to_string(),
         )),
-        (Some(script), true) => Ok(Some(TransactionScriptTemplate::CustomScript(script))),
-        (None, false) => {
-            let partial_notes: Vec<PartialNote> =
-                own_output_notes.into_iter().map(Into::into).collect();
-
-            Ok(Some(TransactionScriptTemplate::SendNotes(partial_notes)))
-        },
-        (None, true) => Ok(None),
+        (Some(script), true) => Ok(Some(RequestScript::Custom { script, arg: script_arg })),
+        (None, _) if script_arg.is_some() => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set a script argument without a custom script".to_string(),
+        )),
+        (None, true) if expiration_delta.is_none() => Ok(None),
+        (None, _) => Ok(Some(RequestScript::Generated { own_output_notes, expiration_delta })),
     }
 }
 

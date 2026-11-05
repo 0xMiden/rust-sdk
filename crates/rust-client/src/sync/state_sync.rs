@@ -1319,31 +1319,28 @@ impl StateSync {
             }
         };
 
-        let vault_patch = async {
-            if details.vault_details.is_too_many_assets() {
-                let vault_info = self
-                    .rpc_api
-                    .sync_account_vault(block_from + 1, block_to, account_id)
-                    .await
-                    .map_err(ClientError::RpcError)?;
-                Ok(Some(vault_info.vault_patch))
-            } else {
-                Ok(None)
+        let vault_update = async {
+            match &details.vault_details {
+                AccountVaultDetails::Assets(assets) => Ok(VaultUpdate::Full(assets.clone())),
+                AccountVaultDetails::TooManyAssets => {
+                    let vault_info = self
+                        .rpc_api
+                        .sync_account_vault(block_from + 1, block_to, account_id)
+                        .await
+                        .map_err(ClientError::RpcError)?;
+                    Ok(VaultUpdate::Patch(vault_info.vault_patch))
+                },
+                AccountVaultDetails::Partial(_) => {
+                    Err(ClientError::RpcError(RpcError::InvalidResponse(
+                        "get_account returned a partial vault for a request of the full vault"
+                            .into(),
+                    )))
+                },
             }
         };
 
         // The storage and vault requests are independent, so they run concurrently.
-        let (storage, vault_patch) = futures::try_join!(storage_update, vault_patch)?;
-
-        let vault = match (vault_patch, details.vault_details) {
-            (Some(vault_patch), _) => VaultUpdate::Patch(vault_patch),
-            (None, AccountVaultDetails::Assets(assets)) => VaultUpdate::Full(assets),
-            (None, _) => {
-                return Err(ClientError::RpcError(RpcError::ExpectedDataMissing(
-                    "account response did not carry the full vault".into(),
-                )));
-            },
-        };
+        let (storage, vault) = futures::try_join!(storage_update, vault_update)?;
 
         Ok(AccountStateUpdate::new(details.header, storage, vault, details.code))
     }

@@ -146,6 +146,7 @@ pub use request::{
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestAuthArgs,
     RequestInputNote,
     RequestScript,
     SwapTransactionData,
@@ -1564,19 +1565,15 @@ fn attach_default_auth_args(
     reference_header: &BlockHeader,
     protocol_config: &ProtocolConfig,
 ) -> Result<(), ClientError> {
-    // An auth arg the caller set is the caller's business: it may carry a commitment the caller
-    // computed itself, or something else entirely. An empty word commits nothing, so it does not
-    // count.
-    if transaction_request.has_auth_arg() {
-        return Ok(());
-    }
+    let declared_salt = match transaction_request.auth_args() {
+        // Auth args that the caller set are the caller's business.
+        RequestAuthArgs::Explicit { .. } => return Ok(()),
+        RequestAuthArgs::Default => None,
+        RequestAuthArgs::DefaultWithSalt(salt) => Some(*salt),
+    };
 
     if let Some((auth_arg, preimage)) = AuthArgsLayout::of(account_code_interface)
-        .default_auth_args(
-            transaction_request.fee_conversion_salt(),
-            reference_header,
-            protocol_config,
-        )?
+        .default_auth_args(declared_salt, reference_header, protocol_config)?
     {
         transaction_request.commit_auth_args(auth_arg, preimage);
     }
@@ -1624,16 +1621,17 @@ impl AuthArgsLayout {
     }
 
     /// Returns the block that the auth args of `transaction_request` bind, or `None` when the
-    /// layout binds no block or the request carries no auth args.
+    /// layout binds no block or the request carries no explicit auth args.
     ///
     /// The kernel reads the commitment of this block, so the transaction must track it.
     fn bound_block(&self, transaction_request: &TransactionRequest) -> Option<BlockNumber> {
-        if !matches!(self, Self::Multisig(_)) || !transaction_request.has_auth_arg() {
+        if !matches!(self, Self::Multisig(_)) {
             return None;
         }
 
-        let auth_arg = (*transaction_request.auth_arg())?;
-        let preimage = transaction_request.advice_map().get(&auth_arg)?;
+        let RequestAuthArgs::Explicit { preimage, .. } = transaction_request.auth_args() else {
+            return None;
+        };
         let bound_block = u32::try_from(preimage.first()?.as_canonical_u64()).ok()?;
 
         Some(BlockNumber::from(bound_block))
@@ -1998,6 +1996,7 @@ mod tests {
     use super::{
         AccountComponentInterface,
         NATIVE_FEE_CONVERSION_SALT,
+        RequestAuthArgs,
         TransactionRequest,
         TransactionRequestBuilder,
         attach_default_auth_args,
@@ -2176,7 +2175,7 @@ mod tests {
             &header_with_base_fee(verification_base_fee),
             &test_protocol_config(),
         );
-        *request.auth_arg()
+        explicit_commitment(&request)
     }
 
     /// As [`injected_auth_arg`], but surfaces the attachment error instead of discarding it.
@@ -2191,7 +2190,15 @@ mod tests {
             &header_with_base_fee(verification_base_fee),
             &test_protocol_config(),
         )?;
-        Ok(*request.auth_arg())
+        Ok(explicit_commitment(&request))
+    }
+
+    /// Returns the commitment of the explicit auth args of `request`, if it has explicit auth args.
+    fn explicit_commitment(request: &TransactionRequest) -> Option<Word> {
+        match request.auth_args() {
+            RequestAuthArgs::Explicit { commitment, .. } => Some(*commitment),
+            _ => None,
+        }
     }
 
     fn singlesig_account() -> Account {

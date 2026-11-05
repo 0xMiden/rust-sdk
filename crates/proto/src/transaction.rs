@@ -21,6 +21,7 @@ use miden_client_core::transaction::{
     ForeignAccount,
     InputNoteAuthentication,
     NoteArgs,
+    RequestAuthArgs,
     RequestInputNote,
     RequestScript,
     TransactionDetails,
@@ -30,7 +31,6 @@ use miden_client_core::transaction::{
     TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
-use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -38,6 +38,7 @@ use miden_protocol::note::{Note, NoteDetails, NoteDetailsCommitment, NoteRecipie
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, TransactionScript};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::AdviceMap;
+use miden_protocol::{Felt, Word};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -198,8 +199,7 @@ impl ProtobufValue for TransactionRequest {
             merkle_store: Some(self.merkle_store().into()),
             foreign_accounts: self.foreign_accounts().values().map(Into::into).collect(),
             ignore_invalid_input_notes: self.ignore_invalid_input_notes(),
-            auth_arg: self.auth_arg().map(Into::into),
-            fee_conversion_salt: self.fee_conversion_salt().map(Into::into),
+            auth_args: encode_auth_args(self.auth_args()),
             expected_ntx_scripts: self.expected_ntx_scripts().iter().map(Into::into).collect(),
             account_code_upgrade: self.account_code_upgrade().map(Into::into),
         };
@@ -258,8 +258,7 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(ForeignAccount::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    let auth_arg = request.auth_arg.map(Word::try_from).transpose()?;
-    let fee_conversion_salt = request.fee_conversion_salt.map(Word::try_from).transpose()?;
+    let auth_args = decode_auth_args(request.auth_args)?;
     let expected_ntx_scripts = request
         .expected_ntx_scripts
         .into_iter()
@@ -305,7 +304,7 @@ fn decode_transaction_request_v1(
     if request.ignore_invalid_input_notes {
         builder = builder.ignore_invalid_input_notes();
     }
-    if let Some(salt) = fee_conversion_salt {
+    if let RequestAuthArgs::DefaultWithSalt(salt) = auth_args {
         builder = builder.fee_conversion_salt(salt);
     }
     if let Some(account_code_upgrade) = account_code_upgrade {
@@ -314,31 +313,53 @@ fn decode_transaction_request_v1(
 
     let mut transaction_request =
         builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
-    if let Some(auth_arg) = auth_arg {
-        set_auth_arg(&mut transaction_request, auth_arg)?;
+    // The builder takes explicit auth args only as a type that commits to them, so the decoded
+    // commitment and preimage are set on the built request.
+    if let RequestAuthArgs::Explicit { commitment, preimage } = auth_args {
+        transaction_request.commit_auth_args(commitment, preimage);
     }
 
     Ok(transaction_request)
 }
 
-/// Sets `auth_arg` on `transaction_request`.
-///
-/// A request always stores the preimage of its auth arg in its advice map.
-///
-/// # Errors
-/// - If the advice map of the request has no preimage for `auth_arg`.
-fn set_auth_arg(
-    transaction_request: &mut TransactionRequest,
-    auth_arg: Word,
-) -> Result<(), ProtoDecodeError> {
-    let preimage = transaction_request.advice_map().get(&auth_arg).ok_or_else(|| {
-        ProtoDecodeError::InvalidValue(format!(
-            "advice map has no preimage for auth arg {auth_arg}"
-        ))
-    })?;
-    let preimage = preimage.to_vec();
-    transaction_request.commit_auth_args(auth_arg, preimage);
-    Ok(())
+/// Decodes the auth args of a request. An absent message means the default auth args.
+fn decode_auth_args(
+    auth_args: Option<proto::RequestAuthArgs>,
+) -> Result<RequestAuthArgs, ProtoDecodeError> {
+    use proto::request_auth_args::AuthArgs;
+
+    let Some(auth_args) = auth_args else {
+        return Ok(RequestAuthArgs::Default);
+    };
+
+    match required(auth_args.auth_args, "request auth args", "auth args")? {
+        AuthArgs::DefaultWithSalt(salt) => Ok(RequestAuthArgs::DefaultWithSalt(salt.try_into()?)),
+        AuthArgs::Explicit(explicit) => Ok(RequestAuthArgs::Explicit {
+            commitment: required(explicit.commitment, "explicit auth args", "commitment")?
+                .try_into()?,
+            preimage: explicit
+                .preimage
+                .into_iter()
+                .map(Felt::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+    }
+}
+
+/// Encodes the auth args of a request. The default auth args have no message.
+fn encode_auth_args(auth_args: &RequestAuthArgs) -> Option<proto::RequestAuthArgs> {
+    use proto::request_auth_args::{AuthArgs, Explicit};
+
+    let auth_args = match auth_args {
+        RequestAuthArgs::Default => return None,
+        RequestAuthArgs::DefaultWithSalt(salt) => AuthArgs::DefaultWithSalt(salt.into()),
+        RequestAuthArgs::Explicit { commitment, preimage } => AuthArgs::Explicit(Explicit {
+            commitment: Some(commitment.into()),
+            preimage: preimage.iter().map(Into::into).collect(),
+        }),
+    };
+
+    Some(proto::RequestAuthArgs { auth_args: Some(auth_args) })
 }
 
 /// Decodes an input note of a request into its authentication and its arguments.

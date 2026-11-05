@@ -96,12 +96,28 @@ message TransactionRequestV1 {
   primitives.MerkleStore merkle_store = 7;
   repeated ForeignAccount foreign_accounts = 8;
   bool ignore_invalid_input_notes = 9;
-  // Word that the authentication procedure receives on the operand stack.
-  primitives.Word auth_arg = 10;
-  primitives.Word fee_conversion_salt = 11;
-  repeated note.NoteScript expected_ntx_scripts = 12;
+  // An absent value means that the executing client builds the default auth args with its default
+  // salt.
+  RequestAuthArgs auth_args = 10;
+  repeated note.NoteScript expected_ntx_scripts = 11;
   // New code of the executing account.
-  account.AccountCodeUpgrade account_code_upgrade = 13;
+  account.AccountCodeUpgrade account_code_upgrade = 12;
+}
+
+// Auth args that the executing client passes to the auth procedure of the account.
+message RequestAuthArgs {
+  // Auth args that the caller sets.
+  message Explicit {
+    // Word that the auth procedure receives on the operand stack.
+    primitives.Word commitment = 1;
+    repeated primitives.Felt preimage = 2;
+  }
+
+  oneof auth_args {
+    // Salt that the executing client builds the default auth args with.
+    primitives.Word default_with_salt = 1;
+    Explicit explicit = 2;
+  }
 }
 
 // An input note of a transaction request, with its arguments.

@@ -215,6 +215,50 @@ impl InputNoteState {
         self.inner().transaction_committed(transaction_id, block_height)
     }
 
+    /// Returns whether the transition from `old_discriminant` to `new_discriminant` is valid.
+    ///
+    /// This is intended to be used to check a note's state transition against the stored state,
+    /// before persisting the new state.
+    ///
+    /// A note that a discarded transaction was consuming moves back from
+    /// `STATE_PROCESSING_AUTHENTICATED` to `STATE_COMMITTED`, and from
+    /// `STATE_PROCESSING_UNAUTHENTICATED` to `STATE_EXPECTED`. These two backward transitions are
+    /// valid. They are required for the transaction discarding to work, because
+    /// [`Self::transaction_discarded`] produces them.
+    ///
+    /// A note that a transaction is consuming can receive its inclusion proof. The note then moves
+    /// from `STATE_PROCESSING_UNAUTHENTICATED` to `STATE_PROCESSING_AUTHENTICATED` and stays held
+    /// by the transaction. This backward transition is valid.
+    pub fn is_valid_transition(old_discriminant: u8, new_discriminant: u8) -> bool {
+        // These backward transitions are described in the documentation of this function.
+        if matches!(
+            (old_discriminant, new_discriminant),
+            (Self::STATE_PROCESSING_AUTHENTICATED, Self::STATE_COMMITTED)
+                | (
+                    Self::STATE_PROCESSING_UNAUTHENTICATED,
+                    Self::STATE_EXPECTED | Self::STATE_PROCESSING_AUTHENTICATED
+                )
+        ) {
+            return true;
+        }
+
+        // An invalid note can receive a new inclusion proof, be verified against a later block
+        // header, or be nullified by the network. The first two cases move to a lower discriminant,
+        // so the comparison below does not cover them.
+        if old_discriminant == Self::STATE_INVALID {
+            return matches!(
+                new_discriminant,
+                Self::STATE_UNVERIFIED
+                    | Self::STATE_COMMITTED
+                    | Self::STATE_INVALID
+                    | Self::STATE_CONSUMED_EXTERNAL
+            );
+        }
+
+        // Every other discriminant is ordered along the note lifecycle, which only moves forward.
+        new_discriminant >= old_discriminant
+    }
+
     /// Returns a new state to reflect that the transaction currently consuming the note was
     /// discarded, which makes the note available again. Only a note being processed by that
     /// transaction changes state; for any other state `None` is returned.
@@ -461,5 +505,23 @@ mod tests {
                 "got {new_state:?}"
             );
         }
+    }
+
+    /// The backward transitions that a discarded transaction or a received inclusion proof produces
+    /// are valid. Other backward transitions out of a processing state are not valid.
+    #[test]
+    fn backward_processing_transitions_are_valid() {
+        type S = InputNoteState;
+
+        assert!(S::is_valid_transition(S::STATE_PROCESSING_AUTHENTICATED, S::STATE_COMMITTED));
+        assert!(S::is_valid_transition(S::STATE_PROCESSING_UNAUTHENTICATED, S::STATE_EXPECTED));
+        assert!(S::is_valid_transition(
+            S::STATE_PROCESSING_UNAUTHENTICATED,
+            S::STATE_PROCESSING_AUTHENTICATED
+        ));
+
+        assert!(!S::is_valid_transition(S::STATE_PROCESSING_AUTHENTICATED, S::STATE_EXPECTED));
+        assert!(!S::is_valid_transition(S::STATE_PROCESSING_UNAUTHENTICATED, S::STATE_COMMITTED));
+        assert!(!S::is_valid_transition(S::STATE_PROCESSING_AUTHENTICATED, S::STATE_UNVERIFIED));
     }
 }

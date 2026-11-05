@@ -273,6 +273,7 @@ pub mod config;
 // These modules intentionally shadow the miden_client re-exports - CLI has its own errors/utils
 #[allow(hidden_glob_reexports)]
 mod errors;
+mod fee_faucet;
 mod info;
 #[allow(hidden_glob_reexports)]
 mod utils;
@@ -423,10 +424,10 @@ impl Cli {
             return keys.execute(&keystore);
         }
 
-        let cache_fee_faucet = cli_config.cache_fee_faucet;
         let cli_client = CliClient::from_config(cli_config).await?;
 
-        let client = cli_client.into_inner();
+        let mut client = cli_client.into_inner();
+        fee_faucet::set_up_once(&mut client).await;
 
         match &self.action {
             Command::Account(account) => account.execute(client).await,
@@ -441,7 +442,7 @@ impl Cli {
             | Command::Keys(_) => Ok(()), /* Already handled earlier */
             Command::Info(info_cmd) => info::print_client_info(&client, info_cmd.rpc_status).await,
             Command::Notes(notes) => Box::pin(notes.execute(client)).await,
-            Command::Sync(sync) => sync.execute(client, cache_fee_faucet).await,
+            Command::Sync(sync) => sync.execute(client).await,
             Command::Tags(tags) => tags.execute(client).await,
             Command::Address(addresses) => addresses.execute(client).await,
             Command::Transaction(transaction) => transaction.execute(client).await,
@@ -452,9 +453,7 @@ impl Cli {
             Command::Transfer(transfer) => Box::pin(transfer.execute(client)).await,
             Command::Pswap(pswap) => Box::pin(pswap.execute(client)).await,
             Command::Swap(swap) => Box::pin(swap.execute(client)).await,
-            Command::ConsumeNotes(consume_notes) => {
-                Box::pin(consume_notes.execute(client, cache_fee_faucet)).await
-            },
+            Command::ConsumeNotes(consume_notes) => Box::pin(consume_notes.execute(client)).await,
         }
     }
 }

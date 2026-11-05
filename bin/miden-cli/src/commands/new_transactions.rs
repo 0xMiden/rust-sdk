@@ -33,7 +33,6 @@ use miden_client::transaction::{
 use miden_client::{Client, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word};
 use tracing::info;
 
-use crate::commands::sync::sync_state;
 use crate::config::CliConfig;
 use crate::create_dynamic_table;
 use crate::errors::CliError;
@@ -290,7 +289,11 @@ impl SwapCmd {
 }
 
 /// Default value of the largest number of notes that one note-consumption transaction consumes.
-const DEFAULT_NOTES_PER_TX: usize = 50;
+///
+/// Proving time and memory double each time the execution trace grows past a power of two. With
+/// fees and assets that have callbacks, 40 notes keep the trace below 2^19 rows. More notes can
+/// double the proving time and memory.
+const DEFAULT_NOTES_PER_TX: usize = 40;
 
 /// Consume with the account corresponding to `account_id` all of the notes from `list_of_notes`. If
 /// no account ID is provided, the default one is used. If no notes are provided, any notes that are
@@ -324,14 +327,15 @@ pub struct ConsumeNotesCmd {
     notes_per_tx: usize,
 
     /// Consume only the notes that use one of these note scripts. Each value is the name of a
-    /// standard note (for example P2ID or P2IDE) or a hex note script root. Separate the values
-    /// with commas or use the flag more than one time. This flag cannot be used with note IDs.
+    /// standard note (e.g., "P2ID" or "P2IDE") or a hex note script root. Separate the values with
+    /// commas or use the flag more than one time. This flag cannot be used with note IDs.
     #[arg(
         long,
         value_name = "SCRIPT",
         value_delimiter = ',',
         value_parser = parse_note_script_filter,
         conflicts_with = "list_of_notes",
+        long_help = filter_long_help(),
     )]
     filter: Vec<NoteScriptRoot>,
 
@@ -350,12 +354,9 @@ pub struct ConsumeNotesCmd {
 }
 
 impl ConsumeNotesCmd {
-    /// Runs the command. If `cache_fee_faucet` is true, each sync between the transactions keeps
-    /// the fee token faucet up to date.
     pub async fn execute<AUTH: Keystore + Sync + 'static>(
         &self,
         mut client: Client<AUTH>,
-        cache_fee_faucet: bool,
     ) -> Result<(), CliError> {
         let force = self.force;
 
@@ -425,7 +426,6 @@ impl ConsumeNotesCmd {
                 account_id,
                 &input_notes,
                 self.notes_per_tx,
-                cache_fee_faucet,
                 prover,
             )
             .await;
@@ -479,6 +479,23 @@ const STANDARD_NOTES: [StandardNote; 19] = [
     StandardNote::TX_FEE,
 ];
 
+/// Returns the names of [`STANDARD_NOTES`], separated by commas.
+fn standard_note_names() -> String {
+    STANDARD_NOTES.iter().map(StandardNote::name).collect::<Vec<_>>().join(", ")
+}
+
+/// Returns the help of `--filter` that `--help` prints. It lists the standard notes that the flag
+/// accepts by name.
+fn filter_long_help() -> String {
+    format!(
+        "Consume only the notes that use one of these note scripts. Each value is the name of a \
+         standard note (e.g., \"P2ID\" or \"P2IDE\") or a hex note script root. Separate the \
+         values with commas or use the flag more than one time. This flag cannot be used with \
+         note IDs.\n\nStandard notes: {}.",
+        standard_note_names()
+    )
+}
+
 /// Parses a `--filter` value: the name of a standard note in any letter case, or a hex note script
 /// root.
 fn parse_note_script_filter(value: &str) -> Result<NoteScriptRoot, String> {
@@ -489,10 +506,9 @@ fn parse_note_script_filter(value: &str) -> Result<NoteScriptRoot, String> {
     }
 
     Word::try_from(value).map(NoteScriptRoot::from_raw).map_err(|_| {
-        let names = STANDARD_NOTES.iter().map(StandardNote::name).collect::<Vec<_>>();
         format!(
             "expected a hex note script root or the name of a standard note: {}",
-            names.join(", ")
+            standard_note_names()
         )
     })
 }
@@ -531,15 +547,14 @@ fn consume_notes_request(input_notes: &[Note]) -> Result<TransactionRequest, Cli
 ///
 /// Each transaction starts from the account state that the previous transaction leaves. The client
 /// syncs before each transaction after the first, to keep the reference block of the transaction
-/// recent during a long run. Each sync passes `cache_fee_faucet` to `sync_state`. The function
-/// stops at the first transaction that fails. The notes of that transaction and of the transactions
-/// after it stay unconsumed, so a new run of the command can consume them.
+/// recent during a long run. The function stops at the first transaction that fails. The notes of
+/// that transaction and of the transactions after it stay unconsumed, so a new run of the command
+/// can consume them.
 async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
     input_notes: &[Note],
     notes_per_tx: usize,
-    cache_fee_faucet: bool,
     prover: Arc<dyn TransactionProver + Send + Sync>,
 ) -> Result<(), CliError> {
     let num_transactions = input_notes.len().div_ceil(notes_per_tx);
@@ -554,7 +569,7 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
 
         let result = async {
             if index > 0 {
-                sync_state(client, cache_fee_faucet).await?;
+                client.sync_state().await?;
             }
             let transaction_request = consume_notes_request(notes)?;
             Ok::<_, CliError>(
@@ -1127,7 +1142,7 @@ mod tests {
         let account_id = wallet.id().to_hex();
         let args = ["consume-notes", "--force", "--account", account_id.as_str()];
         let cmd = ConsumeNotesCmd::try_parse_from(args.iter().chain(extra_args)).unwrap();
-        Box::pin(cmd.execute(client, true)).await
+        Box::pin(cmd.execute(client)).await
     }
 
     async fn num_input_notes(client: &Client<FilesystemKeyStore>, filter: NoteFilter) -> usize {
@@ -1146,7 +1161,7 @@ mod tests {
     /// The command consumes more notes than one transaction can hold, in transactions of at most
     /// the default number of notes.
     #[tokio::test]
-    #[ignore = "proves 40 transactions of 50 notes, which takes minutes and more than 2 GB of memory"]
+    #[ignore = "proves 50 transactions of 40 notes, which takes minutes and more than 2 GB of memory"]
     async fn consume_notes_consumes_more_notes_than_one_transaction_holds() {
         const NUM_NOTES: usize = 2_000;
 

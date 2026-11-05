@@ -7,6 +7,7 @@ pub use miden_client_core::transaction::{
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestAuthArgs,
     RequestInputNote,
     RequestScript,
     SwapTransactionData,

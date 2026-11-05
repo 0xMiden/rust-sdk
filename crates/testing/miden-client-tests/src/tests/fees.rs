@@ -17,6 +17,7 @@ use miden_client::store::NoteFilter;
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
+    RequestAuthArgs,
     TransactionExecutorError,
     TransactionRequestBuilder,
     TransactionRequestError,
@@ -89,8 +90,8 @@ async fn fee_conversion_info_pays_the_transaction_fee() {
     // `MockChain` executes without a `Client`.
     let request = TransactionRequestBuilder::new().fee_conversion_salt(salt).build().unwrap();
     assert_eq!(
-        request.fee_conversion_salt(),
-        Some(salt),
+        request.auth_args(),
+        &RequestAuthArgs::DefaultWithSalt(salt),
         "the request should carry the declared salt for the client to commit under"
     );
 

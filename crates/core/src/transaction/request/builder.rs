@@ -36,6 +36,7 @@ use super::{
     ForeignAccount,
     InputNoteAuthentication,
     NoteArgs,
+    RequestAuthArgs,
     RequestInputNote,
     RequestScript,
     TransactionRequest,
@@ -85,12 +86,10 @@ pub struct TransactionRequestBuilder {
     /// execution. If the advice map is extended with some user defined entries, this script
     /// argument could be used as a key to access the corresponding value.
     script_arg: Option<Word>,
-    /// Optional [`Word`] that will be pushed to the stack for the authentication procedure during
-    /// transaction execution.
-    auth_arg: Option<Word>,
-    /// Salt the native fee conversion info is committed under when the transaction is prepared, set
-    /// through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client to use
-    /// its fixed default salt.
+    /// Explicit auth args that the executing client passes to the auth procedure of the account, as
+    /// their commitment and preimage.
+    auth_args: Option<(Word, Vec<Felt>)>,
+    /// Salt the client commits the fee conversion info under when it builds the default auth args.
     fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
@@ -121,7 +120,7 @@ impl TransactionRequestBuilder {
             foreign_accounts: BTreeMap::default(),
             ignore_invalid_input_notes: false,
             script_arg: None,
-            auth_arg: None,
+            auth_args: None,
             fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
             account_code_upgrade: None,
@@ -323,20 +322,17 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Sets the auth arg to the commitment of `auth_args` and adds their preimage to the advice
-    /// map.
+    /// Sets `auth_args` as the explicit auth args of the request. The executing client passes their
+    /// commitment to the auth procedure and adds their preimage to the advice map.
     ///
     /// Use this method for auth components that load their auth args from the advice map, for
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
-    /// of multisig auth args.
+    /// of multisig auth args. [`Self::build`] fails if a fee conversion salt is also set.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
-        let auth_arg = auth_args.to_commitment();
-        self.advice_map.insert(auth_arg, auth_args.to_elements());
-        self.auth_arg = Some(auth_arg);
-        self.fee_conversion_salt = None;
+        self.auth_args = Some((auth_args.to_commitment(), auth_args.to_elements()));
         self
     }
 
@@ -348,10 +344,11 @@ impl TransactionRequestBuilder {
     /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
     /// the transaction's reference block. Use the same reference block when collecting signatures
     /// across repeated executions. See `Client::execute_transaction_at`.
+    ///
+    /// [`Self::build`] fails if explicit auth args are also set.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);
-        self.auth_arg = None;
         self
     }
 
@@ -786,6 +783,7 @@ impl TransactionRequestBuilder {
     /// - If both a custom script and own output notes are set.
     /// - If a script argument is set without a custom script.
     /// - If a note appears more than once among the input notes.
+    /// - If both explicit auth args and a fee conversion salt are set.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
         check_expiration_delta(self.expiration_delta, self.custom_script.as_ref())?;
         let transaction_script = build_transaction_script(
@@ -795,6 +793,7 @@ impl TransactionRequestBuilder {
             self.expiration_delta.and_then(NonZeroU16::new),
         )?;
         check_no_duplicate_input_notes(&self.input_notes)?;
+        let auth_args = build_auth_args(self.auth_args, self.fee_conversion_salt)?;
 
         Ok(TransactionRequest {
             block_numbers: self.block_numbers,
@@ -806,8 +805,7 @@ impl TransactionRequestBuilder {
             merkle_store: self.merkle_store,
             foreign_accounts: self.foreign_accounts,
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
-            auth_arg: self.auth_arg,
-            fee_conversion_salt: self.fee_conversion_salt,
+            auth_args,
             expected_ntx_scripts: self.expected_ntx_scripts,
             account_code_upgrade: self.account_code_upgrade,
         })
@@ -845,6 +843,22 @@ fn check_no_duplicate_input_notes(
     }
 
     Ok(())
+}
+
+/// Builds the auth args of the request. The client builds the default auth args with the fee
+/// conversion salt, so a salt together with explicit auth args has no effect.
+fn build_auth_args(
+    explicit: Option<(Word, Vec<Felt>)>,
+    fee_conversion_salt: Option<Word>,
+) -> Result<RequestAuthArgs, TransactionRequestError> {
+    match (explicit, fee_conversion_salt) {
+        (Some(_), Some(_)) => Err(TransactionRequestError::AuthArgsWithFeeConversionSalt),
+        (Some((commitment, preimage)), None) => {
+            Ok(RequestAuthArgs::Explicit { commitment, preimage })
+        },
+        (None, Some(salt)) => Ok(RequestAuthArgs::DefaultWithSalt(salt)),
+        (None, None) => Ok(RequestAuthArgs::Default),
+    }
 }
 
 /// Builds the transaction script of the request. At most one of the custom script and the own

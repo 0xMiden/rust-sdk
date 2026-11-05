@@ -123,6 +123,21 @@ pub enum InputNoteAuthentication {
     Explicit(InputNote),
 }
 
+/// Specifies the auth args that the executing client passes to the auth procedure of the account.
+///
+/// The auth procedure receives the commitment of the auth args, and loads their preimage from the
+/// advice map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RequestAuthArgs {
+    /// The executing client builds the default auth args with its fixed default salt.
+    #[default]
+    Default,
+    /// The executing client builds the default auth args with this salt.
+    DefaultWithSalt(Word),
+    /// The caller sets the auth args. The executing client does not change them.
+    Explicit { commitment: Word, preimage: Vec<Felt> },
+}
+
 /// Specifies a transaction request that can be executed by an account.
 ///
 /// A request contains information about input notes to be consumed by the transaction (if any),
@@ -155,13 +170,8 @@ pub struct TransactionRequest {
     /// Indicates whether to **silently** ignore invalid input notes when executing the transaction.
     /// This will allow the transaction to be executed even if some input notes are invalid.
     ignore_invalid_input_notes: bool,
-    /// Optional [`Word`] that will be pushed to the stack for the authentication procedure during
-    /// transaction execution.
-    auth_arg: Option<Word>,
-    /// Salt the native fee conversion info is committed under when the transaction is prepared, set
-    /// through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client to use
-    /// its fixed default salt.
-    fee_conversion_salt: Option<Word>,
+    /// Auth args that the executing client passes to the auth procedure of the account.
+    auth_args: RequestAuthArgs,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
     /// See [`TransactionRequestBuilder::expected_ntx_scripts`] for details.
@@ -261,23 +271,9 @@ impl TransactionRequest {
         self.ignore_invalid_input_notes
     }
 
-    /// Returns the auth argument for the transaction request.
-    pub fn auth_arg(&self) -> &Option<Word> {
-        &self.auth_arg
-    }
-
-    /// Returns the caller-declared salt for the native fee conversion info the client commits when
-    /// preparing the transaction, set through [`TransactionRequestBuilder::fee_conversion_salt`].
-    pub fn fee_conversion_salt(&self) -> Option<Word> {
-        self.fee_conversion_salt
-    }
-
-    /// Returns whether the request carries an auth arg that commits anything.
-    ///
-    /// An empty word counts as no arg: otherwise it would suppress the conversion info the client
-    /// attaches, leaving `fee::pay_fee` nothing to read.
-    pub fn has_auth_arg(&self) -> bool {
-        self.auth_arg.is_some_and(|auth_arg| auth_arg != Word::empty())
+    /// Returns the auth args that the executing client passes to the auth procedure of the account.
+    pub fn auth_args(&self) -> &RequestAuthArgs {
+        &self.auth_args
     }
 
     /// Returns the expected NTX scripts that the node's NTX builder will need in its registry.
@@ -315,24 +311,22 @@ impl TransactionRequest {
         Ok(())
     }
 
-    /// Returns this request with the auth arg set to the commitment of `auth_args`, and with their
-    /// preimage added to the advice map.
+    /// Returns this request with `auth_args` as its explicit auth args.
     ///
     /// The executing party can use this method to set auth args that only it can choose, for
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) with a salt
-    /// and a bound block of its choice. The new auth args replace the previous auth args and the
-    /// declared fee conversion salt. The client tracks the bound block of multisig auth args.
+    /// and a bound block of its choice. The new auth args replace the previous auth args. The
+    /// client tracks the bound block of multisig auth args.
     #[must_use]
     pub fn with_auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
         self.commit_auth_args(auth_args.to_commitment(), auth_args.to_elements());
-        self.fee_conversion_salt = None;
         self
     }
 
-    /// Sets `auth_arg` and adds its `preimage` to the advice map.
-    pub fn commit_auth_args(&mut self, auth_arg: Word, preimage: Vec<Felt>) {
-        self.advice_map.insert(auth_arg, preimage);
-        self.auth_arg = Some(auth_arg);
+    /// Sets the explicit auth args to `commitment` and its `preimage`. The new auth args replace
+    /// the previous auth args.
+    pub fn commit_auth_args(&mut self, commitment: Word, preimage: Vec<Felt>) {
+        self.auth_args = RequestAuthArgs::Explicit { commitment, preimage };
     }
 
     /// Builds the [`InputNotes`] needed for the transaction execution.
@@ -403,6 +397,7 @@ impl TransactionRequest {
             advice_map,
             merkle_store,
             account_code_upgrade,
+            auth_args,
             ..
         } = self;
 
@@ -412,8 +407,11 @@ impl TransactionRequest {
             tx_args = tx_args.with_tx_script_and_args(tx_script, script_args);
         }
 
-        if let Some(auth_argument) = self.auth_arg {
-            tx_args = tx_args.with_auth_args(auth_argument);
+        // Default auth args pass nothing. The client commits the defaults as explicit auth args
+        // before it converts a request that needs them.
+        if let RequestAuthArgs::Explicit { commitment, preimage } = auth_args {
+            tx_args = tx_args.with_auth_args(commitment);
+            tx_args.extend_advice_map([(commitment, preimage)]);
         }
 
         if let Some(account_code_upgrade) = account_code_upgrade {
@@ -528,6 +526,8 @@ pub enum TransactionRequestError {
     DuplicateInputNote(NoteId),
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
+    #[error("cannot set both explicit auth args and a fee conversion salt")]
+    AuthArgsWithFeeConversionSalt,
     #[error(
         "foreign account {0} has incompatible visibility; use `ForeignAccount::public()` for public accounts and `ForeignAccount::private()` for private accounts"
     )]
@@ -626,6 +626,7 @@ mod tests {
         BlockNumber,
         ExpirationTransactionScript,
         NonZeroU16,
+        RequestAuthArgs,
         TransactionRequestBuilder,
         TransactionScript,
     };
@@ -634,16 +635,15 @@ mod tests {
     fn auth_args_set_the_commitment_and_its_preimage() {
         let auth_args = MultisigAuthArgs::new(BlockNumber::from(7u32), Word::from([1u32, 2, 3, 4]));
 
-        let request = TransactionRequestBuilder::new()
-            .fee_conversion_salt(Word::from([5u32, 6, 7, 8]))
-            .auth_args(&auth_args)
-            .build()
-            .unwrap();
+        let request = TransactionRequestBuilder::new().auth_args(&auth_args).build().unwrap();
 
-        let auth_arg = auth_args.to_commitment();
-        assert_eq!(request.auth_arg(), &Some(auth_arg));
-        assert_eq!(request.fee_conversion_salt(), None);
-        assert_eq!(request.advice_map().get(&auth_arg).unwrap().as_ref(), auth_args.to_elements());
+        assert_eq!(
+            request.auth_args(),
+            &RequestAuthArgs::Explicit {
+                commitment: auth_args.to_commitment(),
+                preimage: auth_args.to_elements(),
+            }
+        );
     }
 
     #[test]

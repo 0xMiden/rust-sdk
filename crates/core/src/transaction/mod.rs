@@ -19,6 +19,7 @@ pub use request::{
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestAuthArgs,
     RequestInputNote,
     RequestScript,
     SwapTransactionData,

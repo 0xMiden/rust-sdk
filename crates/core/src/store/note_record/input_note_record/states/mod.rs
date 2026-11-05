@@ -225,12 +225,19 @@ impl InputNoteState {
     /// `STATE_PROCESSING_UNAUTHENTICATED` to `STATE_EXPECTED`. These two backward transitions are
     /// valid. They are required for the transaction discarding to work, because
     /// [`Self::transaction_discarded`] produces them.
+    ///
+    /// A note that a transaction is consuming can receive its inclusion proof. The note then moves
+    /// from `STATE_PROCESSING_UNAUTHENTICATED` to `STATE_PROCESSING_AUTHENTICATED` and stays held
+    /// by the transaction. This backward transition is valid.
     pub fn is_valid_transition(old_discriminant: u8, new_discriminant: u8) -> bool {
-        // A discarded transaction releases the notes that it was consuming.
+        // These backward transitions are described in the documentation of this function.
         if matches!(
             (old_discriminant, new_discriminant),
             (Self::STATE_PROCESSING_AUTHENTICATED, Self::STATE_COMMITTED)
-                | (Self::STATE_PROCESSING_UNAUTHENTICATED, Self::STATE_EXPECTED)
+                | (
+                    Self::STATE_PROCESSING_UNAUTHENTICATED,
+                    Self::STATE_EXPECTED | Self::STATE_PROCESSING_AUTHENTICATED
+                )
         ) {
             return true;
         }
@@ -500,14 +507,18 @@ mod tests {
         }
     }
 
-    /// The two backward transitions that a discarded transaction produces are valid. Other backward
-    /// transitions out of a processing state are not valid.
+    /// The backward transitions that a discarded transaction or a received inclusion proof produces
+    /// are valid. Other backward transitions out of a processing state are not valid.
     #[test]
-    fn discarded_transaction_transitions_are_valid() {
+    fn backward_processing_transitions_are_valid() {
         type S = InputNoteState;
 
         assert!(S::is_valid_transition(S::STATE_PROCESSING_AUTHENTICATED, S::STATE_COMMITTED));
         assert!(S::is_valid_transition(S::STATE_PROCESSING_UNAUTHENTICATED, S::STATE_EXPECTED));
+        assert!(S::is_valid_transition(
+            S::STATE_PROCESSING_UNAUTHENTICATED,
+            S::STATE_PROCESSING_AUTHENTICATED
+        ));
 
         assert!(!S::is_valid_transition(S::STATE_PROCESSING_AUTHENTICATED, S::STATE_EXPECTED));
         assert!(!S::is_valid_transition(S::STATE_PROCESSING_UNAUTHENTICATED, S::STATE_COMMITTED));

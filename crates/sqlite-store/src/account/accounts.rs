@@ -1007,7 +1007,7 @@ impl SqliteStore {
         // replaced.
         let full_storage = match update.storage() {
             StorageUpdate::Full(storage) => Some(storage),
-            StorageUpdate::Patch(_) => None,
+            StorageUpdate::Patch { .. } => None,
         };
         let full_assets = match update.vault() {
             VaultUpdate::Full(assets) => Some(assets.as_slice()),
@@ -1026,9 +1026,12 @@ impl SqliteStore {
                     storage.slots().iter().any(|slot| slot.name() == slot_name)
                 })?,
             ),
-            StorageUpdate::Patch(storage_patch) => {
-                (Cow::Borrowed(storage_patch), AccountStoragePatch::default())
-            },
+            StorageUpdate::Patch { header, patch } => (
+                Cow::Borrowed(patch),
+                Self::slot_removal_patch(tx, account_id, |slot_name| {
+                    header.find_slot_header_by_name(slot_name).is_some()
+                })?,
+            ),
         };
 
         Self::apply_account_update(

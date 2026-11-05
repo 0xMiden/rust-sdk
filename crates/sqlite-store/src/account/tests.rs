@@ -544,7 +544,10 @@ async fn apply_sync_account_update_replaces_vault() -> anyhow::Result<()> {
     // The vault arrives as the complete asset list and there are no storage changes.
     let update = AccountStateUpdate::new(
         (&account_after).into(),
-        StorageUpdate::Patch(AccountStoragePatch::default()),
+        StorageUpdate::Patch {
+            header: account_after.storage().to_header(),
+            patch: AccountStoragePatch::default(),
+        },
         VaultUpdate::Full(account_after.vault().assets().collect()),
         account_after.code().clone(),
     );
@@ -3831,6 +3834,56 @@ async fn update_account_state_changes_slot_types_and_undo_restores_them() -> any
     assert_eq!(load_account(&store, initial.id()).await?, initial);
     let metrics = get_storage_metrics(&store).await;
     assert_eq!(metrics.latest_storage_map_entries, 1, "only the old map has entries");
+
+    Ok(())
+}
+
+/// A sync storage patch removes the local slots that the new storage header does not list.
+#[tokio::test]
+async fn apply_sync_account_update_patch_removes_unlisted_slots() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let kept = slot_name("kept");
+    let dropped_value = slot_name("dropped_value");
+    let dropped_map = slot_name("dropped_map");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_value(kept.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+            StorageSlot::with_value(dropped_value, [ONE, ONE, ZERO, ZERO].into()),
+            StorageSlot::with_map(dropped_map, map_with_entry(1, 10)?),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(
+        vec![StorageSlot::with_value(kept, [ONE, ZERO, ZERO, ZERO].into())],
+        &[],
+        2,
+    )?;
+    let update = AccountStateUpdate::new(
+        (&updated).into(),
+        StorageUpdate::Patch {
+            header: updated.storage().to_header(),
+            patch: AccountStoragePatch::default(),
+        },
+        VaultUpdate::Patch(AccountVaultPatch::default()),
+        updated.code().clone(),
+    );
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_sync_account_update(&tx, &mut smt_forest, &update)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 0);
 
     Ok(())
 }

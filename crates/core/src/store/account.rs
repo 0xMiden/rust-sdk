@@ -9,6 +9,7 @@ use miden_protocol::account::{
     AccountHeader,
     AccountId,
     AccountStorage,
+    AccountStorageHeader,
     AccountStoragePatch,
     AccountVaultPatch,
     PartialAccount,
@@ -248,9 +249,14 @@ impl AccountStateUpdate {
 pub enum StorageUpdate {
     /// The complete storage. The store replaces every local slot with it.
     Full(AccountStorage),
-    /// The absolute changes to the storage, layered onto the local one. Maps the node returned in
-    /// full are `Create` patches, which replace the slot.
-    Patch(AccountStoragePatch),
+    /// The absolute changes to the storage, layered onto the local one.
+    Patch {
+        /// The header of the new storage. The store removes the local slots that it does not list.
+        header: AccountStorageHeader,
+        /// The changes to the slots of `header`. Maps the node returned in full are `Create`
+        /// patches, which replace the slot.
+        patch: AccountStoragePatch,
+    },
 }
 
 /// Vault part of a [`AccountStateUpdate`].

@@ -1409,7 +1409,10 @@ impl StateSync {
         )
         .map_err(StoreError::AccountPatchError)?;
 
-        Ok(StorageUpdate::Patch(storage))
+        Ok(StorageUpdate::Patch {
+            header: details.storage_details.header.clone(),
+            patch: storage,
+        })
     }
 
     /// Applies the changes received from the sync response to the notes and transactions tracked by
@@ -2301,7 +2304,7 @@ mod tests {
         };
         let expected_assets: Vec<Asset> = account.vault().assets().collect();
         assert_eq!(*assets, expected_assets);
-        let StorageUpdate::Patch(storage) = update.storage() else {
+        let StorageUpdate::Patch { patch: storage, .. } = update.storage() else {
             panic!("storage with an oversized map must be applied as a patch");
         };
         // The transaction did not touch the map, so there are no changes to layer onto it.

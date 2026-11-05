@@ -20,12 +20,13 @@ use miden_client::note::{
     StandardNote,
     get_input_note_with_id_prefix,
 };
-use miden_client::store::NoteRecordError;
+use miden_client::store::{NoteRecordError, TransactionFilter};
 use miden_client::transaction::{
     PaymentNoteDescription,
     PswapTransactionData,
     RawOutputNote,
     SwapTransactionData,
+    TransactionDetails,
     TransactionProver,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -546,10 +547,11 @@ fn consume_notes_request(input_notes: &[Note]) -> Result<TransactionRequest, Cli
 /// notes each.
 ///
 /// Each transaction starts from the account state that the previous transaction leaves. The client
-/// syncs before each transaction after the first, to keep the reference block of the transaction
-/// recent during a long run. The function stops at the first transaction that fails. The notes of
-/// that transaction and of the transactions after it stay unconsumed, so a new run of the command
-/// can consume them.
+/// syncs the chain before the first transaction. After each transaction, the client syncs again
+/// only if the next transaction can expire before the node accepts it. The sync does not fetch
+/// notes from the note transport layer, because the run consumes only the notes in `input_notes`.
+/// The function stops at the first transaction that fails. The notes of that transaction and of the
+/// transactions after it stay unconsumed, so a new run of the command can consume them.
 async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
     account_id: AccountId,
@@ -559,6 +561,8 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
 ) -> Result<(), CliError> {
     let num_transactions = input_notes.len().div_ceil(notes_per_tx);
     let mut num_consumed = 0;
+    let mut sync_before_transaction = true;
+    let mut previous_submission_height = BlockNumber::GENESIS;
 
     for (index, notes) in input_notes.chunks(notes_per_tx).enumerate() {
         println!(
@@ -568,24 +572,24 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
         );
 
         let result = async {
-            if index > 0 {
-                client.sync_state().await?;
+            if sync_before_transaction {
+                client.sync_chain().await?;
             }
             let transaction_request = consume_notes_request(notes)?;
-            Ok::<_, CliError>(
-                client
-                    .submit_new_transaction_with_prover(
-                        account_id,
-                        transaction_request,
-                        prover.clone(),
-                    )
-                    .await?,
-            )
+            let transaction_id = client
+                .submit_new_transaction_with_prover(account_id, transaction_request, prover.clone())
+                .await?;
+            let details = client
+                .get_transactions(TransactionFilter::Ids(vec![transaction_id]))
+                .await?
+                .pop()
+                .map(|record| record.details);
+            Ok::<_, CliError>((transaction_id, details))
         }
         .await;
 
-        let transaction_id = match result {
-            Ok(transaction_id) => transaction_id,
+        let (transaction_id, details) = match result {
+            Ok(result) => result,
             Err(err) => {
                 println!(
                     "Consumed {num_consumed} of {} notes in {index} transactions. To consume the other notes, run `consume-notes` again without note IDs.",
@@ -597,10 +601,46 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
 
         num_consumed += notes.len();
         println!("Transaction ID: {transaction_id}");
+
+        sync_before_transaction = match details {
+            Some(details) => {
+                let can_expire = next_transaction_can_expire(&details, previous_submission_height);
+                previous_submission_height = details.submission_height;
+                can_expire
+            },
+            None => true,
+        };
     }
 
     println!("Consumed {num_consumed} notes in {num_transactions} transactions.");
     Ok(())
+}
+
+/// The smallest number of blocks between the chain tip and the expiration block of a transaction
+/// that the node accepts. The node rejects a transaction that expires at most 2 blocks after the
+/// chain tip.
+const MIN_BLOCKS_BEFORE_EXPIRATION: u32 = 3;
+
+/// Returns `true` if a transaction with the same reference block as the transaction of `details`
+/// can expire before the node accepts it.
+///
+/// `previous_submission_height` is the chain tip at the submission of the transaction before the
+/// transaction of `details`. The estimate assumes that the next transaction takes as many blocks as
+/// the transaction of `details`, and it adds the same number of blocks as a margin.
+fn next_transaction_can_expire(
+    details: &TransactionDetails,
+    previous_submission_height: BlockNumber,
+) -> bool {
+    // The chain tip when the transaction started. After a sync, it is the reference block.
+    // Otherwise, it is the submission height of the previous transaction.
+    let start_height = details.block_num.max(previous_submission_height).as_u32();
+    let submission_height = details.submission_height.as_u32();
+    let num_blocks = submission_height.saturating_sub(start_height);
+
+    submission_height
+        .saturating_add(num_blocks.saturating_mul(2))
+        .saturating_add(MIN_BLOCKS_BEFORE_EXPIRATION)
+        > details.expiration_block_num.as_u32()
 }
 
 // PSWAP COMMANDS

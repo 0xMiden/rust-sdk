@@ -3862,3 +3862,59 @@ async fn update_account_state_repairs_drifted_vault_tree() -> anyhow::Result<()>
 
     Ok(())
 }
+
+/// A full update rebuilds a map tree that holds an entry the account tables do not have.
+#[tokio::test]
+async fn update_account_state_repairs_drifted_map_tree() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot = slot_name("map");
+    let value_slot = slot_name("value");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_map(map_slot.clone(), map_with_entry(1, 10)?),
+            StorageSlot::with_value(value_slot.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let mut drift_entries = StorageMapPatchEntries::new();
+    drift_entries.insert(
+        StorageMapKey::new([Felt::from(2u32), ZERO, ZERO, ZERO].into()),
+        [ONE, ZERO, ZERO, ZERO].into(),
+    );
+    let drift_patch = AccountStoragePatch::from_entries([(
+        map_slot.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries: drift_entries }),
+    )])?;
+    let mut drift = AccountUpdate::new();
+    drift.storage_patch(initial.id(), &drift_patch);
+    desync_forest(&store, drift).await?;
+
+    // The map does not change, so the account tables keep its rows. Only the forest repair makes
+    // the map tree match them again.
+    let updated = account_with_state(
+        vec![
+            StorageSlot::with_map(map_slot.clone(), map_with_entry(1, 10)?),
+            StorageSlot::with_value(value_slot, [ONE, ONE, ZERO, ZERO].into()),
+        ],
+        &[],
+        2,
+    )?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let account_id = updated.id();
+    let forest_map_root = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            Ok(smt_forest.map_root(account_id, &map_slot))
+        })
+        .await?;
+    assert_eq!(forest_map_root, Some(map_with_entry(1, 10)?.root()));
+
+    Ok(())
+}

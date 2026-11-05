@@ -468,6 +468,7 @@ impl SqliteStore {
             init_account_state,
             final_account_state,
             patch.storage(),
+            None,
             patch.vault(),
             None,
             patch.code().as_code(),
@@ -483,6 +484,8 @@ impl SqliteStore {
     /// `Some` while the new state is still undeployed. `full_assets` is the complete vault of
     /// `final_account_state` when the update carries it. The vault tree is then rebuilt from it
     /// instead of from `vault_patch`, so a tree that drifted from the account tables is repaired.
+    /// `full_storage` is the complete storage of `final_account_state` when the update carries
+    /// it. The map trees are then rebuilt from it instead of from `storage_patch`.
     #[allow(clippy::too_many_arguments)]
     fn apply_account_update(
         tx: &Transaction<'_>,
@@ -490,6 +493,7 @@ impl SqliteStore {
         init_account_state: &AccountHeader,
         final_account_state: &AccountHeader,
         storage_patch: &AccountStoragePatch,
+        full_storage: Option<&AccountStorage>,
         vault_patch: &AccountVaultPatch,
         full_assets: Option<&[Asset]>,
         code: Option<&AccountCode>,
@@ -562,7 +566,10 @@ impl SqliteStore {
                 );
             },
         }
-        forest_update.storage_patch(account_id, storage_patch);
+        match full_storage {
+            Some(storage) => forest_update.full_storage(account_id, storage.slots().iter()),
+            None => forest_update.storage_patch(account_id, storage_patch),
+        }
         // A map slot that becomes a value slot has no map patch, so its tree is cleared here.
         let stored_slots = query_storage_values(tx, account_id)?;
         for (slot_name, _) in storage_patch.values() {
@@ -952,7 +959,8 @@ impl SqliteStore {
         // row is replaced.
         let assets: Vec<Asset> = new_account_state.vault().assets().collect();
         let vault_patch = Self::full_vault_patch(tx, account_id, &assets)?;
-        let storage_patch = Self::full_storage_patch(tx, account_id, new_account_state.storage())?;
+        let storage = new_account_state.storage();
+        let storage_patch = Self::full_storage_patch(tx, account_id, storage)?;
 
         Self::apply_account_update(
             tx,
@@ -960,6 +968,7 @@ impl SqliteStore {
             &old_header,
             &new_account_state.into(),
             &storage_patch,
+            Some(storage),
             &vault_patch,
             Some(&assets),
             Some(new_account_state.code()),
@@ -991,6 +1000,10 @@ impl SqliteStore {
         // A part the update carries in full is turned into the patch that takes the stored state to
         // it. These patches are derived from the latest tables, so they are built before any row is
         // replaced.
+        let full_storage = match update.storage() {
+            StorageUpdate::Full(storage) => Some(storage),
+            StorageUpdate::Patch(_) => None,
+        };
         let full_assets = match update.vault() {
             VaultUpdate::Full(assets) => Some(assets.as_slice()),
             VaultUpdate::Patch(_) => None,
@@ -1014,6 +1027,7 @@ impl SqliteStore {
             &init_header,
             new_header,
             &storage_patch,
+            full_storage,
             &vault_patch,
             full_assets,
             Some(update.code()),

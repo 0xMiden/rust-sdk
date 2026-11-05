@@ -1,10 +1,11 @@
 //! Vault/asset-related database operations for accounts.
 
+use std::collections::BTreeMap;
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
 use miden_protocol::account::{AccountHeader, AccountId, AccountVaultPatch};
-use miden_protocol::asset::{Asset, AssetId};
+use miden_protocol::asset::{Asset, AssetId, AssetIdHash};
 use miden_protocol::utils::serde::Serializable;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -47,18 +48,26 @@ impl SqliteStore {
 
     /// Builds the vault patch that takes the stored vault of an account to `assets`.
     ///
-    /// Stored assets that `assets` does not have are marked as removed.
+    /// The patch holds only the assets that change. Stored assets that `assets` does not have are
+    /// marked as removed.
     pub(crate) fn full_vault_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
         assets: &[Asset],
     ) -> Result<AccountVaultPatch, StoreError> {
+        let mut stored_assets: BTreeMap<AssetIdHash, Asset> = query_vault_assets(tx, account_id)?
+            .into_iter()
+            .map(|asset| (asset.id().hash(), asset))
+            .collect();
         let mut vault_patch = AccountVaultPatch::default();
-        for stored_asset in query_vault_assets(tx, account_id)? {
-            vault_patch.remove_asset(stored_asset.id());
-        }
         for asset in assets {
-            vault_patch.insert_asset(*asset);
+            match stored_assets.remove(&asset.id().hash()) {
+                Some(stored) if stored.to_value_word() == asset.to_value_word() => {},
+                _ => vault_patch.insert_asset(*asset),
+            }
+        }
+        for stored_asset in stored_assets.into_values() {
+            vault_patch.remove_asset(stored_asset.id());
         }
 
         Ok(vault_patch)

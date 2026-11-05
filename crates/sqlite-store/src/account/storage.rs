@@ -9,7 +9,9 @@ use miden_protocol::account::{
     AccountId,
     AccountStorage,
     AccountStoragePatch,
+    StorageMap,
     StorageMapPatch,
+    StorageMapPatchEntries,
     StorageSlot,
     StorageSlotContent,
     StorageSlotName,
@@ -21,7 +23,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Word};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use crate::account::rows::query_storage_values;
+use crate::account::rows::{query_storage_maps, query_storage_values};
 use crate::forest::ScopedAccountForest;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, insert_sql, subst, u64_to_value};
@@ -35,29 +37,49 @@ impl SqliteStore {
 
     /// Builds the storage patch that takes the stored storage of an account to `storage`.
     ///
-    /// Every slot of `storage` becomes a `Create` patch, which the patch writer applies as a
-    /// replacement of the slot. Stored slots that `storage` does not have become `Remove` patches.
+    /// The patch holds only the slots that change. A stored map that stays a map gets an `Update`
+    /// patch with only the entries that change. Any other changed slot gets a `Create` patch, which
+    /// the patch writer applies as a replacement of the slot. A slot whose type changes gets only
+    /// the patch of its new type. The patch writer removes the entries of a map slot that becomes a
+    /// value slot. Stored slots that `storage` does not have become `Remove` patches.
     pub(crate) fn full_storage_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
         storage: &AccountStorage,
     ) -> Result<AccountStoragePatch, StoreError> {
-        let mut slot_patches: BTreeMap<StorageSlotName, StorageSlotPatch> =
-            query_storage_values(tx, account_id)?
-                .into_iter()
-                .map(|(slot_name, (slot_type, _))| {
-                    let removal = match slot_type {
-                        StorageSlotType::Value => {
-                            StorageSlotPatch::Value(StorageValuePatch::Remove)
-                        },
-                        StorageSlotType::Map => StorageSlotPatch::Map(StorageMapPatch::Remove),
-                    };
-                    (slot_name, removal)
-                })
-                .collect();
+        let stored_slots = query_storage_values(tx, account_id)?;
+        let changed_map_names: Vec<String> = storage
+            .slots()
+            .iter()
+            .filter(|slot| {
+                slot.slot_type() == StorageSlotType::Map
+                    && matches!(
+                        stored_slots.get(slot.name()),
+                        Some((StorageSlotType::Map, root)) if *root != slot.value()
+                    )
+            })
+            .map(|slot| slot.name().to_string())
+            .collect();
+        let stored_maps = query_storage_maps(tx, account_id, Some(&changed_map_names))?;
+
+        let mut slot_patches: BTreeMap<StorageSlotName, StorageSlotPatch> = stored_slots
+            .iter()
+            .filter(|(slot_name, _)| storage.slots().iter().all(|slot| slot.name() != *slot_name))
+            .map(|(slot_name, (slot_type, _))| (slot_name.clone(), removal_patch(*slot_type)))
+            .collect();
         for slot in storage.slots() {
-            slot_patches
-                .insert(slot.name().clone(), StorageSlotPatch::from(slot.content().clone()));
+            if stored_slots.get(slot.name()) == Some(&(slot.slot_type(), slot.value())) {
+                continue;
+            }
+            let slot_patch = match (stored_maps.get(slot.name()), slot.content()) {
+                (Some(stored_map), StorageSlotContent::Map(map)) => {
+                    StorageSlotPatch::Map(StorageMapPatch::Update {
+                        entries: map_entry_changes(stored_map, map),
+                    })
+                },
+                _ => StorageSlotPatch::from(slot.content().clone()),
+            };
+            slot_patches.insert(slot.name().clone(), slot_patch);
         }
 
         AccountStoragePatch::from_raw(slot_patches).map_err(StoreError::AccountPatchError)
@@ -409,4 +431,29 @@ impl SqliteStore {
 
         Ok(())
     }
+}
+
+/// Returns the patch that removes a slot of type `slot_type`.
+fn removal_patch(slot_type: StorageSlotType) -> StorageSlotPatch {
+    match slot_type {
+        StorageSlotType::Value => StorageSlotPatch::Value(StorageValuePatch::Remove),
+        StorageSlotType::Map => StorageSlotPatch::Map(StorageMapPatch::Remove),
+    }
+}
+
+/// Returns the entries that take `stored` to `new`. A key that `new` does not have gets the empty
+/// word, which removes the entry.
+fn map_entry_changes(stored: &StorageMap, new: &StorageMap) -> StorageMapPatchEntries {
+    let mut changes = BTreeMap::new();
+    for (key, value) in new.entries() {
+        if stored.get(key) != *value {
+            changes.insert(*key, *value);
+        }
+    }
+    for (key, _) in stored.entries() {
+        if new.get(key) == EMPTY_WORD {
+            changes.insert(*key, EMPTY_WORD);
+        }
+    }
+    StorageMapPatchEntries::from_raw(changes)
 }

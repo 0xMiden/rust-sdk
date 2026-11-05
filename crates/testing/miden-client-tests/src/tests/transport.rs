@@ -23,8 +23,7 @@ use miden_client::note_transport::{
     NoteTransportError,
     NoteTransportSyncState,
 };
-use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
-use miden_client::store::{InputNoteRecord, InputNoteState, NoteFilter, StoreError};
+use miden_client::store::{InputNoteState, NoteFilter, StoreError};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -205,28 +204,28 @@ async fn transport_repeated_delivery_repairs_incomplete_records() {
     for unverified in [true, false] {
         let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
 
-        // Insert the incomplete note record (with state `Unverified` or `Invalid`)
-        let state: InputNoteState = if unverified {
-            UnverifiedNoteState {
-                metadata: *note.metadata(),
-                inclusion_proof: genesis_inclusion_proof(),
-            }
-            .into()
+        // Import the incomplete note record (with state `Unverified` or `Invalid`)
+        let proof = if unverified {
+            // Import the note with a proof that does not verify (a proof for a block after the sync
+            // height gives an unverified record).
+            NoteInclusionProof::new(BlockNumber::from(100u32), 0, SparseMerklePath::default())
+                .unwrap()
         } else {
-            InvalidNoteState {
-                metadata: *note.metadata(),
-                invalid_inclusion_proof: genesis_inclusion_proof(),
-                block_note_root: Word::default(),
-            }
-            .into()
+            // The genesis block does not contain the note, so a proof for it gives an invalid
+            // record.
+            genesis_inclusion_proof()
         };
-        let record = InputNoteRecord::new(
-            NoteDetails::from(note.clone()),
-            note.attachments().clone(),
-            None,
-            state,
-        );
-        client.test_store().upsert_input_notes(&[record]).await.unwrap();
+        client
+            .import_notes(&[NoteFile::Committed { note: note.clone(), proof }])
+            .await
+            .unwrap();
+
+        let state = client.get_input_note(note.id()).await.unwrap().unwrap().state().clone();
+        if unverified {
+            assert!(matches!(state, InputNoteState::Unverified(_)), "got {state:?}");
+        } else {
+            assert!(matches!(state, InputNoteState::Invalid(_)), "got {state:?}");
+        }
 
         transport
             .write()

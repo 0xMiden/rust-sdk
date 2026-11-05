@@ -12,12 +12,16 @@ use crate::generated as proto;
 // STORAGE MAP INFO CONVERSION
 // ================================================================================================
 
-impl TryFrom<proto::rpc::SyncAccountStorageMapsResponse> for StorageMapInfo {
+impl TryFrom<proto::node::v1::SyncAccountStorageMapsResponse> for StorageMapInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::SyncAccountStorageMapsResponse) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: proto::node::v1::SyncAccountStorageMapsResponse,
+    ) -> Result<Self, Self::Error> {
         let pagination_info = value.pagination_info.ok_or(
-            proto::rpc::SyncAccountStorageMapsResponse::missing_field(stringify!(pagination_info)),
+            proto::node::v1::SyncAccountStorageMapsResponse::missing_field(stringify!(
+                pagination_info
+            )),
         )?;
 
         let mut updates = value
@@ -48,7 +52,7 @@ impl TryFrom<proto::rpc::SyncAccountStorageMapsResponse> for StorageMapInfo {
 
 /// Converts a single proto storage-map update into its block number, slot name, key, and new value.
 fn storage_map_update_from_proto(
-    value: proto::rpc::StorageMapUpdate,
+    value: proto::node::v1::StorageMapUpdate,
 ) -> Result<(BlockNumber, StorageSlotName, StorageMapKey, Word), RpcError> {
     let block_num = BlockNumber::from(value.block_num);
 
@@ -56,13 +60,15 @@ fn storage_map_update_from_proto(
         .map_err(|err| RpcError::InvalidResponse(err.to_string()))?;
 
     let key = Word::try_from(
-        value.key.ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(key)))?,
+        value
+            .key
+            .ok_or(proto::node::v1::StorageMapUpdate::missing_field(stringify!(key)))?,
     )
     .map(StorageMapKey::new)?;
 
     let map_value: Word = value
         .value
-        .ok_or(proto::rpc::StorageMapUpdate::missing_field(stringify!(value)))?
+        .ok_or(proto::node::v1::StorageMapUpdate::missing_field(stringify!(value)))?
         .try_into()?;
 
     Ok((block_num, slot_name, key, map_value))

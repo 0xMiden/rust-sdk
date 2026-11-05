@@ -4,7 +4,7 @@ use std::sync::Arc;
 use miden_client::Client;
 use miden_client::builder::ClientBuilder;
 use miden_client::keystore::FilesystemKeyStore;
-use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
+use miden_client::rpc::{Endpoint, GrpcClient};
 use miden_client_sqlite_store::SqliteStore;
 
 /// Default store directory name, created in the current working directory.
@@ -47,7 +47,7 @@ pub async fn create_client(
     let store = SqliteStore::new(sqlite_path).await?;
 
     let builder = ClientBuilder::new()
-        .rpc(Arc::new(VerifyingRpcClient::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS))))
+        .rpc(Arc::new(GrpcClient::new(endpoint, RPC_TIMEOUT_MS)))
         .store(Arc::new(store))
         .filesystem_keystore(keystore_path.to_str().expect("keystore path should be valid UTF-8"))?
         .tx_discard_delta(None);

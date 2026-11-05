@@ -61,7 +61,7 @@ impl SqliteStore {
             })
             .map(|slot| slot.name().to_string())
             .collect();
-        let stored_maps = query_storage_maps(tx, account_id, Some(&changed_map_names))?;
+        let stored_maps = query_storage_maps(tx, account_id, &changed_map_names)?;
 
         let mut slot_patches = BTreeMap::new();
         for slot in storage.slots() {

@@ -245,9 +245,6 @@ pub enum ClientError {
     Observer(Box<dyn core::error::Error + Send + Sync + 'static>),
     #[error("expected note blocks to be screened before state sync update is built")]
     UnscreenedNoteBlocks,
-    #[deprecated(since = "0.17.1", note = "account tags are no longer limited")]
-    #[error("client already tracks maximum number of account tags possible: {0}")]
-    AccountTagLimitExceeded(usize),
 }
 
 // OBSERVER FAN-OUT
@@ -501,8 +498,9 @@ fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),
         RpcError::AcceptHeaderError(_) => Some(ErrorHint {
-            message: "The node rejected the request due to a version mismatch. \
-                      Ensure your client version is compatible with the node version."
+            message: "The node rejected the request because the client's genesis commitment does \
+                      not match the node's. Ensure the client is configured for the node's \
+                      network."
                 .to_string(),
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),

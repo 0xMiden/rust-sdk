@@ -1,22 +1,12 @@
-use std::collections::BTreeMap;
-
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
 use comfy_table::{Cell, ContentArrangement, presets};
 use miden_client::Client;
 use miden_client::block::BlockNumber;
 use miden_client::keystore::Keystore;
-use miden_client::note::{NoteAssets, NoteId, Nullifier, StandardNote};
-use miden_client::store::{
-    InputNoteRecord,
-    NoteFilter,
-    OutputNoteRecord,
-    TransactionFilter,
-    TransactionFilterQuery,
-};
+use miden_client::store::{TransactionFilter, TransactionFilterQuery};
 use miden_client::transaction::{
     ExpirationTransactionScript,
-    RawOutputNote,
     SendNotesTransactionScript,
     TransactionRecord,
     TransactionScript,
@@ -25,22 +15,10 @@ use miden_client::transaction::{
     TransactionStatusVariant,
 };
 
-use crate::commands::notes::note_record_type;
 use crate::errors::CliError;
-use crate::note_decoding::format_note_storage;
-use crate::utils::{
-    FaucetMetadataResolver,
-    FormattedAsset,
-    NO_VALUE,
-    load_faucet_metadata_resolver,
-    parse_account_id,
-};
+use crate::notes::display::{print_input_notes, print_output_notes};
+use crate::utils::{NO_VALUE, load_faucet_metadata_resolver, parse_account_id};
 use crate::{Parser, create_dynamic_table, get_transaction_with_id_prefix};
-
-/// Placeholder shown instead of the ID of a consumed note the client does not track. A consumed
-/// note is recorded only by its nullifier. If the client does not track the note, its ID cannot be
-/// recovered from the nullifier.
-const UNTRACKED_NOTE: &str = "<untracked>";
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum TransactionStatusFilter {
@@ -137,7 +115,7 @@ async fn show_transaction<AUTH: Keystore + Sync + 'static>(
 
     print_transaction_details(&transaction);
     print_input_notes(client, &resolver, &transaction).await?;
-    print_output_notes(client, &resolver, &transaction).await?;
+    print_output_notes(client, &resolver, &transaction.details.output_notes, true).await?;
 
     Ok(())
 }
@@ -192,149 +170,6 @@ fn print_transaction_details(transaction: &TransactionRecord) {
     ]);
 
     println!("{table}");
-}
-
-/// Prints the notes the transaction consumed.
-///
-/// A note ID can't be derived from a nullifier, so it's recovered by looking the nullifier up among
-/// the client's tracked notes; an unresolved one is marked as private.
-async fn print_input_notes<AUTH: Keystore + Sync>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    transaction: &TransactionRecord,
-) -> Result<(), CliError> {
-    let nullifiers = transaction
-        .details
-        .input_note_nullifiers
-        .iter()
-        .map(|nullifier| Nullifier::from_raw(*nullifier))
-        .collect::<Vec<_>>();
-
-    println!("\nInput Notes:");
-    if nullifiers.is_empty() {
-        println!("The transaction consumed no notes.");
-        return Ok(());
-    }
-
-    let records: BTreeMap<Nullifier, InputNoteRecord> = client
-        .get_input_notes(NoteFilter::Nullifiers(nullifiers.clone()))
-        .await?
-        .into_iter()
-        .filter_map(|record| record.nullifier().map(|nullifier| (nullifier, record)))
-        .collect();
-
-    let mut table = create_dynamic_table(&[
-        "ID",
-        "Nullifier",
-        "Standard Note",
-        "Type",
-        "State",
-        "Storage",
-        "Assets",
-    ]);
-    for nullifier in &nullifiers {
-        let Some(record) = records.get(nullifier) else {
-            table.add_row(vec![
-                UNTRACKED_NOTE,
-                &nullifier.to_hex(),
-                NO_VALUE,
-                NO_VALUE,
-                NO_VALUE,
-                NO_VALUE,
-                NO_VALUE,
-            ]);
-            continue;
-        };
-
-        let id = record.id().map_or_else(|| NO_VALUE.to_string(), |id| id.to_hex());
-        let standard_note = StandardNote::from_script_root(record.details().script().root());
-        let storage = format_note_storage(
-            client,
-            resolver,
-            standard_note,
-            record.details().storage().items(),
-        )
-        .await?;
-
-        table.add_row(vec![
-            id,
-            nullifier.to_hex(),
-            standard_note.map_or(NO_VALUE, |standard_note| standard_note.name()).to_string(),
-            note_record_type(record.metadata()),
-            record.state().to_string(),
-            storage,
-            format_note_assets(client, resolver, record.assets()).await?,
-        ]);
-    }
-
-    println!("{table}");
-    Ok(())
-}
-
-/// Prints the notes the transaction created.
-async fn print_output_notes<AUTH: Keystore + Sync>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    transaction: &TransactionRecord,
-) -> Result<(), CliError> {
-    let output_notes = &transaction.details.output_notes;
-
-    println!("\nOutput Notes:");
-    if output_notes.is_empty() {
-        println!("The transaction created no notes.");
-        return Ok(());
-    }
-
-    // The transaction keeps the notes as it created them. The store keeps their current state.
-    let note_ids = output_notes.iter().map(RawOutputNote::id).collect::<Vec<_>>();
-    let records: BTreeMap<NoteId, OutputNoteRecord> = client
-        .get_output_notes(NoteFilter::List(note_ids))
-        .await?
-        .into_iter()
-        .map(|record| (record.id(), record))
-        .collect();
-
-    let mut table = create_dynamic_table(&[
-        "ID",
-        "Standard Note",
-        "Type",
-        "Tag",
-        "State",
-        "Expected Height",
-        "Storage",
-        "Assets",
-    ]);
-    for note in output_notes.iter() {
-        // A partial output note carries no recipient, so its script and storage aren't known.
-        let recipient = note.recipient();
-        let standard_note = recipient
-            .and_then(|recipient| StandardNote::from_script_root(recipient.script().root()));
-        let storage = match recipient {
-            Some(recipient) => {
-                format_note_storage(client, resolver, standard_note, recipient.storage().items())
-                    .await?
-            },
-            None => NO_VALUE.to_string(),
-        };
-        let record = records.get(&note.id());
-
-        table.add_row(vec![
-            note.id().to_hex(),
-            standard_note.map_or(NO_VALUE, |standard_note| standard_note.name()).to_string(),
-            note_record_type(Some(note.metadata())),
-            note.metadata().tag().to_string(),
-            record.map_or_else(|| NO_VALUE.to_string(), |record| record.state().to_string()),
-            record.map_or_else(
-                || NO_VALUE.to_string(),
-                |record| record.expected_height().to_string(),
-            ),
-            storage,
-            format_note_assets(client, resolver, note.assets()).await?,
-        ]);
-    }
-
-    println!("{table}");
-    Ok(())
 }
 
 // HELPERS
@@ -394,26 +229,6 @@ fn format_timestamp(timestamp: u64) -> String {
         .ok()
         .and_then(|seconds| Local.timestamp_opt(seconds, 0).single())
         .map_or_else(|| timestamp.to_string(), |datetime| datetime.to_string())
-}
-
-/// Renders a note's assets one per line, so they fit a single table cell.
-async fn format_note_assets<AUTH: Keystore + Sync>(
-    client: &Client<AUTH>,
-    resolver: &FaucetMetadataResolver,
-    assets: &NoteAssets,
-) -> Result<String, CliError> {
-    let mut formatted = Vec::with_capacity(assets.num_assets());
-    for asset in assets.iter() {
-        let resolved_faucet = resolver.resolve_asset(client, asset).await?;
-        formatted
-            .push(FormattedAsset::new(asset, &resolved_faucet, resolver.network_id()).to_string());
-    }
-
-    if formatted.is_empty() {
-        return Ok(NO_VALUE.to_string());
-    }
-
-    Ok(formatted.join("\n"))
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use crate::generated as proto;
 // SYNC TARGET
 // ================================================================================================
 
-impl From<SyncTarget> for proto::rpc::FinalityLevel {
+impl From<SyncTarget> for proto::node::v1::FinalityLevel {
     fn from(target: SyncTarget) -> Self {
         match target {
             SyncTarget::CommittedChainTip => Self::Committed,
@@ -23,22 +23,22 @@ impl From<SyncTarget> for proto::rpc::FinalityLevel {
 // CHAIN MMR INFO
 // ================================================================================================
 
-impl TryFrom<proto::rpc::SyncChainMmrResponse> for ChainMmrInfo {
+impl TryFrom<proto::node::v1::SyncChainMmrResponse> for ChainMmrInfo {
     type Error = RpcError;
 
-    fn try_from(value: proto::rpc::SyncChainMmrResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: proto::node::v1::SyncChainMmrResponse) -> Result<Self, Self::Error> {
         let block_range = value
             .block_range
-            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
+            .ok_or(proto::node::v1::SyncChainMmrResponse::missing_field(stringify!(block_range)))?;
 
         let mmr_delta: MmrDelta = value
             .mmr_delta
-            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
+            .ok_or(proto::node::v1::SyncChainMmrResponse::missing_field(stringify!(mmr_delta)))?
             .decode_and_verify()?;
 
         let block_header: BlockHeader = value
             .block_header
-            .ok_or(proto::rpc::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
+            .ok_or(proto::node::v1::SyncChainMmrResponse::missing_field(stringify!(block_header)))?
             .decode_and_build_unchecked()?;
 
         let protocol_config: Option<ProtocolConfig> =
@@ -100,7 +100,7 @@ mod tests {
     fn response(
         committed: &ProtocolConfig,
         returned: Option<&ProtocolConfig>,
-    ) -> proto::rpc::SyncChainMmrResponse {
+    ) -> proto::node::v1::SyncChainMmrResponse {
         let mock = BlockHeader::mock(0, None, None, &[]);
         let header = BlockHeader::new(
             Word::empty(),
@@ -116,8 +116,8 @@ mod tests {
             None,
             0,
         );
-        proto::rpc::SyncChainMmrResponse {
-            block_range: Some(proto::rpc::BlockRange { block_from: 0, block_to: 0 }),
+        proto::node::v1::SyncChainMmrResponse {
+            block_range: Some(proto::node::v1::BlockRange { block_from: 0, block_to: 0 }),
             mmr_delta: Some(
                 MmrDelta {
                     forest: Forest::empty(),

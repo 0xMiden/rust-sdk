@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 #[cfg(feature = "dap")]
 use std::net::SocketAddr;
@@ -23,15 +23,19 @@ use miden_client::note::{
 use miden_client::store::{NoteRecordError, TransactionFilter};
 use miden_client::transaction::{
     PaymentNoteDescription,
+    ProvenTransaction,
     PswapTransactionData,
     RawOutputNote,
     SwapTransactionData,
     TransactionDetails,
     TransactionProver,
+    TransactionProverError,
     TransactionRequest,
     TransactionRequestBuilder,
+    TransactionResult,
 };
-use miden_client::{Client, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word};
+use miden_client::{Client, ClientError, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word};
+use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::config::CliConfig;
@@ -296,6 +300,9 @@ impl SwapCmd {
 /// double the proving time and memory.
 const DEFAULT_NOTES_PER_TX: usize = 40;
 
+/// The largest value of `--in-flight`.
+const MAX_IN_FLIGHT: usize = 8;
+
 /// Consume with the account corresponding to `account_id` all of the notes from `list_of_notes`. If
 /// no account ID is provided, the default one is used. If no notes are provided, any notes that are
 /// identified to be owned by the account ID are consumed. If there are more notes than
@@ -326,6 +333,20 @@ pub struct ConsumeNotesCmd {
         value_parser = RangedU64ValueParser::<usize>::new().range(1..=MAX_INPUT_NOTES_PER_TX as u64),
     )]
     notes_per_tx: usize,
+
+    /// The number of transactions that the command keeps in flight when it consumes the notes in
+    /// more than one transaction. With a value above 1, the command executes a transaction on the
+    /// account state that the previous transaction leaves while the previous transaction is being
+    /// proven, so that up to this many proofs run at the same time. Only a remote prover proves
+    /// transactions at the same time, so a value above 1 needs `--delegate-proving`. If a
+    /// transaction fails, the transactions executed after it are not submitted. The next sync after
+    /// they expire discards them, and their notes can be consumed again.
+    #[arg(
+        long,
+        default_value_t = 1,
+        value_parser = RangedU64ValueParser::<usize>::new().range(1..=MAX_IN_FLIGHT as u64),
+    )]
+    in_flight: usize,
 
     /// Consume only the notes that use one of these note scripts. Each value is the name of a
     /// standard note (e.g., "P2ID" or "P2IDE") or a hex note script root. Separate the values with
@@ -360,6 +381,13 @@ impl ConsumeNotesCmd {
         mut client: Client<AUTH>,
     ) -> Result<(), CliError> {
         let force = self.force;
+
+        if self.in_flight > 1 && !self.delegate_proving {
+            return Err(CliError::Input(
+                "--in-flight needs --delegate-proving: only a remote prover proves transactions at the same time"
+                    .to_string(),
+            ));
+        }
 
         let mut input_notes = Vec::new();
 
@@ -397,39 +425,7 @@ impl ConsumeNotesCmd {
         print_note_scripts(&input_notes);
 
         if input_notes.len() > self.notes_per_tx {
-            #[cfg(feature = "dap")]
-            if self.start_debug_adapter.is_some() {
-                return Err(CliError::Input(format!(
-                    "the debug adapter runs one transaction, but {} notes need more than one transaction of up to {} notes. Pass fewer notes or a larger --notes-per-tx",
-                    input_notes.len(),
-                    self.notes_per_tx
-                )));
-            }
-
-            println!(
-                "Consuming {} notes in {} transactions of up to {} notes each.",
-                input_notes.len(),
-                input_notes.len().div_ceil(self.notes_per_tx),
-                self.notes_per_tx
-            );
-            if !force
-                && !user_confirms(
-                    "\nContinue with executing, proving and submitting all transactions? Changes will be irreversible once the proofs are finalized on the network (y/N)",
-                )
-            {
-                println!("Note consumption was cancelled.");
-                return Ok(());
-            }
-
-            let prover = transaction_prover(&client, self.delegate_proving)?;
-            return consume_notes_in_chunks(
-                &mut client,
-                account_id,
-                &input_notes,
-                self.notes_per_tx,
-                prover,
-            )
-            .await;
+            return self.consume_in_transactions(&mut client, account_id, &input_notes).await;
         }
 
         let transaction_request = consume_notes_request(&input_notes)?;
@@ -454,6 +450,53 @@ impl ConsumeNotesCmd {
             self.delegate_proving,
         )
         .await
+    }
+
+    /// Consumes `input_notes` in more than one transaction of at most `notes_per_tx` notes, after
+    /// one confirmation for all of the transactions.
+    async fn consume_in_transactions<AUTH: Keystore + Sync + 'static>(
+        &self,
+        client: &mut Client<AUTH>,
+        account_id: AccountId,
+        input_notes: &[Note],
+    ) -> Result<(), CliError> {
+        #[cfg(feature = "dap")]
+        if self.start_debug_adapter.is_some() {
+            return Err(CliError::Input(format!(
+                "the debug adapter runs one transaction, but {} notes need more than one transaction of up to {} notes. Pass fewer notes or a larger --notes-per-tx",
+                input_notes.len(),
+                self.notes_per_tx
+            )));
+        }
+
+        println!(
+            "Consuming {} notes in {} transactions of up to {} notes each.",
+            input_notes.len(),
+            input_notes.len().div_ceil(self.notes_per_tx),
+            self.notes_per_tx
+        );
+        if !self.force
+            && !user_confirms(
+                "\nContinue with executing, proving and submitting all transactions? Changes will be irreversible once the proofs are finalized on the network (y/N)",
+            )
+        {
+            println!("Note consumption was cancelled.");
+            return Ok(());
+        }
+
+        let prover = transaction_prover(client, self.delegate_proving)?;
+        if self.in_flight > 1 {
+            return consume_notes_pipelined(
+                client,
+                account_id,
+                input_notes,
+                self.notes_per_tx,
+                prover,
+                self.in_flight,
+            )
+            .await;
+        }
+        consume_notes_in_chunks(client, account_id, input_notes, self.notes_per_tx, prover).await
     }
 }
 
@@ -641,6 +684,154 @@ fn next_transaction_can_expire(
         .saturating_add(num_blocks.saturating_mul(2))
         .saturating_add(MIN_BLOCKS_BEFORE_EXPIRATION)
         > details.expiration_block_num.as_u32()
+}
+
+/// Consumes `input_notes` with the account `account_id`, in transactions of at most `notes_per_tx`
+/// notes each, with up to `in_flight` transactions being proven at the same time.
+///
+/// The function applies each executed transaction to the store before its proof exists, so that the
+/// next transaction can be executed on the account state that it leaves while the proof runs. It
+/// submits the proven transactions in execution order. The node accepts a transaction that starts
+/// from the state that a transaction in its mempool leaves.
+///
+/// The function stops at the first transaction that fails to prove or to submit. That transaction
+/// and the transactions executed after it stay in the store as pending transactions that the node
+/// never received. The next sync after they expire discards them and releases their notes, so a new
+/// run of the command can consume the notes.
+async fn consume_notes_pipelined<AUTH: Keystore + Sync + 'static>(
+    client: &mut Client<AUTH>,
+    account_id: AccountId,
+    input_notes: &[Note],
+    notes_per_tx: usize,
+    prover: Arc<dyn TransactionProver + Send + Sync>,
+    in_flight: usize,
+) -> Result<(), CliError> {
+    let chunks: Vec<&[Note]> = input_notes.chunks(notes_per_tx).collect();
+    let num_transactions = chunks.len();
+    let mut num_executed = 0;
+    let mut num_submitted = 0;
+    let mut num_consumed = 0;
+    let mut in_flight_transactions = VecDeque::new();
+
+    let result = async {
+        let mut reference_block = client.sync_chain().await?.block_num;
+        // The chain tip that the node reported last.
+        let mut chain_tip = reference_block;
+        // The expiration block of the last executed transaction.
+        let mut expiration_block = None;
+        // The number of blocks that the last submission took.
+        let mut blocks_per_submission = 0;
+
+        loop {
+            while in_flight_transactions.len() < in_flight && num_executed < num_transactions {
+                if let Some(expiration) = expiration_block
+                    && pipelined_transaction_can_expire(
+                        chain_tip,
+                        in_flight,
+                        blocks_per_submission,
+                        expiration,
+                    )
+                {
+                    reference_block = client.sync_chain().await?.block_num;
+                    chain_tip = reference_block;
+                }
+
+                let notes = chunks[num_executed];
+                println!(
+                    "Transaction {}/{num_transactions}: executing with {} notes...",
+                    num_executed + 1,
+                    notes.len()
+                );
+                let transaction_request = consume_notes_request(notes)?;
+                let tx_result = client.execute_transaction(account_id, transaction_request).await?;
+                // The submission height is not known yet. The reference block stands in for it.
+                client.apply_transaction(&tx_result, reference_block).await?;
+                expiration_block = Some(tx_result.executed_transaction().expiration_block_num());
+
+                let prover = prover.clone();
+                let tx_inputs = tx_result.executed_transaction().clone().into();
+                let proof = tokio::spawn(async move { prover.prove(tx_inputs).await });
+                in_flight_transactions.push_back((num_executed, tx_result, proof));
+                num_executed += 1;
+            }
+
+            let Some((index, tx_result, proof)) = in_flight_transactions.pop_front() else {
+                break;
+            };
+            let proven_transaction = proven_transaction(&tx_result, proof).await?;
+            let submission_height =
+                client.submit_proven_transaction(proven_transaction, &tx_result).await?;
+            blocks_per_submission = submission_height.as_u32().saturating_sub(chain_tip.as_u32());
+            chain_tip = submission_height;
+            num_submitted += 1;
+            num_consumed += chunks[index].len();
+            println!(
+                "Transaction {}/{num_transactions} submitted. Transaction ID: {}",
+                index + 1,
+                tx_result.executed_transaction().id()
+            );
+        }
+        Ok::<_, CliError>(())
+    }
+    .await;
+
+    if let Err(err) = result {
+        for (_, _, proof) in in_flight_transactions {
+            proof.abort();
+        }
+        println!(
+            "Consumed {num_consumed} of {} notes in {num_submitted} transactions. {} executed transactions were not submitted. The next `sync` after they expire discards them, and their notes can be consumed again. To consume the other notes, run `consume-notes` again without note IDs.",
+            input_notes.len(),
+            num_executed - num_submitted
+        );
+        return Err(err);
+    }
+
+    println!("Consumed {num_consumed} notes in {num_transactions} transactions.");
+    Ok(())
+}
+
+/// Waits for the proof task `proof` and checks that the proof is for the transaction of
+/// `tx_result`.
+async fn proven_transaction(
+    tx_result: &TransactionResult,
+    proof: JoinHandle<Result<ProvenTransaction, TransactionProverError>>,
+) -> Result<ProvenTransaction, CliError> {
+    let proven_transaction = proof
+        .await
+        .map_err(|err| CliError::Transaction(err.into(), "the proving task failed".to_string()))?
+        .map_err(ClientError::TransactionProvingError)?;
+
+    let executed_transaction = tx_result.executed_transaction();
+    if proven_transaction.id() != executed_transaction.id() {
+        return Err(ClientError::MismatchedProvenTransaction {
+            requested: executed_transaction.id(),
+            returned: proven_transaction.id(),
+        }
+        .into());
+    }
+
+    Ok(proven_transaction)
+}
+
+/// Returns `true` if a transaction that is executed now with the reference block of a transaction
+/// that expires at `expiration_block` can expire before the node accepts it.
+///
+/// `chain_tip` is the chain tip that the node reported last. The node accepts the transaction after
+/// the `in_flight` transactions ahead of it. The estimate assumes that each of them takes
+/// `blocks_per_submission` blocks, and it adds the same number of blocks as a margin.
+fn pipelined_transaction_can_expire(
+    chain_tip: BlockNumber,
+    in_flight: usize,
+    blocks_per_submission: u32,
+    expiration_block: BlockNumber,
+) -> bool {
+    let num_submissions = u32::try_from(in_flight).unwrap_or(u32::MAX);
+    chain_tip
+        .as_u32()
+        .saturating_add(blocks_per_submission.saturating_mul(num_submissions).saturating_mul(2))
+        .saturating_add(MIN_BLOCKS_BEFORE_EXPIRATION)
+        > expiration_block.as_u32()
 }
 
 // PSWAP COMMANDS
@@ -1030,7 +1221,7 @@ mod tests {
     use miden_client::builder::ClientBuilder;
     use miden_client::crypto::eddsa_25519_sha512::KeyExchangeKey;
     use miden_client::keystore::FilesystemKeyStore;
-    use miden_client::note::{BlockNumber, NoteFile, NoteScriptRoot, NoteType, StandardNote};
+    use miden_client::note::{BlockNumber, Note, NoteFile, NoteScriptRoot, NoteType, StandardNote};
     use miden_client::rpc::encryption::TransactionEncryptionKey;
     use miden_client::store::{NoteFilter, TransactionFilter};
     use miden_client::testing::account_id::{
@@ -1046,6 +1237,7 @@ mod tests {
         TransactionInputs,
         TransactionProver,
         TransactionProverError,
+        TransactionStatus,
     };
     use miden_client::{Client, ClientError, Word};
     use miden_client_sqlite_store::ClientBuilderSqliteExt;
@@ -1131,7 +1323,7 @@ mod tests {
             .rpc(Arc::new(rpc.clone()))
             .sqlite_store(store_path)
             .authenticator(Arc::new(FilesystemKeyStore::new(std::env::temp_dir()).unwrap()))
-            .tx_discard_delta(None);
+            .tx_discard_delta(Some(crate::TX_DISCARD_DELTA));
         if let Some(prover) = prover {
             builder = builder.prover(prover);
         }
@@ -1310,5 +1502,158 @@ mod tests {
                 .iter()
                 .all(|note| note.details().script().root() == StandardNote::P2ID.script_root())
         );
+    }
+
+    /// Consumes all committed notes of `wallet` with `in_flight` transactions in flight.
+    async fn consume_notes_pipelined(
+        client: &mut Client<FilesystemKeyStore>,
+        wallet: &Account,
+        notes_per_tx: usize,
+        in_flight: usize,
+        prover: Arc<dyn TransactionProver + Send + Sync>,
+    ) -> Result<(), CliError> {
+        let notes: Vec<Note> = client
+            .get_input_notes(NoteFilter::Committed)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.try_into().unwrap())
+            .collect();
+        Box::pin(super::consume_notes_pipelined(
+            client,
+            wallet.id(),
+            &notes,
+            notes_per_tx,
+            prover,
+            in_flight,
+        ))
+        .await
+    }
+
+    /// With `--in-flight` above 1, the command proves transactions at the same time and submits
+    /// them in execution order, so the node commits all of them.
+    #[tokio::test]
+    async fn consume_notes_pipelined_submits_the_transactions_in_order() {
+        const NUM_NOTES: usize = 10;
+        const NOTES_PER_TX: usize = 2;
+
+        let (rpc, wallet, note_files) = mock_chain_with_notes(NUM_NOTES, 0);
+        let mut client =
+            new_wallet_client(&rpc, create_test_store_path(), &wallet, &note_files, None).await;
+        let initial_balance = balance(&client, &wallet).await;
+
+        let prover = Arc::new(LocalTransactionProver::default());
+        consume_notes_pipelined(&mut client, &wallet, NOTES_PER_TX, 2, prover)
+            .await
+            .unwrap();
+
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 0);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, NUM_NOTES);
+        assert_eq!(client.get_transactions(TransactionFilter::Uncommitted).await.unwrap().len(), 5);
+
+        rpc.prove_block();
+        client.sync_state().await.unwrap();
+        let transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
+        assert_eq!(transactions.len(), 5);
+        assert!(
+            transactions
+                .iter()
+                .all(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
+        );
+        assert_eq!(
+            balance(&client, &wallet).await,
+            initial_balance + NUM_NOTES as u64 * NOTE_AMOUNT
+        );
+    }
+
+    /// When a transaction fails, the transactions executed after it are not submitted. The sync
+    /// after they expire discards them and releases their notes, and a new run consumes the notes.
+    #[tokio::test]
+    async fn consume_notes_pipelined_releases_the_notes_of_unsubmitted_transactions() {
+        const NUM_NOTES: usize = 10;
+        const NOTES_PER_TX: usize = 2;
+
+        let (rpc, wallet, note_files) = mock_chain_with_notes(NUM_NOTES, 0);
+        let store_path = create_test_store_path();
+        let mut client =
+            new_wallet_client(&rpc, store_path.clone(), &wallet, &note_files, None).await;
+        // The third proof fails.
+        let prover = Arc::new(FailingProver {
+            calls: AtomicUsize::new(0),
+            failing_call: 2,
+        });
+
+        let result = consume_notes_pipelined(&mut client, &wallet, NOTES_PER_TX, 2, prover).await;
+        assert!(matches!(
+            result,
+            Err(CliError::Client {
+                error: ClientError::TransactionProvingError(_),
+                ..
+            })
+        ));
+
+        // Transactions 1 and 2 were submitted. Transaction 3 failed to prove, and transaction 4 was
+        // executed while transaction 3 was being proven. The node never received 3 and 4.
+        assert_eq!(client.get_transactions(TransactionFilter::Uncommitted).await.unwrap().len(), 4);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, 4 * NOTES_PER_TX);
+        assert_eq!(
+            num_input_notes(&client, NoteFilter::Committed).await,
+            NUM_NOTES - 4 * NOTES_PER_TX
+        );
+
+        rpc.prove_block();
+        rpc.advance_blocks(crate::TX_DISCARD_DELTA + 2);
+        client.sync_state().await.unwrap();
+        let transactions = client.get_transactions(TransactionFilter::All).await.unwrap();
+        assert_eq!(
+            transactions
+                .iter()
+                .filter(|tx| matches!(tx.status, TransactionStatus::Committed { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            transactions
+                .iter()
+                .filter(|tx| matches!(tx.status, TransactionStatus::Discarded(_)))
+                .count(),
+            2
+        );
+        // The notes of the committed transactions are consumed. The discarded transactions released
+        // their notes, which are consumable again.
+        assert_eq!(num_input_notes(&client, NoteFilter::Consumed).await, 2 * NOTES_PER_TX);
+        assert_eq!(num_input_notes(&client, NoteFilter::Processing).await, 0);
+        assert_eq!(
+            num_input_notes(&client, NoteFilter::Committed).await,
+            NUM_NOTES - 2 * NOTES_PER_TX
+        );
+
+        let notes_per_tx = NOTES_PER_TX.to_string();
+        consume_notes(client, &wallet, &["--notes-per-tx", &notes_per_tx])
+            .await
+            .unwrap();
+
+        let client = open_client(&rpc, store_path, None).await;
+        assert_eq!(num_input_notes(&client, NoteFilter::Committed).await, 0);
+        assert_eq!(
+            num_input_notes(&client, NoteFilter::Processing).await,
+            NUM_NOTES - 2 * NOTES_PER_TX
+        );
+        // The new transactions are pending. Two of them consume the released notes from the same
+        // account state as the discarded transactions, so they have the same IDs and replace the
+        // discarded records.
+        assert_eq!(client.get_transactions(TransactionFilter::Uncommitted).await.unwrap().len(), 3);
+    }
+
+    /// `--in-flight` takes 1 to 8, and a value above 1 needs `--delegate-proving`.
+    #[tokio::test]
+    async fn consume_notes_validates_in_flight() {
+        assert!(ConsumeNotesCmd::try_parse_from(["consume-notes", "--in-flight", "0"]).is_err());
+        assert!(ConsumeNotesCmd::try_parse_from(["consume-notes", "--in-flight", "9"]).is_err());
+
+        let (rpc, wallet, _) = mock_chain_with_notes(1, 0);
+        let client = open_client(&rpc, create_test_store_path(), None).await;
+        let result = consume_notes(client, &wallet, &["--in-flight", "2"]).await;
+        assert!(matches!(result, Err(CliError::Input(_))));
     }
 }

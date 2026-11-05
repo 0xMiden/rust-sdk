@@ -24,7 +24,7 @@ use miden_client::note_transport::{
     NoteTransportSyncState,
 };
 use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
-use miden_client::store::{InputNoteRecord, NoteFilter, StoreError};
+use miden_client::store::{InputNoteRecord, InputNoteState, NoteFilter, StoreError};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -202,40 +202,35 @@ async fn unavailable_attachments_do_not_fail_sync() {
 /// Repeated transport deliveries can repair unverified and invalid records.
 #[tokio::test]
 async fn transport_repeated_delivery_repairs_incomplete_records() {
-    let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
-    transport
-        .write()
-        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
-    client.fetch_private_notes().await.unwrap();
-    let committed = client.get_input_note(note.id()).await.unwrap().unwrap();
-    assert!(committed.is_committed());
+    for unverified in [true, false] {
+        let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
 
-    for state in [
-        UnverifiedNoteState {
-            metadata: *note.metadata(),
-            inclusion_proof: committed.inclusion_proof().unwrap().clone(),
-        }
-        .into(),
-        InvalidNoteState {
-            metadata: *note.metadata(),
-            invalid_inclusion_proof: genesis_inclusion_proof(),
-            block_note_root: Word::default(),
-        }
-        .into(),
-    ] {
+        // Insert the incomplete note record (with state `Unverified` or `Invalid`)
+        let state: InputNoteState = if unverified {
+            UnverifiedNoteState {
+                metadata: *note.metadata(),
+                inclusion_proof: genesis_inclusion_proof(),
+            }
+            .into()
+        } else {
+            InvalidNoteState {
+                metadata: *note.metadata(),
+                invalid_inclusion_proof: genesis_inclusion_proof(),
+                block_note_root: Word::default(),
+            }
+            .into()
+        };
         let record = InputNoteRecord::new(
-            committed.details().clone(),
-            committed.attachments().clone(),
-            committed.created_at(),
+            NoteDetails::from(note.clone()),
+            note.attachments().clone(),
+            None,
             state,
         );
         client.test_store().upsert_input_notes(&[record]).await.unwrap();
-        let uncovered = NoteTransportSyncState {
-            cursor: transport_cursor(0),
-            covered_tags: BTreeSet::new(),
-        };
-        client.test_store().set_note_transport_sync_state(&uncovered).await.unwrap();
 
+        transport
+            .write()
+            .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
         client.fetch_private_notes().await.unwrap();
         assert!(client.get_input_note(note.id()).await.unwrap().unwrap().is_committed());
     }

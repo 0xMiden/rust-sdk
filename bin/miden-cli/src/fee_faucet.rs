@@ -29,11 +29,7 @@ pub(crate) async fn set_up_once<AUTH: Keystore + Sync + 'static>(client: &mut Cl
 async fn try_set_up_once<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
 ) -> Result<(), ClientError> {
-    if client
-        .get_setting::<AccountId>(FEE_FAUCET_SET_UP_KEY.to_string())
-        .await?
-        .is_some()
-    {
+    if set_up_faucet_id(client).await?.is_some() {
         return Ok(());
     }
 
@@ -57,4 +53,14 @@ async fn try_set_up_once<AUTH: Keystore + Sync + 'static>(
     }
 
     client.set_setting(FEE_FAUCET_SET_UP_KEY.to_string(), faucet_id).await
+}
+
+/// Returns the ID of the fee token faucet that the store set up, or `None` before the set up.
+///
+/// The store can keep this faucet as a watched account. A watched account is not an account of the
+/// user.
+pub(crate) async fn set_up_faucet_id<AUTH: Keystore + Sync + 'static>(
+    client: &Client<AUTH>,
+) -> Result<Option<AccountId>, ClientError> {
+    client.get_setting(FEE_FAUCET_SET_UP_KEY.to_string()).await
 }

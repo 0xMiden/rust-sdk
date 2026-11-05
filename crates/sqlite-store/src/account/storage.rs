@@ -35,13 +35,14 @@ impl SqliteStore {
     // MUTATOR/WRITER METHODS
     // --------------------------------------------------------------------------------------------
 
-    /// Builds the storage patch that takes the stored storage of an account to `storage`.
+    /// Builds the storage patch that takes the stored storage of an account to the slots of
+    /// `storage`.
     ///
     /// The patch holds only the slots that change. A stored map that stays a map gets an `Update`
     /// patch with only the entries that change. Any other changed slot gets a `Create` patch, which
     /// the patch writer applies as a replacement of the slot. A slot whose type changes gets only
     /// the patch of its new type. The patch writer removes the entries of a map slot that becomes a
-    /// value slot. Stored slots that `storage` does not have become `Remove` patches.
+    /// value slot. Stored slots that `storage` does not have are not in the patch.
     pub(crate) fn full_storage_patch(
         tx: &Transaction<'_>,
         account_id: AccountId,
@@ -62,11 +63,7 @@ impl SqliteStore {
             .collect();
         let stored_maps = query_storage_maps(tx, account_id, Some(&changed_map_names))?;
 
-        let mut slot_patches: BTreeMap<StorageSlotName, StorageSlotPatch> = stored_slots
-            .iter()
-            .filter(|(slot_name, _)| storage.slots().iter().all(|slot| slot.name() != *slot_name))
-            .map(|(slot_name, (slot_type, _))| (slot_name.clone(), removal_patch(*slot_type)))
-            .collect();
+        let mut slot_patches = BTreeMap::new();
         for slot in storage.slots() {
             if stored_slots.get(slot.name()) == Some(&(slot.slot_type(), slot.value())) {
                 continue;
@@ -81,6 +78,27 @@ impl SqliteStore {
             };
             slot_patches.insert(slot.name().clone(), slot_patch);
         }
+
+        AccountStoragePatch::from_raw(slot_patches).map_err(StoreError::AccountPatchError)
+    }
+
+    /// Builds the patch that removes the stored slots of an account for which `is_kept` returns
+    /// `false`.
+    ///
+    /// The removals are kept apart from the patch of the new slots. Each patch can hold at most
+    /// [`AccountStorage::MAX_NUM_STORAGE_SLOTS`] slots, but the stored slots and the new slots
+    /// together can be more than that.
+    pub(crate) fn slot_removal_patch(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        is_kept: impl Fn(&StorageSlotName) -> bool,
+    ) -> Result<AccountStoragePatch, StoreError> {
+        let slot_patches: BTreeMap<StorageSlotName, StorageSlotPatch> =
+            query_storage_values(tx, account_id)?
+                .into_iter()
+                .filter(|(slot_name, _)| !is_kept(slot_name))
+                .map(|(slot_name, (slot_type, _))| (slot_name, removal_patch(slot_type)))
+                .collect();
 
         AccountStoragePatch::from_raw(slot_patches).map_err(StoreError::AccountPatchError)
     }

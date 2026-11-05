@@ -3835,6 +3835,35 @@ async fn update_account_state_changes_slot_types_and_undo_restores_them() -> any
     Ok(())
 }
 
+/// A full update that renames many slots succeeds, although the stored slots and the new slots
+/// together are more than the maximum number of slots in one storage patch.
+#[tokio::test]
+async fn update_account_state_renames_many_slots() -> anyhow::Result<()> {
+    const NUM_SLOTS: u32 = 200;
+    let store = create_test_store().await;
+
+    let slots = |prefix: &str| {
+        (0..NUM_SLOTS)
+            .map(|i| {
+                StorageSlot::with_value(
+                    slot_name(&format!("{prefix}{i}")),
+                    [Felt::from(i + 1), ZERO, ZERO, ZERO].into(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let initial = account_with_state(slots("old"), &[], 1)?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(slots("new"), &[], 2)?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+
+    Ok(())
+}
+
 /// A full update rebuilds a vault tree that holds an asset the account tables do not have.
 #[tokio::test]
 async fn update_account_state_repairs_drifted_vault_tree() -> anyhow::Result<()> {

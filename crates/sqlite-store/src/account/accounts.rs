@@ -468,6 +468,7 @@ impl SqliteStore {
             init_account_state,
             final_account_state,
             patch.storage(),
+            &AccountStoragePatch::default(),
             None,
             patch.vault(),
             None,
@@ -484,8 +485,9 @@ impl SqliteStore {
     /// `Some` while the new state is still undeployed. `full_assets` is the complete vault of
     /// `final_account_state` when the update carries it. The vault tree is then rebuilt from it
     /// instead of from `vault_patch`, so a tree that drifted from the account tables is repaired.
-    /// `full_storage` is the complete storage of `final_account_state` when the update carries
-    /// it. The map trees are then rebuilt from it instead of from `storage_patch`.
+    /// `removed_slots` removes stored slots that `storage_patch` does not name. `full_storage` is
+    /// the complete storage of `final_account_state` when the update carries it. The map trees are
+    /// then rebuilt from it instead of from `storage_patch`.
     #[allow(clippy::too_many_arguments)]
     fn apply_account_update(
         tx: &Transaction<'_>,
@@ -493,6 +495,7 @@ impl SqliteStore {
         init_account_state: &AccountHeader,
         final_account_state: &AccountHeader,
         storage_patch: &AccountStoragePatch,
+        removed_slots: &AccountStoragePatch,
         full_storage: Option<&AccountStorage>,
         vault_patch: &AccountVaultPatch,
         full_assets: Option<&[Asset]>,
@@ -566,6 +569,7 @@ impl SqliteStore {
                 );
             },
         }
+        forest_update.storage_patch(account_id, removed_slots);
         match full_storage {
             Some(storage) => forest_update.full_storage(account_id, storage.slots().iter()),
             None => forest_update.storage_patch(account_id, storage_patch),
@@ -581,14 +585,11 @@ impl SqliteStore {
         smt_forest.apply(revision, forest_update)?;
 
         // The patch writer reads the new map roots from the forest, so the storage rows are written
-        // after the forest update.
-        Self::write_storage_patch(
-            tx,
-            smt_forest,
-            account_id,
-            final_account_state.nonce().as_canonical_u64(),
-            storage_patch,
-        )?;
+        // after the forest update. The two patches name different slots, so their historical rows
+        // do not overwrite each other.
+        let nonce = final_account_state.nonce().as_canonical_u64();
+        Self::write_storage_patch(tx, smt_forest, account_id, nonce, removed_slots)?;
+        Self::write_storage_patch(tx, smt_forest, account_id, nonce, storage_patch)?;
         Self::verify_storage_commitment(tx, account_id, final_account_state.storage_commitment())?;
 
         Ok(())
@@ -961,6 +962,9 @@ impl SqliteStore {
         let vault_patch = Self::full_vault_patch(tx, account_id, &assets)?;
         let storage = new_account_state.storage();
         let storage_patch = Self::full_storage_patch(tx, account_id, storage)?;
+        let removed_slots = Self::slot_removal_patch(tx, account_id, |slot_name| {
+            storage.slots().iter().any(|slot| slot.name() == slot_name)
+        })?;
 
         Self::apply_account_update(
             tx,
@@ -968,6 +972,7 @@ impl SqliteStore {
             &old_header,
             &new_account_state.into(),
             &storage_patch,
+            &removed_slots,
             Some(storage),
             &vault_patch,
             Some(&assets),
@@ -1014,11 +1019,16 @@ impl SqliteStore {
             },
             VaultUpdate::Patch(vault_patch) => Cow::Borrowed(vault_patch),
         };
-        let storage_patch = match update.storage() {
-            StorageUpdate::Full(storage) => {
-                Cow::Owned(Self::full_storage_patch(tx, account_id, storage)?)
+        let (storage_patch, removed_slots) = match update.storage() {
+            StorageUpdate::Full(storage) => (
+                Cow::Owned(Self::full_storage_patch(tx, account_id, storage)?),
+                Self::slot_removal_patch(tx, account_id, |slot_name| {
+                    storage.slots().iter().any(|slot| slot.name() == slot_name)
+                })?,
+            ),
+            StorageUpdate::Patch(storage_patch) => {
+                (Cow::Borrowed(storage_patch), AccountStoragePatch::default())
             },
-            StorageUpdate::Patch(storage_patch) => Cow::Borrowed(storage_patch),
         };
 
         Self::apply_account_update(
@@ -1027,6 +1037,7 @@ impl SqliteStore {
             &init_header,
             new_header,
             &storage_patch,
+            &removed_slots,
             full_storage,
             &vault_patch,
             full_assets,

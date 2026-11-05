@@ -33,7 +33,7 @@ use crate::commands::keys::{ECDSA_SCHEME_NAME, FALCON_SCHEME_NAME, scheme_name};
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::packages::load_packages;
-use crate::utils::parse_ecdsa_public_key;
+use crate::utils::invalid_ecdsa_key;
 use crate::{CliKeyStore, client_binary_name};
 
 // CLI TYPES
@@ -86,7 +86,9 @@ struct AuthArgs {
 impl AuthArgs {
     fn choice(&self) -> Result<AuthChoice, CliError> {
         match (&self.ecdsa_k256_keccak, self.falcon512_poseidon2) {
-            (Some(Some(key)), false) => parse_ecdsa_public_key(key).map(AuthChoice::ExternalEcdsa),
+            (Some(Some(key)), false) => ecdsa_k256_keccak::PublicKey::from_hex(key)
+                .map(AuthChoice::ExternalEcdsa)
+                .map_err(invalid_ecdsa_key),
             (Some(None), false) => Ok(AuthChoice::Generate(AuthSchemeId::EcdsaK256Keccak)),
             (None, true) => Ok(AuthChoice::Generate(AuthSchemeId::Falcon512Poseidon2)),
             (None, false) => Ok(AuthChoice::Default),

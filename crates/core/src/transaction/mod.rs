@@ -20,11 +20,11 @@ pub use request::{
     PaymentNoteDescription,
     PswapTransactionData,
     RequestInputNote,
+    RequestScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
-    TransactionScriptTemplate,
     build_fpi_script,
     collect_assets,
 };

@@ -469,6 +469,7 @@ impl SqliteStore {
             final_account_state,
             patch.storage(),
             patch.vault(),
+            None,
             patch.code().as_code(),
             None,
         )
@@ -479,7 +480,9 @@ impl SqliteStore {
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
     /// `code` is the account code of `final_account_state`. It can be `None` only if the code
     /// commitment does not change. `new_seed` is stored on the new latest header row. It is only
-    /// `Some` while the new state is still undeployed.
+    /// `Some` while the new state is still undeployed. `full_assets` is the complete vault of
+    /// `final_account_state` when the update carries it. The vault tree is then rebuilt from it
+    /// instead of from `vault_patch`, so a tree that drifted from the account tables is repaired.
     #[allow(clippy::too_many_arguments)]
     fn apply_account_update(
         tx: &Transaction<'_>,
@@ -488,6 +491,7 @@ impl SqliteStore {
         final_account_state: &AccountHeader,
         storage_patch: &AccountStoragePatch,
         vault_patch: &AccountVaultPatch,
+        full_assets: Option<&[Asset]>,
         code: Option<&AccountCode>,
         new_seed: Option<Word>,
     ) -> Result<(), StoreError> {
@@ -544,7 +548,20 @@ impl SqliteStore {
         // Build one forest update covering the vault and the map slots, and apply it at a freshly
         // allocated revision.
         let mut forest_update = AccountUpdate::new();
-        forest_update.vault_patch(account_id, vault_patch, final_account_state.vault_root());
+        match full_assets {
+            Some(assets) => forest_update.full_vault(
+                account_id,
+                assets.iter().copied(),
+                final_account_state.vault_root(),
+            ),
+            None => {
+                forest_update.vault_patch(
+                    account_id,
+                    vault_patch,
+                    final_account_state.vault_root(),
+                );
+            },
+        }
         forest_update.storage_patch(account_id, storage_patch);
         // A map slot that becomes a value slot has no map patch, so its tree is cleared here.
         let stored_slots = query_storage_values(tx, account_id)?;
@@ -944,6 +961,7 @@ impl SqliteStore {
             &new_account_state.into(),
             &storage_patch,
             &vault_patch,
+            Some(&assets),
             Some(new_account_state.code()),
             new_seed,
         )
@@ -973,6 +991,10 @@ impl SqliteStore {
         // A part the update carries in full is turned into the patch that takes the stored state to
         // it. These patches are derived from the latest tables, so they are built before any row is
         // replaced.
+        let full_assets = match update.vault() {
+            VaultUpdate::Full(assets) => Some(assets.as_slice()),
+            VaultUpdate::Patch(_) => None,
+        };
         let vault_patch = match update.vault() {
             VaultUpdate::Full(assets) => {
                 Cow::Owned(Self::full_vault_patch(tx, account_id, assets)?)
@@ -993,6 +1015,7 @@ impl SqliteStore {
             new_header,
             &storage_patch,
             &vault_patch,
+            full_assets,
             Some(update.code()),
             None,
         )

@@ -107,6 +107,23 @@ impl AccountUpdate {
             .extend(patch.removed_asset_ids().map(|id| (id.hash().into(), EMPTY_WORD)));
     }
 
+    /// Records that an account's vault holds exactly `assets`, along with the vault root they must
+    /// produce.
+    ///
+    /// The vault tree is rebuilt from `assets`, so keys that are not in `assets` are removed even
+    /// if the account tables do not have them.
+    pub fn full_vault(
+        &mut self,
+        account_id: AccountId,
+        assets: impl Iterator<Item = Asset>,
+        expected_root: Word,
+    ) {
+        let vault = self.entry(vault_lineage_id(account_id));
+        vault.expect_root = Some(expected_root);
+        vault.exhaustive = true;
+        vault.pairs.extend(assets.map(|a| (a.id().hash().into(), a.to_value_word())));
+    }
+
     /// Records an account's storage patch.
     ///
     /// Map slots are layered onto their current tree for `Update` patches and replaced wholesale

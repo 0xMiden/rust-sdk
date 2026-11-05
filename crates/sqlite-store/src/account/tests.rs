@@ -3772,6 +3772,20 @@ async fn undo_account_states(
         .await
 }
 
+/// Applies `update` to the forest only, so the forest no longer matches the account tables.
+async fn desync_forest(store: &SqliteStore, update: AccountUpdate) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            let revision = allocate_forest_revision(&tx).into_store_error()?;
+            smt_forest.apply(revision, update)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
 async fn load_account(store: &SqliteStore, account_id: AccountId) -> anyhow::Result<Account> {
     Ok(store
         .get_account(account_id)
@@ -3817,6 +3831,34 @@ async fn update_account_state_changes_slot_types_and_undo_restores_them() -> any
     assert_eq!(load_account(&store, initial.id()).await?, initial);
     let metrics = get_storage_metrics(&store).await;
     assert_eq!(metrics.latest_storage_map_entries, 1, "only the old map has entries");
+
+    Ok(())
+}
+
+/// A full update rebuilds a vault tree that holds an asset the account tables do not have.
+#[tokio::test]
+async fn update_account_state_repairs_drifted_vault_tree() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let nf_faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?;
+    let asset: Asset = FungibleAsset::new(faucet_id, 100)?.into();
+    let stray: Asset = NonFungibleAsset::new(&NonFungibleAssetDetails::new(
+        nf_faucet_id,
+        NON_FUNGIBLE_ASSET_DATA.into(),
+    ))
+    .into();
+
+    let initial = account_with_state(vec![], &[asset], 1)?;
+    insert_native_account(&store, &initial).await?;
+
+    let mut drift = AccountUpdate::new();
+    drift.full_state(initial.id(), [asset, stray].into_iter(), core::iter::empty());
+    desync_forest(&store, drift).await?;
+
+    let updated = account_with_state(vec![], &[asset], 2)?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
 
     Ok(())
 }

@@ -11,7 +11,6 @@
 
 ### Enhancements
 
-* [cli] Removed the CLI's ECDSA public key parsing. The CLI uses `ecdsa_k256_keccak::PublicKey::from_hex` from `miden-crypto` instead ([#2783](https://github.com/0xMiden/rust-sdk/pull/2783)).
 * Added the standard note name, type, tag, storage and assets of each input and output note to the transaction summary. For an input note it also shows whether the note is authenticated. The summary loads the token map only when it shows notes or vault changes ([#2760](https://github.com/0xMiden/rust-sdk/pull/2760)).
 * `account --show`, `notes --show` and the transaction summary show non-fungible assets in a separate table with their faucet ID and asset ID. The fungible asset tables no longer have an asset type column. `tx --show` shows the asset ID of a non-fungible asset, and `account --list` and `account --show` label a non-fungible faucet as `Non-fungible faucet` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).

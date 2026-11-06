@@ -377,3 +377,243 @@ Section E's rows are the checklist items inside these PRs, not PRs of their own.
 | 7. test: harness cleanup | R-16, R-17 | ~1k lines, mostly deletions | Any time; independent. |
 
 Order: 1 → 3 → 2 → 4 (a then b) → 5 → 6; 7 whenever. P-3 and the deferred items (F1, X12, X7, X15, C16/C17) stay out.
+
+## G. Resume guide for the pending PRs (written 2026-11-05)
+
+Everything needed to pick up PR 2, 4a, 4b, 5 and 6 without re-reading sections A–F. Each
+checklist item names its finding code; the code's paragraph above has the file references
+(valid for `next` at 1bcdb1aee, 2026-10-06, re-locate with `git grep` on the identifiers).
+
+### Working rules for every PR
+- Branch from `origin/next`, rebase instead of merge. Commits `type(scope): description`.
+- Reshapes that move a public free fn onto its type keep the entry point and get a
+  `[BREAKING]` changelog entry (F4, F5, C7/K14, K9, R-12).
+- Keep: `Client::validate_request` + `OutputNoteSenderMismatch` hint, `Client::apply_state_sync`
+  (must cache the partial MMR like `apply_chain_updates`), `SyncSummary::new_empty/combine_with`,
+  `GrpcNoteTransportClient::health_check`, `ForeignAccount::storage_slot_requirements`.
+- Do not change the `OnNoteReceived` trait (K1), the shape of `SyncedNote::new` / `NoteInfo`
+  without a changelog entry (F8/F1), or make `StateSync` depend on the store (K2).
+- web-sdk implements `Store` and calls the pswap/swap ctors: any change to `Store` or to
+  those ctors needs a web-sdk follow-up (C-1, R-8, X12).
+- Verify: `make lint` (clippy on stable, typos, taplo), `make test`, `make test-docs`.
+  Mock-chain tests in `crates/testing/miden-client-tests` are package
+  `miden-client-unit-tests`; run them one at a time. Unit tests under `sync/` need
+  `--features "std dap testing"`. Run `make format` last.
+- No changelog entry for test_utils / integration-tests / bench changes; describe them in the
+  PR body instead.
+
+### PR 2. fix: close correctness gaps (C-1, C-2, C-3, C-4)
+Order inside the PR: C-2 → C-3 → C-4 → C-1 (C-1 carries the web-sdk follow-up).
+
+C-1 settled-note tag removal (A.3, K5/Q15), rust-client + sqlite-store:
+- [ ] Decide the predicate: sqlite `sync.rs` removes tags for `!is_inclusion_pending()`,
+      web-sdk idxdb `sync/mod.rs` for `is_committed()`. Pick one and write it down in the PR.
+- [ ] Add `InputNoteRecord::tag_record() -> Option<NoteTagRecord>` that honours
+      `ExpectedNoteState.tag`; replace the `TryInto<NoteTagRecord> for &InputNoteRecord` in
+      `note/tag.rs` and the special case in `import.rs` plus the four sites that rebuild the
+      record by hand.
+- [ ] Add `tags_to_remove()` on the note update tracker; sqlite's `apply_state_sync` and the
+      idxdb store call it instead of filtering records themselves.
+- [ ] web-sdk follow-up PR: adopt the two helpers in the idxdb store.
+
+C-2 invariant gaps, rust-client:
+- [ ] A.6: extend `TransactionRequest::validate()` so every SendNotes partial has its recipient
+      in `expected_output_recipients`; today a deserialized request panics in
+      `get_outgoing_assets` / `validate_output_note_senders` / the web-sdk wrapper. No wire
+      format change. Add a deserialization test with a missing recipient.
+- [ ] A.10 + K7: one `mark_externally_consumed` with the sync-height guard; `import.rs`
+      (import by proof) currently marks `ConsumedExternal` without the guard that
+      `mark_externally_consumed` (#2453) has.
+- [ ] K11: `FilesystemKeyStore::get_key_sync` must check that the file-name commitment matches
+      the loaded key; `list_keys` / `associate_key` already do, `get_signature` /
+      `get_public_key` do not.
+- [ ] K13: `DataStoreCache::account_state_at() -> Result`; delete the dead `ChainTip` fallback
+      that contradicts its own comment and the later `expect`.
+- [ ] A.9: derive `PartialEq` (and keep derived `Ord`) on `rpc::domain::nullifier::NullifierUpdate`;
+      drop the manual nullifier-only `PartialEq`.
+- [ ] Changelog entries for the validate() hardening and the keystore check.
+
+C-3 CLI, miden-cli + rust-client:
+- [ ] A.4 / C6: the bech32 codec in `codecs/mod.rs` takes `network_id` and rejects foreign
+      networks, so `keys --associate/--disassociate` and typed `call` account-id args behave
+      like every other path. Config is in scope at both construction points.
+- [ ] A.7 / C8: expose `FaucetMetadata::from_token_config` from the library (it enforces
+      `MAX_DECIMALS`); the CLI stops hand-destructuring the token config in `account.rs`.
+- [ ] C8 / C17: give the faucet resolver a tracked-faucet source so `account --show`'s vault
+      table uses the same `format_asset` and miss fallback (bech32, not prefix hex).
+- [ ] CLI test for a foreign-network id on `keys --associate`.
+
+C-4 harness, test_utils + integration-tests (no changelog):
+- [ ] A.5: replace `std::thread::sleep` inside async fns (`test_utils/common.rs`,
+      `test_utils/client.rs`) with `tokio::time::sleep`.
+- [ ] T2: add `TestClient::wait_until(max_blocks, pred)` and migrate the ~10 ad-hoc loops;
+      delete the two-client `wait_for_committed_note`; remove `wait_for_blocks(1)` +
+      `sync_state` double syncs; `assert!` inside `Result` fns becomes `Err`.
+- [ ] Check first what #2683 already did to `wait_for_consumable_notes` (returns the notes,
+      fails on timeout) and to the sync calls, so this does not redo it.
+
+### PR 4a. refactor(sync): type-centric cleanup of sync and store rules (R-2, R-3, R-4, R-8)
+Order: R-8 → R-2 → R-3 → R-4 (R-4 is the risky one, keep it last and reviewable on its own
+commit). Pair R-8 with C-1 if PR 2 has not landed, so web-sdk adopts once.
+
+R-8 rust-client owns store-side rules:
+- [ ] Q7: `TransactionStoreUpdate::to_transaction_record(created_at)`; sqlite
+      `apply_transaction_in_txn` and idxdb stop building `TransactionRecord` field by field.
+- [ ] Q8: `TransactionFilterQuery::apply(&mut Vec<TransactionRecord>)`; sqlite
+      `get_transactions` applies it instead of matching `TransactionFilter::Query` after the
+      query. The ordering contract stays documented on the rust-client type.
+- [ ] Q9: `COMMITTED_STATES` / `CONSUMED_STATES` / … consts next to `UNSPENT_STATES`; stores
+      stop inlining discriminant sets.
+- [ ] K9: `Store::get_protocol_config` default method replaces `load_protocol_config(&dyn Store, ..)`;
+      the settings key fn stays `pub` because sqlite writes it inside its sync transaction.
+
+R-2 note record owns committed-note transitions:
+- [ ] K4: `InputNoteRecord::committed_note_received(proof, metadata, attachments, header)`;
+      use it from the tracker and from `import.rs`; `expected_note_matching` returns `&mut` so
+      the tracker's `expect` goes away.
+- [ ] K1: `InputNoteRecord::is_committed_as(&NoteId)` replaces the four
+      `NoteId::new(commitment, metadata) == id` sites; delete the redundant `Expected` scan in
+      the screener (every metadata-less Expected is Unspent, so it is already in the tracker).
+- [ ] K6: import-by-details matches notes to requests once, not in both `import.rs` sites.
+- [ ] HARD CONSTRAINT: keep the screener-before-tracker order in sync. The screener's `Unique`
+      lookup is what stops consumed or invalid records from being re-inserted as Committed.
+      Do not ask the tracker first.
+
+R-3 one way to track a block in the partial MMR:
+- [ ] K3: `track_block(partial_mmr, header, proof)` built on `MmrProof::with_forest` (trims
+      identically, returns an error instead of panicking; node indices come from the `nodes()`
+      diff).
+- [ ] Delete `adjust_merkle_path_for_forest` (panicking `expect`), `track_block_in_mmr`,
+      `authenticated_block_nodes`, `fetch_block_header`. Callers to migrate: `transaction/mod.rs`,
+      `batch/mod.rs`, `data_store/mod.rs`.
+- [ ] Changelog: the panic on an inconsistent forest becomes an error.
+
+R-4 account sync context:
+- [ ] K2: `SyncTarget { block_from, chain_tip_header }` inside `StateSync`; the proof-pinning
+      check lives once on it (today copied in `sync/mod.rs`, `state_sync.rs` ×2).
+- [ ] K2: `StateSyncInput` carries `Vec<(AccountId, has_stored_witness)>`; delete the post-hoc
+      dedupe against `AccountUpdateTracker::with_account_witnesses` on `Client`. `StateSync`
+      stays store-free.
+- [ ] K12: build the execution-chain grouping once per sync and share it between
+      `derive_account_commitments` and `compute_ordered_nullifiers`.
+- [ ] Mind PR #2660 (`AccountUpdateTracker`, same-nonce race fix) which touches
+      `state_sync.rs` and `state_sync_update.rs`: rebase on it or wait for it.
+
+### PR 4b. refactor(transaction, rpc): type-centric cleanup (R-5, R-6, R-7, R-10, R-11, R-12)
+Order: R-5 → R-6 → R-7 (same file, `transaction/mod.rs`), then R-10 → R-11 → R-12.
+
+R-5 request owns input-note classification:
+- [ ] X4 + X10: `TransactionRequest::build_input_notes(stored_records)` owns the
+      consumed/processing/authenticated classification; the current free fn has one caller that
+      pre-filters, so its checks are unreachable and its `expect`s depend on the caller.
+- [ ] `TransactionRequest::authenticated_note_blocks()` replaces the pinned-vs-inferred
+      re-derivation in `chain_anchor_for_request`; `explicit_input_notes` becomes private again.
+- [ ] X8: `TransactionRequest::outgoing_assets()` over the SendNotes partials;
+      `get_outgoing_assets` merged a set with itself (identical ids and assets, verified on
+      protocol 0.17.0). Removes an `expect`.
+
+R-6 shared execution tail:
+- [ ] X2: `Client::execute_prepared<STORE>(..)` + `PreparedTransaction::register_on`; used by
+      `execute_transaction_with_mode` and `execute_transaction_for_batch` (#2629 had to edit
+      both). `InMemoryBatchDataStore` gets an `inner()` accessor. No borrow obstacle.
+- [ ] X11: `Client::ensure_account_allowed(id)` replaces `ensure_account_allowed(id, Result<bool>)`
+      plus the 3-line gate copied in both submit paths.
+- [ ] X16: one `notify_transaction_observers`; the two loops have diverged, diff them first.
+- [ ] X15 optional: share the partial-blockchain assembly between `chain_anchor_at_tip` and
+      `BatchBuilder::submit` (`lower_refs` is always empty in practice).
+
+R-7 fee auth classified once:
+- [ ] X3: `FeeAuth::of` once per prepare; `TransactionRequest::attach_fee_conversion_info(&FeeAuth, ..)`
+      replaces the three free fns over the request.
+- [ ] Move (do not delete) `validate_fee_conversion_info_support`: `validate_request` needs it
+      for the deserialized-only path. Drop the duplicated `Ignored` arm.
+
+R-10 rpc free functions onto their types (all `[BREAKING]` where the fn was public):
+- [ ] F5: `attestation_commitment` (5 args, sole caller passes its own fields) and
+      `seal_transaction_inputs(rng, &key, ..)` become methods on the key types.
+- [ ] F4: `parse_node_error` / `parse_status_error` become associated fns on `EndpointError`
+      (keep both matches, two different inputs).
+- [ ] F7: `AccountStateAt::block_num() -> Option<BlockNumber>` + `From<Option<BlockNumber>>`;
+      replaces the matches in `tonic_client`, `verifying_client`, `transaction/mod.rs` and the
+      inverse `map_or` in `data_store`.
+- [ ] F2: `BlockPagination::block_range()` (5 inline copies) and `advance_page(Option<PaginationInfo>)`
+      for the 3 paging loops.
+- [ ] F8: `NoteContentFetch::requests()` and the attachments fallback move out of the
+      `sync_notes_with_content` default method onto their types.
+- [ ] F3: `AccountDetails::into_domain(self, &GetAccountRequest)`; `get_account` stops building a
+      0/1-entry BTreeMap and cloning `StorageMapFetch`.
+- [ ] F14 optional: storage-map cross-page merge on the patch type, as the vault already does
+      with `AccountVaultPatch::merge`.
+
+R-11 one `ApiClient`:
+- [ ] F11: `type Service` per cfg target (pattern in `note_transport/grpc.rs`) and a
+      `ConnectConfig` for the forwarded fields; delete the duplicated struct.
+
+R-12 id-prefix lookups:
+- [ ] C7 + K14: generic prefix helper and `Client::get_input_note_by_id_prefix` /
+      `get_account_by_id_prefix` / `get_transaction_by_id_prefix` (names to settle); delete the
+      three CLI copies in `lib.rs` and the public free fn `get_input_note_with_id_prefix`.
+      `[BREAKING]`. `ensure_not_processing` becomes private.
+- [ ] Upstream candidates, not for this PR: `validate_account_witness(..)` (#2476),
+      `block_num_from_forest(&PartialMmr)` (#2453), `TryFrom<&NoteAttachment> for
+      PswapNoteAttachment` from miden-standards replacing `extract_pswap_attachment`.
+
+### PR 5. refactor(store): sqlite account writer context (R-9)
+- [ ] Q1: `AccountStateWriter<'a>` owning `(tx, account_id, nonce, ..)`; the archive-then-write
+      sequence exists 3× with different key arity, so keep per-table statement sets inside the
+      writer. Expect ~500 lines in `crates/sqlite-store/src/account/`.
+- [ ] Q14: `apply_account_patch` calls `apply_forest_update` instead of inlining allocate+apply.
+- [ ] Q11: delete the dead `has_client_notes` bool; one upsert statement for headers.
+- [ ] Q10: deduplicate the serializer fields.
+- [ ] Rebase note: #2770 (PR 1) and #2729 (one-snapshot `get_account`) already changed the
+      account read path in this directory; diff against them before starting.
+- [ ] Out of scope: P-3 / A.8 (diff-based `PublicAccountUpdate::Full` writes). Needs a design
+      note first; a store-local diff feeding the patch writers, not via `AccountPatch::new`
+      (rejects nonce 0).
+
+### PR 6. refactor(cli): type-centric cleanup (R-13, R-14, R-15)
+Needs R-12 from PR 4b. Order: R-13 → R-14 → R-15.
+
+R-13 command context built once:
+- [ ] C1: `CliContext { client, config, network_id, faucets }` built in `Cli::execute`; root
+      cause is `from_config` consuming a non-`Clone` config. The three legitimate extra
+      `CliConfig::load()` sites are the root, `network_note_status` and the public `CliClient::new`.
+- [ ] C1: the address resolver stores `network_id`; `client` stays a parameter.
+- [ ] C21: the four address fns share `(client, account_id, network_id)`; map the error instead
+      of the `expect`.
+- [ ] C11: `RpcConfig::grpc_client()`; today 5 constructions, one with a 6 MiB message limit and
+      four with the 4 MiB default. Library candidate `Client::get_account_or_fetch` removes the
+      two fallbacks.
+- [ ] C19: one accessor pair for the default account setting (raw in 4 files, 8 sites).
+
+R-14 `StoredNote` and small command cleanups:
+- [ ] C3: `enum StoredNote { Input(..), Output(..) }` + one `find_by_id_prefix`; keep the
+      same-prefix-two-notes check; removes 5 `expect` + 3 `panic!` from `show_note`; `send`
+      uses the same lookup.
+- [ ] C12: import does not re-read the account code it just wrote. C13: `export_note` does not
+      re-fetch + expect. C14: `--list consumable` keeps the classified value instead of
+      `try_into().expect`. C15: `Network` → `Endpoint` without the String round trip; one
+      note-transport-per-network match in `init`. C22/C23: `CallTarget::run`, `InfoCmd::execute`.
+
+R-15 shared args, package loading, dispatch:
+- [ ] C4: `SubmitArgs` (flattened) replaces the 5-param `execute_transaction` free fn at 7 call
+      sites and the `force` / `delegate_proving` fields declared on 7 structs.
+- [ ] DECISION: `-f` exists only on `consume-notes`. Either add it everywhere through
+      `SubmitArgs` or drop it; changelog either way.
+- [ ] C5: `AccountCreationArgs` (flattened) replaces the 7-param `create_client_account`.
+- [ ] C9: split `load_packages` into resolution and reading; remove the `&CliConfig::default()`
+      sentinel and the two `slice::from_ref(..).pop().expect`.
+- [ ] C10: one `match` in `Cli::execute`; clap 4.6.7 supports `#[command(flatten)]` on
+      subcommand variants, so the dead "already handled" arm goes.
+- [ ] Not in this PR (library additions, decide separately): C16 `StandardTransactionScript::from_root`,
+      `TransactionDetails::expiration_block() -> Option`, `input_note_nullifiers: Vec<Nullifier>`;
+      C17 `Address::for_account`; C18 shared key-length classifier.
+
+### Deferred, needs a decision before any PR
+- F1: note transport decodes, re-encodes and re-decodes each fetched note with two commitment
+  checks. The redundant copy is the grpc-side `Verify` / `FetchedNoteMismatch`; `rejoin_note`'s
+  client-side check is reserved for e2ee. Decide the e2ee direction first.
+- X12: zero-asset rule into `SwapTransactionData::new` / `PswapTransactionData::new` only;
+  the ctors would return `Result`, which breaks web-sdk callers.
+- X7: `fetch_public_account_inputs` / `local_account_inputs` take `(store, rpc_api)`; home is a
+  small `{ store, rpc_api }` struct, not `ClientDataStore`.

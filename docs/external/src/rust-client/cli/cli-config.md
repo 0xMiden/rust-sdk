@@ -189,7 +189,7 @@ miden-client init --block-delta 256
 
 A `note_transport` section is used to configure the connection to the Miden Note Transport node used in the exchange of private notes. It contains the following fields:
 - `endpoint`: The endpoint of the Miden Note Transport node;
-- `timeout_ms`: The timeout employed in client requests to the node.
+- `timeout_ms`: The timeout employed in client requests to the node, in milliseconds. Optional, defaults to `10000`.
 
 > [!Note]
 > - Running the node locally for development is encouraged.

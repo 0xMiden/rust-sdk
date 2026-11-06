@@ -11,7 +11,9 @@ pub(crate) mod data_store;
 
 pub use miden_client_core::errors::{NoteRecordError, StoreError};
 pub use miden_client_core::store::{
+    AccountStateUpdate,
     AccountStatus,
+    AccountUpdates,
     BlockRelevance,
     InputNoteRecord,
     InputNoteState,
@@ -19,10 +21,10 @@ pub use miden_client_core::store::{
     NoteFilter,
     OutputNoteRecord,
     OutputNoteState,
+    StorageUpdate,
     Store,
     TransactionFilter,
     TransactionFilterQuery,
+    VaultUpdate,
     input_note_states,
 };
-
-pub use crate::sync::PublicAccountUpdate;

@@ -14,6 +14,7 @@ use miden_client::account::{
     AccountHeader,
     AccountId,
     AccountPatch,
+    AccountStorage,
     AccountStoragePatch,
     AccountType,
     AccountVaultPatch,
@@ -27,14 +28,27 @@ use miden_client::account::{
 };
 use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
-use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
+use miden_client::asset::{
+    Asset,
+    AssetVault,
+    FungibleAsset,
+    NonFungibleAsset,
+    NonFungibleAssetDetails,
+};
 use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
 use miden_client::block::AccountWitness;
 use miden_client::note::NoteTag;
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_client_core::errors::StoreError;
-use miden_client_core::store::{AccountUpdate, ClientAccountType, Store};
+use miden_client_core::store::{
+    AccountStateUpdate,
+    AccountUpdate,
+    ClientAccountType,
+    StorageUpdate,
+    Store,
+    VaultUpdate,
+};
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 use miden_protocol::account::{
     AccountComponentMetadata,
@@ -481,6 +495,174 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
     assert!(read_slot_value(&store, account_id, &value_slot_name).await?.is_none());
     assert!(read_slot_value(&store, account_id, &map_slot_name).await?.is_none());
 
+    Ok(())
+}
+
+/// A sync update with a full vault replaces the vault: assets missing from the list are removed and
+/// the listed ones are inserted.
+#[tokio::test]
+async fn apply_sync_account_update_replaces_vault() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let fungible_faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let non_fungible: Asset = NonFungibleAsset::new(&NonFungibleAssetDetails::new(
+        AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?,
+        NON_FUNGIBLE_ASSET_DATA.into(),
+    ))
+    .into();
+    let initial_assets: Vec<Asset> =
+        vec![FungibleAsset::new(fungible_faucet, 100)?.into(), non_fungible];
+
+    let account = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .with_assets(initial_assets)
+        .build_existing()?;
+    let account_id = account.id();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    // The on-chain state changed the fungible amount and removed the non-fungible asset.
+    let mut vault_patch = AccountVaultPatch::default();
+    vault_patch.insert_asset(FungibleAsset::new(fungible_faucet, 250)?.into());
+    vault_patch.remove_asset(non_fungible.id());
+    let state_patch = AccountPatch::new(
+        account_id,
+        AccountStoragePatch::default(),
+        vault_patch,
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
+    let mut account_after = account.clone();
+    account_after.apply_patch(&state_patch)?;
+
+    // The vault arrives as the complete asset list and there are no storage changes.
+    let update = AccountStateUpdate::new(
+        (&account_after).into(),
+        StorageUpdate::Patch {
+            header: account_after.storage().to_header(),
+            patch: AccountStoragePatch::default(),
+        },
+        VaultUpdate::Full(account_after.vault().assets().collect()),
+        account_after.code().clone(),
+    );
+
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+
+            SqliteStore::apply_sync_account_update(&tx, &mut smt_forest, &update)?;
+
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let updated_account: Account = store
+        .get_account(account_id)
+        .await?
+        .context("failed to find inserted account")?
+        .try_into()?;
+
+    assert_eq!(updated_account, account_after);
+    Ok(())
+}
+
+/// A sync update with a full storage replaces every slot: the value slot and the map entries take
+/// the provided state.
+#[tokio::test]
+async fn apply_sync_account_update_replaces_storage() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+
+    let value_slot_name =
+        StorageSlotName::new("miden::testing::sqlite_store::value").expect("valid slot name");
+    let map_slot_name =
+        StorageSlotName::new("miden::testing::sqlite_store::map").expect("valid slot name");
+
+    let mut map = StorageMap::new();
+    map.insert(StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into()), [ONE, ONE, ONE, ONE].into())?;
+    let dummy_component = AccountComponent::new(
+        BasicWallet::code().as_package().clone(),
+        vec![
+            StorageSlot::with_value(value_slot_name.clone(), [ZERO, ZERO, ZERO, ONE].into()),
+            StorageSlot::with_map(map_slot_name.clone(), map),
+        ],
+        AccountComponentMetadata::new("miden::testing::dummy_component"),
+    )?;
+    let account = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(dummy_component)
+        .build_existing()?;
+    let account_id = account.id();
+    store
+        .insert_account(&account, Address::new(account_id), ClientAccountType::Native)
+        .await?;
+
+    // The on-chain state changed the value slot and the map entry.
+    let mut map_entries = StorageMapPatchEntries::new();
+    map_entries
+        .insert(StorageMapKey::new([ONE, ZERO, ZERO, ZERO].into()), [ONE, ONE, ONE, ZERO].into());
+    let storage_patch = AccountStoragePatch::from_entries([
+        (
+            value_slot_name,
+            StorageSlotPatch::Value(StorageValuePatch::Update {
+                value: [ONE, ZERO, ZERO, ZERO].into(),
+            }),
+        ),
+        (
+            map_slot_name,
+            StorageSlotPatch::Map(StorageMapPatch::Update { entries: map_entries }),
+        ),
+    ])?;
+    let state_patch = AccountPatch::new(
+        account_id,
+        storage_patch,
+        AccountVaultPatch::default(),
+        AccountCodePatch::default(),
+        Some(Felt::from(2u32)),
+    )?;
+    let mut account_after = account.clone();
+    account_after.apply_patch(&state_patch)?;
+
+    // The storage arrives complete and there are no vault changes.
+    let update = AccountStateUpdate::new(
+        (&account_after).into(),
+        StorageUpdate::Full(account_after.storage().clone()),
+        VaultUpdate::Patch(AccountVaultPatch::default()),
+        account_after.code().clone(),
+    );
+
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+
+            SqliteStore::apply_sync_account_update(&tx, &mut smt_forest, &update)?;
+
+            drop(smt_forest);
+            tx.commit().into_store_error()?;
+            Ok(())
+        })
+        .await?;
+
+    let updated_account: Account = store
+        .get_account(account_id)
+        .await?
+        .context("failed to find inserted account")?
+        .try_into()?;
+
+    assert_eq!(updated_account, account_after);
     Ok(())
 }
 
@@ -3407,7 +3589,7 @@ async fn apply_account_patch_rejects_code_not_matching_final_header() -> anyhow:
 
     let result = apply_patch_in_store(&store, (&account).into(), final_header, patch).await;
     assert!(
-        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("patch code commitment")),
+        matches!(&result, Err(StoreError::DatabaseError(msg)) if msg.contains("does not match the final code commitment")),
         "unexpected result: {result:?}"
     );
 
@@ -3515,6 +3697,306 @@ async fn undo_code_upgrade_restores_previous_code() -> anyhow::Result<()> {
         .try_into()?;
     assert_eq!(stored, account);
     assert_eq!(stored.code(), account.code());
+
+    Ok(())
+}
+
+// FULL ACCOUNT UPDATES
+// ================================================================================================
+
+/// Returns a wallet account with the slots of `slots`, the assets of `assets` and `nonce`.
+fn account_with_state(
+    slots: Vec<StorageSlot>,
+    assets: &[Asset],
+    nonce: u32,
+) -> anyhow::Result<Account> {
+    let base = AccountBuilder::new([0; 32])
+        .account_type(AccountType::Private)
+        .with_component(AuthSingleSig::new(Approver::new(
+            PublicKeyCommitment::from(EMPTY_WORD),
+            AuthSchemeId::Falcon512Poseidon2,
+        )))
+        .with_component(BasicWallet)
+        .build_existing()?;
+    Ok(Account::new(
+        base.id(),
+        AssetVault::new(assets)?,
+        AccountStorage::new(slots)?,
+        base.code().clone(),
+        Felt::from(nonce),
+        None,
+    )?)
+}
+
+fn slot_name(name: &str) -> StorageSlotName {
+    StorageSlotName::new(format!("miden::testing::sqlite_store::{name}")).expect("valid slot name")
+}
+
+fn map_with_entry(key: u32, value: u32) -> anyhow::Result<StorageMap> {
+    let mut map = StorageMap::new();
+    map.insert(
+        StorageMapKey::new([Felt::from(key), ZERO, ZERO, ZERO].into()),
+        [Felt::from(value), ZERO, ZERO, ZERO].into(),
+    )?;
+    Ok(map)
+}
+
+async fn insert_native_account(store: &SqliteStore, account: &Account) -> anyhow::Result<()> {
+    store
+        .insert_account(account, Address::new(account.id()), ClientAccountType::Native)
+        .await?;
+    Ok(())
+}
+
+async fn update_account_state(store: &SqliteStore, account: Account) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::update_account_state(&tx, &mut smt_forest, &account)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
+async fn undo_account_states(
+    store: &SqliteStore,
+    discarded_states: Vec<(AccountId, Word)>,
+) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::undo_account_state(&tx, &mut smt_forest, &discarded_states)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
+/// Applies `update` to the forest only, so the forest no longer matches the account tables.
+async fn desync_forest(store: &SqliteStore, update: AccountUpdate) -> Result<(), StoreError> {
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            let revision = allocate_forest_revision(&tx).into_store_error()?;
+            smt_forest.apply(revision, update)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await
+}
+
+async fn load_account(store: &SqliteStore, account_id: AccountId) -> anyhow::Result<Account> {
+    Ok(store
+        .get_account(account_id)
+        .await?
+        .context("failed to find the account")?
+        .try_into()?)
+}
+
+/// A full update that changes the type of slots removes the old map entries, and undo restores the
+/// old slots with their old types.
+#[tokio::test]
+async fn update_account_state_changes_slot_types_and_undo_restores_them() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let becomes_map = slot_name("becomes_map");
+    let becomes_value = slot_name("becomes_value");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_value(becomes_map.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+            StorageSlot::with_map(becomes_value.clone(), map_with_entry(1, 10)?),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(
+        vec![
+            StorageSlot::with_map(becomes_map, map_with_entry(2, 20)?),
+            StorageSlot::with_value(becomes_value, [ONE, ONE, ZERO, ZERO].into()),
+        ],
+        &[],
+        2,
+    )?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 1, "only the new map has entries");
+
+    undo_account_states(&store, vec![(updated.id(), updated.to_commitment())]).await?;
+
+    assert_eq!(load_account(&store, initial.id()).await?, initial);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 1, "only the old map has entries");
+
+    Ok(())
+}
+
+/// A sync storage patch removes the local slots that the new storage header does not list.
+#[tokio::test]
+async fn apply_sync_account_update_patch_removes_unlisted_slots() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let kept = slot_name("kept");
+    let dropped_value = slot_name("dropped_value");
+    let dropped_map = slot_name("dropped_map");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_value(kept.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+            StorageSlot::with_value(dropped_value, [ONE, ONE, ZERO, ZERO].into()),
+            StorageSlot::with_map(dropped_map, map_with_entry(1, 10)?),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(
+        vec![StorageSlot::with_value(kept, [ONE, ZERO, ZERO, ZERO].into())],
+        &[],
+        2,
+    )?;
+    let update = AccountStateUpdate::new(
+        (&updated).into(),
+        StorageUpdate::Patch {
+            header: updated.storage().to_header(),
+            patch: AccountStoragePatch::default(),
+        },
+        VaultUpdate::Patch(AccountVaultPatch::default()),
+        updated.code().clone(),
+    );
+    store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let mut smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            SqliteStore::apply_sync_account_update(&tx, &mut smt_forest, &update)?;
+            drop(smt_forest);
+            tx.commit().into_store_error()
+        })
+        .await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let metrics = get_storage_metrics(&store).await;
+    assert_eq!(metrics.latest_storage_map_entries, 0);
+
+    Ok(())
+}
+
+/// A full update that renames many slots succeeds, although the stored slots and the new slots
+/// together are more than the maximum number of slots in one storage patch.
+#[tokio::test]
+async fn update_account_state_renames_many_slots() -> anyhow::Result<()> {
+    const NUM_SLOTS: u32 = 200;
+    let store = create_test_store().await;
+
+    let slots = |prefix: &str| {
+        (0..NUM_SLOTS)
+            .map(|i| {
+                StorageSlot::with_value(
+                    slot_name(&format!("{prefix}{i}")),
+                    [Felt::from(i + 1), ZERO, ZERO, ZERO].into(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let initial = account_with_state(slots("old"), &[], 1)?;
+    insert_native_account(&store, &initial).await?;
+
+    let updated = account_with_state(slots("new"), &[], 2)?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+
+    Ok(())
+}
+
+/// A full update rebuilds a vault tree that holds an asset the account tables do not have.
+#[tokio::test]
+async fn update_account_state_repairs_drifted_vault_tree() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let nf_faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET)?;
+    let asset: Asset = FungibleAsset::new(faucet_id, 100)?.into();
+    let stray: Asset = NonFungibleAsset::new(&NonFungibleAssetDetails::new(
+        nf_faucet_id,
+        NON_FUNGIBLE_ASSET_DATA.into(),
+    ))
+    .into();
+
+    let initial = account_with_state(vec![], &[asset], 1)?;
+    insert_native_account(&store, &initial).await?;
+
+    let mut drift = AccountUpdate::new();
+    drift.full_state(initial.id(), [asset, stray].into_iter(), core::iter::empty());
+    desync_forest(&store, drift).await?;
+
+    let updated = account_with_state(vec![], &[asset], 2)?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+
+    Ok(())
+}
+
+/// A full update rebuilds a map tree that holds an entry the account tables do not have.
+#[tokio::test]
+async fn update_account_state_repairs_drifted_map_tree() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot = slot_name("map");
+    let value_slot = slot_name("value");
+
+    let initial = account_with_state(
+        vec![
+            StorageSlot::with_map(map_slot.clone(), map_with_entry(1, 10)?),
+            StorageSlot::with_value(value_slot.clone(), [ONE, ZERO, ZERO, ZERO].into()),
+        ],
+        &[],
+        1,
+    )?;
+    insert_native_account(&store, &initial).await?;
+
+    let mut drift_entries = StorageMapPatchEntries::new();
+    drift_entries.insert(
+        StorageMapKey::new([Felt::from(2u32), ZERO, ZERO, ZERO].into()),
+        [ONE, ZERO, ZERO, ZERO].into(),
+    );
+    let drift_patch = AccountStoragePatch::from_entries([(
+        map_slot.clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries: drift_entries }),
+    )])?;
+    let mut drift = AccountUpdate::new();
+    drift.storage_patch(initial.id(), &drift_patch);
+    desync_forest(&store, drift).await?;
+
+    // The map does not change, so the account tables keep its rows. Only the forest repair makes
+    // the map tree match them again.
+    let updated = account_with_state(
+        vec![
+            StorageSlot::with_map(map_slot.clone(), map_with_entry(1, 10)?),
+            StorageSlot::with_value(value_slot, [ONE, ONE, ZERO, ZERO].into()),
+        ],
+        &[],
+        2,
+    )?;
+    update_account_state(&store, updated.clone()).await?;
+
+    assert_eq!(load_account(&store, updated.id()).await?, updated);
+    let account_id = updated.id();
+    let forest_map_root = store
+        .interact_with_connection(move |conn| {
+            let tx = conn.transaction().into_store_error()?;
+            let smt_forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
+            Ok(smt_forest.map_root(account_id, &map_slot))
+        })
+        .await?;
+    assert_eq!(forest_map_root, Some(map_with_entry(1, 10)?.root()));
 
     Ok(())
 }

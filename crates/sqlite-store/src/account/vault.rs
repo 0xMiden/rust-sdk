@@ -1,13 +1,15 @@
 //! Vault/asset-related database operations for accounts.
 
+use std::collections::BTreeMap;
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
 use miden_protocol::account::{AccountHeader, AccountId, AccountVaultPatch};
-use miden_protocol::asset::{Asset, AssetId};
+use miden_protocol::asset::{Asset, AssetId, AssetIdHash};
 use miden_protocol::utils::serde::Serializable;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::account::rows::query_vault_assets;
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, blob_array, insert_sql, subst, u64_to_value};
 
@@ -44,12 +46,39 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Builds the vault patch that takes the stored vault of an account to `assets`.
+    ///
+    /// The patch holds only the assets that change. Stored assets that `assets` does not have are
+    /// marked as removed.
+    pub(crate) fn full_vault_patch(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+        assets: &[Asset],
+    ) -> Result<AccountVaultPatch, StoreError> {
+        let mut stored_assets: BTreeMap<AssetIdHash, Asset> = query_vault_assets(tx, account_id)?
+            .into_iter()
+            .map(|asset| (asset.id().hash(), asset))
+            .collect();
+        let mut vault_patch = AccountVaultPatch::default();
+        for asset in assets {
+            match stored_assets.remove(&asset.id().hash()) {
+                Some(stored) if stored.to_value_word() == asset.to_value_word() => {},
+                _ => vault_patch.insert_asset(*asset),
+            }
+        }
+        for stored_asset in stored_assets.into_values() {
+            vault_patch.remove_asset(stored_asset.id());
+        }
+
+        Ok(vault_patch)
+    }
+
     /// Persists vault patch changes to the asset tables, updating fungible and non-fungible assets.
     /// It archives the old value of every changed entry to the historical table, writes the updated
     /// assets to the latest table, and deletes the removed assets from it.
     ///
     /// The corresponding forest update (and the verification that the resulting vault root matches
-    /// the final header) happens in `apply_account_patch`, which applies all of an account's tree
+    /// the final header) happens in `apply_account_update`, which applies all of an account's tree
     /// changes in one batch.
     pub(crate) fn apply_account_vault_patch(
         tx: &Transaction<'_>,

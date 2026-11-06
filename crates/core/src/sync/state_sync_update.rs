@@ -1,16 +1,15 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use miden_protocol::account::{Account, AccountHeader, AccountId, AccountPatch};
-use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::Nullifier;
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionHeader, TransactionId};
-use miden_protocol::{Felt, Word};
 
-use crate::store::NoteUpdates;
+use crate::store::{AccountUpdates, NoteUpdates};
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 
 // STATE SYNC UPDATE
@@ -342,124 +341,12 @@ impl TransactionUpdateTracker {
     }
 }
 
-// PUBLIC ACCOUNT UPDATE
-// ================================================================================================
-
-/// Update to a single tracked public account.
-///
-/// `StateSync` emits one of two variants depending on whether the node could return the account's
-/// full state in a single response:
-///
-/// - [`PublicAccountUpdate::Full`] carries the new [`Account`] state directly (used when no storage
-///   map is oversized and the vault fits in the response). The store applies it by replacing the
-///   local state.
-/// - [`PublicAccountUpdate::Patch`] carries the new account header plus the absolute
-///   [`AccountPatch`] built from the node's incremental endpoints (`sync_storage_maps` and
-///   `sync_account_vault`, used when any part of the account is oversized). The header is included
-///   because the patch does not carry the final commitments.
-#[derive(Debug, Clone)]
-pub enum PublicAccountUpdate {
-    /// The account fits in a single proof response — the new full state is carried as-is.
-    Full(Account),
-    /// The account is oversized in some dimension. The new state is described by the absolute
-    /// patch, which advances the local state to `new_header`.
-    Patch {
-        /// The new account header after applying the patch.
-        new_header: AccountHeader,
-        /// The absolute patch to apply.
-        patch: AccountPatch,
-    },
-}
-
-impl PublicAccountUpdate {
-    /// Returns the account ID for this update.
-    pub fn id(&self) -> AccountId {
-        match self {
-            Self::Full(account) => account.id(),
-            Self::Patch { new_header, .. } => new_header.id(),
-        }
-    }
-
-    /// Returns the account nonce that this update advances the local state to.
-    pub fn nonce(&self) -> Felt {
-        match self {
-            Self::Full(account) => account.nonce(),
-            Self::Patch { new_header, .. } => new_header.nonce(),
-        }
-    }
-}
-
-// ACCOUNT UPDATES
-// ================================================================================================
-
-/// Contains account changes to apply to the store after a sync request.
-#[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_field_names)]
-pub struct AccountUpdates {
-    /// Updated public accounts, either as full state replacements or incremental patches.
-    updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Account commitments received from the network that don't match the currently locally-tracked
-    /// state of the private accounts.
-    ///
-    /// These updates may represent a stale account commitment (meaning that the latest local state
-    /// hasn't been committed). If this is not the case, the account may be locked until the state
-    /// is restored manually.
-    mismatched_private_accounts: Vec<(AccountId, Word)>,
-    /// Witnesses validated at the target block, for the accounts the sync queried anyway. Kept so
-    /// that the witness refresh does not request them a second time.
-    account_witnesses: Vec<(AccountId, AccountWitness)>,
-}
-
-impl AccountUpdates {
-    /// Creates a new instance of `AccountUpdates`.
-    pub fn new(
-        updated_public_accounts: Vec<PublicAccountUpdate>,
-        mismatched_private_accounts: Vec<(AccountId, Word)>,
-    ) -> Self {
-        Self {
-            updated_public_accounts,
-            mismatched_private_accounts,
-            account_witnesses: Vec::new(),
-        }
-    }
-
-    /// Attaches the account witnesses the sync validated at its target block.
-    #[must_use]
-    pub fn with_account_witnesses(
-        mut self,
-        account_witnesses: Vec<(AccountId, AccountWitness)>,
-    ) -> Self {
-        self.account_witnesses = account_witnesses;
-        self
-    }
-
-    /// Returns the updated public accounts.
-    pub fn updated_public_accounts(&self) -> &[PublicAccountUpdate] {
-        &self.updated_public_accounts
-    }
-
-    /// Returns the mismatched private accounts.
-    pub fn mismatched_private_accounts(&self) -> &[(AccountId, Word)] {
-        &self.mismatched_private_accounts
-    }
-
-    /// Returns the account witnesses validated at the sync's target block.
-    pub fn account_witnesses(&self) -> &[(AccountId, AccountWitness)] {
-        &self.account_witnesses
-    }
-
-    pub fn extend(&mut self, other: AccountUpdates) {
-        self.updated_public_accounts.extend(other.updated_public_accounts);
-        self.mismatched_private_accounts.extend(other.mismatched_private_accounts);
-        self.account_witnesses.extend(other.account_witnesses);
-    }
-}
-
 // TESTS
 // ================================================================================================
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::Felt;
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
     use miden_protocol::transaction::{InputNoteCommitment, InputNotes, RawOutputNotes};
 

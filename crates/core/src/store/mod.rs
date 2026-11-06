@@ -47,7 +47,16 @@ use crate::sync::{NoteTagRecord, StateSyncUpdate};
 use crate::transaction::{BatchStoreUpdate, TransactionRecord, TransactionStoreUpdate};
 
 mod account;
-pub use account::{AccountRecord, AccountRecordData, AccountStatus, ClientAccountType};
+pub use account::{
+    AccountRecord,
+    AccountRecordData,
+    AccountStateUpdate,
+    AccountStatus,
+    AccountUpdates,
+    ClientAccountType,
+    StorageUpdate,
+    VaultUpdate,
+};
 
 mod block;
 pub use block::BlockRelevance;

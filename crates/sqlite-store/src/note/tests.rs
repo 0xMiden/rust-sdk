@@ -21,6 +21,7 @@ use miden_client_core::store::input_note_states::{
     NoteSubmissionData,
 };
 use miden_client_core::store::{
+    AccountUpdates,
     InputNoteCursor,
     InputNoteRecord,
     InputNoteState,
@@ -31,7 +32,6 @@ use miden_client_core::store::{
     Store,
 };
 use miden_client_core::sync::{
-    AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
     TransactionUpdateTracker,

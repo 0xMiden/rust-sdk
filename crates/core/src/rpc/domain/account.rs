@@ -131,6 +131,61 @@ impl TryFrom<AccountDetails> for PartialAccount {
     }
 }
 
+impl TryFrom<&AccountStorageDetails> for AccountStorage {
+    type Error = RpcError;
+
+    /// Builds an [`AccountStorage`] from [`AccountStorageDetails`].
+    ///
+    /// This conversion fails when a map slot has no details in the response, when its entries are
+    /// not complete (oversized or requested by key), or when they do not form a valid map.
+    fn try_from(details: &AccountStorageDetails) -> Result<Self, Self::Error> {
+        let mut slots: Vec<StorageSlot> = Vec::new();
+
+        for slot_header in details.header.slots() {
+            match slot_header.slot_type() {
+                StorageSlotType::Value => {
+                    slots.push(StorageSlot::with_value(
+                        slot_header.name().clone(),
+                        slot_header.value(),
+                    ));
+                },
+                StorageSlotType::Map => {
+                    let map_details =
+                        details.find_map_details(slot_header.name()).ok_or_else(|| {
+                            RpcError::ExpectedDataMissing(format!(
+                                "slot '{}' is a map but has no map_details in response",
+                                slot_header.name()
+                            ))
+                        })?;
+
+                    let storage_map = map_details
+                        .entries
+                        .clone()
+                        .into_storage_map()
+                        .ok_or_else(|| {
+                            RpcError::ExpectedDataMissing(format!(
+                                "slot '{}' did not come back with all its entries, so the full \
+                                 account cannot be built",
+                                slot_header.name(),
+                            ))
+                        })?
+                        .map_err(|err| {
+                            RpcError::InvalidResponse(format!(
+                                "the rpc api returned a non-valid map entry: {err}"
+                            ))
+                        })?;
+
+                    slots.push(StorageSlot::with_map(slot_header.name().clone(), storage_map));
+                },
+            }
+        }
+
+        AccountStorage::new(slots).map_err(|err| {
+            RpcError::InvalidResponse(format!("rpc api returned non-valid storage slots: {err}"))
+        })
+    }
+}
+
 impl TryFrom<&AccountDetails> for Account {
     type Error = RpcError;
 
@@ -167,56 +222,11 @@ impl TryFrom<&AccountDetails> for Account {
             )));
         }
 
-        let mut slots: Vec<StorageSlot> = Vec::new();
-
-        for slot_header in details.storage_details.header.slots() {
-            match slot_header.slot_type() {
-                StorageSlotType::Value => {
-                    slots.push(StorageSlot::with_value(
-                        slot_header.name().clone(),
-                        slot_header.value(),
-                    ));
-                },
-                StorageSlotType::Map => {
-                    let map_details = details
-                        .storage_details
-                        .find_map_details(slot_header.name())
-                        .ok_or_else(|| {
-                            RpcError::ExpectedDataMissing(format!(
-                                "slot '{}' is a map but has no map_details in response",
-                                slot_header.name()
-                            ))
-                        })?;
-
-                    let storage_map = map_details
-                        .entries
-                        .clone()
-                        .into_storage_map()
-                        .ok_or_else(|| {
-                            RpcError::ExpectedDataMissing(format!(
-                                "slot '{}' did not come back with all its entries, so the full \
-                                 account cannot be built",
-                                slot_header.name(),
-                            ))
-                        })?
-                        .map_err(|err| {
-                            RpcError::InvalidResponse(format!(
-                                "the rpc api returned a non-valid map entry: {err}"
-                            ))
-                        })?;
-
-                    slots.push(StorageSlot::with_map(slot_header.name().clone(), storage_map));
-                },
-            }
-        }
-
         let asset_vault = AssetVault::new(assets).map_err(|err| {
             RpcError::InvalidResponse(format!("rpc api returned non-valid assets: {err}"))
         })?;
 
-        let account_storage = AccountStorage::new(slots).map_err(|err| {
-            RpcError::InvalidResponse(format!("rpc api returned non-valid storage slots: {err}"))
-        })?;
+        let account_storage = AccountStorage::try_from(&details.storage_details)?;
 
         let account = Account::new(
             details.header.id(),

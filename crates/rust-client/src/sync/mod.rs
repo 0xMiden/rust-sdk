@@ -77,7 +77,7 @@ use tracing::{info, warn};
 use crate::pswap::PswapChainObserver;
 use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
-use crate::store::{NoteFilter, TransactionFilter};
+use crate::store::{AccountUpdates, NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
@@ -89,9 +89,7 @@ pub use note_observer::NoteObserver;
 
 mod state_sync;
 pub use miden_client_core::sync::{
-    AccountUpdates,
     PartialBlockchainUpdates,
-    PublicAccountUpdate,
     StateSyncUpdate,
     TransactionUpdateTracker,
 };

@@ -1,0 +1,319 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300" role="img" aria-labelledby="title desc">
+  <title id="title">Miden client state sync: safe parallelism</title>
+  <desc id="desc">A dependency diagram showing how note and transaction synchronization can run concurrently, how account and raw nullifier requests can overlap, which state mutations must remain ordered, and the recommended implementation sequence.</desc>
+
+  <defs>
+    <linearGradient id="page-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef3f8"/>
+    </linearGradient>
+    <linearGradient id="header-accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4361ee"/>
+      <stop offset="0.56" stop-color="#4f7df3"/>
+      <stop offset="1" stop-color="#18a999"/>
+    </linearGradient>
+    <linearGradient id="commit-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ecfdf5"/>
+      <stop offset="1" stop-color="#dff8ee"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#1e293b" flood-opacity="0.09"/>
+    </filter>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4169e1"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16866f"/>
+    </marker>
+    <style>
+      .title { font: 700 42px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #14213d; letter-spacing: -0.8px; }
+      .subtitle { font: 400 19px Inter, ui-sans-serif, system-ui, sans-serif; fill: #526176; }
+      .eyebrow { font: 700 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #4361ee; letter-spacing: 1.7px; }
+      .panel-title { font: 700 22px Inter, ui-sans-serif, system-ui, sans-serif; fill: #17233c; }
+      .lane-label { font: 700 14px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.2px; }
+      .card-title { font: 700 18px Inter, ui-sans-serif, system-ui, sans-serif; fill: #17233c; }
+      .card-copy { font: 400 14px Inter, ui-sans-serif, system-ui, sans-serif; fill: #526176; }
+      .small { font: 500 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #64748b; }
+      .tiny { font: 500 12px Inter, ui-sans-serif, system-ui, sans-serif; fill: #64748b; }
+      .step-num { font: 700 14px Inter, ui-sans-serif, system-ui, sans-serif; fill: #ffffff; }
+      .step-title { font: 700 16px Inter, ui-sans-serif, system-ui, sans-serif; fill: #17233c; }
+      .step-copy { font: 400 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #526176; }
+      .rpc-card { fill: #edf3ff; stroke: #8da9f5; stroke-width: 1.5; }
+      .local-card { fill: #fff8e8; stroke: #e9bd62; stroke-width: 1.5; }
+      .commit-card { fill: url(#commit-bg); stroke: #5db99e; stroke-width: 1.6; }
+      .flow { fill: none; stroke: #4169e1; stroke-width: 3; marker-end: url(#arrow-blue); }
+      .dependency { fill: none; stroke: #64748b; stroke-width: 2.5; stroke-dasharray: 7 6; marker-end: url(#arrow-slate); }
+      .commit-flow { fill: none; stroke: #16866f; stroke-width: 3; marker-end: url(#arrow-green); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1300" fill="url(#page-bg)"/>
+  <rect x="0" y="0" width="1800" height="9" fill="url(#header-accent)"/>
+
+  <!-- Header -->
+  <text x="70" y="65" class="eyebrow">MIDEN CLIENT · STATE SYNC</text>
+  <text x="70" y="112" class="title">Safe parallelism, with the real dependency edges</text>
+  <text x="70" y="145" class="subtitle">Blue work is network I/O that may overlap. Amber work mutates or derives local state and stays ordered.</text>
+
+  <!-- Legend -->
+  <g transform="translate(1260 52)">
+    <rect x="0" y="0" width="470" height="82" rx="16" fill="#ffffff" stroke="#d8e0ea"/>
+    <rect x="24" y="22" width="20" height="20" rx="5" class="rpc-card"/>
+    <text x="54" y="37" class="small">RPC / network</text>
+    <rect x="174" y="22" width="20" height="20" rx="5" class="local-card"/>
+    <text x="204" y="37" class="small">local processing</text>
+    <rect x="342" y="22" width="20" height="20" rx="5" class="commit-card"/>
+    <text x="372" y="37" class="small">commit</text>
+    <path d="M 24 60 H 72" class="dependency"/>
+    <text x="84" y="65" class="tiny">must wait for result</text>
+    <path d="M 244 60 H 292" class="flow"/>
+    <text x="304" y="65" class="tiny">data flow</text>
+  </g>
+
+  <!-- Main panel -->
+  <rect x="60" y="178" width="1680" height="665" rx="28" fill="#ffffff" stroke="#d8e0ea" filter="url(#shadow)"/>
+  <text x="92" y="220" class="panel-title">Corrected execution graph</text>
+  <rect x="1354" y="195" width="350" height="40" rx="20" fill="#f0f4ff" stroke="#c8d5fa"/>
+  <text x="1529" y="220" text-anchor="middle" class="small" fill="#3153bd">Every downstream request is pinned to tip T</text>
+
+  <!-- Lane backgrounds -->
+  <rect x="375" y="251" width="1000" height="221" rx="20" fill="#f7f9ff" stroke="#bac9f5" stroke-dasharray="8 7"/>
+  <rect x="375" y="501" width="1000" height="221" rx="20" fill="#f9fbfd" stroke="#c5d1de" stroke-dasharray="8 7"/>
+  <text x="399" y="281" class="lane-label" fill="#4361ee">NOTE BRANCH</text>
+  <text x="399" y="531" class="lane-label" fill="#526176">TRANSACTION + ACCOUNT BRANCH</text>
+
+  <!-- Start gate -->
+  <g filter="url(#shadow)">
+    <rect x="94" y="358" width="238" height="160" rx="20" class="rpc-card"/>
+  </g>
+  <circle cx="124" cy="389" r="16" fill="#4361ee"/>
+  <text x="124" y="394" text-anchor="middle" class="step-num">1</text>
+  <text x="151" y="395" class="card-title">Sync chain MMR</text>
+  <text x="118" y="431" class="card-copy">
+    <tspan x="118" dy="0">Discover chain tip + header</tspan>
+    <tspan x="118" dy="23">and obtain MMR delta.</tspan>
+  </text>
+  <rect x="118" y="477" width="188" height="25" rx="12.5" fill="#dbe6ff"/>
+  <text x="212" y="494" text-anchor="middle" class="tiny" fill="#3153bd">the only initial gate</text>
+
+  <!-- Fork -->
+  <path d="M 332 438 H 354 V 348 H 415" class="flow"/>
+  <path d="M 354 438 V 598 H 415" class="flow"/>
+  <circle cx="354" cy="438" r="6" fill="#4169e1"/>
+
+  <!-- Note RPC -->
+  <g filter="url(#shadow)">
+    <rect x="416" y="300" width="265" height="126" rx="18" class="rpc-card"/>
+  </g>
+  <circle cx="448" cy="332" r="16" fill="#4361ee"/>
+  <text x="448" y="337" text-anchor="middle" class="step-num">2A</text>
+  <text x="476" y="338" class="card-title">Sync notes + content</text>
+  <text x="440" y="371" class="card-copy">
+    <tspan x="440">Tag chunks may be bounded</tspan>
+    <tspan x="440" dy="21">and concurrent; each chunk’s</tspan>
+    <tspan x="440" dy="21">pages remain sequential.</tspan>
+  </text>
+
+  <!-- Build the note tracker from both note blocks and transaction-derived note facts -->
+  <g filter="url(#shadow)">
+    <rect x="744" y="300" width="265" height="126" rx="18" class="local-card"/>
+  </g>
+  <text x="770" y="337" class="card-title">Build note tracker</text>
+  <text x="770" y="370" class="card-copy">
+    <tspan x="770">Screen note blocks; apply tx</tspan>
+    <tspan x="770" dy="21">ordered-nullifier metadata,</tspan>
+    <tspan x="770" dy="21">output proofs and erasures.</tspan>
+  </text>
+
+  <!-- Nullifier RPC -->
+  <g filter="url(#shadow)">
+    <rect x="1072" y="300" width="265" height="126" rx="18" class="rpc-card"/>
+  </g>
+  <text x="1098" y="337" class="card-title">Fetch raw nullifiers</text>
+  <text x="1098" y="370" class="card-copy">
+    <tspan x="1098">Network-only phase.</tspan>
+    <tspan x="1098" dy="21">Do not apply consumption</tspan>
+    <tspan x="1098" dy="21">effects yet.</tspan>
+  </text>
+
+  <!-- Transaction RPC -->
+  <g filter="url(#shadow)">
+    <rect x="416" y="550" width="265" height="126" rx="18" class="rpc-card"/>
+  </g>
+  <circle cx="448" cy="582" r="16" fill="#4361ee"/>
+  <text x="448" y="587" text-anchor="middle" class="step-num">2B</text>
+  <text x="476" y="588" class="card-title">Sync transactions</text>
+  <text x="440" y="621" class="card-copy">
+    <tspan x="440">Account-ID chunks may be</tspan>
+    <tspan x="440" dy="21">bounded and concurrent;</tspan>
+    <tspan x="440" dy="21">preserve deterministic order.</tspan>
+  </text>
+
+  <!-- Working MMR can advance locally as soon as the MMR response arrives -->
+  <g filter="url(#shadow)">
+    <rect x="94" y="558" width="238" height="112" rx="18" class="local-card"/>
+  </g>
+  <text x="118" y="591" class="card-title">Advance working MMR</text>
+  <text x="118" y="621" class="card-copy">
+    <tspan x="118">Validate the delta on a clone.</tspan>
+    <tspan x="118" dy="21">Do not commit it yet.</tspan>
+  </text>
+
+  <!-- Derive commitments -->
+  <g filter="url(#shadow)">
+    <rect x="744" y="550" width="265" height="126" rx="18" class="local-card"/>
+  </g>
+  <text x="770" y="587" class="card-title">Derive commitments</text>
+  <text x="770" y="620" class="card-copy">
+    <tspan x="770">Identify changed public and</tspan>
+    <tspan x="770" dy="21">private accounts from the</tspan>
+    <tspan x="770" dy="21">transaction records.</tspan>
+  </text>
+
+  <!-- Account RPC -->
+  <g filter="url(#shadow)">
+    <rect x="1072" y="550" width="265" height="126" rx="18" class="rpc-card"/>
+  </g>
+  <text x="1098" y="587" class="card-title">Fetch account states</text>
+  <text x="1098" y="620" class="card-copy">
+    <tspan x="1098">Public/private proofs may use</tspan>
+    <tspan x="1098" dy="21">one bounded pool; storage-map</tspan>
+    <tspan x="1098" dy="21">and vault calls can be joined.</tspan>
+  </text>
+
+  <!-- Primary lane arrows -->
+  <path d="M 681 363 H 744" class="flow"/>
+  <path d="M 1009 363 H 1072" class="flow"/>
+  <path d="M 681 613 H 744" class="flow"/>
+  <path d="M 1009 613 H 1072" class="flow"/>
+
+  <!-- Transactions also contribute note facts before the final unspent-prefix set exists -->
+  <path d="M 681 579 C 710 517, 747 465, 812 426" class="flow"/>
+  <rect x="679" y="478" width="132" height="27" rx="13.5" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="745" y="496" text-anchor="middle" class="tiny">tx note facts</text>
+
+  <path d="M 213 518 V 558" class="dependency"/>
+
+  <!-- Parallelism note -->
+  <path d="M 1042 455 H 1362" stroke="#18a999" stroke-width="2" stroke-dasharray="5 5"/>
+  <rect x="1058" y="436" width="288" height="38" rx="19" fill="#e8faf6" stroke="#94d7c6"/>
+  <text x="1202" y="460" text-anchor="middle" class="small" fill="#147865">These two RPCs may overlap</text>
+  <path d="M 1202 436 V 426" stroke="#18a999" stroke-width="2"/>
+  <path d="M 1202 474 V 550" stroke="#18a999" stroke-width="2"/>
+
+  <!-- Ordered apply card -->
+  <g filter="url(#shadow)">
+    <rect x="1420" y="274" width="275" height="430" rx="22" class="commit-card"/>
+  </g>
+  <circle cx="1454" cy="308" r="17" fill="#16866f"/>
+  <text x="1454" y="313" text-anchor="middle" class="step-num">3</text>
+  <text x="1484" y="314" class="card-title">Join, then apply in order</text>
+  <line x1="1446" y1="336" x2="1668" y2="336" stroke="#a7d9ca"/>
+
+  <circle cx="1458" cy="371" r="13" fill="#16866f"/>
+  <text x="1458" y="376" text-anchor="middle" class="step-num">1</text>
+  <text x="1484" y="368" class="step-title">Superseded accounts</text>
+  <text x="1484" y="389" class="step-copy">Resolve same-nonce losers first.</text>
+
+  <circle cx="1458" cy="430" r="13" fill="#16866f"/>
+  <text x="1458" y="435" text-anchor="middle" class="step-num">2</text>
+  <text x="1484" y="427" class="step-title">Transaction inclusions</text>
+  <text x="1484" y="448" class="step-copy">Build external-consumer mapping.</text>
+
+  <circle cx="1458" cy="489" r="13" fill="#16866f"/>
+  <text x="1458" y="494" text-anchor="middle" class="step-num">3</text>
+  <text x="1484" y="486" class="step-title">Nullifier consumptions</text>
+  <text x="1484" y="507" class="step-copy">Now classify and discard safely.</text>
+
+  <circle cx="1458" cy="548" r="13" fill="#16866f"/>
+  <text x="1458" y="553" text-anchor="middle" class="step-num">4</text>
+  <text x="1484" y="545" class="step-title">Track paths + commit MMR</text>
+  <text x="1484" y="566" class="step-copy">After the final unspent set.</text>
+
+  <rect x="1446" y="600" width="222" height="68" rx="15" fill="#16866f"/>
+  <text x="1557" y="628" text-anchor="middle" style="font:700 16px Inter,ui-sans-serif,system-ui;fill:#fff">One store apply call</text>
+  <text x="1557" y="650" text-anchor="middle" style="font:500 12px Inter,ui-sans-serif,system-ui;fill:#d9fff3">Store::apply_state_sync</text>
+
+  <!-- Join arrows -->
+  <path d="M 1337 363 H 1360 Q 1385 363 1385 388 V 479" fill="none" stroke="#16866f" stroke-width="3"/>
+  <path d="M 1337 613 H 1360 Q 1385 613 1385 588 V 499" fill="none" stroke="#16866f" stroke-width="3"/>
+  <path d="M 1385 477 L 1397 489 L 1385 501 L 1373 489 Z" fill="#16866f"/>
+  <path d="M 1397 489 H 1420" class="commit-flow"/>
+  <path d="M 213 670 V 735 H 1387 Q 1405 735 1405 717 V 548 H 1420" class="dependency"/>
+  <!-- Important invariant -->
+  <rect x="92" y="753" width="1283" height="64" rx="15" fill="#fff7df" stroke="#e8c667"/>
+  <circle cx="120" cy="785" r="15" fill="#e2a72e"/>
+  <text x="120" y="790" text-anchor="middle" class="step-num">!</text>
+  <text x="147" y="778" class="small" fill="#7c5b14">Parallelize fetching, not state-transition order.</text>
+  <text x="147" y="799" class="tiny">Observer caveat: screening is needed to derive prefixes, so observers may run before a later account-RPC failure unless delivery is split or deferred.</text>
+
+  <!-- Protocol wall panel -->
+  <rect x="60" y="876" width="820" height="354" rx="26" fill="#ffffff" stroke="#d8e0ea" filter="url(#shadow)"/>
+  <text x="92" y="920" class="eyebrow" fill="#b55d39">CURRENT PROTOCOL WALL</text>
+  <text x="92" y="954" class="panel-title">Why note block ranges cannot simply fan out</text>
+
+  <rect x="92" y="985" width="205" height="70" rx="16" class="rpc-card"/>
+  <text x="194" y="1013" text-anchor="middle" class="card-title">Range [from … m]</text>
+  <text x="194" y="1039" text-anchor="middle" class="small">proof → forest(m + 1)</text>
+
+  <text x="317" y="1028" text-anchor="middle" style="font:700 24px Inter,ui-sans-serif,system-ui;fill:#64748b">+</text>
+
+  <rect x="337" y="985" width="205" height="70" rx="16" class="rpc-card"/>
+  <text x="439" y="1013" text-anchor="middle" class="card-title">Range [m+1 … tip]</text>
+  <text x="439" y="1039" text-anchor="middle" class="small">proof → forest(tip + 1)</text>
+
+  <path d="M 194 1055 V 1071 Q 194 1082 215 1092" class="flow"/>
+  <path d="M 439 1055 V 1071 Q 439 1082 419 1092" class="flow"/>
+  <rect x="214" y="1082" width="206" height="72" rx="16" fill="#fff1ee" stroke="#dc8b76"/>
+  <text x="317" y="1111" text-anchor="middle" class="card-title" fill="#963e2c">Anchor mismatch</text>
+  <text x="317" y="1137" text-anchor="middle" class="small">paths are not composable</text>
+
+  <rect x="580" y="985" width="268" height="169" rx="16" fill="#f8fafc" stroke="#d8e0ea"/>
+  <text x="606" y="1017" class="step-title">Clean fix</text>
+  <text x="606" y="1046" class="card-copy">
+    <tspan x="606">Let the node/protocol separate</tspan>
+    <tspan x="606" dy="21">the scanned range from one</tspan>
+    <tspan x="606" dy="21">common proof anchor.</tspan>
+    <tspan x="606" dy="29">Avoid speculative suffix waves</tspan>
+    <tspan x="606" dy="21">unless gaps are reconciled.</tspan>
+  </text>
+
+  <!-- Rollout panel -->
+  <rect x="910" y="876" width="830" height="354" rx="26" fill="#ffffff" stroke="#d8e0ea" filter="url(#shadow)"/>
+  <text x="942" y="920" class="eyebrow" fill="#16866f">RECOMMENDED SHIP ORDER</text>
+  <text x="942" y="954" class="panel-title">Measure first, then widen concurrency</text>
+
+  <line x1="976" y1="997" x2="976" y2="1187" stroke="#cad5e2" stroke-width="3"/>
+
+  <circle cx="976" cy="1004" r="17" fill="#4361ee"/>
+  <text x="976" y="1009" text-anchor="middle" class="step-num">1</text>
+  <text x="1010" y="1001" class="step-title">Fix the redundant terminal note page + add telemetry</text>
+  <text x="1010" y="1022" class="step-copy">Record latency, pages, bytes, retries and maximum in-flight requests.</text>
+
+  <circle cx="976" cy="1054" r="17" fill="#4361ee"/>
+  <text x="976" y="1059" text-anchor="middle" class="step-num">2</text>
+  <text x="1010" y="1051" class="step-title">Join notes ∥ transactions</text>
+  <text x="1010" y="1072" class="step-copy">Smallest high-confidence client change.</text>
+
+  <circle cx="976" cy="1104" r="17" fill="#4361ee"/>
+  <text x="976" y="1109" text-anchor="middle" class="step-num">3</text>
+  <text x="1010" y="1101" class="step-title">Split nullifier fetch/apply; overlap account fetch</text>
+  <text x="1010" y="1122" class="step-copy">Observers follow the first join; transaction/consumption updates follow the second.</text>
+
+  <circle cx="976" cy="1154" r="17" fill="#4361ee"/>
+  <text x="976" y="1159" text-anchor="middle" class="step-num">4</text>
+  <text x="1010" y="1151" class="step-title">Add bounded, ordered fan-out</text>
+  <text x="1010" y="1172" class="step-copy">Start with get_notes_by_id, then measured tag/account/prefix chunks.</text>
+
+  <circle cx="976" cy="1204" r="17" fill="#16866f"/>
+  <text x="976" y="1209" text-anchor="middle" class="step-num">5</text>
+  <text x="1010" y="1201" class="step-title">Only then consider range splitting</text>
+  <text x="1010" y="1222" class="step-copy">Transactions/nullifiers first; notes require a protocol-level anchor change.</text>
+
+  <!-- Footer -->
+  <text x="70" y="1270" class="tiny">Invariant: concurrency is structured and bounded; dropping the sync cancels all in-flight work. Diagram reflects the current rust-client dependency graph.</text>
+  <text x="1730" y="1270" text-anchor="end" class="tiny">2026-08-03</text>
+</svg>

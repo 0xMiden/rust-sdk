@@ -1032,9 +1032,10 @@ where
     /// Runs the transaction script and records it. [`trace::replay_call_trace`] replays the
     /// recording in the debug engine for the call tree. The replay blocks the thread until it ends.
     ///
-    /// A failed run keeps the recording up to the failure. The recording is `None` if the program
-    /// never ran. Without `package` the frames have no names, since account code from the store has
-    /// no debug info.
+    /// Returns a tuple containing:
+    /// - The result of the run: the output stack, or the error that stopped the run.
+    /// - The recording of the run. A failed run keeps the recording up to the failure. The
+    ///   recording is `None` if the program never ran.
     ///
     /// The recording is kept in one slot per process, so only one traced execution can run at a
     /// time. A second one fails with [`trace::TraceError::Busy`] and leaves no recording.
@@ -1069,8 +1070,8 @@ where
         .await;
 
         let recording = slot.take_recording().map(|mut recording| {
-            // The recording can hold the account code from the store, which has no debug info.
-            // The replay keeps the last forest for each procedure, so the package goes last.
+            // The recording can hold the account code from the store, which has no debug info. The
+            // replay keeps the last forest for each procedure, so the package goes last.
             if let Some(package) = package {
                 recording
                     .mast_forests

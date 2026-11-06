@@ -123,7 +123,7 @@ pub(super) fn render_call_trace(
     let max_kind = FrameKind::shown_at(verbose);
 
     let scope = package.map(PackageScope::new).unwrap_or_default();
-    let mut printer = Printer {
+    let mut renderer = TreeRenderer {
         out,
         entry,
         entry_result,
@@ -132,26 +132,26 @@ pub(super) fn render_call_trace(
         shown: 0,
         hidden: 0,
     };
-    writeln!(printer.out, "\nCall trace:").unwrap();
-    printer.print(&replay.trace.roots, 0);
+    writeln!(renderer.out, "\nCall trace:").unwrap();
+    renderer.render_frames(&replay.trace.roots, 0);
 
-    if printer.shown == 0 {
-        writeln!(printer.out, "  (no frames to show)").unwrap();
+    if renderer.shown == 0 {
+        writeln!(renderer.out, "  (no frames to show)").unwrap();
     }
-    if printer.hidden > 0 {
+    if renderer.hidden > 0 {
         let more = match max_kind {
             FrameKind::User => "library functions with -v, everything with -vv",
             _ => "everything with -vv",
         };
-        writeln!(printer.out, "\n{} frame(s) hidden; show {more}.", printer.hidden).unwrap();
+        writeln!(renderer.out, "\n{} frame(s) hidden; show {more}.", renderer.hidden).unwrap();
     }
-    printer.out
+    renderer.out
 }
 
-/// Walks the tree. A frame that is not printed is replaced by its children, so the nesting stays
+/// Walks the tree. A frame that is not shown is replaced by its children, so the nesting stays
 /// right.
-struct Printer<'a> {
-    /// The lines printed so far.
+struct TreeRenderer<'a> {
+    /// The lines rendered so far.
     out: String,
     /// The call the user made, which names and renders the entry frame.
     entry: Option<&'a EntryCall>,
@@ -159,7 +159,7 @@ struct Printer<'a> {
     entry_result: Option<&'a str>,
     /// Which frames are the package's own code.
     scope: &'a PackageScope<'a>,
-    /// The last kind that is still printed.
+    /// The last kind that is still shown.
     max_kind: FrameKind,
     shown: usize,
     /// Frames that a higher `--verbose` level shows. Frames without a name are not counted, since
@@ -167,8 +167,9 @@ struct Printer<'a> {
     hidden: usize,
 }
 
-impl Printer<'_> {
-    fn print(&mut self, frames: &[CallFrameRecord], depth: usize) {
+impl TreeRenderer<'_> {
+    /// Appends a line for each shown frame in `frames` and their children to `out`.
+    fn render_frames(&mut self, frames: &[CallFrameRecord], depth: usize) {
         for frame in frames {
             // The procedure the user called is always shown, whatever its path looks like.
             let entry = self.entry.filter(|entry| {
@@ -183,13 +184,13 @@ impl Printer<'_> {
                 (Some(entry), _) => (entry.name.clone(), FrameKind::User),
                 (None, Some(name)) => (name.text, name.kind),
                 (None, None) => {
-                    self.print(&frame.children, depth);
+                    self.render_frames(&frame.children, depth);
                     continue;
                 },
             };
             if kind > self.max_kind {
                 self.hidden += 1;
-                self.print(&frame.children, depth);
+                self.render_frames(&frame.children, depth);
                 continue;
             }
 
@@ -215,12 +216,12 @@ impl Printer<'_> {
             };
             writeln!(self.out, "{indent}{label}({args}){results}  {cycles}").unwrap();
 
-            self.print(&frame.children, depth + 1);
+            self.render_frames(&frame.children, depth + 1);
         }
     }
 }
 
-/// A procedure path cut down for printing, and the kind of code it names.
+/// A procedure path cut down for display, and the kind of code it names.
 struct ShortName {
     text: String,
     kind: FrameKind,
@@ -299,7 +300,7 @@ fn shorten(name: &str, scope: &PackageScope<'_>) -> Option<ShortName> {
     })
 }
 
-/// Prints the arguments the way a call site writes them. An unreadable value is shown as `?`.
+/// Formats the arguments the way a call site writes them. An unreadable value is shown as `?`.
 ///
 /// The `self` argument is left out. Its value is a memory address, which tells the user nothing.
 fn format_args_list(args: &[TracedArg]) -> String {
@@ -313,7 +314,7 @@ fn format_args_list(args: &[TracedArg]) -> String {
         .join(", ")
 }
 
-/// Prints one felt on its own, and more than one as a list.
+/// Formats one felt on its own, and more than one as a list.
 fn format_felts(felts: &[u64]) -> String {
     match felts {
         [single] => single.to_string(),
@@ -323,7 +324,7 @@ fn format_felts(felts: &[u64]) -> String {
     }
 }
 
-/// Prints what a call returned: nothing for no value, and `?` for a value that could not be read.
+/// Formats what a call returned: nothing for no value, and `?` for a value that could not be read.
 fn format_results(results: Option<&[u64]>) -> String {
     match results {
         None => " -> ?".to_string(),
@@ -374,20 +375,20 @@ mod tests {
         }
     }
 
-    /// The lines a printer writes for `roots` at the default level, with `entry` as the call.
-    fn printed(roots: &[CallFrameRecord], entry: Option<&EntryCall>) -> String {
-        printed_at(roots, entry, FrameKind::User).0
+    /// The lines a renderer writes for `roots` at the default level, with `entry` as the call.
+    fn rendered(roots: &[CallFrameRecord], entry: Option<&EntryCall>) -> String {
+        rendered_at(roots, entry, FrameKind::User).0
     }
 
-    /// The lines a printer writes for `roots` when it shows up to `max_kind`, and the number of
+    /// The lines a renderer writes for `roots` when it shows up to `max_kind`, and the number of
     /// frames it counts as hidden.
-    fn printed_at(
+    fn rendered_at(
         roots: &[CallFrameRecord],
         entry: Option<&EntryCall>,
         max_kind: FrameKind,
     ) -> (String, usize) {
         let scope = counter_scope();
-        let mut printer = Printer {
+        let mut renderer = TreeRenderer {
             out: String::new(),
             entry,
             entry_result: Some("10"),
@@ -396,8 +397,8 @@ mod tests {
             shown: 0,
             hidden: 0,
         };
-        printer.print(roots, 0);
-        (printer.out, printer.hidden)
+        renderer.render_frames(roots, 0);
+        (renderer.out, renderer.hidden)
     }
 
     #[test]
@@ -490,11 +491,11 @@ mod tests {
 
         // Their children take their place, and they are not counted as hidden.
         assert_eq!(
-            printed_at(&roots, None, FrameKind::Internal),
+            rendered_at(&roots, None, FrameKind::Internal),
             ("  intrinsics::mem::load_sw()  1 cycles\n  level2()  1 cycles\n".to_string(), 0)
         );
         assert_eq!(
-            printed_at(&roots, None, FrameKind::User),
+            rendered_at(&roots, None, FrameKind::User),
             ("  level2()  1 cycles\n".to_string(), 1)
         );
     }
@@ -509,7 +510,7 @@ mod tests {
             )],
         )];
 
-        assert_eq!(printed(&roots, None), "  level1()  1 cycles\n    level2()  1 cycles\n");
+        assert_eq!(rendered(&roots, None), "  level1()  1 cycles\n    level2()  1 cycles\n");
     }
 
     #[test]
@@ -526,10 +527,10 @@ mod tests {
         // The export body runs under its plain name, which no symbol of the own crate has, so only
         // the entry tells it from library code.
         assert_eq!(
-            printed(&roots, Some(&entry)),
+            rendered(&roots, Some(&entry)),
             "  depth_probe(3, 7) -> 10  1 cycles\n    level1()  1 cycles\n"
         );
-        assert_eq!(printed(&roots, None), "  level1()  1 cycles\n");
+        assert_eq!(rendered(&roots, None), "  level1()  1 cycles\n");
     }
 
     #[test]

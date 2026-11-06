@@ -212,12 +212,12 @@ impl CallCmd {
         // warning. Dynamic linking provides that resolution without embedding the library bytes.
         let builder = client.code_builder().with_dynamically_linked_package(&package)?;
         #[cfg(feature = "trace")]
-        let entry = typed
-            .as_ref()
-            .zip(export.signature.as_ref())
-            .map(|(_, signature)| (name.to_string(), self.args.as_slice(), signature.params.len()));
-        #[cfg(feature = "trace")]
-        let trace = TraceCall::new(self.trace.level(), package, entry);
+        let trace = {
+            let entry = typed.as_ref().zip(export.signature.as_ref()).map(|(_, signature)| {
+                (name.to_string(), self.args.as_slice(), signature.params.len())
+            });
+            TraceCall::new(self.trace.level(), package, entry)
+        };
         Ok(CallCode {
             builder,
             digest,

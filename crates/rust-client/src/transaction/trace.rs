@@ -75,8 +75,8 @@ impl Drop for TraceSlot {
     }
 }
 
-/// The normal executor plus a [`ReplaySnapshot`] left in the slot. Holds the inputs until `execute`
-/// has the program to build the package with.
+/// The normal executor plus a [`ReplaySnapshot`] left in the slot. Holds the inputs until
+/// [`execute`](ProgramExecutor::execute) has the program to build the package with.
 pub(crate) struct TraceProgramExecutor {
     /// Built in `new`, so bad inputs fail at the same point as in the default executor.
     processor: FastProcessor,

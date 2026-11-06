@@ -8,7 +8,7 @@ use miden_client::rpc::{GrpcClient, RpcStatusInfo};
 use miden_client::store::NoteFilter;
 
 use super::config::CliConfig;
-use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
+use crate::commands::account::get_default_account_id;
 use crate::errors::CliError;
 
 pub async fn print_client_info<AUTH: Keystore + Sync + 'static>(
@@ -50,10 +50,7 @@ async fn print_client_stats<AUTH: Keystore + Sync + 'static>(
     println!("Expected notes: {}", client.get_input_notes(NoteFilter::Expected).await?.len());
     println!(
         "Default account: {}",
-        client
-            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
-            .await?
-            .map_or("-".to_string(), AccountId::to_hex)
+        get_default_account_id(client).await?.map_or("-".to_string(), AccountId::to_hex)
     );
     Ok(())
 }

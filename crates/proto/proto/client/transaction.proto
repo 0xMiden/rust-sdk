@@ -6,13 +6,16 @@ package client.transaction;
 
 import "account.proto";
 import "asset.proto";
+import "block.proto";
 import "block_number.proto";
 import "note.proto";
+import "partial_blockchain.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
 import "client/input_note.proto";
 import "client/output_note.proto";
+import "client/sync.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -192,6 +195,13 @@ message AccountStorageRequirements {
   repeated SlotKeys slots = 1;
 }
 
+// An executed transaction with the notes that later transactions create from it.
+message TransactionResult {
+  // Upstream encoding of the executed transaction.
+  bytes executed_transaction = 1;
+  repeated ExpectedFutureNote future_notes = 2;
+}
+
 // Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
   // Executed transaction in its protocol encoding.
@@ -201,7 +211,7 @@ message TransactionStoreUpdate {
   repeated ExpectedFutureNote future_notes = 3;
   repeated InputNoteUpdate input_notes = 4;
   repeated OutputNoteUpdate output_notes = 5;
-  repeated NoteTagRecord new_tags = 6;
+  repeated sync.NoteTagRecord new_tags = 6;
 }
 
 // How the store writes a note record.
@@ -228,20 +238,8 @@ message OutputNoteUpdate {
   NoteUpdateType update_type = 2;
 }
 
-// A note tag that the client tracks, and the reason that it tracks the tag.
-message NoteTagRecord {
-  // The user added the tag.
-  message User {}
-
-  fixed32 tag = 1;
-
-  oneof source {
-    // Account whose address has the tag.
-    account.AccountId account = 2;
-    // Details commitment of the expected note that has the tag.
-    primitives.Word note = 3;
-    User user = 4;
-    // Key of the subscription that has the tag.
-    primitives.Word subscription = 5;
-  }
+// A reference block with a partial blockchain that is consistent with it.
+message ChainAnchor {
+  blockchain.BlockHeader header = 1;
+  blockchain.PartialBlockchain partial_blockchain = 2;
 }

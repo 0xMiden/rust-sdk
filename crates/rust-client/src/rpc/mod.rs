@@ -49,13 +49,6 @@ pub use miden_client_core::errors::{
     RpcError,
     node,
 };
-pub use miden_client_core::rpc::{
-    AccountStateAt,
-    NodeRpcClient,
-    NoteContentFetch,
-    RpcEndpoint,
-    RpcLimits,
-    domain,
-};
+pub use miden_client_core::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcLimits, domain};
 #[cfg(feature = "tonic")]
 pub use miden_client_grpc::{Endpoint, GrpcClient};

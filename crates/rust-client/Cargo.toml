@@ -85,6 +85,7 @@ miden-agglayer        = { workspace = true }
 miden-assembly-syntax = { workspace = true }
 miden-client-core     = { workspace = true }
 miden-client-grpc     = { optional = true, workspace = true }
+miden-client-proto    = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }

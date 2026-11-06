@@ -243,8 +243,8 @@ pub(crate) async fn sync_notes_with_content(
         let mut notes = BTreeMap::new();
         for (note_id, committed) in block.notes {
             // Fetched attachments win when the response actually carried some: a public note's
-            // attachments are bound to the requested id, which `VerifyingRpcClient` checks. The
-            // sync record is the fallback, and a note reporting neither has none.
+            // attachments are bound to the requested id, which `get_notes_by_id` checks. The sync
+            // record is the fallback, and a note reporting neither has none.
             let (details, fetched_attachments) =
                 fetched_content.remove(&note_id).unwrap_or_default();
             let attachments = fetched_attachments

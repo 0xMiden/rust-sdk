@@ -57,9 +57,6 @@ pub mod encryption;
 mod limits;
 pub use limits::RpcLimits;
 
-mod verifying_client;
-pub use verifying_client::VerifyingRpcClient;
-
 /// Represents the state that we want to retrieve from the network
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AccountStateAt {
@@ -200,8 +197,8 @@ impl fmt::Display for RpcEndpoint {
 ///
 /// The implementers are responsible for connecting to the Miden node, handling endpoint
 /// requests/responses, and translating responses into domain objects relevant for each of the
-/// endpoints. Implementations do not check that responses correspond to the method's arguments.
-/// Wrap a client in [`VerifyingRpcClient`] to reject mismatched responses.
+/// endpoints. Implementations that talk to a remote node must check that each response corresponds
+/// to the method's arguments, and reject a mismatch with [`RpcError::InvalidResponse`].
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NodeRpcClient: Send + Sync {
@@ -258,8 +255,7 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// When `None` is provided, returns info regarding the latest block.
     ///
-    /// The returned header is not verified against the requested `block_num`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a header for a block other than the requested `block_num`.
     async fn get_block_header_by_number(
         &self,
         block_num: Option<BlockNumber>,
@@ -269,8 +265,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the genesis block header and the protocol configuration that it commits to, using
     /// the `/GetBlockHeaderByNumber` endpoint.
     ///
-    /// The returned header is not verified to be the genesis header; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a header for a block other than the genesis block.
     async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError>;
 
     /// Given a block number, fetches the block corresponding to that height from the node using the
@@ -280,8 +275,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// alongside the signed block. It is [`None`] when `include_proof` is false, and also when the
     /// node has not proven the block yet.
     ///
-    /// The returned block is not verified against the requested `block_num`; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a block other than the requested `block_num`.
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
@@ -299,8 +293,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// In both cases, a [`miden_protocol::note::NoteInclusionProof`] is returned so the caller can
     /// verify that each note is part of the block's note tree.
     ///
-    /// Returned notes are not verified to be among the requested `note_ids`; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a note that is not among the requested `note_ids`.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError>;
 
     /// Fetches the MMR delta for a given block range using the `/SyncChainMmr` RPC endpoint.
@@ -390,8 +383,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Every returned note carries its full metadata, and its attachment content when the response
     /// carried it. Use [`NodeRpcClient::get_notes_by_id`] to fetch the rest.
     ///
-    /// Returned notes are not verified to carry one of the requested `note_tags`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a note that does not carry one of the requested `note_tags`.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
@@ -406,8 +398,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
     ///
-    /// Returned nullifiers are not verified to carry one of the requested prefixes;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a nullifier that does not carry one of the requested prefixes,
+    /// or that is outside the requested block range.
     async fn sync_nullifiers(
         &self,
         prefix: &[u16],
@@ -423,8 +415,8 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///
-    /// The response block number is not verified against the requested one; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a proof for another account, or for a block other than the
+    /// requested one.
     ///
     /// # Errors
     ///
@@ -599,8 +591,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the note script with the specified root, returning `None` if the node has no script
     /// registered for that root.
     ///
-    /// A returned script's root is not verified to match the requested `root`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a script whose root is not the requested `root`.
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError>;
 
     /// Fetches storage map updates for specified account and storage slots within a block range,
@@ -637,6 +628,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
     /// - `account_ids`: The account IDs for which to fetch transactions.
+    ///
+    /// Implementations must reject a transaction record for an account that was not requested.
     async fn sync_transactions(
         &self,
         block_from: BlockNumber,
@@ -662,8 +655,8 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the RPC status without requiring Accept header validation.
     ///
-    /// This is useful for diagnostics when version negotiation fails, as it allows retrieving node
-    /// information even when there's a version mismatch.
+    /// This is useful for diagnostics when Accept header negotiation fails, as it allows retrieving
+    /// node information even when the client's genesis commitment does not match the node's.
     async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError>;
 
     /// Fetches the status of a specific network note ID.

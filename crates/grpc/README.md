@@ -2,7 +2,8 @@
 
 Default gRPC implementation of the `NodeRpcClient` trait from `miden-client-core`.
 
-- `GrpcClient`, which implements `NodeRpcClient` and talks to a Miden node over gRPC
+- `GrpcClient`, which implements `NodeRpcClient` and talks to a Miden node over gRPC. It rejects node responses that do not match the request
+- `RpcMethod` and the `v1` module, with one type per endpoint of the node RPC API version, for callers that choose the API version of each call
 - `Endpoint`, the address of the node, with presets for the public networks
 - The protobuf code generated from the node RPC API, and the conversions between its messages and the `miden-client-core` types
 - The parsing of the typed errors that the node returns
@@ -32,6 +33,21 @@ use miden_client_grpc::{Endpoint, GrpcClient};
 
 let client = GrpcClient::new(&Endpoint::testnet(), 10_000);
 let (block_header, _) = client.get_block_header_by_number(None, false).await?;
+```
+
+`NodeRpcClient` uses the newest API version that the client supports. To call one endpoint of a specific API version, pass its type to `GrpcClient::call`:
+
+```rust
+use miden_client_grpc::{Endpoint, GrpcClient, v1};
+
+let client = GrpcClient::new(&Endpoint::testnet(), 10_000);
+let response = client
+    .call(v1::GetBlockHeaderByNumber {
+        block_num: None,
+        include_mmr_proof: true,
+        include_protocol_config: false,
+    })
+    .await?;
 ```
 
 ## Features

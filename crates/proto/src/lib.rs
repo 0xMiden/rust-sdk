@@ -11,8 +11,8 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
-use miden_objects::ConversionError;
-use miden_protocol::utils::serde::DeserializationError;
+use miden_objects::{ConversionError, DecodeMessageExt, Verify};
+use miden_protocol::utils::serde::{Deserializable, DeserializationError};
 
 mod input_note;
 mod note_transport;
@@ -20,6 +20,7 @@ mod output_note;
 mod protocol;
 mod pswap;
 mod rpc;
+mod sync;
 mod transaction;
 
 pub use output_note::{
@@ -57,6 +58,9 @@ mod generated {
     pub mod rpc {
         include!(concat!(env!("OUT_DIR"), "/client.rpc.rs"));
     }
+    pub mod sync {
+        include!(concat!(env!("OUT_DIR"), "/client.sync.rs"));
+    }
     pub mod transaction {
         include!(concat!(env!("OUT_DIR"), "/client.transaction.rs"));
     }
@@ -67,6 +71,7 @@ pub use generated::output_note::*;
 pub use generated::protocol::*;
 pub use generated::pswap::*;
 pub use generated::rpc::*;
+pub use generated::sync::*;
 pub use generated::transaction::*;
 
 // PROTOBUF VALUE
@@ -144,8 +149,24 @@ impl From<ProtoDecodeError> for StoreError {
 // HELPERS
 // ================================================================================================
 
+/// Decodes a value of an upstream type from its upstream encoding.
+pub fn read_upstream<T: Deserializable>(bytes: &[u8]) -> Result<T, ProtoDecodeError> {
+    T::read_from_bytes(bytes).map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+}
+
+/// Decodes and verifies every message of a list.
+pub fn decode_all<M>(
+    messages: Vec<M>,
+) -> Result<Vec<<M::Decoded as Verify>::Verified>, ProtoDecodeError>
+where
+    M: DecodeMessageExt,
+    M::Decoded: Verify,
+{
+    messages.into_iter().map(|message| Ok(message.decode_and_verify()?)).collect()
+}
+
 /// Returns a required field, or an error that names it.
-pub(crate) fn required<T>(
+pub fn required<T>(
     field: Option<T>,
     message: &'static str,
     name: &'static str,

@@ -17,7 +17,6 @@ use miden_client_core::transaction::{
 use miden_protocol::Word;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::transaction::{ExecutedTransaction, ToInputNoteCommitments, TransactionId};
-use miden_protocol::utils::serde::{Deserializable as _, Serializable as _};
 use rusqlite::{Connection, ToSql, Transaction, params};
 
 use super::SqliteStore;
@@ -25,7 +24,7 @@ use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{blob_array, insert_sql, proto, subst, with_write_tx};
+use crate::{blob_array, insert_sql, proto, subst, with_write_tx, word_from_blob};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {
@@ -67,7 +66,7 @@ fn transaction_filter_to_query(
         ),
         TransactionFilter::Ids(ids) => (
             format!("{TRANSACTIONS_BASE_QUERY} WHERE tx.id IN rarray(?)"),
-            vec![Box::new(blob_array(ids)) as Box<dyn ToSql>],
+            vec![Box::new(blob_array(ids.iter().map(TransactionId::as_bytes))) as Box<dyn ToSql>],
         ),
         TransactionFilter::Query(query) => transaction_query_to_sql(query),
         // `TransactionFilter` is `#[non_exhaustive]`, so a new variant must not compile silently
@@ -124,7 +123,7 @@ impl SqliteStore {
             .map(|result| {
                 let (id, script, details, status) = result.into_store_error()?;
                 Ok(TransactionRecord {
-                    id: TransactionId::read_from_bytes(&id)?,
+                    id: TransactionId::from_raw(word_from_blob(&id)?),
                     details: proto::decode_unchecked(&details)?,
                     script: script.map(|script| proto::decode_unchecked(&script)).transpose()?,
                     status: proto::decode_unchecked(&status)?,
@@ -144,7 +143,7 @@ impl SqliteStore {
                 b.details
                     .creation_timestamp
                     .cmp(&a.details.creation_timestamp)
-                    .then_with(|| b.id.to_bytes().cmp(&a.id.to_bytes()))
+                    .then_with(|| b.id.as_bytes().cmp(&a.id.as_bytes()))
             });
             if let Some(limit) = query.limit {
                 records.truncate(limit as usize);
@@ -282,7 +281,7 @@ pub(crate) fn upsert_transaction_record(
     tx: &Transaction<'_>,
     transaction: &TransactionRecord,
 ) -> Result<(), StoreError> {
-    let script_root = transaction.script.as_ref().map(|script| script.root().to_bytes());
+    let script_root = transaction.script.as_ref().map(|script| script.root().as_bytes());
 
     if let Some(script) = &transaction.script {
         tx.execute(INSERT_TRANSACTION_SCRIPT_QUERY, params![script_root, proto::encode(script)])
@@ -292,7 +291,7 @@ pub(crate) fn upsert_transaction_record(
     tx.execute(
         UPSERT_TRANSACTION_QUERY,
         params![
-            transaction.id.to_bytes(),
+            transaction.id.as_bytes(),
             proto::encode(&transaction.details),
             script_root,
             transaction.status.variant() as u8,

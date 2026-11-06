@@ -63,6 +63,8 @@ use alloc::vec::Vec;
 use core::cmp::max;
 
 use futures::{StreamExt, TryStreamExt};
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, decode_all, required};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
@@ -70,7 +72,6 @@ use miden_protocol::crypto::merkle::mmr::{InOrderIndex, PartialMmr};
 use miden_protocol::note::NoteId;
 use miden_protocol::transaction::TransactionId;
 use miden_tx::auth::TransactionAuthenticator;
-use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 use tracing::{info, warn};
 
 use crate::pswap::PswapChainObserver;
@@ -634,41 +635,88 @@ impl SyncSummary {
     }
 }
 
-impl Serializable for SyncSummary {
-    fn write_into<W: miden_tx::utils::serde::ByteWriter>(&self, target: &mut W) {
-        self.block_num.write_into(target);
-        self.new_public_notes.write_into(target);
-        self.new_private_notes.write_into(target);
-        self.committed_notes.write_into(target);
-        self.consumed_notes.write_into(target);
-        self.updated_accounts.write_into(target);
-        self.locked_accounts.write_into(target);
-        self.committed_transactions.write_into(target);
+// SERIALIZATION
+// ================================================================================================
+
+impl ProtobufValue for SyncSummary {
+    type Message = proto::SyncSummary;
+
+    fn to_proto(&self) -> Self::Message {
+        let note_ids = |ids: &[NoteId]| ids.iter().map(Into::into).collect();
+
+        Self::Message {
+            block_num: Some(self.block_num.into()),
+            new_public_notes: note_ids(&self.new_public_notes),
+            new_private_notes: note_ids(&self.new_private_notes),
+            committed_notes: note_ids(&self.committed_notes),
+            consumed_notes: note_ids(&self.consumed_notes),
+            updated_accounts: self.updated_accounts.iter().map(|id| (*id).into()).collect(),
+            locked_accounts: self.locked_accounts.iter().map(|id| (*id).into()).collect(),
+            committed_transactions: self.committed_transactions.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn from_proto(summary: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(SyncSummary::new(
+            required(summary.block_num, "sync summary", "block number")?.decode_and_verify()?,
+            decode_all(summary.new_public_notes)?,
+            decode_all(summary.new_private_notes)?,
+            decode_all(summary.committed_notes)?,
+            decode_all(summary.consumed_notes)?,
+            decode_all(summary.updated_accounts)?,
+            decode_all(summary.locked_accounts)?,
+            decode_all(summary.committed_transactions)?,
+        ))
     }
 }
 
-impl Deserializable for SyncSummary {
-    fn read_from<R: miden_tx::utils::serde::ByteReader>(
-        source: &mut R,
-    ) -> Result<Self, DeserializationError> {
-        let block_num = BlockNumber::read_from(source)?;
-        let new_public_notes = Vec::<NoteId>::read_from(source)?;
-        let new_private_notes = Vec::<NoteId>::read_from(source)?;
-        let committed_notes = Vec::<NoteId>::read_from(source)?;
-        let consumed_notes = Vec::<NoteId>::read_from(source)?;
-        let updated_accounts = Vec::<AccountId>::read_from(source)?;
-        let locked_accounts = Vec::<AccountId>::read_from(source)?;
-        let committed_transactions = Vec::<TransactionId>::read_from(source)?;
+// TESTS
+// ================================================================================================
 
-        Ok(Self {
-            block_num,
-            new_public_notes,
-            new_private_notes,
-            committed_notes,
-            consumed_notes,
-            updated_accounts,
-            locked_accounts,
-            committed_transactions,
-        })
+#[cfg(test)]
+mod tests {
+    use miden_client_proto::{ProtoDecodeError, ProtobufValue, decode, encode};
+    use miden_objects::proto::{note, primitives};
+    use miden_protocol::Word;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::note::NoteId;
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        ACCOUNT_ID_SENDER,
+    };
+    use miden_protocol::transaction::TransactionId;
+
+    use super::SyncSummary;
+
+    fn sync_summary() -> SyncSummary {
+        let note_id = |seed: u32| NoteId::from_raw(Word::from([seed, 0, 0, 0]));
+        SyncSummary::new(
+            BlockNumber::from(9u32),
+            vec![note_id(1)],
+            vec![note_id(2)],
+            vec![note_id(3)],
+            vec![note_id(4)],
+            vec![AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap()],
+            vec![AccountId::try_from(ACCOUNT_ID_SENDER).unwrap()],
+            vec![TransactionId::from_raw(Word::from([5u32, 0, 0, 0]))],
+        )
+    }
+
+    /// Each list holds a different ID, so a field mix-up causes a mismatch.
+    #[test]
+    fn sync_summary_round_trips() {
+        let summary = sync_summary();
+        assert_eq!(decode::<SyncSummary>(&encode(&summary)).unwrap(), summary);
+    }
+
+    #[test]
+    fn sync_summary_rejects_a_malformed_note_id() {
+        let mut message = sync_summary().to_proto();
+        message.committed_notes[0] = note::NoteId {
+            id: Some(primitives::Word { encoded: vec![0; 31] }),
+        };
+
+        assert!(matches!(SyncSummary::from_proto(message), Err(ProtoDecodeError::Conversion(_))));
     }
 }

@@ -5,15 +5,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_tx::utils::serde::Serializable;
 use miden_tx::utils::sync::RwLock;
 
 use crate::note_transport::{
@@ -180,6 +175,67 @@ impl MockNoteTransportNode {
 impl Default for MockNoteTransportNode {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// SERIALIZATION
+// ================================================================================================
+
+// The encoding carries the stored notes with their cursors, the nonce and the next sequence. The
+// batch cap and the proven notes are not part of it.
+impl ProtobufValue for MockNoteTransportNode {
+    type Message = proto::MockNoteTransportNode;
+
+    fn to_proto(&self) -> Self::Message {
+        use proto::mock_note_transport_node::{Entry, TagNotes};
+
+        Self::Message {
+            notes: self
+                .notes
+                .iter()
+                .map(|(tag, notes)| TagNotes {
+                    tag: tag.as_u32(),
+                    notes: notes
+                        .iter()
+                        .map(|(note, cursor)| Entry {
+                            note: Some(note.to_proto()),
+                            cursor: Some(cursor.to_proto()),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            nonce: self.nonce,
+            next_sequence: self.next_sequence,
+        }
+    }
+
+    fn from_proto(node: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "mock note transport entry";
+
+        let notes = node
+            .notes
+            .into_iter()
+            .map(|tag_notes| {
+                let notes = tag_notes
+                    .notes
+                    .into_iter()
+                    .map(|entry| {
+                        let info = NoteInfo::from_proto(required(entry.note, MESSAGE, "note")?)?;
+                        let cursor = required(entry.cursor, MESSAGE, "cursor")?;
+                        Ok((info, NoteTransportCursor::from_proto(cursor)?))
+                    })
+                    .collect::<Result<Vec<_>, ProtoDecodeError>>()?;
+                Ok((NoteTag::from(tag_notes.tag), notes))
+            })
+            .collect::<Result<BTreeMap<_, _>, ProtoDecodeError>>()?;
+
+        Ok(Self {
+            notes,
+            nonce: node.nonce,
+            next_sequence: node.next_sequence,
+            max_batch: None,
+            proven_notes: BTreeMap::default(),
+        })
     }
 }
 
@@ -354,32 +410,5 @@ impl NoteTransportClient for FaultyNoteTransportApi {
             ));
         }
         self.inner.fetch_notes_page(tags, cursor, sync_to).await
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for MockNoteTransportNode {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.notes.write_into(target);
-        self.nonce.write_into(target);
-        self.next_sequence.write_into(target);
-    }
-}
-
-impl Deserializable for MockNoteTransportNode {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let notes = BTreeMap::<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>::read_from(source)?;
-        let nonce = u64::read_from(source)?;
-        let next_sequence = u64::read_from(source)?;
-
-        Ok(Self {
-            notes,
-            nonce,
-            next_sequence,
-            max_batch: None,
-            proven_notes: BTreeMap::default(),
-        })
     }
 }

@@ -11,14 +11,17 @@
 
 ### Enhancements
 
+* Added the standard note name, type, tag, storage and assets of each input and output note to the transaction summary. For an input note it also shows whether the note is authenticated. The summary loads the token map only when it shows notes or vault changes ([#2760](https://github.com/0xMiden/rust-sdk/pull/2760)).
 * `account --show`, `notes --show` and the transaction summary show non-fungible assets in a separate table with their faucet ID and asset ID. The fungible asset tables no longer have an asset type column. `tx --show` shows the asset ID of a non-fungible asset, and `account --list` and `account --show` label a non-fungible faucet as `Non-fungible faucet` ([#2688](https://github.com/0xMiden/rust-sdk/pull/2688)).
 * [rust] `miden-client` no longer pulls the `tonic` runtime dependencies into builds unless the `tonic` feature enables them ([#2520](https://github.com/0xMiden/rust-sdk/pull/2520)).
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 
 ### Features
 
+* [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version ([#2763](https://github.com/0xMiden/rust-sdk/pull/2763)).
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::input_notes_args`, `TransactionRequest::explicit_input_notes` and `TransactionRequest::expiration_delta` getters ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
+* [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource` and `NoteInfo`. `miden-client` encodes `TransactionResult`, `SyncSummary` and `ChainAnchor` with `miden-client-proto`, and `MockNoteTransportNode` under its `testing` feature ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
 * [FEATURE][rust] Added `NodeRpcClient::get_account_details_at`, which fetches a public account at a given block and also returns the witness that commits to it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [FEATURE][rust] Added `Client::prune_chain_anchors`, which deletes the stored MMR peaks at the past sync heights up to a block number ([#2740](https://github.com/0xMiden/rust-sdk/pull/2740)).
@@ -26,6 +29,10 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
+* [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
+* [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.
+* [BREAKING][removal][rust] Removed `VerifyingRpcClient`. Use `GrpcClient` directly, since it already rejects mismatched responses. `NodeRpcClient` implementations that talk to a remote node must check responses against requests themselves.
 * [BREAKING][removal][rust] Removed the deprecated `Client::MAX_ACCOUNT_TAGS`, `Client::MAX_BACKFILL_TAGS_PER_SYNC`, `ClientError::AccountTagLimitExceeded` and `NoteTransportError::PaginationDidNotTerminate`. Use `Client::MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST` for the request-size limit ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][removal][rust] Removed the deprecated `TransactionRequestBuilder::auth_arg`; use `TransactionRequestBuilder::auth_args`, which also adds the auth arg preimage to the advice map ([#2777](https://github.com/0xMiden/rust-sdk/pull/2777)).
 * [BREAKING][arch][rust] Moved `TransactionRequest`, `TransactionRequestBuilder`, `TransactionRequestError`, `TransactionScriptTemplate`, `NoteArgs`, `ForeignAccount`, `PaymentNoteDescription`, `SwapTransactionData`, `PswapTransactionData` and `build_fpi_script` to `miden-client-core`. `miden-client-core` now depends on `miden-standards` ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
@@ -66,6 +73,10 @@
 * [BREAKING][arch][rust] Removed `NodeRpcClient::sync_notes_with_content` and `NodeRpcClient::get_public_note_records`. `get_public_note_records` is now `Client::get_public_note_records`. Moved `SyncedNote` from `miden_client_core::rpc::domain::note` to `miden_client::sync` and made its fields private. Removed `ResolvedSyncNotesBlock` and `NoteContentFetch` from the public API ([#2767](https://github.com/0xMiden/rust-sdk/pull/2767)).
 * [BREAKING][param][rust,store] `Store::get_note_transport_sync_state` and `Store::set_note_transport_sync_state` replace `get_note_transport_cursors` and `set_note_transport_cursors`. They read and write the new `NoteTransportSyncState`, which holds the note transport cursor and the tags that it covers. The SQLite store keeps the state under a new key and does not read per-tag cursors ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of `TransactionStoreUpdate`, `NoteUpdates`, `InputNoteUpdate`, `OutputNoteUpdate`, `NoteUpdateType`, `InputNoteRecord`, `InputNoteState` and its states, `NoteSubmissionData`, `OutputNoteRecord`, `OutputNoteState`, `NoteTagRecord` and `AccountStorageRequirements`. Use the `TransactionStoreUpdate` protobuf encoding in `miden-client-proto` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
+* [BREAKING][removal][rust] Removed the `Serializable` and `Deserializable` implementations of the remaining client types, among them `TransactionResult`, `SyncSummary`, `ChainAnchor`, `NoteTagSource`, `FaucetMetadata` and `MockNoteTransportNode` ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [BREAKING][param][rust] `Client::set_setting` takes the value as `Vec<u8>` and `Client::get_setting` returns `Option<Vec<u8>>`, so the caller encodes the value ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [BREAKING][removal][rust] Removed `ClientError::DataDeserializationError`. The client no longer decodes setting values, so nothing produced it ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [BREAKING][arch][rust] Moved the `NoteTransportClient` trait, `NoteTransportPage`, `NoteInfo`, `TransportNote` and `NoteTransportError` to `miden-client-core`. `miden_client::note_transport` re-exports them, so their paths keep working. Removed the `miden_client::note_transport::errors` module ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 
 ### Features
 

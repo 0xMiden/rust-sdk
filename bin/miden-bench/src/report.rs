@@ -3,6 +3,9 @@
 use std::time::Duration;
 
 use comfy_table::{Attribute, Cell, ContentArrangement, Table, presets};
+use miden_client::transaction::ProvenTransaction;
+use miden_objects::proto;
+use prost::Message;
 
 use crate::metrics::BenchmarkResult;
 
@@ -143,4 +146,9 @@ pub fn format_size(bytes: usize) -> String {
     } else {
         format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// Returns the size of the protobuf encoding of `tx`. The node receives this encoding.
+pub fn proven_transaction_size(tx: &ProvenTransaction) -> usize {
+    proto::transaction::ProvenTransaction::from(tx).encoded_len()
 }

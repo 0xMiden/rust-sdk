@@ -782,7 +782,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn raw_arguments_are_read_as_decimal_felts() {
         let args = ["0", "10", (Felt::ORDER - 1).to_string().as_str()].map(String::from);

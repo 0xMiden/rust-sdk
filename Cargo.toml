@@ -56,7 +56,9 @@ miden-debug     = { default-features = false, features = ["dap", "std"], version
 miden-processor = { default-features = false, version = "0.25" }
 
 # External dependencies
+aes-gcm            = { default-features = false, features = ["aes", "alloc"], version = "0.10" }
 anyhow             = { default-features = false, version = "1.0" }
+argon2             = { default-features = false, features = ["alloc"], version = "0.5" }
 assert_cmd         = { version = "2.0" }
 async-trait        = { version = "0.1" }
 chrono             = { version = "0.4" }
@@ -71,6 +73,7 @@ rand_chacha        = { version = "0.10" }
 regex              = { version = "1.0" }
 rstest             = { version = "0.25" }
 serde              = { features = ["derive"], version = "1.0" }
+sha2               = { default-features = false, version = "0.10" }
 serde_json         = { version = "1.0" }
 tempfile           = { version = "3.0" }
 thiserror          = { default-features = false, version = "2.0" }
@@ -79,6 +82,7 @@ tonic              = { default-features = false, version = "0.14" }
 tracing            = { version = "0.1" }
 tracing-subscriber = { default-features = false, version = "0.3" }
 uuid               = { version = "1.10" }
+zeroize            = { default-features = false, features = ["alloc"], version = "1.8" }
 
 # Lints are set to warn for development, which are promoted to errors in CI.
 [workspace.lints.clippy]

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use deadpool::Runtime;
 use deadpool::managed::{Manager, Metrics, RecycleResult};
@@ -16,6 +17,9 @@ deadpool::managed_reexports!(
 );
 
 const RUNTIME: Runtime = Runtime::Tokio1;
+
+/// How long a connection waits for a lock before surfacing `SQLITE_BUSY`.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // POOL MANAGER
 // ================================================================================================
@@ -56,6 +60,27 @@ impl SqlitePoolManager {
         // this module for every connection we create to the DB to support the
         // queries we want to run
         array::load_module(&conn)?;
+
+        // The store is designed for a single accessor, but SQLite locks at the file
+        // level: an accidental second process on the same database (e.g. a CLI
+        // invocation while another client instance runs) would otherwise fail
+        // instantly with `SQLITE_BUSY`. Waiting briefly turns that accident into a
+        // short delay. Also set before the journal-mode switch below, which itself
+        // takes a lock.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+
+        // WAL commits append pages once to the `-wal` file instead of the rollback
+        // journal's double write (journal + database), and it is what makes
+        // `synchronous = NORMAL` below safe. `journal_mode` returns the resulting
+        // mode as a row (and legitimately reports a non-WAL mode for in-memory
+        // databases), so it cannot go through `pragma_update`.
+        let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+
+        // In WAL mode, NORMAL fsyncs at checkpoints rather than on every commit —
+        // the store applies many small transactions per sync cycle. Database
+        // integrity on crash is preserved; at most the final commits before a power
+        // loss roll back, which the next state sync re-derives.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         // Enable foreign key checks.
         conn.pragma_update(None, "foreign_keys", "ON")?;

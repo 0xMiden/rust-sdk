@@ -52,8 +52,12 @@ dap = ["dep:miden-processor", "std"]
 default = ["std"]
 std = [
   "concurrent",
+  "dep:aes-gcm",
+  "dep:argon2",
+  "dep:sha2",
   "dep:tempfile",
   "dep:tokio",
+  "dep:zeroize",
   "miden-agglayer/std",
   "miden-protocol/std",
   "miden-tx/std",
@@ -82,7 +86,9 @@ miden-tx        = { workspace = true }
 miden-tx-batch  = { workspace = true }
 
 # External dependencies
+aes-gcm      = { optional = true, workspace = true }
 anyhow       = { workspace = true }
+argon2       = { optional = true, workspace = true }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
 futures      = { version = "0.3" }
@@ -91,6 +97,7 @@ prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
 rand         = { workspace = true }
 serde        = { workspace = true }
+sha2         = { optional = true, workspace = true }
 serde_json   = { workspace = true }
 tempfile     = { optional = true, workspace = true }
 thiserror    = { workspace = true }
@@ -100,6 +107,7 @@ tonic-health = { version = "0.14" }
 tonic-prost  = { version = "0.14" }
 tracing      = { workspace = true }
 uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
+zeroize      = { optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom             = { features = ["wasm_js"], version = "0.3" }

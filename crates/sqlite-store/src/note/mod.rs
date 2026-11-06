@@ -97,7 +97,13 @@ struct SerializedInputNoteParts {
     pub state: Vec<u8>,
     pub created_at: u64,
     pub attachments: Vec<u8>,
+    pub script_root: Vec<u8>,
 }
+
+/// Deserialized note scripts keyed by their script root, used to deserialize each distinct script
+/// only once per query. Notes that share a script then share a single [`NoteScript`], which holds
+/// its MAST forest behind an `Arc`.
+type NoteScriptCache = BTreeMap<Vec<u8>, NoteScript>;
 
 /// Represents the parts retrieved from the database to build an `OutputNoteRecord`.
 struct SerializedOutputNoteParts {
@@ -140,12 +146,13 @@ impl SqliteStore {
         filter: &NoteFilter,
     ) -> Result<Vec<InputNoteRecord>, StoreError> {
         let (query, params) = note_filter_to_query_input_notes(filter);
+        let mut script_cache = NoteScriptCache::new();
         let notes = conn
             .prepare(query.as_str())
             .into_store_error()?
             .query_map(params_from_iter(params), parse_input_note_columns)
             .expect("no binding parameters used in query")
-            .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
+            .map(|result| parse_input_note(result.into_store_error()?, &mut script_cache))
             .collect::<Result<Vec<InputNoteRecord>, _>>()?;
 
         Ok(notes)
@@ -185,12 +192,13 @@ impl SqliteStore {
             block_end,
             offset,
         );
+        let mut script_cache = NoteScriptCache::new();
         let note = conn
             .prepare(&query)
             .into_store_error()?
             .query_map(params_from_iter(params), parse_input_note_columns)
             .expect("no binding parameters used in query")
-            .map(|result| Ok(result.into_store_error()?).and_then(parse_input_note))
+            .map(|result| parse_input_note(result.into_store_error()?, &mut script_cache))
             .next()
             .transpose()?;
 
@@ -362,6 +370,7 @@ fn parse_input_note_columns(
     let state: Vec<u8> = row.get(4)?;
     let created_at: u64 = row.get(5)?;
     let attachments: Vec<u8> = row.get(6)?;
+    let script_root: Vec<u8> = row.get(7)?;
 
     Ok(SerializedInputNoteParts {
         assets,
@@ -371,12 +380,15 @@ fn parse_input_note_columns(
         state,
         created_at,
         attachments,
+        script_root,
     })
 }
 
-/// Parse a note from the provided parts.
+/// Parse a note from the provided parts, reusing (and populating) `script_cache` so that a script
+/// shared by several notes is deserialized once.
 fn parse_input_note(
     serialized_input_note_parts: SerializedInputNoteParts,
+    script_cache: &mut NoteScriptCache,
 ) -> Result<InputNoteRecord, StoreError> {
     let SerializedInputNoteParts {
         assets,
@@ -386,12 +398,20 @@ fn parse_input_note(
         state,
         created_at,
         attachments,
+        script_root,
     } = serialized_input_note_parts;
 
     let assets = NoteAssets::read_from_bytes(&assets)?;
 
     let serial_number = Word::read_from_bytes(&serial_number)?;
-    let script = NoteScript::read_from_bytes(&script)?;
+    let script = match script_cache.get(&script_root) {
+        Some(cached) => cached.clone(),
+        None => {
+            let script = NoteScript::read_from_bytes(&script)?;
+            script_cache.insert(script_root, script.clone());
+            script
+        },
+    };
     let inputs = NoteStorage::read_from_bytes(&inputs)?;
     let recipient = NoteRecipient::new(serial_number, script, inputs);
 

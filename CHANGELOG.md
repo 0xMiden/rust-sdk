@@ -8,6 +8,8 @@
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
+* [FEATURE][cli] Added `call --trace`, which prints the hierarchy of procedure calls the execution made, with the arguments, return value and cycle count of each call. By default only the contract's own procedures are shown; `-v` adds library functions and `-vv` shows every frame that has a name. It requires `--package`, which names the frames. Behind the new `trace` cargo feature ([#2588](https://github.com/0xMiden/rust-sdk/pull/2588)).
+* [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host. `replay_call_trace` replays the recording through the debug engine to produce a `CallTrace`. The replay blocks the thread, so the caller chooses where it runs ([#2588](https://github.com/0xMiden/rust-sdk/pull/2588)).
 
 ### Enhancements
 

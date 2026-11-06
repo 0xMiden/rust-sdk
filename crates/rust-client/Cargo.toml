@@ -78,6 +78,7 @@ testing = [
   "miden-usdcx/testing",
 ]
 tonic = ["dep:miden-client-grpc", "dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
+trace = ["dep:miden-debug-engine", "std"]
 
 [dependencies]
 # Miden dependencies
@@ -87,6 +88,7 @@ miden-client-core     = { workspace = true }
 miden-client-grpc     = { optional = true, workspace = true }
 miden-client-proto    = { workspace = true }
 miden-debug           = { optional = true, workspace = true }
+miden-debug-engine    = { optional = true, workspace = true }
 miden-objects         = { workspace = true }
 miden-processor       = { workspace = true }
 miden-protocol        = { workspace = true }

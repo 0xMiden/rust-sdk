@@ -869,6 +869,7 @@
 
 ### Features
 
+<<<<<<< HEAD
 * Added support for getting specific vault and storage elements from `Store` along with their proofs ([#1164](https://github.com/0xMiden/rust-sdk/pull/1164)).
 * Implemented functions for lazy loading on webstore [(#1184)](https://github.com/0xMiden/rust-sdk/pull/1184).
 * Separated `migrations` and `settings` tables [(#1287)](https://github.com/0xMiden/rust-sdk/pull/1287).
@@ -892,6 +893,32 @@
 * Introduce an account and note tag limit to be tracked by the client. ([#1476](https://github.com/0xMiden/rust-sdk/pull/1476)).
 * Added ability to create `AccountComponent` from a `Package` and `StorageSlot` array in the Web Client ([#1469](https://github.com/0xMiden/rust-sdk/pull/1469)).
 * Added new global default .miden directory in HOME path at the client CLI ([#1465](https://github.com/0xMiden/rust-sdk/pull/1465))
+=======
+* Added support for getting specific vault and storage elements from `Store` along with their proofs ([#1164](https://github.com/0xMiden/miden-client/pull/1164)).
+* Implemented functions for lazy loading on webstore [(#1184)](https://github.com/0xMiden/miden-client/pull/1184).
+* Separated `migrations` and `settings` tables [(#1287)](https://github.com/0xMiden/miden-client/pull/1287).
+* Added single default address on account creation ([#1308](https://github.com/0xMiden/miden-client/pull/1308)).
+* Added a `GetNoteScriptByRoot` call to the `RpcClient` ([#1311](https://github.com/0xMiden/miden-client/pull/1311)).
+* Implemented account lazy loading with more granular account data getters ([#1321](https://github.com/0xMiden/miden-client/pull/1321)).
+* Added `NoAuth` component to the web client ([#1330](https://github.com/0xMiden/miden-client/pull/1330)).
+* Implemented shared source manager for better error reporting ([#1275](https://github.com/0xMiden/miden-client/pull/1275)).
+* Added `getMapEntries` method to `AccountStorage` in web client for iterating storage map entries ([#1323](https://github.com/0xMiden/miden-client/pull/1323)).
+* Added `Address` addition and removal for accounts ([#1367](https://github.com/0xMiden/miden-client/pull/1367)).
+* Refactored code into their own files and added `ProvenTransaction` and `TransactionStoreUpdate` bindings for the WebClient ([#1408](https://github.com/0xMiden/miden-client/pull/1408)).
+* Added `NoteFile` type, used for exporting and importing `Notes`([#1378](https://github.com/0xMiden/miden-client/pull/1383)).
+* Build `IndexedDB` code from a `build.rs` instead of pushing artifacts to the repo ([#1409](https://github.com/0xMiden/miden-client/pull/1409)).
+* Implemented missing RPC endpoints: `/SyncStorageMaps`, `/SyncAccountVault` & `/SyncTransactions` ([#1362](https://github.com/0xMiden/miden-client/pull/1362)).
+* Updated `submit_proven_transaction()` to include `TransactionInputs` for validator ([#1421](https://github.com/0xMiden/miden-client/pull/1421)).
+* [BREAKING] Replaced `AccountComponentTemplates` for `Packages` for account creation ([#1313](https://github.com/0xMiden/miden-client/pull/1313)).
+* Allowed `new-account` command to create accounts with non-Falcon auth components ([#1443](https://github.com/0xMiden/miden-client/pull/1443)).
+* Allow for note ID prefixes in CLI `notes --send` ([#1433](https://github.com/0xMiden/miden-client/pull/1433)).
+* Added support for silently initializing the client CLI ([#1424](https://github.com/0xMiden/miden-client/pull/1424)).
+* Started allowing for note ID prefixes in CLI `notes --send` ([#1433](https://github.com/0xMiden/miden-client/pull/1433)).
+* Refactored note scripts to be pre-loaded into the store instead of providing them through advice inputs ([#1426](https://github.com/0xMiden/miden-client/pull/1426)).
+* [BREAKING] Refactored client transaction APIs and the new `TransactionResult` type ([#1407](https://github.com/0xMiden/miden-client/pull/1407)).
+* Added new `.miden` directory for configuration files at the client CLI ([#1464](https://github.com/0xMiden/miden-client/pull/1464))
+* Added ability to create `AccountComponent` from a `Package` and `StorageSlot` array in the Web Client ([#1469](https://github.com/0xMiden/miden-client/pull/1469)).
+>>>>>>> 70a2f1732b5d297dd6e8d166776e871628fc5b4c
 
 ### Changes
 

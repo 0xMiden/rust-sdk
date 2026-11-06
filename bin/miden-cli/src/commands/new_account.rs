@@ -286,6 +286,7 @@ impl NewWalletCmd {
 ///
 /// # Authentication Components
 ///
+<<<<<<< HEAD
 /// If a package with an authentication component is provided via `-p`, it will be used for the
 /// account. Otherwise, a default `RpoFalcon512` authentication component will be added
 /// automatically.
@@ -321,6 +322,25 @@ impl NewWalletCmd {
 /// Set init storage values on the command line instead of in a file:
 /// ```bash
 /// miden-client new-account -p my-component --init-slot 'my::component::slot="0x1234"'
+=======
+/// If a package with an authentication component is provided via `-p`, it will be used for
+/// the account. Otherwise, a default `RpoFalcon512` authentication component will be added
+/// automatically.
+///
+/// Each account can only have one authentication component. If multiple packages contain
+/// authentication components, an error will be returned.
+///
+/// # Examples
+///
+/// Create an account with default Falcon auth:
+/// ```bash
+/// miden-client new-account --account-type regular-account-immutable-code -p basic-wallet
+/// ```
+///
+/// Create an account with a custom auth component (e.g., NoAuth):
+/// ```bash
+/// miden-client new-account --account-type regular-account-immutable-code -p no-auth -p basic-wallet
+>>>>>>> 70a2f1732b5d297dd6e8d166776e871628fc5b4c
 /// ```
 #[derive(Debug, Parser, Clone)]
 pub struct NewAccountCmd {
@@ -590,14 +610,54 @@ fn should_add_implicit_token_policy_manager(regular_components: &[AccountCompone
     has_basic_fungible_faucet && !has_token_policy_manager
 }
 
+/// Separates account components into auth and regular components.
+///
+/// Returns a tuple of (`auth_component`, `regular_components`).
+/// Returns an error if multiple auth components are found.
+fn separate_auth_components(
+    components: Vec<AccountComponent>,
+) -> Result<(Option<AccountComponent>, Vec<AccountComponent>), CliError> {
+    let mut auth_component: Option<AccountComponent> = None;
+    let mut regular_components = Vec::new();
+
+    for component in components {
+        let auth_proc_count =
+            component.get_procedures().into_iter().filter(|(_, is_auth)| *is_auth).count();
+
+        match auth_proc_count {
+            0 => regular_components.push(component),
+            1 => {
+                if auth_component.is_some() {
+                    return Err(CliError::InvalidArgument(
+                        "Multiple auth components found in packages. Only one auth component is allowed per account.".to_string()
+                    ));
+                }
+                auth_component = Some(component);
+            },
+            _ => {
+                return Err(CliError::InvalidArgument(
+                    "Component has multiple auth procedures. Only one auth procedure is allowed per component.".to_string()
+                ));
+            },
+        }
+    }
+
+    Ok((auth_component, regular_components))
+}
+
 /// Helper function to create the seed, initialize the account builder, add the given components,
 /// and build the account.
 ///
+<<<<<<< HEAD
 /// The auth component follows `auth_choice`: an explicitly selected scheme either commits to the
 /// given external ECDSA key (storing no secret key) or generates and stores a key of that scheme.
 /// With no explicit selection, an auth component from the packages wins, and a Falcon key is
 /// generated when the packages provide none.
 async fn create_client_account<AUTH: Keystore + Sync + 'static>(
+=======
+/// If no auth component is detected in the packages, a Falcon-based auth component will be added.
+async fn create_client_account<AUTH: TransactionAuthenticator + Sync + 'static>(
+>>>>>>> 70a2f1732b5d297dd6e8d166776e871628fc5b4c
     client: &mut Client<AUTH>,
     keystore: &CliKeyStore,
     account_type: AccountType,
@@ -640,6 +700,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
+<<<<<<< HEAD
     let builder = AccountBuilder::new(init_seed).account_type(account_type);
 
     // Only add the default auth component when no package provides one.
@@ -667,6 +728,27 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     }
     let (mut builder, auth_outcome) =
         add_auth_component(builder, auth_choice, auth_components, client.rng())?;
+=======
+    let mut builder = AccountBuilder::new(init_seed)
+        .account_type(account_type)
+        .storage_mode(storage_mode);
+
+    // Process packages and separate auth components from regular components
+    let account_components = process_packages(packages, &init_storage_data)?;
+    let (auth_component, regular_components) = separate_auth_components(account_components)?;
+
+    // Add the auth component (either from packages or default Falcon)
+    let key_pair = if let Some(auth_component) = auth_component {
+        debug!("Adding auth component from package");
+        builder = builder.with_auth_component(auth_component);
+        None
+    } else {
+        debug!("Adding default Falcon auth component");
+        let kp = SecretKey::with_rng(client.rng());
+        builder = builder.with_auth_component(AuthRpoFalcon512::new(kp.public_key().into()));
+        Some(kp)
+    };
+>>>>>>> 70a2f1732b5d297dd6e8d166776e871628fc5b4c
 
     // Add all regular (non-auth) components
     for component in regular_components {
@@ -677,6 +759,7 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
         .build_with_schema_commitment()
         .map_err(|err| CliError::Account(err, "failed to build account".into()))?;
 
+<<<<<<< HEAD
     match auth_outcome {
         AuthOutcome::Generated(key) => {
             keystore.add_key(&key, account.id()).await.map_err(CliError::KeyStore)?;
@@ -702,6 +785,16 @@ async fn create_client_account<AUTH: Keystore + Sync + 'static>(
     if offline {
         client.prepare_offline_bootstrap().await?;
         println!("Offline mode enabled for local account creation.");
+=======
+    // Only add the key to the keystore if we generated a default key type (Falcon)
+    if let Some(key_pair) = key_pair {
+        keystore
+            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .map_err(CliError::KeyStore)?;
+        println!("Generated and stored Falcon512 authentication key in keystore.");
+    } else {
+        println!("Using custom authentication component from package (no key generated).");
+>>>>>>> 70a2f1732b5d297dd6e8d166776e871628fc5b4c
     }
 
     client.add_account(&account, false).await?;

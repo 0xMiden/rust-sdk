@@ -16,7 +16,7 @@ use miden_client_core::store::{
     OutputNoteRecord,
     OutputNoteUpdate,
 };
-use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+use miden_client_core::sync::NoteTagRecord;
 use miden_client_core::transaction::{
     DiscardCause,
     ForeignAccount,
@@ -33,26 +33,13 @@ use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::note::{
-    Note,
-    NoteDetails,
-    NoteDetailsCommitment,
-    NoteId,
-    NoteRecipient,
-    NoteTag,
-    PartialNote,
-};
-use miden_protocol::transaction::{
-    AccountInputs,
-    ExecutedTransaction,
-    InputNote,
-    TransactionScript,
-};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
+use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
+use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+use miden_protocol::utils::serde::Serializable;
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, required};
+use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;
@@ -213,7 +200,7 @@ impl ProtobufValue for TransactionRequest {
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
             expected_future_notes: self
                 .expected_future_notes()
-                .map(|(details, tag)| expected_future_note(details, *tag))
+                .map(ProtobufValue::to_proto)
                 .collect(),
             advice_map: Some(self.advice_map().into()),
             merkle_store: Some(self.merkle_store().into()),
@@ -271,8 +258,8 @@ fn decode_transaction_request_v1(
     let expected_future_notes = request
         .expected_future_notes
         .into_iter()
-        .map(expected_future_note_from_proto)
-        .collect::<Result<Vec<(NoteDetails, NoteTag)>, ProtoDecodeError>>()?;
+        .map(<(NoteDetails, NoteTag)>::from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
     let advice_map: AdviceMap =
         required(request.advice_map, MESSAGE, "advice map")?.decode_and_verify()?;
     let merkle_store: MerkleStore =
@@ -567,20 +554,6 @@ impl TryFrom<proto::ForeignAccount> for ForeignAccount {
     }
 }
 
-fn expected_future_note(details: &NoteDetails, tag: NoteTag) -> proto::ExpectedFutureNote {
-    proto::ExpectedFutureNote {
-        details: Some(details.into()),
-        tag: tag.into(),
-    }
-}
-
-fn expected_future_note_from_proto(
-    note: proto::ExpectedFutureNote,
-) -> Result<(NoteDetails, NoteTag), ProtoDecodeError> {
-    let details = required(note.details, "expected future note", "details")?.decode_and_verify()?;
-    Ok((details, NoteTag::from(note.tag)))
-}
-
 impl From<&AccountFetch> for proto::AccountFetch {
     fn from(fetch: &AccountFetch) -> Self {
         use proto::account_fetch::{AllAssets, AllStorageMaps, AssetIds, Storage, Vault};
@@ -673,6 +646,27 @@ impl TryFrom<proto::AccountStorageRequirements> for AccountStorageRequirements {
     }
 }
 
+// EXPECTED FUTURE NOTE
+// ================================================================================================
+
+impl ProtobufValue for (NoteDetails, NoteTag) {
+    type Message = proto::ExpectedFutureNote;
+
+    fn to_proto(&self) -> Self::Message {
+        let (details, tag) = self;
+        Self::Message {
+            details: Some(details.into()),
+            tag: (*tag).into(),
+        }
+    }
+
+    fn from_proto(note: Self::Message) -> Result<Self, ProtoDecodeError> {
+        let details =
+            required(note.details, "expected future note", "details")?.decode_and_verify()?;
+        Ok((details, NoteTag::from(note.tag)))
+    }
+}
+
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
@@ -684,11 +678,7 @@ impl ProtobufValue for TransactionStoreUpdate {
         Self::Message {
             executed_transaction: self.executed_transaction().to_bytes(),
             submission_height: Some(self.submission_height().into()),
-            future_notes: self
-                .future_notes()
-                .iter()
-                .map(|(details, tag)| expected_future_note(details, *tag))
-                .collect(),
+            future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
                 .input_notes()
                 .iter()
@@ -712,15 +702,13 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction =
-            ExecutedTransaction::read_from_bytes(&update.executed_transaction)
-                .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
+        let executed_transaction = read_upstream(&update.executed_transaction)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
             .future_notes
             .into_iter()
-            .map(expected_future_note_from_proto)
+            .map(<(NoteDetails, NoteTag)>::from_proto)
             .collect::<Result<_, _>>()?;
         let input_notes = update
             .input_notes
@@ -792,47 +780,13 @@ impl TryFrom<proto::NoteUpdateType> for NoteUpdateType {
     }
 }
 
-impl ProtobufValue for NoteTagRecord {
-    type Message = proto::NoteTagRecord;
-
-    fn to_proto(&self) -> Self::Message {
-        use proto::note_tag_record::{Source, User};
-
-        let source = match self.source {
-            NoteTagSource::Account(account_id) => Source::Account(account_id.into()),
-            NoteTagSource::Note(commitment) => Source::Note(commitment.as_word().into()),
-            NoteTagSource::User => Source::User(User {}),
-            NoteTagSource::Subscription(key) => Source::Subscription(key.into()),
-        };
-
-        Self::Message {
-            tag: self.tag.into(),
-            source: Some(source),
-        }
-    }
-
-    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
-        use proto::note_tag_record::Source;
-
-        let source = match required(record.source, "note tag record", "source")? {
-            Source::Account(account_id) => NoteTagSource::Account(account_id.decode_and_verify()?),
-            Source::Note(commitment) => {
-                NoteTagSource::Note(NoteDetailsCommitment::from_raw(Word::try_from(commitment)?))
-            },
-            Source::User(_) => NoteTagSource::User,
-            Source::Subscription(key) => NoteTagSource::Subscription(Word::try_from(key)?),
-        };
-
-        Ok(NoteTagRecord { tag: NoteTag::from(record.tag), source })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::vec;
     use std::vec::Vec;
 
     use miden_client_core::store::{InputNoteRecord, OutputNoteRecord};
+    use miden_client_core::sync::NoteTagSource;
     use miden_client_core::transaction::{
         ForeignAccount,
         TransactionRequest,
@@ -871,7 +825,6 @@ mod tests {
         AccountStorageRequirements,
         InputNoteUpdate,
         NoteTagRecord,
-        NoteTagSource,
         NoteUpdateType,
         NoteUpdates,
         OutputNoteUpdate,

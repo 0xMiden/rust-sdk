@@ -3,10 +3,12 @@
 use std::path::Path;
 use std::time::Instant;
 
+use miden_client::Client;
 use miden_client::account::{AccountFile, AccountId};
 use miden_client::keystore::{FilesystemKeyStore, Keystore};
 use miden_client::testing::common::TestClient;
-use miden_client::{Client, Serializable};
+use miden_objects::proto;
+use prost::Message;
 
 use crate::report::format_size;
 
@@ -59,7 +61,7 @@ pub async fn import_from_network(
         .get_account(account_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Imported account {account_id} not found in store"))?;
-    let serialized_size = account.to_bytes().len();
+    let serialized_size = proto::account::Account::from(&account).encoded_len();
 
     println!();
     println!("Account ID: {account_id}");

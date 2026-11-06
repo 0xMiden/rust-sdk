@@ -1,4 +1,3 @@
-pub mod errors;
 pub mod generated;
 #[cfg(feature = "tonic")]
 pub mod grpc;
@@ -9,6 +8,15 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+pub use miden_client_core::errors::NoteTransportError;
+pub use miden_client_core::note_transport::{
+    NoteInfo,
+    NoteTransportClient,
+    NoteTransportCursor,
+    NoteTransportPage,
+    NoteTransportSyncState,
+    TransportNote,
+};
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{
@@ -20,17 +28,9 @@ use miden_protocol::note::{
     NoteInclusionProof,
     NoteTag,
 };
-use miden_protocol::utils::serde::Serializable;
 use miden_tx::auth::TransactionAuthenticator;
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    SliceReader,
-};
+use miden_tx::utils::serde::{Deserializable, SliceReader};
 
-pub use self::errors::NoteTransportError;
 use crate::note::{NoteFile, NoteSyncHint};
 use crate::store::{NoteFilter, StoreError};
 use crate::{Client, ClientError};
@@ -38,7 +38,6 @@ use crate::{Client, ClientError};
 pub const NOTE_TRANSPORT_MAINNET_ENDPOINT: &str = "https://transport.mainnet.miden.io";
 pub const NOTE_TRANSPORT_TESTNET_ENDPOINT: &str = "https://transport.miden.io";
 pub const NOTE_TRANSPORT_DEVNET_ENDPOINT: &str = "https://transport.devnet.miden.io";
-pub use miden_client_core::note_transport::{NoteTransportCursor, NoteTransportSyncState};
 
 /// Maximum number of note tags in one transport fetch request. The service rejects larger requests.
 const MAX_NOTE_TAGS_PER_TRANSPORT_REQUEST: usize = 128;
@@ -441,133 +440,10 @@ fn validate_transport_page(
     Ok(notes)
 }
 
-/// The part of a note that the note transport network sends to a recipient.
-///
-/// The transport sends the original header and details. It does not send note attachments. The
-/// constructor verifies that the header commits to the details.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransportNote {
-    header: NoteHeader,
-    details: NoteDetails,
-}
-
-impl TransportNote {
-    /// Creates a transport note from matching note parts.
-    pub fn new(header: NoteHeader, details: NoteDetails) -> Result<Self, NoteTransportError> {
-        validate_note_parts(&header, &details)?;
-        Ok(Self { header, details })
-    }
-
-    /// Returns the note header.
-    pub fn header(&self) -> &NoteHeader {
-        &self.header
-    }
-
-    /// Returns the note details.
-    pub fn details(&self) -> &NoteDetails {
-        &self.details
-    }
-
-    /// Returns the note header and details.
-    pub fn into_parts(self) -> (NoteHeader, NoteDetails) {
-        (self.header, self.details)
-    }
-}
-
-impl From<Note> for TransportNote {
-    fn from(note: Note) -> Self {
-        let header = *note.header();
-        let details = NoteDetails::from(note);
-        Self { header, details }
-    }
-}
-
-/// The main transport client trait for sending and receiving private notes.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait NoteTransportClient: Send + Sync {
-    /// Sends a note together with its inclusion proof.
-    ///
-    /// The transport carries the proof to the network. The network verifies `inclusion_proof`
-    /// before it stores the note and relays the exact commitment block to the recipient.
-    async fn send_note_with_proof(
-        &self,
-        note: TransportNote,
-        inclusion_proof: NoteInclusionProof,
-    ) -> Result<(), NoteTransportError>;
-
-    /// Fetches a page of notes after `cursor` and up to `sync_to` for the given tags.
-    ///
-    /// Without `cursor`, the page starts from the first retained note. Without `sync_to`, the
-    /// service uses its current head as the bound. The page returns the bound that the service
-    /// used. A cursor from another service database restarts from the first retained note.
-    async fn fetch_notes_page(
-        &self,
-        tags: &[NoteTag],
-        cursor: Option<NoteTransportCursor>,
-        sync_to: Option<NoteTransportCursor>,
-    ) -> Result<NoteTransportPage, NoteTransportError>;
-}
-
-/// A page of notes from the transport service.
-pub struct NoteTransportPage {
-    /// Notes in global sequence order.
-    pub notes: Vec<NoteInfo>,
-    /// Position of the last returned note. An empty page keeps the request position.
-    pub cursor: NoteTransportCursor,
-    /// Indicates that the requested tags have another page up to `sync_to`.
-    pub has_more: bool,
-    /// Inclusive upper bound of the request. When `has_more` is `false`, the page completes the
-    /// requested tags up to this bound.
-    pub sync_to: NoteTransportCursor,
-}
-
-/// Information about a note fetched from the note transport network
-#[derive(Debug, Clone)]
-pub struct NoteInfo {
-    /// Note header.
-    pub header: NoteHeader,
-    /// Serialized note details.
-    pub details_bytes: Vec<u8>,
-    /// Block from which the recipient starts scanning for the note's on-chain commitment. This is
-    /// either an unverified sender hint or the exact block verified by a proof-aware transport.
-    /// `None` applies the recipient's default lookback window.
-    pub block_hint: Option<BlockNumber>,
-}
-
-impl NoteInfo {
-    /// Builds a [`NoteInfo`] without a block hint (`block_hint` is `None`).
-    ///
-    /// Use the [`NoteInfo::block_hint`] field directly to attach a hint.
-    pub fn new(header: NoteHeader, details_bytes: Vec<u8>) -> Self {
-        Self { header, details_bytes, block_hint: None }
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl Serializable for NoteInfo {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.header.write_into(target);
-        self.details_bytes.write_into(target);
-        self.block_hint.write_into(target);
-    }
-}
-
-impl Deserializable for NoteInfo {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let header = NoteHeader::read_from(source)?;
-        let details_bytes = Vec::<u8>::read_from(source)?;
-        let block_hint = Option::<BlockNumber>::read_from(source)?;
-        Ok(NoteInfo { header, details_bytes, block_hint })
-    }
-}
-
 fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, NoteTransportError> {
     let mut reader = SliceReader::new(details_bytes);
     let details = NoteDetails::read_from(&mut reader)?;
-    validate_note_parts(header, &details)?;
+    let (header, details) = TransportNote::new(*header, details)?.into_parts();
     // The transport wire format only carries `NoteHeader` + serialized `NoteDetails`, not the
     // attachments collection. We rejoin with empty attachments; this matches the original note only
     // when it had no attachments in the first place.
@@ -577,23 +453,6 @@ fn rejoin_note(header: &NoteHeader, details_bytes: &[u8]) -> Result<Note, NoteTr
         partial_metadata,
         details.recipient().clone(),
     ))
-}
-
-/// Checks that the note header commits to the supplied details.
-pub(crate) fn validate_note_parts(
-    header: &NoteHeader,
-    details: &NoteDetails,
-) -> Result<(), NoteTransportError> {
-    let header_commitment = header.details_commitment();
-    let details_commitment = details.commitment();
-    if header_commitment != details_commitment {
-        return Err(NoteTransportError::NoteDetailsMismatch {
-            header: header_commitment,
-            details: details_commitment,
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

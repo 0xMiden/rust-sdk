@@ -16,7 +16,14 @@ use miden_client::account::component::{
     ValueSlotSchema,
     WordSchema,
 };
-use miden_client::account::{AccountFile, AccountId, AccountType, FaucetMetadata, StorageSlotName};
+use miden_client::account::{
+    Account,
+    AccountFile,
+    AccountId,
+    AccountType,
+    FaucetMetadata,
+    StorageSlotName,
+};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{
@@ -916,15 +923,18 @@ async fn import_genesis_accounts_can_be_used_for_transactions() -> Result<()> {
     sync_cli(&temp_dir);
 
     let fungible_faucet_account_id = {
-        let (client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
+        let (mut client, _) = create_rust_client_with_store_path(&store_path, endpoint).await?;
         let accounts = client.get_account_headers().await?;
 
         let mut faucet_accounts = Vec::new();
         for (account_header, _) in accounts {
-            if let Some(account) = client.get_account(account_header.id()).await?
-                && FungibleFaucet::try_from(&account).is_ok()
+            let account_id = account_header.id();
+            // The CLI sync watches the fee token faucet. Only native accounts belong to the user.
+            if let Some(record) = client.test_store().get_account(account_id).await?
+                && !record.is_watched()
+                && FungibleFaucet::try_from(&Account::try_from(record)?).is_ok()
             {
-                faucet_accounts.push(account.id());
+                faucet_accounts.push(account_id);
             }
         }
 

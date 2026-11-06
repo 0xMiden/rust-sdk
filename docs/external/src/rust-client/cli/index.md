@@ -293,6 +293,8 @@ This command queries the Miden node directly and does not require the note to be
 
 Sync the client with the latest state of the Miden network. Shows a brief summary at the end.
 
+When the fee token faucet has asset callbacks, the sync also adds the faucet as a watched account and keeps its account witness up to date, so that a transaction that pays a fee reads the faucet from the store instead of fetching it from the node. If the protocol configuration changes the faucet, the next sync follows the new one.
+
 ### `tags`
 
 View and add tags.
@@ -332,7 +334,7 @@ Usage: `miden-client mint --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET
 
 Account ID consumes a list of notes, specified by their Note ID.
 
-Usage: `miden-client consume-notes --account <ACCOUNT ID> [NOTES]`
+Usage: `miden-client consume-notes --account <ACCOUNT ID> [--notes-per-tx <COUNT>] [--filter <SCRIPT>] [NOTES]`
 
 For this command, you can also provide a partial ID instead of the full ID for each note. So instead of
 
@@ -349,6 +351,12 @@ miden-client consume-notes --account <some-account-id> 0x70b7ecb 0x80b7ecb
 Additionally, you can optionally not specify note IDs, in which case any note that is known to be consumable by the executor account ID will be consumed.
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
+
+One transaction consumes at most `--notes-per-tx` notes. The default value is 40 and the largest value is 1024. If there are more notes, the command consumes them in more than one transaction. A larger value makes fewer transactions, but each transaction needs more time and memory to prove. The node rejects a transaction that is larger than its request size limit, so a large value can fail with large notes. If there is more than one transaction, the command asks for confirmation one time for all of them, unless you use `--force`. If a transaction fails, the command stops. The notes of that transaction and of the transactions after it are not consumed. To consume them, run `consume-notes` again without note IDs.
+
+Use `--filter` to consume only the notes that use specific note scripts. Each value is the name of a standard note, such as `P2ID` or `P2IDE`, or a hex note script root. `miden-client consume-notes --help` lists the names of the standard notes. Separate the values with commas or use the flag more than one time. You cannot use `--filter` with note IDs. For example, `miden-client consume-notes --account <ACCOUNT ID> --filter P2ID,P2IDE` consumes only the P2ID and P2IDE notes of the account.
+
+Before it consumes the notes, the command prints a table with the number of notes for each note script, so that you can see notes that you do not expect.
 
 #### `transfer`
 

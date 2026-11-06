@@ -7,11 +7,12 @@ pub use miden_client_core::transaction::{
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestAuthArgs,
     RequestInputNote,
+    RequestScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
-    TransactionScriptTemplate,
     build_fpi_script,
 };

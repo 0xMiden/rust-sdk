@@ -34,7 +34,6 @@ use miden_client::{Client, MAX_INPUT_NOTES_PER_TX, RemoteTransactionProver, Word
 use tracing::info;
 
 use crate::config::CliConfig;
-use crate::create_dynamic_table;
 use crate::errors::CliError;
 use crate::utils::{
     SHARED_TOKEN_DOCUMENTATION,
@@ -43,6 +42,7 @@ use crate::utils::{
     parse_account_id,
     print_executed_transaction,
 };
+use crate::{create_dynamic_table, fee_faucet};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum NoteType {
@@ -569,7 +569,7 @@ async fn consume_notes_in_chunks<AUTH: Keystore + Sync + 'static>(
 
         let result = async {
             if index > 0 {
-                client.sync_state().await?;
+                fee_faucet::sync(client).await?;
             }
             let transaction_request = consume_notes_request(notes)?;
             Ok::<_, CliError>(

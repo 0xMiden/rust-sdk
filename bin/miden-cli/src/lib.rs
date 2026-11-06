@@ -426,8 +426,7 @@ impl Cli {
 
         let cli_client = CliClient::from_config(cli_config).await?;
 
-        let mut client = cli_client.into_inner();
-        fee_faucet::set_up_once(&mut client).await;
+        let client = cli_client.into_inner();
 
         match &self.action {
             Command::Account(account) => account.execute(client).await,

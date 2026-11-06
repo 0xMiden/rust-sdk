@@ -432,7 +432,7 @@ async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
         return Ok(default_id);
     }
 
-    let fee_faucet_id = fee_faucet::set_up_faucet_id(client).await?;
+    let fee_faucet_id = fee_faucet::tracked_faucet_id(client).await?;
     let local_accounts = client.get_account_headers().await?;
     local_accounts
         .iter()

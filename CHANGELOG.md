@@ -9,6 +9,10 @@
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 
+### Fixes
+
+* [FIX][cli] `timeout_ms` is optional in the `[rpc]` and `[note_transport]` sections of the config file. A missing value defaults to `10000` milliseconds, so a `[note_transport]` section added by hand with only `endpoint` loads ([#2790](https://github.com/0xMiden/rust-sdk/pull/2790)).
+
 ### Enhancements
 
 * Added the standard note name, type, tag, storage and assets of each input and output note to the transaction summary. For an input note it also shows whether the note is authenticated. The summary loads the token map only when it shows notes or vault changes ([#2760](https://github.com/0xMiden/rust-sdk/pull/2760)).

@@ -13,6 +13,7 @@ use miden_client_core::store::{
     AccountUpdate,
     ClientAccountType,
 };
+use miden_client_core::transaction::{TransactionDetails, TransactionStatusVariant};
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -31,6 +32,7 @@ use miden_protocol::account::{
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness, PartialVault};
 use miden_protocol::crypto::merkle::MerkleError;
+use miden_protocol::crypto::merkle::smt::LineageId;
 use miden_protocol::errors::AccountError;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Felt, Word};
@@ -1130,6 +1132,135 @@ impl SqliteStore {
 
         // Write the new latest row.
         Self::insert_new_account_header(tx, new_header, new_seed, old_watched)
+    }
+
+    pub(crate) fn remove_account(
+        conn: &mut Connection,
+        account_id: AccountId,
+    ) -> Result<bool, StoreError> {
+        with_write_tx(conn, |tx| {
+            if Self::get_account_header(tx, account_id)?.is_none() {
+                return Ok(false);
+            }
+
+            // The write transaction prevents a pending transaction from appearing after this check.
+            let mut pending = tx
+                .prepare("SELECT details FROM transactions WHERE status_variant = ?")
+                .into_store_error()?;
+            let rows = pending
+                .query_map(params![TransactionStatusVariant::Pending as u8], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })
+                .into_store_error()?;
+            for row in rows {
+                let details: TransactionDetails =
+                    proto::decode_unchecked(&row.into_store_error()?)?;
+                if details.account_id == account_id {
+                    return Err(StoreError::AccountHasPendingTransactions(account_id));
+                }
+            }
+
+            let account_id_bytes = account_id.to_bytes();
+            let code_commitments = tx
+                .prepare(
+                    "SELECT code_commitment FROM latest_account_headers WHERE id = ?1 \
+                     UNION SELECT code_commitment FROM historical_account_headers WHERE id = ?1",
+                )
+                .into_store_error()?
+                .query_map(params![&account_id_bytes], |row| row.get::<_, Vec<u8>>(0))
+                .into_store_error()?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .into_store_error()?;
+
+            // Retained history can identify map lineages that the latest state no longer uses.
+            let map_slots = Self::query_retained_map_slot_names(tx, account_id)?;
+            Self::remove_forest_lineages(
+                tx,
+                ScopedAccountForest::account_lineages(account_id, map_slots.iter()),
+            )?;
+
+            for (table, account_column) in [
+                ("latest_account_headers", "id"),
+                ("historical_account_headers", "id"),
+                ("latest_account_storage", "account_id"),
+                ("historical_account_storage", "account_id"),
+                ("latest_storage_map_entries", "account_id"),
+                ("historical_storage_map_entries", "account_id"),
+                ("latest_account_assets", "account_id"),
+                ("historical_account_assets", "account_id"),
+                ("addresses", "account_id"),
+                ("account_witnesses", "account_id"),
+            ] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE {account_column} = ?"),
+                    params![&account_id_bytes],
+                )
+                .into_store_error()?;
+            }
+            Self::remove_unreferenced_account_code(tx, &code_commitments)?;
+
+            Ok(true)
+        })
+    }
+
+    /// Returns map slot names referenced by current or historical account state.
+    fn query_retained_map_slot_names(
+        tx: &Transaction<'_>,
+        account_id: AccountId,
+    ) -> Result<BTreeSet<StorageSlotName>, StoreError> {
+        tx.prepare(
+            "SELECT slot_name FROM latest_account_storage WHERE account_id = ?1 AND slot_type = 1 \
+             UNION SELECT slot_name FROM historical_account_storage WHERE account_id = ?1 AND slot_type = 1 \
+             UNION SELECT slot_name FROM latest_storage_map_entries WHERE account_id = ?1 \
+             UNION SELECT slot_name FROM historical_storage_map_entries WHERE account_id = ?1",
+        )
+        .into_store_error()?
+        .query_map(params![account_id.to_bytes()], |row| row.get::<_, String>(0))
+        .into_store_error()?
+        .map(|row| {
+            StorageSlotName::new(row.into_store_error()?)
+                .map_err(|err| StoreError::ParsingError(err.to_string()))
+        })
+        .collect()
+    }
+
+    /// Removes forest data in the transaction that removes its account references.
+    fn remove_forest_lineages(
+        tx: &Transaction<'_>,
+        lineages: impl Iterator<Item = LineageId>,
+    ) -> Result<usize, StoreError> {
+        let mut removed = 0;
+        for lineage in lineages {
+            for table in ["forest_entries", "forest_subtrees", "forest_trees"] {
+                removed += tx
+                    .execute(
+                        &format!("DELETE FROM {table} WHERE lineage = ?"),
+                        params![lineage.as_bytes().as_slice()],
+                    )
+                    .into_store_error()?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Removes candidate code that no account header or foreign account cache uses.
+    fn remove_unreferenced_account_code(
+        tx: &Transaction<'_>,
+        commitments: &[Vec<u8>],
+    ) -> Result<usize, StoreError> {
+        let mut removed = 0;
+        for commitment in commitments {
+            removed += tx
+                .execute(
+                    "DELETE FROM account_code WHERE commitment = ?1 \
+                     AND NOT EXISTS (SELECT 1 FROM latest_account_headers WHERE code_commitment = ?1) \
+                     AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE code_commitment = ?1) \
+                     AND NOT EXISTS (SELECT 1 FROM foreign_account_code WHERE code_commitment = ?1)",
+                    params![commitment],
+                )
+                .into_store_error()?;
+        }
+        Ok(removed)
     }
 
     /// Prunes historical account states for a single account up to the given nonce.

@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust,store] Added `Client::remove_account` to remove an account's local state, history, addresses, witness registration, and account-owned note tags. Removal rejects pending transactions and preserves notes, transaction records, signing keys, and shared account code ([#2721](https://github.com/0xMiden/rust-sdk/issues/2721)).
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
@@ -33,6 +34,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][store] Added the required `Store::remove_account` method and the `StoreError::AccountHasPendingTransactions` variant. Custom stores must implement atomic account removal.
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

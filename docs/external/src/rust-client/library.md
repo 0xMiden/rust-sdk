@@ -141,6 +141,26 @@ let tx_id = client.submit_new_transaction(network_account.id(), deploy).await?;
 
 After deployment the account is a network account, so the node rejects user-submitted transactions against it; all further state changes happen through network transactions.
 
+## Remove a local account
+
+Use `Client::remove_account` to stop tracking an account and remove its local state:
+
+```rust
+client.import_account_by_id(account_id).await?;
+let account = client.get_account(account_id).await?;
+let removed = client.remove_account(account_id).await?;
+assert!(removed);
+assert!(client.get_account(account_id).await?.is_none());
+```
+
+The method returns `true` when it removes the account and `false` if the account is not stored. It removes the current state, historical states, addresses, account witness registration, and note tags whose source is that account. It removes account code only when no remaining account state or foreign account cache references it. Notes, transaction records, foreign account code caches, and tags from other sources remain available.
+
+Removal fails with `StoreError::AccountHasPendingTransactions` if the account has a pending transaction. The check and removal are atomic. Sync the client until those transactions are committed or discarded, then retry.
+
+Keystore entries are retained. Removal only affects local storage and does not change the on-chain account. A public account that exists on-chain can be imported again with `import_account_by_id`. Keep a backup before removing a private account or an account that does not exist on-chain. Retained signing keys alone do not restore its state.
+
+Custom `Store` implementations must implement `remove_account` with the same atomicity and data retention rules.
+
 ## Account registration on an allowlisted network
 
 A network can restrict which accounts get created on chain. An account is created on chain by its first transaction, and a node that enforces an account allowlist rejects that transaction unless the account was registered with an invitation code. Only account creation is gated: an account that already exists on chain is never checked, and network accounts are exempt because the node creates them itself. The network operator hands out the invitation codes. A code binds to one account and cannot be reused for another.

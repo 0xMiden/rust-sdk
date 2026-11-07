@@ -45,6 +45,8 @@ pub enum StoreError {
     AccountDataNotFound(AccountId),
     #[error("note tags of account {0} are derived from its addresses and cannot be stored")]
     AccountNoteTagNotStorable(AccountId),
+    #[error("account {0} has pending transactions and cannot be removed")]
+    AccountHasPendingTransactions(AccountId),
     #[error("account patch error")]
     AccountPatchError(#[from] AccountPatchError),
     #[error("account error")]

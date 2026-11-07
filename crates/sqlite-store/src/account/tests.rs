@@ -3518,3 +3518,6 @@ async fn undo_code_upgrade_restores_previous_code() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[path = "removal_tests.rs"]
+mod removal_tests;

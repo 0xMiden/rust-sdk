@@ -183,6 +183,18 @@ pub struct AccountSmtForest<B: BackendReader> {
 }
 
 impl<B: BackendReader> AccountSmtForest<B> {
+    /// Returns the vault lineage first, followed by the map lineages for backend cleanup.
+    ///
+    /// The caller must supply the names of current and historical map slots. The backend must
+    /// remove these lineages in the same transaction as the account data.
+    pub fn account_lineages<'a>(
+        account_id: AccountId,
+        map_slots: impl Iterator<Item = &'a StorageSlotName> + 'a,
+    ) -> impl Iterator<Item = LineageId> + 'a {
+        core::iter::once(vault_lineage_id(account_id))
+            .chain(map_slots.map(move |slot_name| storage_map_lineage_id(account_id, slot_name)))
+    }
+
     /// Creates a forest over the provided backend, loading tree metadata from it.
     pub fn new(backend: B) -> Result<Self, StoreError> {
         Ok(Self {

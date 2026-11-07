@@ -1,3 +1,13 @@
+## Unreleased
+
+### Features
+
+* [FEATURE][rust,store] Added `Client::remove_account` to remove an account's local state, history, addresses, witness registration, and account-owned note tags. Removal rejects pending transactions and preserves notes, transaction records, signing keys, and shared account code ([#2721](https://github.com/0xMiden/rust-sdk/issues/2721)).
+
+### Breaking Changes
+
+* [BREAKING][type][store] Added the required `Store::remove_account` method and the `StoreError::AccountHasPendingTransactions` variant. Custom stores must implement atomic account removal.
+
 # Changelog
 
 ## 0.18.0 (2026-10-27)

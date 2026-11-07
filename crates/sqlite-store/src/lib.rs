@@ -372,6 +372,11 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn remove_account(&self, account_id: AccountId) -> Result<bool, StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::remove_account(conn, account_id))
+            .await
+    }
+
     async fn update_account(&self, account: &Account) -> Result<(), StoreError> {
         let cloned_account = account.clone();
 

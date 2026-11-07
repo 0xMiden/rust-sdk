@@ -36,6 +36,8 @@ pub enum StoreError {
     AssetVaultError(#[from] AssetVaultError),
     #[error("account data wasn't found for account id {0}")]
     AccountDataNotFound(AccountId),
+    #[error("account {0} has pending transactions and cannot be removed")]
+    AccountHasPendingTransactions(AccountId),
     #[error("account patch error")]
     AccountPatchError(#[from] AccountPatchError),
     #[error("account error")]

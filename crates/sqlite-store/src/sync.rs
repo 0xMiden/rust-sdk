@@ -200,7 +200,7 @@ pub(super) fn add_note_tag_tx(
     Ok(inserted > 0)
 }
 
-pub(super) fn remove_note_tag_tx(
+pub(crate) fn remove_note_tag_tx(
     tx: &Transaction<'_>,
     tag: NoteTagRecord,
 ) -> Result<usize, StoreError> {

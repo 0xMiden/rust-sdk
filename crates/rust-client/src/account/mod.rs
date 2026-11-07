@@ -789,6 +789,29 @@ impl<AUTH> Client<AUTH> {
         AccountReader::new(self.store.clone(), account_id)
     }
 
+    /// Removes an account's current state and history from local storage.
+    ///
+    /// Removes its addresses, account witness registration, and account-owned note tags. Preserves
+    /// notes, transaction records, tags from other sources, and account code that other accounts or
+    /// the foreign account cache reference. Keystore entries are retained.
+    ///
+    /// This operation does not change the on-chain account. A public account that exists on-chain
+    /// can be imported again with [`Self::import_account_by_id`]. A private account or an account
+    /// that does not exist on-chain requires a backup to restore its state.
+    ///
+    /// Returns `true` if the account was removed. Returns `false` without changes if the account is
+    /// not stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::StoreError`] with
+    /// [`crate::store::StoreError::AccountHasPendingTransactions`] if the account has a pending
+    /// transaction. Sync the client until its transactions are committed or discarded before
+    /// removal.
+    pub async fn remove_account(&mut self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.store.remove_account(account_id).await?)
+    }
+
     /// Prunes historical account states for the specified account up to the given nonce.
     ///
     /// Deletes all historical entries with `replaced_at_nonce <= up_to_nonce` and any orphaned

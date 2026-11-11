@@ -93,32 +93,42 @@ With the Miden client, you can create and track any number of public and local a
 The `AccountBuilder` can be used to create a new account with the specified parameters and components. The following code creates a new local account:
 
 ```rust
-let key_pair = SecretKey::with_rng(client.rng());
+use miden_client::account::standards::{
+    auth::{Approver, AuthSingleSig},
+    wallets::BasicWallet,
+};
+use miden_client::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
+use miden_client::auth::{AuthScheme, AuthSecretKey};
+use miden_client::keystore::Keystore;
+
+// The account stores only a commitment to the public key.
+let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+let auth_component = AuthSingleSig::new(Approver::new(
+    secret_key.public_key().to_commitment(),
+    AuthScheme::Falcon512Poseidon2,
+));
 
 let new_account = AccountBuilder::new(init_seed) // Seed should be random for each account
     .account_type(AccountType::Private)
-    .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+    .with_component(auth_component)
     .with_component(BasicWallet)
-    .build()?;
-keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair), new_account.id()).await?;
+    .build_with_schema_commitment()?;
+
+// The client signs the account's transactions with the key from its keystore.
+let keystore = client.authenticator().expect("the client has a keystore").clone();
+keystore.add_key(&secret_key, new_account.id()).await?;
 client.add_account(&new_account, false).await?;
 ```
 Once an account is created, it is kept locally and its state is automatically tracked by the client.
 
-To create a public account, specify `AccountType::Public`:
+To create a public account, specify `AccountType::Public`. The other steps do not change:
 
-```Rust
-let key_pair = SecretKey::with_rng(client.rng());
-let anchor_block = client.get_latest_epoch_block().await.unwrap();
-
+```rust
 let new_account = AccountBuilder::new(init_seed) // Seed should be random for each account
-    .anchor((&anchor_block).try_into().unwrap())
     .account_type(AccountType::Public)
-    .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+    .with_component(auth_component)
     .with_component(BasicWallet)
-    .build()?;
-keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair), new_account.id()).await?;
-client.add_account(&new_account, false).await?;
+    .build_with_schema_commitment()?;
 ```
 
 The account's state is also tracked locally, but during sync the client updates the account state by querying the node for the most recent account data.

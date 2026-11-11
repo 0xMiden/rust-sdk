@@ -1,18 +1,10 @@
-use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::ToString;
 
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
+use miden_objects::DecodeMessageExt;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::merkle::mmr::PartialMmr;
 use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::{MAX_INPUT_NOTES_PER_TX, Word};
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
 use thiserror::Error;
 
 // CHAIN ANCHOR
@@ -24,8 +16,8 @@ use thiserror::Error;
 /// The anchor bundles the reference [`BlockHeader`] with a [`PartialBlockchain`] consistent with it
 /// — exactly the chain data `TransactionInputs` requires: `chain_length()` equals the header's
 /// block number and the peaks hash to the header's chain commitment. Both invariants are enforced
-/// on construction (including deserialization), so an anchor received from an untrusted party only
-/// needs its [`Self::block_commitment`] checked against an independently trusted value — e.g. the
+/// on construction, so an anchor received from an untrusted party only needs its
+/// [`Self::block_commitment`] checked against an independently trusted value — e.g. the
 /// `BLOCK_COMMITMENT` word bound into a signed [`TransactionSummary`] — to be safe to execute
 /// against.
 ///
@@ -110,57 +102,6 @@ impl ChainAnchor {
     }
 }
 
-impl Serializable for ChainAnchor {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.header.write_into(target);
-        self.chain.write_into(target);
-    }
-}
-
-impl Deserializable for ChainAnchor {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let header = BlockHeader::read_from(source)?;
-
-        // Read the partial blockchain's parts rather than calling `PartialBlockchain::read_from`:
-        // that path `expect`s on `PartialMmr::open`, which fails when a tracked leaf's ancestor
-        // sibling is absent — a remotely triggerable panic, since anchor bytes come from another
-        // party. Opening every tracked block here turns it into a rejected deserialization.
-        let mmr = PartialMmr::read_from(source)?;
-        let blocks = BTreeMap::<BlockNumber, BlockHeader>::read_from(source)?;
-
-        // `Self::new` enforces this too, but only after opening and proving every block; rejecting
-        // early bounds the work an oversized anchor can buy.
-        if blocks.len() > MAX_INPUT_NOTES_PER_TX {
-            return Err(DeserializationError::InvalidValue(
-                ChainAnchorError::TooManyTrackedBlocks {
-                    count: blocks.len(),
-                    max: MAX_INPUT_NOTES_PER_TX,
-                }
-                .to_string(),
-            ));
-        }
-
-        for (block_num, header) in &blocks {
-            // The constructor re-derives each position from the header, so the key must agree with
-            // it — otherwise a crafted anchor could aim the `open` below at a harmless position
-            // while the constructor opens the dangerous one.
-            if block_num != &header.block_num() {
-                return Err(DeserializationError::InvalidValue(format!(
-                    "block map key {block_num} does not match the block number {} of the header it maps to",
-                    header.block_num()
-                )));
-            }
-
-            mmr.open(header.block_num().as_usize())
-                .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
-        }
-        let chain = PartialBlockchain::new(mmr, blocks.into_values())
-            .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
-
-        Self::new(header, chain).map_err(|err| DeserializationError::InvalidValue(err.to_string()))
-    }
-}
-
 // CHAIN ANCHOR ERROR
 // ================================================================================================
 
@@ -197,6 +138,45 @@ pub enum ChainAnchorError {
     },
 }
 
+// SERIALIZATION
+// ================================================================================================
+
+impl ProtobufValue for ChainAnchor {
+    type Message = proto::ChainAnchor;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            header: Some(self.header.to_proto()),
+            partial_blockchain: Some((&self.chain).into()),
+        }
+    }
+
+    /// Builds the partial blockchain with the checks of [`PartialBlockchain::new`], then checks it
+    /// against the header with [`ChainAnchor::new`]. The header itself is not authenticated.
+    fn from_proto(anchor: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "chain anchor";
+
+        let header = BlockHeader::from_proto(required(anchor.header, MESSAGE, "header")?)?;
+        let chain = required(anchor.partial_blockchain, MESSAGE, "partial blockchain")?;
+
+        // `ChainAnchor::new` checks the count too, but only after the decoder verifies every block.
+        // An early check bounds the work that an oversized anchor causes.
+        if chain.block_headers.len() > MAX_INPUT_NOTES_PER_TX {
+            return Err(ProtoDecodeError::InvalidValue(
+                ChainAnchorError::TooManyTrackedBlocks {
+                    count: chain.block_headers.len(),
+                    max: MAX_INPUT_NOTES_PER_TX,
+                }
+                .to_string(),
+            ));
+        }
+        let chain: PartialBlockchain = chain.decode_and_build_unchecked()?;
+
+        ChainAnchor::new(header, chain)
+            .map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))
+    }
+}
+
 // TESTS
 // ================================================================================================
 
@@ -204,10 +184,11 @@ pub enum ChainAnchorError {
 mod tests {
     use alloc::vec::Vec;
 
+    use miden_client_proto::{ProtoDecodeError, ProtobufValue, decode, encode};
+    use miden_protocol::MAX_INPUT_NOTES_PER_TX;
     use miden_protocol::block::BlockHeader;
     use miden_protocol::crypto::merkle::mmr::{Mmr, PartialMmr};
     use miden_protocol::transaction::PartialBlockchain;
-    use miden_tx::utils::serde::{Deserializable, DeserializationError, Serializable};
 
     use super::{ChainAnchor, ChainAnchorError};
 
@@ -275,90 +256,53 @@ mod tests {
         assert!(matches!(err, ChainAnchorError::ChainCommitmentMismatch { .. }), "got {err:?}");
     }
 
-    #[test]
-    fn serialization_round_trips() {
-        let (header, chain) = anchor_parts(8, &[3]);
-        let anchor = ChainAnchor::new(header, chain).unwrap();
+    // SERIALIZATION
+    // --------------------------------------------------------------------------------------------
 
-        let deserialized = ChainAnchor::read_from_bytes(&anchor.to_bytes()).unwrap();
-        assert_eq!(anchor, deserialized);
+    /// Returns an anchor at block 8 whose partial blockchain tracks block 3.
+    fn anchor() -> ChainAnchor {
+        let (header, chain) = anchor_parts(8, &[3]);
+        ChainAnchor::new(header, chain).unwrap()
     }
 
     #[test]
-    fn deserialization_rejects_truncated_and_garbage_input() {
-        let (header, chain) = anchor_parts(8, &[3]);
-        let bytes = ChainAnchor::new(header, chain).unwrap().to_bytes();
-
-        assert!(ChainAnchor::read_from_bytes(&bytes[..bytes.len() - 1]).is_err());
-        assert!(ChainAnchor::read_from_bytes(&[0xaa; 64]).is_err());
+    fn chain_anchor_round_trips() {
+        let anchor = anchor();
+        assert_eq!(decode::<ChainAnchor>(&encode(&anchor)).unwrap(), anchor);
     }
 
-    /// A tracked leaf whose ancestor siblings are absent makes `PartialBlockchain::new` panic on
-    /// the `expect` around `PartialMmr::open`; deserialization must reject it instead.
     #[test]
-    fn deserialization_rejects_a_tracked_leaf_with_a_missing_sibling() {
-        use alloc::collections::{BTreeMap, BTreeSet};
+    fn chain_anchor_rejects_a_missing_partial_blockchain() {
+        let mut message = anchor().to_proto();
+        message.partial_blockchain = None;
 
-        use miden_protocol::crypto::merkle::mmr::InOrderIndex;
-
-        let mut mmr = Mmr::default();
-        let mut headers = Vec::new();
-        for block_num in 0..4u32 {
-            let header = BlockHeader::mock(block_num, None, None, &[]);
-            mmr.add(header.commitment()).unwrap();
-            headers.push(header);
-        }
-        let peaks = mmr.peaks();
-
-        // Only the tracked leaf itself, none of its authentication path.
-        let mut nodes = BTreeMap::new();
-        nodes.insert(InOrderIndex::from_leaf_pos(3), headers[3].commitment());
-
-        // `from_parts` rejects the missing authentication path, so the malformed value has to be
-        // built unchecked to reach the deserialization path under test.
-        let partial_mmr =
-            PartialMmr::from_parts_unchecked(peaks.clone(), nodes, BTreeSet::from([3]));
-
-        let bytes = {
-            let mut buf = Vec::new();
-            let header = BlockHeader::mock(4, Some(peaks.hash_peaks()), None, &[]);
-            header.write_into(&mut buf);
-            PartialBlockchain::new_unchecked(partial_mmr, [headers[3].clone()])
-                .unwrap()
-                .write_into(&mut buf);
-            buf
-        };
-
-        assert!(ChainAnchor::read_from_bytes(&bytes).is_err());
+        assert!(matches!(
+            ChainAnchor::from_proto(message),
+            Err(ProtoDecodeError::MissingField { field: "partial blockchain", .. })
+        ));
     }
 
-    /// A block-map key that disagrees with its header would let a crafted anchor aim the pre-flight
-    /// `open` at a harmless position, so deserialization must reject it.
+    /// `PartialBlockchain::new` panics on a tracked block that has no authentication path. The
+    /// decoder must return an error for it.
     #[test]
-    fn deserialization_rejects_a_block_key_that_disagrees_with_its_header() {
-        use alloc::collections::BTreeMap;
+    fn chain_anchor_rejects_a_tracked_block_without_its_path() {
+        let mut message = anchor().to_proto();
+        let chain = message.partial_blockchain.as_mut().unwrap();
+        chain.mmr.as_mut().unwrap().tracked_leaves[0].path.clear();
 
-        use miden_protocol::block::BlockNumber;
+        assert!(matches!(ChainAnchor::from_proto(message), Err(ProtoDecodeError::Conversion(_))));
+    }
 
-        // A fully valid chain, so the disagreeing key is the payload's only defect.
-        let (header, chain) = anchor_parts(8, &[3]);
-        let tracked = chain.get_block(BlockNumber::from(3u32)).unwrap().clone();
+    #[test]
+    fn chain_anchor_rejects_too_many_blocks_before_it_decodes_them() {
+        let mut message = anchor().to_proto();
+        let block = message.header.clone().unwrap();
+        message.partial_blockchain.as_mut().unwrap().block_headers =
+            vec![block; MAX_INPUT_NOTES_PER_TX + 1];
 
-        let mut blocks = BTreeMap::new();
-        blocks.insert(BlockNumber::from(0u32), tracked);
-
-        let bytes = {
-            let mut buf = Vec::new();
-            header.write_into(&mut buf);
-            chain.mmr().write_into(&mut buf);
-            blocks.write_into(&mut buf);
-            buf
-        };
-
-        let err = ChainAnchor::read_from_bytes(&bytes).unwrap_err();
-        assert!(
-            matches!(&err, DeserializationError::InvalidValue(msg) if msg.contains("does not match the block number")),
-            "got {err:?}"
-        );
+        assert!(matches!(
+            ChainAnchor::from_proto(message),
+            Err(ProtoDecodeError::InvalidValue(_))
+        ));
     }
 }

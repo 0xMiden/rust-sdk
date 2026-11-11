@@ -14,6 +14,7 @@ const PROTO_FILES: &[&str] = &[
     "proto/client/protocol.proto",
     "proto/client/pswap.proto",
     "proto/client/rpc.proto",
+    "proto/client/sync.proto",
     "proto/client/transaction.proto",
 ];
 

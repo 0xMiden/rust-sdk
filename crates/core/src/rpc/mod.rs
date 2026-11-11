@@ -27,7 +27,7 @@ use domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use domain::note::{FetchedNote, ResolvedSyncNotesBlock, SyncNotesBlock, SyncedNote};
+use domain::note::{FetchedNote, SyncNotesBlock};
 use domain::nullifier::NullifierUpdate;
 use domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
 use domain::sync::{ChainMmrInfo, SyncTarget};
@@ -39,15 +39,7 @@ use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
-use miden_protocol::note::{
-    NoteAttachments,
-    NoteDetails,
-    NoteId,
-    NoteScript,
-    NoteTag,
-    NoteType,
-    Nullifier,
-};
+use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::vm::ExecutionProof;
@@ -56,8 +48,6 @@ use crate::errors::RpcError;
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::transaction::TransactionRecord;
-use crate::store::InputNoteRecord;
-use crate::store::input_note_states::UnverifiedNoteState;
 
 /// Contains domain types related to RPC requests and responses, as well as utility functions for
 /// dealing with them.
@@ -66,9 +56,6 @@ pub mod encryption;
 
 mod limits;
 pub use limits::RpcLimits;
-
-mod verifying_client;
-pub use verifying_client::VerifyingRpcClient;
 
 /// Represents the state that we want to retrieve from the network
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -210,8 +197,8 @@ impl fmt::Display for RpcEndpoint {
 ///
 /// The implementers are responsible for connecting to the Miden node, handling endpoint
 /// requests/responses, and translating responses into domain objects relevant for each of the
-/// endpoints. Implementations do not check that responses correspond to the method's arguments.
-/// Wrap a client in [`VerifyingRpcClient`] to reject mismatched responses.
+/// endpoints. Implementations that talk to a remote node must check that each response corresponds
+/// to the method's arguments, and reject a mismatch with [`RpcError::InvalidResponse`].
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait NodeRpcClient: Send + Sync {
@@ -268,8 +255,7 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// When `None` is provided, returns info regarding the latest block.
     ///
-    /// The returned header is not verified against the requested `block_num`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a header for a block other than the requested `block_num`.
     async fn get_block_header_by_number(
         &self,
         block_num: Option<BlockNumber>,
@@ -279,8 +265,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the genesis block header and the protocol configuration that it commits to, using
     /// the `/GetBlockHeaderByNumber` endpoint.
     ///
-    /// The returned header is not verified to be the genesis header; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a header for a block other than the genesis block.
     async fn get_genesis_block_header(&self) -> Result<(BlockHeader, ProtocolConfig), RpcError>;
 
     /// Given a block number, fetches the block corresponding to that height from the node using the
@@ -290,8 +275,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// alongside the signed block. It is [`None`] when `include_proof` is false, and also when the
     /// node has not proven the block yet.
     ///
-    /// The returned block is not verified against the requested `block_num`; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a block other than the requested `block_num`.
     async fn get_block_by_number(
         &self,
         block_num: BlockNumber,
@@ -309,8 +293,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// In both cases, a [`miden_protocol::note::NoteInclusionProof`] is returned so the caller can
     /// verify that each note is part of the block's note tree.
     ///
-    /// Returned notes are not verified to be among the requested `note_ids`; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a note that is not among the requested `note_ids`.
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError>;
 
     /// Fetches the MMR delta for a given block range using the `/SyncChainMmr` RPC endpoint.
@@ -398,113 +381,15 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `note_tags` is the set of tags used to filter the notes the client is interested in.
     ///
     /// Every returned note carries its full metadata, and its attachment content when the response
-    /// carried it. Use [`NodeRpcClient::sync_notes_with_content`] to resolve the rest.
+    /// carried it. Use [`NodeRpcClient::get_notes_by_id`] to fetch the rest.
     ///
-    /// Returned notes are not verified to carry one of the requested `note_tags`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a note that does not carry one of the requested `note_tags`.
     async fn sync_notes(
         &self,
         block_from: BlockNumber,
         block_to: BlockNumber,
         note_tags: &BTreeSet<NoteTag>,
     ) -> Result<Vec<SyncNotesBlock>, RpcError>;
-
-    /// Calls [`NodeRpcClient::sync_notes`] for the requested range, then makes a single
-    /// [`NodeRpcClient::get_notes_by_id`] call to resolve the note content the sync response did
-    /// not already carry, according to `fetch`, folding it into each note.
-    ///
-    /// A note whose attachments the sync response already carried needs no request: only notes
-    /// reporting `needs_attachment_fetch` have theirs fetched.
-    ///
-    /// With [`NoteContentFetch::PublicDetailsAndAttachments`], all public notes in the range are
-    /// additionally fetched so the request does not reveal the client's interest set. Narrowing it
-    /// reveals nothing either, since the omissions follow the node's own sync records.
-    ///
-    /// Returns one [`ResolvedSyncNotesBlock`] per matching block, each note carrying its inclusion
-    /// data alongside its content.
-    ///
-    /// A note whose resolved content contradicts its sync record is dropped with a warning rather
-    /// than failing the call, since anyone can commit a note whose content they never publish.
-    async fn sync_notes_with_content(
-        &self,
-        block_from: BlockNumber,
-        block_to: BlockNumber,
-        note_tags: &BTreeSet<NoteTag>,
-        fetch: NoteContentFetch,
-    ) -> Result<Vec<ResolvedSyncNotesBlock>, RpcError> {
-        let blocks = self.sync_notes(block_from, block_to, note_tags).await?;
-        let note_ids: Vec<NoteId> = blocks
-            .iter()
-            .flat_map(|block| block.notes.values())
-            .filter(|note| match fetch {
-                NoteContentFetch::PublicDetailsAndAttachments => {
-                    note.note_type() == NoteType::Public || note.needs_attachment_fetch()
-                },
-                NoteContentFetch::AttachmentsOnly => note.needs_attachment_fetch(),
-            })
-            .map(|note| *note.note_id())
-            .collect();
-
-        let mut fetched_content: BTreeMap<NoteId, (Option<NoteDetails>, Option<NoteAttachments>)> =
-            BTreeMap::new();
-        if !note_ids.is_empty() {
-            for fetched_note in self.get_notes_by_id(&note_ids).await? {
-                let (note_id, details, attachments) = match fetched_note {
-                    FetchedNote::Public(note, _) => {
-                        let note_id = note.id();
-                        let (assets, _, recipient, attachments) = note.into_parts();
-                        (note_id, Some(NoteDetails::new(assets, recipient)), attachments)
-                    },
-                    FetchedNote::Private(note_id, _, attachments, _) => {
-                        (note_id, None, attachments)
-                    },
-                };
-
-                // An empty set carries nothing, so it is recorded as absent rather than as content:
-                // keeping it would shadow the attachments the note's own sync record may already
-                // have carried, for a public note as much as for a private one.
-                let attachments = (!attachments.is_empty()).then_some(attachments);
-                fetched_content.insert(note_id, (details, attachments));
-            }
-        }
-
-        // Fold the resolved content into each note, keeping the per-block grouping so the inclusion
-        // data (header + MMR path) is carried once per block. `SyncedNote::new` rejects content
-        // that is inconsistent with its sync record (mismatched or missing attachment content);
-        // such notes are dropped rather than failing the sync, since a tracked record is never
-        // stored incomplete this way (it stays expected and can be retried by re-importing), while
-        // a hard error would wedge every sync scanning this block range.
-        let mut synced_blocks = Vec::with_capacity(blocks.len());
-        for block in blocks {
-            let mut notes = BTreeMap::new();
-            for (note_id, committed) in block.notes {
-                // Fetched attachments win when the response actually carried some: a public note's
-                // attachments are bound to the requested id, which `VerifyingRpcClient` checks. The
-                // sync record is the fallback, and a note reporting neither has none.
-                let (details, fetched_attachments) =
-                    fetched_content.remove(&note_id).unwrap_or_default();
-                let attachments = fetched_attachments
-                    .or_else(|| committed.attachments().cloned())
-                    .unwrap_or_else(NoteAttachments::empty);
-
-                match SyncedNote::new(committed, details, attachments) {
-                    Ok(synced_note) => {
-                        notes.insert(note_id, synced_note);
-                    },
-                    Err(err) => {
-                        tracing::warn!(%note_id, %err, "skipping synced note with unusable content");
-                    },
-                }
-            }
-            synced_blocks.push(ResolvedSyncNotesBlock {
-                block_header: block.block_header,
-                mmr_path: block.mmr_path,
-                notes,
-            });
-        }
-
-        Ok(synced_blocks)
-    }
 
     /// Fetches the nullifiers corresponding to a list of prefixes using the `/SyncNullifiers` RPC
     /// endpoint.
@@ -513,8 +398,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
     ///
-    /// Returned nullifiers are not verified to carry one of the requested prefixes;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a nullifier that does not carry one of the requested prefixes,
+    /// or that is outside the requested block range.
     async fn sync_nullifiers(
         &self,
         prefix: &[u16],
@@ -530,8 +415,8 @@ pub trait NodeRpcClient: Send + Sync {
     ///
     /// For a fully oversize-resolved account, use [`NodeRpcClient::get_account_details`].
     ///
-    /// The response block number is not verified against the requested one; [`VerifyingRpcClient`]
-    /// performs that check.
+    /// Implementations must reject a proof for another account, or for a block other than the
+    /// requested one.
     ///
     /// # Errors
     ///
@@ -679,40 +564,6 @@ pub trait NodeRpcClient: Send + Sync {
         Ok(nullifiers_height)
     }
 
-    /// Fetches public note-related data for a list of [`NoteId`] and builds [`InputNoteRecord`]s
-    /// with it. If a note is not found or it's private, it is ignored and will not be included in
-    /// the returned list.
-    ///
-    /// The default implementation of this method uses [`NodeRpcClient::get_notes_by_id`].
-    async fn get_public_note_records(
-        &self,
-        note_ids: &[NoteId],
-        current_timestamp: Option<u64>,
-    ) -> Result<Vec<InputNoteRecord>, RpcError> {
-        if note_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut public_notes = Vec::with_capacity(note_ids.len());
-        let note_details = self.get_notes_by_id(note_ids).await?;
-
-        for detail in note_details {
-            if let FetchedNote::Public(note, inclusion_proof) = detail {
-                let state = UnverifiedNoteState {
-                    metadata: *note.metadata(),
-                    inclusion_proof,
-                }
-                .into();
-                let attachments = note.attachments().clone();
-                let note = InputNoteRecord::new(note.into(), attachments, current_timestamp, state);
-
-                public_notes.push(note);
-            }
-        }
-
-        Ok(public_notes)
-    }
-
     /// Given a block number, fetches the block header corresponding to that height from the node
     /// along with the MMR proof.
     ///
@@ -740,8 +591,7 @@ pub trait NodeRpcClient: Send + Sync {
     /// Fetches the note script with the specified root, returning `None` if the node has no script
     /// registered for that root.
     ///
-    /// A returned script's root is not verified to match the requested `root`;
-    /// [`VerifyingRpcClient`] performs that check.
+    /// Implementations must reject a script whose root is not the requested `root`.
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError>;
 
     /// Fetches storage map updates for specified account and storage slots within a block range,
@@ -778,6 +628,8 @@ pub trait NodeRpcClient: Send + Sync {
     /// - `block_from`: The starting block number for the range (inclusive).
     /// - `block_to`: The ending block number for the range (inclusive).
     /// - `account_ids`: The account IDs for which to fetch transactions.
+    ///
+    /// Implementations must reject a transaction record for an account that was not requested.
     async fn sync_transactions(
         &self,
         block_from: BlockNumber,
@@ -803,8 +655,8 @@ pub trait NodeRpcClient: Send + Sync {
 
     /// Fetches the RPC status without requiring Accept header validation.
     ///
-    /// This is useful for diagnostics when version negotiation fails, as it allows retrieving node
-    /// information even when there's a version mismatch.
+    /// This is useful for diagnostics when Accept header negotiation fails, as it allows retrieving
+    /// node information even when the client's genesis commitment does not match the node's.
     async fn get_status_unversioned(&self) -> Result<RpcStatusInfo, RpcError>;
 
     /// Fetches the status of a specific network note ID.
@@ -814,23 +666,4 @@ pub trait NodeRpcClient: Send + Sync {
         &self,
         note_id: NoteId,
     ) -> Result<NetworkNoteStatusInfo, RpcError>;
-}
-
-/// Selects which note content [`NodeRpcClient::sync_notes_with_content`] resolves via
-/// `GetNotesById` after syncing note inclusions.
-///
-/// This enables the possibility of optimizing the call by not requesting more data than needed. For
-/// example, when a public note's details are already known (but not the attachments),
-/// `AttachmentsOnly` can be used. One example of this is when importing notes through
-/// `NoteDetails`.
-///
-/// Neither policy requests attachment content the sync response already carried in full, so a note
-/// whose attachments all fit in a single word is never fetched for its attachments alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteContentFetch {
-    /// Fetch the full body of every public note in the range, plus any attachment content still
-    /// missing.
-    PublicDetailsAndAttachments,
-    /// Fetch only the attachment content still missing.
-    AttachmentsOnly,
 }

@@ -1614,3 +1614,39 @@ async fn committed_private_note_recipient(
 
     (client, private_note, mock_transport_node)
 }
+
+/// The encoding carries the stored notes with their cursors, so the decoded mock serves the same
+/// page from the same position.
+#[test]
+fn mock_note_transport_node_round_trips() {
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+    let target = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+    let mut mock = MockNoteTransportNode::new();
+    for serial in 1..=2u32 {
+        let note: Note = P2idNote::builder()
+            .sender(target)
+            .target(target)
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(ProtocolNoteType::Private)
+            .serial_number(Word::from([serial, 0, 0, 0]))
+            .build()
+            .unwrap()
+            .into();
+        mock.add_note(*note.header(), NoteDetails::from(note).to_bytes());
+    }
+    let tag = NoteTag::with_account_target(target);
+
+    let decoded =
+        miden_client_proto::decode::<MockNoteTransportNode>(&miden_client_proto::encode(&mock))
+            .unwrap();
+
+    let (notes, cursor) = mock.get_notes(&[tag], None);
+    let (decoded_notes, decoded_cursor) = decoded.get_notes(&[tag], None);
+    assert_eq!(decoded_cursor, cursor);
+    assert_eq!(decoded_notes.len(), notes.len());
+    for (decoded_note, note) in decoded_notes.iter().zip(&notes) {
+        assert_eq!(decoded_note.header, note.header);
+        assert_eq!(decoded_note.details_bytes, note.details_bytes);
+        assert_eq!(decoded_note.block_hint, note.block_hint);
+    }
+}

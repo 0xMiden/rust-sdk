@@ -5,12 +5,12 @@ use std::time::Instant;
 use miden_client::account::AccountId;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::transaction::TransactionRequestBuilder;
-use miden_client::{Client, Felt, Serializable};
+use miden_client::{Client, Felt};
 
 use crate::deploy::wait_for_block_advancement;
 use crate::generators::{random_word, slot_rng};
 use crate::masm::{generate_expansion_component_code, generate_expansion_tx_script};
-use crate::report::format_size;
+use crate::report::{format_size, proven_transaction_size};
 
 /// Maximum entries per expansion transaction. Determined empirically to stay within Miden VM
 /// instruction limits per transaction.
@@ -84,7 +84,7 @@ async fn submit_expansion_batches(
 
         let tx_result = client.execute_transaction(account_id, tx_request).await?;
         let proven_tx = client.prove_transaction(&tx_result).await?;
-        let tx_size = proven_tx.to_bytes().len();
+        let tx_size = proven_transaction_size(&proven_tx);
         let submission_height = client.submit_proven_transaction(proven_tx, &tx_result).await?;
         client.apply_transaction(&tx_result, submission_height).await?;
 

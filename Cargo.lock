@@ -2809,6 +2809,7 @@ dependencies = [
  "miden-assembly-syntax",
  "miden-client-core",
  "miden-client-grpc",
+ "miden-client-proto",
  "miden-debug",
  "miden-node-proto-build",
  "miden-objects",
@@ -2850,7 +2851,9 @@ dependencies = [
  "miden-client-core",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
+ "miden-objects",
  "predicates",
+ "prost",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "tokio",
@@ -2899,7 +2902,6 @@ dependencies = [
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "thiserror",
- "tracing",
 ]
 
 [[package]]
@@ -2994,6 +2996,7 @@ version = "0.18.0"
 dependencies = [
  "miden-client",
  "miden-client-core",
+ "miden-client-proto",
  "miden-client-sqlite-store",
  "miden-debug",
  "miden-protocol",

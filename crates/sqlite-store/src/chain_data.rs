@@ -10,7 +10,6 @@ use miden_protocol::Word;
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, MmrPeaks};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 
 use super::SqliteStore;
@@ -18,7 +17,7 @@ use crate::note::unspent_note_block_numbers;
 use crate::settings::protocol_config_key;
 use crate::sql_error::SqlResultExt;
 use crate::sync::query_sync_height;
-use crate::{insert_sql, int_array, proto, subst, with_write_tx};
+use crate::{insert_sql, int_array, proto, subst, with_write_tx, word_from_blob};
 
 impl SqliteStore {
     pub(crate) fn get_block_headers(
@@ -180,7 +179,7 @@ impl SqliteStore {
         const QUERY: &str = insert_sql!(partial_blockchain_nodes { id, node } | IGNORE);
         let mut stmt = tx.prepare_cached(QUERY).into_store_error()?;
         for (index, node) in nodes {
-            stmt.execute(params![index.inner(), node.to_bytes()]).into_store_error()?;
+            stmt.execute(params![index.inner(), node.as_bytes()]).into_store_error()?;
         }
         Ok(())
     }
@@ -309,7 +308,7 @@ fn query_partial_blockchain_nodes<P: rusqlite::Params>(
                     "stored partial blockchain node id must be non-zero".to_string(),
                 )
             })?;
-            Ok((InOrderIndex::new(id), Word::read_from_bytes(&node)?))
+            Ok((InOrderIndex::new(id), word_from_blob(&node)?))
         })
         .collect()
 }

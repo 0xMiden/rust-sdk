@@ -41,7 +41,6 @@ use miden_protocol::crypto::merkle::smt::{
     VersionId,
 };
 use miden_protocol::crypto::merkle::{EmptySubtreeRoots, MerkleError, NodeIndex, SparseMerklePath};
-use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Word};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -122,7 +121,7 @@ fn internal<E: std::error::Error + Send + Sync + 'static>(e: E) -> BackendError 
 }
 
 fn word_from_blob(blob: &[u8]) -> Result<Word> {
-    Word::read_from_bytes(blob)
+    Word::try_from(blob)
         .map_err(|e| BackendError::CorruptedData(format!("malformed word in forest table: {e}")))
 }
 
@@ -576,15 +575,15 @@ fn write_pairs(conn: &Connection, lineage: LineageId, forward: &SmtMutationSet) 
     for (key, value) in forward.new_pairs() {
         if *value == EMPTY_WORD {
             delete
-                .execute(params![lineage.as_bytes().as_slice(), key.to_bytes()])
+                .execute(params![lineage.as_bytes().as_slice(), key.as_bytes()])
                 .map_err(internal)?;
         } else {
             let leaf_position = LeafIndex::<SMT_DEPTH>::from(*key).position();
             upsert
                 .execute(params![
                     lineage.as_bytes().as_slice(),
-                    key.to_bytes(),
-                    value.to_bytes(),
+                    key.as_bytes(),
+                    value.as_bytes(),
                     u64_to_value(leaf_position)
                 ])
                 .map_err(internal)?;
@@ -673,7 +672,7 @@ fn upsert_tree_meta(
         params![
             lineage.as_bytes().as_slice(),
             u64_to_value(version),
-            root.to_bytes(),
+            root.as_bytes(),
             u64_to_value(entry_count as u64)
         ],
     )
@@ -723,7 +722,7 @@ impl BackendReader for SqliteForestBackend<'_, '_> {
         self.tx
             .query_row(
                 "SELECT value FROM forest_entries WHERE lineage = ?1 AND key = ?2",
-                params![lineage.as_bytes().as_slice(), key.to_bytes()],
+                params![lineage.as_bytes().as_slice(), key.as_bytes()],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()
@@ -1334,7 +1333,7 @@ mod tests {
 
         tx.execute(
             "UPDATE forest_entries SET value = ?2 WHERE lineage = ?1",
-            params![lid(1).as_bytes().as_slice(), EMPTY_WORD.to_bytes()],
+            params![lid(1).as_bytes().as_slice(), EMPTY_WORD.as_bytes()],
         )
         .unwrap();
 

@@ -242,7 +242,7 @@ fn consumption_key(note: &InputNoteRecord) -> (u32, u32, Vec<u8>) {
     (
         note.state().consumed_block_height().expect("note is consumed").as_u32(),
         note.state().consumed_tx_order().expect("note has a consumption order"),
-        note.details_commitment().to_bytes(),
+        note.details_commitment().as_bytes().to_vec(),
     )
 }
 

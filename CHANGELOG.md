@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.1 (TBD)
+
+### Features
+
+* [FEATURE][cli] `consume-notes` consumes any number of notes. It splits the notes into transactions of at most `--notes-per-tx` notes, which is 40 by default and 1024 at most. If there is more than one transaction, the command asks for confirmation one time and syncs before each transaction after the first. It stops at the first transaction that fails, and a new run consumes the notes that are left. `--filter` limits the notes to the ones that use the given note scripts, each given by a standard note name or a hex script root. Before it consumes the notes, the command prints a table with the number of notes for each note script ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
+* [FEATURE][cli] Added the `track_fee_faucet` configuration field, which is `false` by default. When it is `true` and the fee token faucet has asset callbacks, a sync adds the faucet as a watched account and keeps its state and account witness up to date. A transaction that pays a fee then reads the faucet from the store and does not fetch it from the node. If the protocol configuration changes the faucet, the next sync drops the witness of the old faucet and sets up the new one. If the field changes back to `false`, the next sync drops the witness of the faucet ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
+* [FEATURE][rust] Re-exported `MAX_INPUT_NOTES_PER_TX`, the largest number of input notes in one transaction ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
+
 ## 0.18.0 (2026-10-27)
 
 ### Breaking Changes

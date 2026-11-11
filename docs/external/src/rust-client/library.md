@@ -262,6 +262,8 @@ You can use note screening when you need to decide whether a note is relevant to
 
 Screening cost depends on each screened note's script. A few well-known scripts, such as P2ID, can be checked statically. Every other note is trial-executed against every tracked account, so cost grows with the number of tracked accounts multiplied by the number of notes screened. Use screening when you need consumability information for planning, filtering, or building a consume transaction.
 
+Screening runs without the client's authenticator, so it never asks a signer for a signature. For an account whose auth component requires a signature, such as an account with `AuthSingleSig`, a note that the account can consume now gets the status `ConsumableWithAuthorization`. Only an account that needs no signature gets `Consumable`. To find the notes that an account can consume now, accept both statuses.
+
 ### Use the Client helpers first
 
 For notes already tracked by the client, you should usually start with the helper methods on `Client`. These cover the common case without creating a `NoteScreener` directly.
@@ -274,7 +276,11 @@ let consumable_notes = client.get_consumable_notes(None).await?;
 
 for (note, accounts) in consumable_notes {
     for (account_id, status) in accounts {
-        if matches!(status, NoteConsumptionStatus::Consumable) {
+        // A signature-protected account gets `ConsumableWithAuthorization`.
+        if matches!(
+            status,
+            NoteConsumptionStatus::Consumable | NoteConsumptionStatus::ConsumableWithAuthorization
+        ) {
             // This account can consume the note at the current sync height.
             println!("{} can consume {}", account_id, note.id().to_hex());
         }
@@ -324,8 +330,9 @@ let account_statuses = screener.get_consumability(&note).await?;
 
 for (account_id, status) in account_statuses {
     match status {
-        NoteConsumptionStatus::Consumable => {
-            // The note can be consumed now by this account.
+        NoteConsumptionStatus::Consumable | NoteConsumptionStatus::ConsumableWithAuthorization => {
+            // The note can be consumed now by this account. A signature-protected account gets
+            // `ConsumableWithAuthorization`, because screening does not sign.
             println!("{account_id} can consume {}", note.id().to_hex());
         },
         NoteConsumptionStatus::ConsumableAfter(block_number) => {

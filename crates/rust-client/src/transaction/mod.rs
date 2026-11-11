@@ -468,9 +468,7 @@ where
                     .get_input_notes(NoteFilter::List(inferred_input_note_ids))
                     .await?
                     .iter()
-                    .filter(|record| record.is_authenticated())
-                    .filter_map(|record| record.inclusion_proof())
-                    .map(|proof| proof.location().block_num()),
+                    .filter_map(InputNoteRecord::authenticated_block_num),
             );
         }
         tracked_blocks.extend(transaction_request.block_numbers().iter().copied());

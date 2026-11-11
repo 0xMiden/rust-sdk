@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, read_upstream};
 use miden_protocol::account::AccountPatch;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
@@ -12,13 +13,7 @@ use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
 };
-use miden_tx::utils::serde::{
-    ByteReader,
-    ByteWriter,
-    Deserializable,
-    DeserializationError,
-    Serializable,
-};
+use miden_protocol::utils::serde::Serializable;
 
 // TRANSACTION RESULT
 // ================================================================================================
@@ -108,18 +103,81 @@ impl From<TransactionResult> for ExecutedTransaction {
     }
 }
 
-impl Serializable for TransactionResult {
-    fn write_into<W: ByteWriter>(&self, target: &mut W) {
-        self.transaction.write_into(target);
-        self.future_notes.write_into(target);
+// SERIALIZATION
+// ================================================================================================
+
+impl ProtobufValue for TransactionResult {
+    type Message = proto::TransactionResult;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            executed_transaction: self.transaction.to_bytes(),
+            future_notes: self.future_notes.iter().map(ProtobufValue::to_proto).collect(),
+        }
+    }
+
+    fn from_proto(result: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(TransactionResult::new(
+            read_upstream(&result.executed_transaction)?,
+            result
+                .future_notes
+                .into_iter()
+                .map(<(NoteDetails, NoteTag)>::from_proto)
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
     }
 }
 
-impl Deserializable for TransactionResult {
-    fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
-        let transaction = ExecutedTransaction::read_from(source)?;
-        let future_notes = Vec::<(NoteDetails, NoteTag)>::read_from(source)?;
+// TESTS
+// ================================================================================================
 
-        Ok(Self { transaction, future_notes })
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use miden_client_proto::{decode, encode};
+    use miden_protocol::account::AccountId;
+    use miden_protocol::asset::{Asset, FungibleAsset};
+    use miden_protocol::note::{NoteDetails, NoteTag, NoteType};
+    use miden_protocol::testing::account_id::{
+        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_SENDER,
+    };
+    use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
+
+    use super::TransactionResult;
+
+    /// The executed transaction consumes a P2ID note, and the result expects the same note as a
+    /// future note, so both fields carry data.
+    #[tokio::test]
+    async fn transaction_result_round_trips() {
+        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        let asset = Asset::from(FungibleAsset::new(faucet_id, 100).unwrap());
+
+        let mut builder = MockChainBuilder::new();
+        let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
+        let note = builder
+            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
+            .unwrap();
+        let mut chain = builder.build().unwrap();
+        chain.prove_next_block().unwrap();
+
+        let executed_transaction = Box::pin(
+            chain
+                .build_transaction(MockTransactionInput::Account(account.clone()))
+                .unauthenticated_input_note(note.clone())
+                .build()
+                .unwrap()
+                .execute(),
+        )
+        .await
+        .unwrap();
+
+        let future_notes =
+            vec![(NoteDetails::from(note), NoteTag::with_account_target(account.id()))];
+        let result = TransactionResult::new(executed_transaction, future_notes);
+
+        assert_eq!(decode::<TransactionResult>(&encode(&result)).unwrap(), result);
     }
 }

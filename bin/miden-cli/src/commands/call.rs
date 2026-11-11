@@ -22,7 +22,7 @@ use miden_client::{Client, ClientError, Felt, Word};
 
 use crate::advice_inputs::load_advice_map_from_file;
 use crate::codecs::with_cli_codecs;
-use crate::commands::account::DEFAULT_ACCOUNT_ID_KEY;
+use crate::commands::account::get_default_account_id;
 use crate::config::CliConfig;
 use crate::errors::CliError;
 use crate::packages::load_packages;
@@ -410,8 +410,7 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
 ) -> Result<AccountId, CliError> {
-    let default_id: Option<AccountId> =
-        client.get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string()).await?;
+    let default_id = get_default_account_id(client).await?;
     if let Some(default_id) = default_id
         && let Some((_, status)) = client.get_account_header(default_id).await?
         && !status.is_locked()

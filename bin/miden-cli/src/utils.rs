@@ -8,8 +8,9 @@ use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
 use miden_client::crypto::ecdsa_k256_keccak;
-use miden_client::transaction::{ExecutedTransaction, InputNote};
-use miden_client::utils::{Deserializable, hex_to_bytes};
+use miden_client::keystore::Keystore;
+use miden_client::transaction::ExecutedTransaction;
+use miden_client::utils::{Deserializable, DeserializationError, Serializable, hex_to_bytes};
 use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
 use miden_client::{
     AssetError,
@@ -23,9 +24,10 @@ use miden_client::{
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
-use crate::commands::account::{DEFAULT_ACCOUNT_ID_KEY, get_non_fungible_faucet_symbol};
+use crate::commands::account::{get_default_account_id, get_non_fungible_faucet_symbol};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
+use crate::notes::display::{print_consumed_notes, print_output_notes};
 
 /// Placeholder for a value that is not available or not set.
 pub(crate) const NO_VALUE: &str = "-";
@@ -47,8 +49,7 @@ pub(crate) async fn get_input_acc_id_by_prefix_or_default<AUTH>(
     let account_id_str = if let Some(account_id_prefix) = account_id {
         account_id_prefix
     } else {
-        client
-            .get_setting(DEFAULT_ACCOUNT_ID_KEY.to_string())
+        get_default_account_id(client)
             .await?
             .map(AccountId::to_hex)
             .ok_or(CliError::Input("No input account ID nor default account defined".to_string()))?
@@ -158,35 +159,34 @@ pub(crate) fn configured_network_id() -> Result<NetworkId, CliError> {
 
 /// Prints the effects of an executed transaction: input notes, output notes, storage value changes,
 /// storage map changes, vault changes, and the nonce change.
-pub async fn print_executed_transaction<AUTH>(
+pub async fn print_executed_transaction<AUTH: Keystore + Sync>(
     client: &Client<AUTH>,
     executed_tx: &ExecutedTransaction,
 ) -> Result<(), CliError> {
     println!("The transaction will have the following effects:\n");
 
     let patch = executed_tx.account_patch();
+    let input_notes = executed_tx.input_notes();
+    let output_notes = executed_tx.output_notes();
+    let needs_metadata =
+        !input_notes.is_empty() || !output_notes.is_empty() || !patch.vault().is_empty();
+    let resolver = needs_metadata.then(load_faucet_metadata_resolver).transpose()?;
 
     // INPUT NOTES
-    let input_note_ids = executed_tx.input_notes().iter().map(InputNote::id).collect::<Vec<_>>();
-    if input_note_ids.is_empty() {
+    if input_notes.is_empty() {
         println!("No notes will be consumed.");
     } else {
-        println!("The following notes will be consumed:");
-        for input_note_id in input_note_ids {
-            println!("\t- {}", input_note_id.to_hex());
-        }
+        let resolver = resolver.as_ref().expect("input notes require a metadata resolver");
+        print_consumed_notes(client, resolver, input_notes).await?;
     }
-    println!();
 
     // OUTPUT NOTES
-    let output_notes: Vec<_> = executed_tx.output_notes().iter().collect();
     if output_notes.is_empty() {
-        println!("No notes will be created as a result of this transaction.");
+        // The table of output notes starts with a blank line. This message does the same.
+        println!("\nNo notes will be created as a result of this transaction.");
     } else {
-        println!("{} notes will be created as a result of this transaction:", output_notes.len());
-        for note in &output_notes {
-            println!("\t- {}", note.id().to_hex());
-        }
+        let resolver = resolver.as_ref().expect("output notes require a metadata resolver");
+        print_output_notes(client, resolver, output_notes, false).await?;
     }
     println!();
 
@@ -223,7 +223,7 @@ pub async fn print_executed_transaction<AUTH>(
     if patch.vault().is_empty() {
         println!("Account Vault will not be changed.");
     } else {
-        let resolver = load_faucet_metadata_resolver()?;
+        let resolver = resolver.as_ref().expect("vault changes require a metadata resolver");
         let mut fungible_table = create_dynamic_table(&["Faucet ID", "New Amount"]);
         let mut non_fungible_table = create_dynamic_table(&["Faucet ID", "Asset ID", "Change"]);
 
@@ -611,7 +611,13 @@ impl FaucetMetadataResolver {
         }
         // 2) settings store
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        Ok(client.get_setting::<FaucetMetadata>(setting_key).await?)
+        let Some(bytes) = client.get_setting(setting_key).await? else {
+            return Ok(None);
+        };
+        let meta = faucet_metadata_from_bytes(&bytes).map_err(|err| {
+            CliError::Parse(err.into(), "Failed to parse the stored faucet metadata".to_string())
+        })?;
+        Ok(Some(meta))
     }
 
     /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
@@ -664,7 +670,7 @@ impl FaucetMetadataResolver {
         let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
             return Ok(None);
         };
-        if let Err(err) = client.set_setting(setting_key, meta.clone()).await {
+        if let Err(err) = client.set_setting(setting_key, faucet_metadata_to_bytes(&meta)).await {
             tracing::warn!("failed to persist faucet metadata for {}: {err}", faucet_id.to_hex());
         }
         Ok(Some(meta))
@@ -798,6 +804,17 @@ const FAUCET_METADATA_SETTING_PREFIX: &str = "faucet_metadata:";
 /// Returns the settings-store key under which the metadata for `faucet_id` is persisted.
 fn faucet_metadata_setting_key(faucet_id: AccountId) -> String {
     format!("{FAUCET_METADATA_SETTING_PREFIX}{}", faucet_id.to_hex())
+}
+
+/// Encodes `meta` for the settings store as its `(symbol, decimals)` pair.
+fn faucet_metadata_to_bytes(meta: &FaucetMetadata) -> Vec<u8> {
+    (&meta.symbol, meta.decimals).to_bytes()
+}
+
+/// Decodes faucet metadata that [`faucet_metadata_to_bytes`] encoded.
+fn faucet_metadata_from_bytes(bytes: &[u8]) -> Result<FaucetMetadata, DeserializationError> {
+    let (symbol, decimals) = <(String, u8)>::read_from_bytes(bytes)?;
+    Ok(FaucetMetadata { symbol, decimals })
 }
 
 /// Parses a bech32 address from the token symbol map and checks that it belongs to `network_id`.
@@ -989,10 +1006,13 @@ mod tests {
     use miden_client::{ClientError, ErrorHint};
 
     use super::{
+        FaucetMetadata,
         FaucetMetadataResolver,
         RawFaucetEntry,
         TokenParseError,
         base_units_to_tokens,
+        faucet_metadata_from_bytes,
+        faucet_metadata_to_bytes,
         hex_to_bytes,
         parse_ecdsa_public_key,
         tokens_to_base_units,
@@ -1196,5 +1216,23 @@ mod tests {
         };
         assert!(library_help.is_some());
         assert_eq!(help, library_help);
+    }
+
+    #[test]
+    fn faucet_metadata_round_trips_through_the_settings_encoding() {
+        let meta = FaucetMetadata { symbol: "BTC".to_string(), decimals: 8 };
+
+        let bytes = faucet_metadata_to_bytes(&meta);
+        assert_eq!(bytes, ("BTC".to_string(), 8u8).to_bytes());
+        assert_eq!(faucet_metadata_from_bytes(&bytes).unwrap(), meta);
+    }
+
+    #[test]
+    fn faucet_metadata_decoding_rejects_a_truncated_value() {
+        let meta = FaucetMetadata { symbol: "BTC".to_string(), decimals: 8 };
+        let bytes = faucet_metadata_to_bytes(&meta);
+
+        assert!(faucet_metadata_from_bytes(&bytes[..bytes.len() - 1]).is_err());
+        assert!(faucet_metadata_from_bytes(&[]).is_err());
     }
 }

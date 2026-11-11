@@ -25,6 +25,14 @@ pub const DEFAULT_PACKAGES_DIR: &str = "packages";
 pub const STORE_FILENAME: &str = "store.sqlite3";
 pub const KEYSTORE_DIRECTORY: &str = "keystore";
 pub const DEFAULT_REMOTE_PROVER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Timeout for RPC and note transport requests, in milliseconds, when the config file does not set
+/// one.
+pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 10000;
+
+/// Returns [`DEFAULT_RPC_TIMEOUT_MS`]. Serde calls it for a missing `timeout_ms` field.
+fn default_timeout_ms() -> u64 {
+    DEFAULT_RPC_TIMEOUT_MS
+}
 
 /// Returns the global miden directory path.
 ///
@@ -424,7 +432,8 @@ impl CliConfig {
 pub struct RpcConfig {
     /// Address of the Miden node to connect to.
     pub endpoint: CliEndpoint,
-    /// Timeout for the RPC api requests, in milliseconds.
+    /// Timeout for the RPC api requests, in milliseconds. Defaults to [`DEFAULT_RPC_TIMEOUT_MS`].
+    #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     /// Bech32 human-readable part of the network the node serves, such as `mm`. When set, it
     /// replaces the network ID derived from `endpoint`, which is `mcst` for an endpoint that is not
@@ -437,7 +446,7 @@ impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             endpoint: Endpoint::testnet().into(),
-            timeout_ms: 10000,
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
             network_id: None,
         }
     }
@@ -451,7 +460,9 @@ impl Default for RpcConfig {
 pub struct NoteTransportConfig {
     /// Address of the Miden Note Transport node to connect to.
     pub endpoint: String,
-    /// Timeout for the Note Transport RPC api requests, in milliseconds.
+    /// Timeout for the Note Transport RPC api requests, in milliseconds. Defaults to
+    /// [`DEFAULT_RPC_TIMEOUT_MS`].
+    #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
 }
 
@@ -459,7 +470,7 @@ impl Default for NoteTransportConfig {
     fn default() -> Self {
         Self {
             endpoint: NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string(),
-            timeout_ms: 10000,
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
         }
     }
 }
@@ -469,7 +480,7 @@ impl NoteTransportConfig {
     pub fn mainnet() -> Self {
         Self {
             endpoint: NOTE_TRANSPORT_MAINNET_ENDPOINT.to_string(),
-            timeout_ms: 10000,
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
         }
     }
 
@@ -477,7 +488,7 @@ impl NoteTransportConfig {
     pub fn devnet() -> Self {
         Self {
             endpoint: NOTE_TRANSPORT_DEVNET_ENDPOINT.to_string(),
-            timeout_ms: 10000,
+            timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
         }
     }
 }
@@ -588,5 +599,34 @@ impl Network {
             Network::Mainnet => Endpoint::mainnet().to_string(),
             Network::Testnet => Endpoint::testnet().to_string(),
         }
+    }
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_ms_defaults_when_missing() {
+        let rpc: RpcConfig = toml::from_str(r#"endpoint = "http://localhost:57291""#).unwrap();
+        let note_transport: NoteTransportConfig =
+            toml::from_str(r#"endpoint = "http://localhost:57292""#).unwrap();
+
+        assert_eq!(rpc.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+        assert_eq!(note_transport.timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn timeout_ms_is_read_when_present() {
+        let rpc: RpcConfig =
+            toml::from_str("endpoint = \"http://localhost:57291\"\ntimeout_ms = 1").unwrap();
+        let note_transport: NoteTransportConfig =
+            toml::from_str("endpoint = \"http://localhost:57292\"\ntimeout_ms = 2").unwrap();
+
+        assert_eq!(rpc.timeout_ms, 1);
+        assert_eq!(note_transport.timeout_ms, 2);
     }
 }

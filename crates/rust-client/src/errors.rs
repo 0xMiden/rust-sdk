@@ -25,7 +25,6 @@ use miden_protocol::transaction::{ProvenTransaction, TransactionId, TransactionI
 // RE-EXPORTS
 // ================================================================================================
 pub use miden_standards::errors::CodeBuilderError;
-use miden_tx::utils::serde::DeserializationError;
 pub use miden_tx::{AuthenticationError, NoteCheckerError, TransactionExecutorError};
 use miden_tx::{DataStoreError, TransactionProverError};
 use thiserror::Error;
@@ -135,8 +134,6 @@ pub enum ClientError {
     ProposedBatchError(#[from] ProposedBatchError),
     #[error("failed to prove batch")]
     ProvenBatchError(#[from] ProvenBatchError),
-    #[error("failed to deserialize data")]
-    DataDeserializationError(#[from] DeserializationError),
     #[error(
         "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
     )]
@@ -498,8 +495,9 @@ fn rpc_hint(err: &RpcError) -> Option<ErrorHint> {
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),
         RpcError::AcceptHeaderError(_) => Some(ErrorHint {
-            message: "The node rejected the request due to a version mismatch. \
-                      Ensure your client version is compatible with the node version."
+            message: "The node rejected the request because the client's genesis commitment does \
+                      not match the node's. Ensure the client is configured for the node's \
+                      network."
                 .to_string(),
             docs_url: Some(TROUBLESHOOTING_DOC),
         }),

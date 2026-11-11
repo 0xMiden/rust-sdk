@@ -293,8 +293,6 @@ This command queries the Miden node directly and does not require the note to be
 
 Sync the client with the latest state of the Miden network. Shows a brief summary at the end.
 
-When the fee token faucet has asset callbacks, the sync also adds the faucet as a watched account and keeps its account witness up to date, so that a transaction that pays a fee reads the faucet from the store instead of fetching it from the node. If the protocol configuration changes the faucet, the next sync follows the new one.
-
 ### `tags`
 
 View and add tags.

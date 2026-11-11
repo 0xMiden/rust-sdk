@@ -4,10 +4,16 @@ use miden_client::keystore::Keystore;
 use miden_client::sync::SyncSummary;
 use miden_client::{Client, ClientError};
 
+use crate::config::CliConfig;
+use crate::errors::CliError;
+
 /// Key of the setting that holds the ID of the fee token faucet that the store follows.
 const TRACKED_FEE_FAUCET_KEY: &str = "tracked_fee_faucet";
 
-/// Syncs the client and makes the store follow the fee token faucet of the protocol configuration.
+/// Syncs the client and makes the store follow the fee token faucet if the configuration asks for
+/// it.
+///
+/// The `track_fee_faucet` configuration field turns this on. It is off by default.
 ///
 /// When the fee token faucet has asset callbacks, each transaction that pays a fee calls the
 /// faucet. The transaction then needs the faucet state and its account witness. If the client keeps
@@ -15,7 +21,9 @@ const TRACKED_FEE_FAUCET_KEY: &str = "tracked_fee_faucet";
 /// the node. A faucet without asset callbacks is never called, so the function does not add it.
 ///
 /// The protocol configuration can change the faucet. When it does, the function stops keeping the
-/// witness of the old faucet and sets up the new one. The old faucet stays a watched account.
+/// witness of the old faucet and sets up the new one. When the configuration field is off, the
+/// function stops keeping the witness of the faucet that the store follows. In both cases the old
+/// faucet stays a watched account.
 ///
 /// A failure in the set up does not stop the command. The function prints a warning instead, and
 /// the next sync tries again.
@@ -23,10 +31,22 @@ pub(crate) async fn sync<AUTH: Keystore + Sync + 'static>(
     client: &mut Client<AUTH>,
 ) -> Result<SyncSummary, ClientError> {
     let summary = client.sync_state().await?;
-    if let Err(err) = track_fee_faucet(client).await {
-        eprintln!("Warning: could not set up the fee token faucet: {err}");
+    if let Err(err) = update_fee_faucet(client).await {
+        eprintln!("Warning: could not update the fee token faucet: {err}");
     }
     Ok(summary)
+}
+
+/// Starts or stops following the fee token faucet, as the configuration field sets.
+async fn update_fee_faucet<AUTH: Keystore + Sync + 'static>(
+    client: &mut Client<AUTH>,
+) -> Result<(), CliError> {
+    if CliConfig::load()?.track_fee_faucet {
+        track_fee_faucet(client).await?;
+    } else {
+        untrack_fee_faucet(client).await?;
+    }
+    Ok(())
 }
 
 /// Makes the store follow the fee token faucet of the protocol configuration at the sync height.
@@ -55,7 +75,19 @@ async fn track_fee_faucet<AUTH: Keystore + Sync + 'static>(
     client.set_setting(TRACKED_FEE_FAUCET_KEY.to_string(), faucet_id).await
 }
 
-/// Returns the ID of the fee token faucet that the store follows, or `None` before the first sync.
+/// Stops keeping the witness of the fee token faucet that the store follows, if there is one.
+async fn untrack_fee_faucet<AUTH: Keystore + Sync + 'static>(
+    client: &mut Client<AUTH>,
+) -> Result<(), ClientError> {
+    if let Some(faucet_id) = tracked_faucet_id(client).await? {
+        client.untrack_account_witness(faucet_id).await?;
+        client.remove_setting(TRACKED_FEE_FAUCET_KEY.to_string()).await?;
+    }
+    Ok(())
+}
+
+/// Returns the ID of the fee token faucet that the store follows, or `None` if the store does not
+/// follow one.
 ///
 /// The store can keep this faucet as a watched account. A watched account is not an account of the
 /// user.

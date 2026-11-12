@@ -344,21 +344,6 @@ impl TransactionRequest {
         self.auth_arg = Some(auth_arg);
     }
 
-    /// Checks the invariants every request must hold.
-    ///
-    /// # Errors
-    /// - If a note appears more than once among the input notes.
-    fn validate(&self) -> Result<(), TransactionRequestError> {
-        let mut seen_input_notes = BTreeSet::new();
-        for note_id in self.input_note_ids() {
-            if !seen_input_notes.insert(note_id) {
-                return Err(TransactionRequestError::DuplicateInputNote(note_id));
-            }
-        }
-
-        Ok(())
-    }
-
     /// Builds the [`InputNotes`] needed for the transaction execution.
     ///
     /// A note with an explicit authentication keeps it. Any other note is authenticated when

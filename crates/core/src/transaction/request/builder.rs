@@ -785,39 +785,16 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`].
     ///
     /// # Errors
-    /// - If both a custom script and own output notes are set.
+    /// - If the expiration delta is zero.
     /// - If an expiration delta is set when a custom script is set.
-    /// - If an invalid note variant is encountered in the own output notes.
+    /// - If both a custom script and own output notes are set.
+    /// - If a note appears more than once among the input notes.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
-        if self.expiration_delta == Some(0) {
-            return Err(TransactionRequestError::ZeroExpirationDelta);
-        }
+        check_expiration_delta(self.expiration_delta, self.custom_script.as_ref())?;
+        let script_template = build_script_template(self.custom_script, self.own_output_notes)?;
+        check_no_duplicate_input_notes(&self.input_notes)?;
 
-        let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
-            (Some(_), false) => {
-                return Err(TransactionRequestError::ScriptTemplateError(
-                    "Cannot set both a custom script and own output notes".to_string(),
-                ));
-            },
-            (Some(script), true) => {
-                if self.expiration_delta.is_some() {
-                    return Err(TransactionRequestError::ScriptTemplateError(
-                        "Cannot set expiration delta when a custom script is set".to_string(),
-                    ));
-                }
-
-                Some(TransactionScriptTemplate::CustomScript(script))
-            },
-            (None, false) => {
-                let partial_notes: Vec<PartialNote> =
-                    self.own_output_notes.into_iter().map(Into::into).collect();
-
-                Some(TransactionScriptTemplate::SendNotes(partial_notes))
-            },
-            (None, true) => None,
-        };
-
-        let request = TransactionRequest {
+        Ok(TransactionRequest {
             block_numbers: self.block_numbers,
             input_notes: self.input_notes,
             script_template,
@@ -833,10 +810,61 @@ impl TransactionRequestBuilder {
             fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
             account_code_upgrade: self.account_code_upgrade,
-        };
-        request.validate()?;
+        })
+    }
+}
 
-        Ok(request)
+// HELPERS
+// ================================================================================================
+
+/// Rejects an expiration delta of zero, and an expiration delta together with a custom script.
+///
+/// The client cannot add the expiration to a custom script, so the delta would have no effect.
+fn check_expiration_delta(
+    expiration_delta: Option<u16>,
+    custom_script: Option<&TransactionScript>,
+) -> Result<(), TransactionRequestError> {
+    match expiration_delta {
+        Some(0) => Err(TransactionRequestError::ZeroExpirationDelta),
+        Some(_) if custom_script.is_some() => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set expiration delta when a custom script is set".to_string(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Rejects input notes that contain the same note more than once.
+fn check_no_duplicate_input_notes(
+    input_notes: &[RequestInputNote],
+) -> Result<(), TransactionRequestError> {
+    let mut seen_note_ids = BTreeSet::new();
+    for note_id in input_notes.iter().map(RequestInputNote::id) {
+        if !seen_note_ids.insert(note_id) {
+            return Err(TransactionRequestError::DuplicateInputNote(note_id));
+        }
+    }
+
+    Ok(())
+}
+
+/// Builds the transaction script template from the custom script and the own output notes. At most
+/// one of the two can be set.
+fn build_script_template(
+    custom_script: Option<TransactionScript>,
+    own_output_notes: Vec<Note>,
+) -> Result<Option<TransactionScriptTemplate>, TransactionRequestError> {
+    match (custom_script, own_output_notes.is_empty()) {
+        (Some(_), false) => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set both a custom script and own output notes".to_string(),
+        )),
+        (Some(script), true) => Ok(Some(TransactionScriptTemplate::CustomScript(script))),
+        (None, false) => {
+            let partial_notes: Vec<PartialNote> =
+                own_output_notes.into_iter().map(Into::into).collect();
+
+            Ok(Some(TransactionScriptTemplate::SendNotes(partial_notes)))
+        },
+        (None, true) => Ok(None),
     }
 }
 

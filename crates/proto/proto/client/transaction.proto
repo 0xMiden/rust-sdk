@@ -6,10 +6,8 @@ package client.transaction;
 
 import "account.proto";
 import "asset.proto";
-import "block.proto";
 import "block_number.proto";
 import "note.proto";
-import "partial_blockchain.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
@@ -236,10 +234,4 @@ message InputNoteUpdate {
 message OutputNoteUpdate {
   output_note.OutputNoteRecord note = 1;
   NoteUpdateType update_type = 2;
-}
-
-// A reference block with a partial blockchain that is consistent with it.
-message ChainAnchor {
-  blockchain.BlockHeader header = 1;
-  blockchain.PartialBlockchain partial_blockchain = 2;
 }

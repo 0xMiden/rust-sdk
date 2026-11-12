@@ -355,7 +355,7 @@ where
         let ref_blocks: BTreeSet<BlockNumber> =
             batch.pushed_txs.iter().map(|p| p.proven_tx.ref_block_num()).collect();
         let (ref_block_header, partial_blockchain) =
-            self.chain_anchor_at_tip(ref_blocks).await?.into_parts();
+            self.partial_blockchain_at_tip(ref_blocks).await?;
 
         // 2. Split pushed_txs into the two views required by the remaining steps and build the
         //    ProposedBatch.

@@ -444,7 +444,7 @@ reader.reset();
 
 ## Supply foreign account inputs yourself
 
-A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. Under `Client::execute_transaction_at` the reference block is the anchor's block. Otherwise it is the sync height at execution time, so do not sync between fetching and executing.
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. The reference block is the sync height at execution time, so do not sync between fetching and executing.
 
 `Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 
@@ -470,5 +470,3 @@ let request = TransactionRequestBuilder::new()
 Declaring an account ID more than once keeps the last declaration, so prefetched inputs added after a `ForeignAccount::public` declaration for the same account replace it. Only the accounts you pass are fetched: include every account reached through foreign procedure calls and every faucet with asset callbacks enabled whose asset the transaction moves, which on a fee-charging chain can include the fee faucet. Storage map keys and vault assets absent from the inputs are still resolved lazily during execution.
 
 `GetAccountRequest::new(account_id).with_fetch(fetch)` builds an RPC request with the same `AccountFetch`. Pass the request to `NodeRpcClient::get_account(request)`. Both policies default to `Skip`, so a declaration without them fetches the account header, code, and witness only. Execution then reads each skipped map entry or asset through its own lookup, from the store for a tracked account and from the node otherwise. Set `VaultFetch::Always` or `VaultFetch::Assets` to carry the assets with the inputs instead.
-
-Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.

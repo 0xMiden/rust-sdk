@@ -83,9 +83,9 @@ pub enum ForeignAccount {
     /// at execution time.
     ///
     /// The witness opens against the account tree of exactly one block, so inputs fetched at block
-    /// `N` are only valid for a transaction whose reference block is `N`: the anchor's block under
-    /// `Client::execute_transaction_at`, or the sync height at execution time otherwise. Storage
-    /// map keys and vault assets absent from the inputs are still resolved lazily during execution.
+    /// `N` are only valid for a transaction whose reference block is `N`, which is the sync height
+    /// at execution time. Storage map keys and vault assets absent from the inputs are still
+    /// resolved lazily during execution.
     Prefetched(AccountInputs),
 }
 

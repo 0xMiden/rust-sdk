@@ -36,7 +36,6 @@ use crate::rpc::{EndpointError, RegisterAccountError, RpcError};
 use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
-    ChainAnchorError,
     ProvenBatchSubmission,
     TransactionRequestError,
     TransactionStoreUpdateError,
@@ -124,8 +123,6 @@ pub enum ClientError {
     AccountDataNotFound(AccountId),
     #[error(transparent)]
     BatchBuilder(#[from] BatchBuilderError),
-    #[error("chain anchor error")]
-    ChainAnchorError(#[from] ChainAnchorError),
     #[error("data store error")]
     DataStoreError(#[from] DataStoreError),
     #[error("failed to construct the partial blockchain")]

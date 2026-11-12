@@ -150,6 +150,15 @@ impl InputNoteRecord {
         self.state.inclusion_proof()
     }
 
+    /// Returns the number of the block that contains the note, or `None` if the note is not
+    /// authenticated.
+    pub fn authenticated_block_num(&self) -> Option<BlockNumber> {
+        if !self.is_authenticated() {
+            return None;
+        }
+        self.inclusion_proof().map(|proof| proof.location().block_num())
+    }
+
     /// Returns the note's details.
     pub fn details(&self) -> &NoteDetails {
         &self.details

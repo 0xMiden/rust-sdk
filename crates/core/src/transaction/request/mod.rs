@@ -1,6 +1,5 @@
 //! Contains structures and functions related to transaction creation.
 
-use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -411,8 +410,7 @@ impl TransactionRequest {
             tx_args = tx_args.with_account_code_upgrade(account_code_upgrade);
         }
 
-        tx_args
-            .extend_output_note_recipients(expected_output_recipients.into_values().map(Box::new));
+        tx_args.extend_output_note_recipients(expected_output_recipients.into_values());
         tx_args.extend_merkle_store(merkle_store.inner_nodes());
 
         tx_args

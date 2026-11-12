@@ -30,16 +30,30 @@ use miden_client_core::transaction::{
 };
 use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
-use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{
+    AccountCodeUpgrade,
+    AccountHeader,
+    AccountPatch,
+    PartialAccount,
+    StorageMapKey,
+    StorageSlotName,
+};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
-use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
-use miden_protocol::utils::serde::Serializable;
+use miden_protocol::transaction::{
+    AccountInputs,
+    ExecutedTransaction,
+    InputNote,
+    TransactionInputs,
+    TransactionMeasurements,
+    TransactionOutputs,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;
@@ -667,6 +681,124 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
     }
 }
 
+// EXECUTED TRANSACTION
+// ================================================================================================
+
+/// The transaction inputs are not authenticated against a trusted chain. Decode an executed
+/// transaction only from a trusted source.
+impl ProtobufValue for ExecutedTransaction {
+    type Message = proto::ExecutedTransaction;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            inputs: Some(self.tx_inputs().into()),
+            final_account: Some(self.final_account().into()),
+            output_notes: Some(self.output_notes().into()),
+            expiration_block_num: Some(self.expiration_block_num().into()),
+            logs: Some(self.logs().into()),
+            code_patch: Some(self.code_patch().into()),
+            account_patch: Some(self.account_patch().into()),
+            measurements: Some(self.measurements().into()),
+        }
+    }
+
+    fn from_proto(transaction: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "executed transaction";
+
+        let tx_inputs: TransactionInputs =
+            required(transaction.inputs, MESSAGE, "inputs")?.decode_and_build_unchecked()?;
+        let final_account: AccountHeader =
+            required(transaction.final_account, MESSAGE, "final account")?.decode_and_verify()?;
+        let output_notes =
+            required(transaction.output_notes, MESSAGE, "output notes")?.decode_and_verify()?;
+        let expiration_block_num =
+            required(transaction.expiration_block_num, MESSAGE, "expiration block number")?
+                .decode_and_verify()?;
+        let logs = required(transaction.logs, MESSAGE, "logs")?.decode_and_verify()?;
+        let code_patch =
+            required(transaction.code_patch, MESSAGE, "code patch")?.decode_and_verify()?;
+        let account_patch: AccountPatch =
+            required(transaction.account_patch, MESSAGE, "account patch")?.decode_and_verify()?;
+        let measurements =
+            required(transaction.measurements, MESSAGE, "measurements")?.try_into()?;
+
+        // `ExecutedTransaction::new` panics on this mismatch.
+        if tx_inputs.account().id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "transaction inputs and transaction outputs name different accounts".to_string(),
+            ));
+        }
+        if account_patch.id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "account patch and transaction outputs name different accounts".to_string(),
+            ));
+        }
+
+        // The transaction executor accepts a transaction only if the kernel commits to the patch
+        // that the host built. The commitment of the patch is thus the commitment of the outputs.
+        let tx_outputs = TransactionOutputs::new(
+            final_account,
+            account_patch.to_commitment(),
+            output_notes,
+            expiration_block_num,
+            logs,
+            code_patch,
+        );
+
+        Ok(ExecutedTransaction::new(tx_inputs, tx_outputs, account_patch, measurements))
+    }
+}
+
+impl From<&TransactionMeasurements> for proto::TransactionMeasurements {
+    fn from(measurements: &TransactionMeasurements) -> Self {
+        Self {
+            prologue: measurements.prologue as u64,
+            notes_processing: measurements.notes_processing as u64,
+            note_execution: measurements
+                .note_execution
+                .iter()
+                .map(|(note_id, cycles)| proto::transaction_measurements::NoteExecution {
+                    note_id: Some(note_id.into()),
+                    cycles: *cycles as u64,
+                })
+                .collect(),
+            tx_script_processing: measurements.tx_script_processing as u64,
+            epilogue: measurements.epilogue as u64,
+            auth_procedure: measurements.auth_procedure as u64,
+        }
+    }
+}
+
+impl TryFrom<proto::TransactionMeasurements> for TransactionMeasurements {
+    type Error = ProtoDecodeError;
+
+    fn try_from(measurements: proto::TransactionMeasurements) -> Result<Self, Self::Error> {
+        let note_execution = measurements
+            .note_execution
+            .into_iter()
+            .map(|entry| {
+                let note_id: NoteId =
+                    required(entry.note_id, "note execution", "note id")?.decode_and_verify()?;
+                Ok((note_id, cycle_count(entry.cycles)?))
+            })
+            .collect::<Result<_, ProtoDecodeError>>()?;
+
+        Ok(Self {
+            prologue: cycle_count(measurements.prologue)?,
+            notes_processing: cycle_count(measurements.notes_processing)?,
+            note_execution,
+            tx_script_processing: cycle_count(measurements.tx_script_processing)?,
+            epilogue: cycle_count(measurements.epilogue)?,
+            auth_procedure: cycle_count(measurements.auth_procedure)?,
+        })
+    }
+}
+
+fn cycle_count(cycles: u64) -> Result<usize, ProtoDecodeError> {
+    usize::try_from(cycles)
+        .map_err(|_| ProtoDecodeError::InvalidValue(format!("cycle count {cycles} is too large")))
+}
+
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
@@ -676,7 +808,7 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn to_proto(&self) -> Self::Message {
         let note_updates = self.note_updates();
         Self::Message {
-            executed_transaction: self.executed_transaction().to_bytes(),
+            executed_transaction: Some(self.executed_transaction().to_proto()),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
@@ -702,7 +834,11 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction = read_upstream(&update.executed_transaction)?;
+        let executed_transaction = ExecutedTransaction::from_proto(required(
+            update.executed_transaction,
+            MESSAGE,
+            "executed transaction",
+        )?)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
@@ -813,7 +949,12 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+    use miden_protocol::transaction::{
+        AccountInputs,
+        ExecutedTransaction,
+        InputNote,
+        TransactionScript,
+    };
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
@@ -833,7 +974,7 @@ mod tests {
         VaultFetch,
         proto,
     };
-    use crate::{decode, encode};
+    use crate::{ProtoDecodeError, decode, encode};
 
     /// A store update with an executed transaction, every note update type, an output note and
     /// every tag source.
@@ -891,6 +1032,19 @@ mod tests {
         );
 
         assert_eq!(decode::<TransactionStoreUpdate>(&encode(&update)).unwrap(), update);
+    }
+
+    #[test]
+    fn executed_transaction_without_inputs_is_rejected() {
+        let bytes = prost::Message::encode_to_vec(&proto::ExecutedTransaction::default());
+
+        assert!(matches!(
+            decode::<ExecutedTransaction>(&bytes),
+            Err(ProtoDecodeError::MissingField {
+                message: "executed transaction",
+                field: "inputs"
+            })
+        ));
     }
 
     #[test]

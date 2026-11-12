@@ -195,17 +195,47 @@ message AccountStorageRequirements {
   repeated SlotKeys slots = 1;
 }
 
+// Cycle counts of the stages of a transaction execution.
+message TransactionMeasurements {
+  // Cycle count of the execution of one input note.
+  message NoteExecution {
+    note.NoteId note_id = 1;
+    uint64 cycles = 2;
+  }
+
+  uint64 prologue = 1;
+  uint64 notes_processing = 2;
+  repeated NoteExecution note_execution = 3;
+  uint64 tx_script_processing = 4;
+  uint64 epilogue = 5;
+  uint64 auth_procedure = 6;
+}
+
+// A transaction that the client executed, with the inputs to execute it again.
+message ExecutedTransaction {
+  .transaction.TransactionInputs inputs = 1;
+  // Header of the account after the transaction.
+  account.AccountHeader final_account = 2;
+  .transaction.RawOutputNotes output_notes = 3;
+  // Block at which the transaction expires.
+  blockchain.BlockNumber expiration_block_num = 4;
+  .transaction.TransactionLogs logs = 5;
+  .transaction.CodePatch code_patch = 6;
+  // Changes that the transaction makes to the account. The reader computes the commitment to the
+  // patch from this field.
+  account.AccountPatch account_patch = 7;
+  TransactionMeasurements measurements = 8;
+}
+
 // An executed transaction with the notes that later transactions create from it.
 message TransactionResult {
-  // Upstream encoding of the executed transaction.
-  bytes executed_transaction = 1;
+  ExecutedTransaction executed_transaction = 1;
   repeated ExpectedFutureNote future_notes = 2;
 }
 
 // Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
-  // Executed transaction in its protocol encoding.
-  bytes executed_transaction = 1;
+  ExecutedTransaction executed_transaction = 1;
   // Block at which the transaction was submitted.
   blockchain.BlockNumber submission_height = 2;
   repeated ExpectedFutureNote future_notes = 3;

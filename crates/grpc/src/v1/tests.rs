@@ -8,6 +8,7 @@ use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::transaction::TransactionRecord;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::code_tree::CodePatch;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::note::{
@@ -76,7 +77,7 @@ fn signed_block(block_num: u32) -> SignedBlock {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        OrderedTransactionHeaders::new_unchecked(Vec::new()),
+        vec![OrderedTransactionHeaders::new_unchecked(Vec::new())],
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
@@ -138,6 +139,8 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
+            Word::empty(),
+            CodePatch::default().commitment(),
         )
         .unwrap(),
         vec![],

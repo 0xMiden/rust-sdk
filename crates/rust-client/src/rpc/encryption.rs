@@ -11,6 +11,8 @@ use alloc::vec::Vec;
 
 pub use miden_client_core::errors::TransactionEncryptionError;
 pub use miden_client_core::rpc::encryption::*;
+use miden_objects::prost::Message;
+use miden_objects::proto;
 use miden_protocol::Word;
 use miden_protocol::transaction::{TransactionId, TransactionInputs};
 use miden_protocol::utils::serde::Serializable;
@@ -104,9 +106,11 @@ pub fn seal_transaction_inputs<R: CryptoRng>(
     transaction_inputs: &TransactionInputs,
 ) -> Result<SealedTransactionInputs, RpcError> {
     let associated_data = key_associated_data(key, tx_id);
+    // The validator decodes the plaintext as the canonical protobuf message of the inputs.
+    let plaintext = proto::transaction::TransactionInputs::from(transaction_inputs).encode_to_vec();
     let sealed = key
         .sealing_key()
-        .seal_bytes_with_associated_data(rng, &transaction_inputs.to_bytes(), &associated_data)
+        .seal_bytes_with_associated_data(rng, &plaintext, &associated_data)
         .map_err(|err| RpcError::TransactionInputsSealingFailed(err.to_string()))?;
 
     Ok(SealedTransactionInputs::new(key.key_id().to_vec(), sealed.to_bytes()))
@@ -117,6 +121,7 @@ pub fn seal_transaction_inputs<R: CryptoRng>(
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::block::code_tree::CodePatch;
     use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
     use miden_protocol::crypto::ies::{SealedMessage, UnsealingKey};
     use miden_protocol::utils::serde::Deserializable;
@@ -141,6 +146,8 @@ mod tests {
             Word::from([0, seed, 0, 0]),
             Word::from([0, 0, seed, 0]),
             Word::from([0, 0, 0, seed]),
+            Word::empty(),
+            CodePatch::default().commitment(),
         )
     }
 

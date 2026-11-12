@@ -179,6 +179,7 @@ pub use miden_protocol::transaction::{
     TransactionScript,
     TransactionScriptRoot,
     TransactionSummary,
+    TransactionWitness,
 };
 pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
@@ -1976,6 +1977,7 @@ mod tests {
         AccountType,
     };
     use miden_protocol::asset::{AssetId, FungibleAsset};
+    use miden_protocol::block::code_tree::CodeTreeRoot;
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::note::{Note, NoteType};
@@ -1987,6 +1989,7 @@ mod tests {
         ACCOUNT_ID_SENDER,
     };
     use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+    use miden_standards::account::auth::multisig_smart::DelayedExecutionPolicy;
     use miden_standards::account::auth::{
         Approver,
         ApproverSet,
@@ -2166,6 +2169,7 @@ mod tests {
             Word::empty(),
             Word::empty(),
             Word::empty(),
+            CodeTreeRoot::from_raw(Word::empty()),
             Word::empty(),
             Word::empty(),
             validator_keys,
@@ -2378,7 +2382,9 @@ mod tests {
         )
         .unwrap();
 
-        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
+        let delayed_execution = DelayedExecutionPolicy::new(1, 1, 1).unwrap();
+        let config = AuthMultisigSmartConfig::new(approvers, delayed_execution);
+        account_with_auth(AuthMultisigSmart::new(config).unwrap())
     }
 
     /// Multisig components load a preimage also when the chain charges no fee.

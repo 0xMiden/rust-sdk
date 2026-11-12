@@ -459,7 +459,7 @@ impl TestClient {
         let faucet = NonFungibleFaucet::builder()
             .name(TokenName::new(&symbol.to_string())?)
             .symbol(symbol)
-            .build();
+            .build()?;
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
@@ -824,10 +824,10 @@ impl TestClient {
             .map(|note| (note, None::<NoteArgs>))
             .collect::<Vec<(Note, Option<NoteArgs>)>>();
 
-        self.submit_new_transaction(executor, tx_request).await?;
+        Box::pin(self.submit_new_transaction(executor, tx_request)).await?;
 
         let tx_request = TransactionRequestBuilder::new().input_notes(output_notes).build()?;
-        Ok(self.submit_new_transaction(consumer, tx_request).await?)
+        Ok(Box::pin(self.submit_new_transaction(consumer, tx_request)).await?)
     }
 
     /// Mints assets for the target account and consumes them immediately without waiting for the

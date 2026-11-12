@@ -11,7 +11,7 @@ use miden_client::ClientError;
 use miden_client::account::standards::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, BoundSignature, SignatureKey};
 use miden_client::keystore::Keystore;
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::TestClient;
@@ -25,8 +25,9 @@ use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::auth::multisig_smart::DelayedExecutionPolicy;
 use miden_standards::account::auth::{
     Approver,
     ApproverSet,
@@ -416,7 +417,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .find(|failed| failed.note().id() == note.id())
         .expect("the note should be accounted for");
 
-    let error = failed.error();
+    let error = failed.execution_error();
     assert!(
         matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
         "the trial should get as far as requesting a signature rather than aborting on the unpaid \
@@ -486,7 +487,10 @@ async fn serialized_multisig_request_uses_native_auth_args(
                 .into()
         },
         AccountComponentInterface::AuthMultisigSmart => {
-            AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap().into()
+            let delayed_execution = DelayedExecutionPolicy::new(1, 1, 1).unwrap();
+            AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers, delayed_execution))
+                .unwrap()
+                .into()
         },
         _ => unreachable!(),
     };
@@ -524,11 +528,11 @@ async fn serialized_multisig_request_uses_native_auth_args(
 
     let message = summary.to_commitment();
     for key in client.keystore().get_keys_for_account(&account.id()).await.unwrap() {
-        let public_key: Word = key.public_key().to_commitment().into();
-        request.advice_map_mut().insert(
-            Hasher::merge(&[public_key, message]),
-            key.sign(message).to_encoded_signature(message),
-        );
+        let signature_key = SignatureKey::new(key.public_key().to_commitment(), message);
+        let signature = BoundSignature::new(signature_key, key.sign(message)).unwrap();
+        request
+            .advice_map_mut()
+            .insert(signature_key.to_advice_map_key(), signature.to_encoded_signature());
     }
     let result = Box::pin(client.execute_transaction_at(account.id(), request, anchor))
         .await

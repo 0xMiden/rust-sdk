@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
@@ -33,6 +34,11 @@
 
 ### Breaking Changes
 
+* [BREAKING][arch][all] Updated the protocol dependencies to `1.0.0-rc.1` and the node to the matching revision, which raises the MSRV to 1.99.1. Data that an earlier version wrote is not compatible, so the client requires a new store ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
+* [BREAKING][type][rust] `TransactionProver::prove` takes a `TransactionWitness` instead of `TransactionInputs`. `RemoteTransactionProver::prove` takes a `&TransactionWitness` instead of a `&TransactionInputs`. `ExecutedTransaction` converts into a `TransactionWitness`. `miden_client::transaction` exports `TransactionWitness` ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
+* [BREAKING][behavior][rust] The client seals the transaction inputs of a submission as their canonical protobuf message. Nodes before this protocol version reject them ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
+* [BREAKING][type][rust] `Signature::to_encoded_signature` moved to `BoundSignature`. A signature that a request carries in its advice map must be encoded with `BoundSignature::to_encoded_signature` under the key `SignatureKey::to_advice_map_key`. `miden_client::auth` exports `BoundSignature` and `SignatureKey` ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
+* [BREAKING][removal][rust] `FailedNote::error` is replaced by `FailedNote::failure` and `FailedNote::execution_error`. `miden_client::note` exports `NoteFailure` and `FeeError` ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

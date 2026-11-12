@@ -19,7 +19,7 @@ Writes, into `OUTPUT_DIR`:
   secret key of its own).
 - `faucet_operator.mac`: the wallet owning the native faucet, written **with** its secret key. It
   is what `miden-faucet init --import` takes to run a faucet dispensing the native asset.
-- `funding_account.mac`: the public funding account `miden-validator genesis` requires, written
+- `funding_account.mac`: the public funding account `miden-genesis build` requires, written
   **with** its secret key. The node's funding service pays out of it.
 - `funding_account.key`: the serialized signing key used by the funding service.
 - `tst_faucet.mac`: the TST genesis faucet, written **with** its secret key so tests can mint.
@@ -31,7 +31,7 @@ Writes, into `OUTPUT_DIR`:
 The genesis block is then built with:
 
 ```bash
-miden-validator genesis \
+miden-genesis build \
   --native-faucet OUTPUT_DIR/native_faucet.mac \
   --funding-account OUTPUT_DIR/funding_account.mac \
   --accounts-config OUTPUT_DIR/accounts.toml \
@@ -67,7 +67,7 @@ accounts, which no client transaction can deploy.
 ## Why a TOML manifest
 
 The accounts are built in Rust (depending only on `miden-protocol` / `miden-standards`) and emitted
-as `.mac` files. `accounts.toml` is a thin manifest the node's own `miden-validator genesis`
+as `.mac` files. `accounts.toml` is a thin manifest the node's own `miden-genesis build`
 consumes, so this crate stays decoupled from the node's internal crates.
 
 ## License

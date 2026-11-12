@@ -368,7 +368,7 @@ impl FaultyNoteTransportApi {
     fn take_send_failure(&self) -> Option<NoteTransportError> {
         self.send_attempts.fetch_add(1, Ordering::SeqCst);
         self.fail_next
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
             .then(|| {
                 NoteTransportError::Network(
@@ -402,7 +402,7 @@ impl NoteTransportClient for FaultyNoteTransportApi {
         let attempt = self.fetch_attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let should_fail = self
             .fail_next_fetches
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
         if should_fail || attempt == self.fail_on_fetch.load(Ordering::SeqCst) {
             return Err(NoteTransportError::Network(

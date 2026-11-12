@@ -212,9 +212,11 @@ pub mod auth {
         AuthScheme,
         AuthScheme as AuthSchemeId,
         AuthSecretKey,
+        BoundSignature,
         PublicKey,
         PublicKeyCommitment,
         Signature,
+        SignatureKey,
     };
     pub use miden_protocol::errors::AuthSchemeError;
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};

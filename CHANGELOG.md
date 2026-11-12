@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.2 (TBD)
+
+### Fixes
+
+* [FIX][rust] The NTL note screening no longer keeps non-consumable notes that match a note-sourced or subscription-sourced tag. It keeps only consumable notes and notes that match a user-sourced tag ([#2801](https://github.com/0xMiden/rust-sdk/pull/2801)).
+
 ## 0.18.1 (2026-11-11)
 
 ### Features

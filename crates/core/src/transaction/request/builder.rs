@@ -178,8 +178,7 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
-    /// against.
+    /// the note's creation block.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
@@ -359,7 +358,7 @@ impl TransactionRequestBuilder {
     ///
     /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
     /// the transaction's reference block. Use the same reference block when collecting signatures
-    /// across repeated executions. See `Client::execute_transaction_at`.
+    /// across repeated executions.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);

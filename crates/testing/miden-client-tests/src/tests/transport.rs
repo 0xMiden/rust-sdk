@@ -333,7 +333,8 @@ async fn transport_fetch_chunks_tracked_tags() {
     let head = transport_cursor(3);
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
     assert_eq!(transport.fetch_bounds(), [None, Some(head)]);
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
+    // The note screening only keeps the notes that match tracked tags with `NoteTagSource::User`
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
     let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
     assert_eq!(cursor, head);
     assert_eq!(covered.len(), 129);

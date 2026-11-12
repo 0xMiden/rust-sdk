@@ -26,7 +26,12 @@ use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{ExecutedTransaction, OutputNote, ProvenTransaction};
+use miden_protocol::transaction::{
+    ExecutedTransaction,
+    OrderedTransactionHeaders,
+    OutputNote,
+    ProvenTransaction,
+};
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -392,7 +397,9 @@ impl MockRpcApi {
                 continue;
             }
 
-            for transaction_header in block.body().transactions().as_slice() {
+            let transaction_headers =
+                block.body().transactions().iter().flat_map(OrderedTransactionHeaders::as_slice);
+            for transaction_header in transaction_headers {
                 if !account_ids.contains(&transaction_header.account_id()) {
                     continue;
                 }
@@ -635,22 +642,22 @@ impl NodeRpcClient for MockRpcApi {
         let mut return_notes = vec![];
         for note in hit_notes {
             let fetched_note = match note {
-                MockChainNote::Private(note_id, note_metadata, _, note_inclusion_proof) => {
+                MockChainNote::Private(note, note_inclusion_proof) => {
                     let attachments = self
                         .private_note_attachments
                         .read()
-                        .get(note_id)
+                        .get(&note.id())
                         .cloned()
                         .unwrap_or_else(NoteAttachments::empty);
                     FetchedNote::Private(
-                        *note_id,
-                        *note_metadata,
+                        note.id(),
+                        *note.metadata(),
                         attachments,
                         note_inclusion_proof.clone(),
                     )
                 },
                 MockChainNote::Public(note, note_inclusion_proof) => {
-                    FetchedNote::Public(note.clone(), note_inclusion_proof.clone())
+                    FetchedNote::Public(note.as_note().clone(), note_inclusion_proof.clone())
                 },
             };
             return_notes.push(fetched_note);

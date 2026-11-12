@@ -26,7 +26,6 @@ use miden_client::transaction::{
     LocalTransactionProver,
     ProvenTransaction,
     TransactionExecutorError,
-    TransactionInputs,
     TransactionProver,
     TransactionProverError,
     TransactionRequest,
@@ -34,6 +33,7 @@ use miden_client::transaction::{
     TransactionRequestError,
     TransactionScript,
     TransactionStatus,
+    TransactionWitness,
 };
 use miden_client::{ClientError, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
@@ -309,7 +309,7 @@ struct AlwaysFailingProver;
 impl TransactionProver for AlwaysFailingProver {
     async fn prove(
         &self,
-        _inputs: TransactionInputs,
+        _witness: TransactionWitness,
     ) -> Result<ProvenTransaction, TransactionProverError> {
         Err(TransactionProverError::other("simulated remote prover failure"))
     }
@@ -326,7 +326,7 @@ struct SwapProver {
 impl TransactionProver for SwapProver {
     async fn prove(
         &self,
-        _inputs: TransactionInputs,
+        _witness: TransactionWitness,
     ) -> Result<ProvenTransaction, TransactionProverError> {
         Ok(self.swapped.clone())
     }

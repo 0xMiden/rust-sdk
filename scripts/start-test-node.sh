@@ -78,7 +78,7 @@ BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee0000
 ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
-    miden-note-transport)
+    miden-note-transport miden-genesis)
 
 # Resolve the node source from Cargo.lock. By default, install the crates.io version that
 # Cargo.lock locks for `miden-node-proto-build`. A git pin of the node in Cargo.lock takes
@@ -195,15 +195,15 @@ done
 # earlier chain state depends on it. If a node bump changes the key format, regenerate all three
 # with `miden-validator keygen`.
 SIGNING_KEY="9cbcf0fc18b2a4afeff56ef43ad96af92e804fae64615c9802cff2a182e9cae2"
-VALIDATOR_PUBLIC_KEY="020c06515b355a62133ae98e53e4b5d3e6ee9ff60ce620a436780e4e308a3ff3e9"
+VALIDATOR_PUBLIC_KEY="0x020c06515b355a62133ae98e53e4b5d3e6ee9ff60ce620a436780e4e308a3ff3e9"
 ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7"
 
 {
-    # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file. The native faucet and the funding
-    # account are required inputs with their own flags; the fee and the timestamp are genesis
-    # parameters rather than accounts, so they are passed here instead of through the fixtures.
-    "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
+    # Genesis generation is separate from bootstrap: `miden-genesis build` builds the block once,
+    # then every component seeds its database from the resulting file. The native faucet and the
+    # funding account are required inputs with their own flags. The fee and the timestamp are
+    # genesis parameters, not accounts, so they are passed here and not through the fixtures.
+    "$BIN/miden-genesis" build --genesis-block-directory "$DATA/genesis" \
         --accounts-directory "$DATA/accounts" \
         --accounts-config "$DATA/genesis-config/accounts.toml" \
         --native-faucet "$DATA/genesis-config/native_faucet.mac" \

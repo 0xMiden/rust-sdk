@@ -137,7 +137,7 @@ pub use miden_standards::note::{
     TxFeeNote,
     UpgradeNote,
 };
-pub use miden_tx::{FailedNote, NoteConsumptionInfo};
+pub use miden_tx::{FailedNote, FeeError, NoteConsumptionInfo, NoteFailure};
 pub use note_reader::InputNoteReader;
 pub use note_screener::{NoteConsumability, NoteScreener, NoteScreenerError};
 pub use note_update_tracker::NoteConsumption;

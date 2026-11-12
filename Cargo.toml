@@ -33,7 +33,7 @@ authors      = ["miden contributors"]
 edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 version      = "0.18.0"
 
 [profile.dev]
@@ -53,17 +53,17 @@ miden-client-proto             = { default-features = false, path = "crates/prot
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.18" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.18" }
-miden-objects   = { default-features = false, version = "0.18" }
-miden-protocol  = { default-features = false, version = "0.18" }
-miden-standards = { default-features = false, version = "0.18" }
-miden-testing   = { default-features = false, version = "0.18" }
-miden-tx        = { default-features = false, version = "0.18" }
-miden-tx-batch  = { default-features = false, version = "0.18" }
-miden-usdcx     = { default-features = false, version = "0.18" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
+miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "b01c7502b2daab666001ff901617fce7908eb7fe" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.18.1" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "03670c14a6258bf999f5aaaac9f946060de8fb95" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.36" }
@@ -112,6 +112,7 @@ uuid                  = { version = "1.10" }
 # Pedantic lints are set to a lower priority which allows lints in the group to be selectively enabled.
 pedantic = { level = "warn", priority = -1 }
 # cast_possible_truncation =   "allow"  # Overly many instances especially regarding indices.
+assert_is_empty             = "allow" # Many triggers in tests, and the suggested form is harder to read.
 ignored_unit_patterns       = "allow" # Stylistic choice.
 missing_errors_doc          = "allow" # TODO: fixup and enable this.
 missing_panics_doc          = "allow" # TODO: fixup and enable this.

@@ -33,6 +33,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed `ChainAnchor`, `ChainAnchorError`, `Client::execute_transaction_at`, `Client::chain_anchor_for_request`, `ClientDataStore::with_chain_anchor` and `ClientError::ChainAnchorError`. A transaction always executes against the sync height of the client.
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

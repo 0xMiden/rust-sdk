@@ -452,8 +452,8 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
     }
 }
 
-/// A serialized request with a declared salt supports multisig preview and execution against the
-/// same anchor.
+/// A serialized request with a declared salt supports multisig preview and execution at the same
+/// block.
 #[rstest::rstest]
 #[case::multisig(AccountComponentInterface::AuthMultisig)]
 #[case::guarded_multisig(AccountComponentInterface::AuthGuardedMultisig)]
@@ -490,7 +490,7 @@ async fn serialized_multisig_request_uses_native_auth_args(
         },
         _ => unreachable!(),
     };
-    let (mut client, rpc_api, account) =
+    let (mut client, _rpc_api, account) =
         Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await;
     if matches!(auth_component, AccountComponentInterface::AuthGuardedMultisig) {
         client.keystore().add_key(&guardian_key, account.id()).await.unwrap();
@@ -509,18 +509,14 @@ async fn serialized_multisig_request_uses_native_auth_args(
         .own_output_notes(vec![own_note.into()])
         .build()
         .unwrap();
-    let anchor = client.chain_anchor_for_request(&request).await.unwrap();
-
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-    assert!(client.get_sync_height().await.unwrap() > anchor.block_num());
+    let sync_height = client.get_sync_height().await.unwrap();
 
     let summary = unauthorized_summary(
-        Box::pin(client.execute_transaction_at(account.id(), request.clone(), anchor.clone()))
+        Box::pin(client.execute_transaction(account.id(), request.clone()))
             .await
             .expect_err("an unsigned multisig request should return its summary"),
     );
-    assert_eq!(summary.block_number(), anchor.block_num());
+    assert_eq!(summary.block_number(), sync_height);
 
     let message = summary.to_commitment();
     for key in client.keystore().get_keys_for_account(&account.id()).await.unwrap() {
@@ -530,7 +526,7 @@ async fn serialized_multisig_request_uses_native_auth_args(
             key.sign(message).to_encoded_signature(message),
         );
     }
-    let result = Box::pin(client.execute_transaction_at(account.id(), request, anchor))
+    let result = Box::pin(client.execute_transaction(account.id(), request))
         .await
         .expect("the signed request should execute");
     // The smart multisig auth component does not create a fee note.

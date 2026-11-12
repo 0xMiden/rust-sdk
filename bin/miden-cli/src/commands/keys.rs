@@ -3,18 +3,14 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, ValueEnum};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
-use miden_client::crypto::rpo_falcon512;
+use miden_client::crypto::{ecdsa_k256_keccak, rpo_falcon512};
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
 
 use crate::codecs::parse_account_id_token;
 use crate::errors::CliError;
-use crate::utils::{
-    ECDSA_COMPRESSED_KEY_BYTES,
-    ECDSA_UNCOMPRESSED_KEY_BYTES,
-    parse_ecdsa_public_key,
-};
+use crate::utils::{ECDSA_COMPRESSED_KEY_BYTES, ECDSA_UNCOMPRESSED_KEY_BYTES, invalid_ecdsa_key};
 use crate::{Parser, create_dynamic_table};
 
 /// Length of a serialized Falcon public key. It matches the form that `rpo_falcon512::PublicKey`
@@ -238,7 +234,9 @@ fn print_commitment(public_key: &str) -> Result<(), CliError> {
             if length == ECDSA_COMPRESSED_KEY_BYTES * 2
                 || length == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 =>
         {
-            parse_ecdsa_public_key(public_key)?.to_commitment()
+            ecdsa_k256_keccak::PublicKey::from_hex(public_key)
+                .map_err(invalid_ecdsa_key)?
+                .to_commitment()
         },
         length if length == FALCON_PUBLIC_KEY_BYTES * 2 => {
             let scheme = KeyScheme::Falcon512Poseidon2;

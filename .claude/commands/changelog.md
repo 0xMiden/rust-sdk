@@ -17,7 +17,7 @@ Generate changelog entries for the current branch following the project's Change
 ## Rules
 
 - Use the categories from Changelog.Format.md: `rename`, `removal`, `param`, `type`, `behavior`, `arch`
-- Use the scopes: `rust`, `cli`, `store`
+- Use the scopes: `lib`, `cli`, `store`
 - Do not add a PR number or link. The release adds it.
 - Do not edit `CHANGELOG.md`. It is the archive of the releases up to 0.18.0.
 - Group related commits into single entries (don't produce one entry per commit).

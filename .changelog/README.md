@@ -4,7 +4,7 @@ Every PR that changes something a downstream user notices adds a file to `unrele
 (e.g. the branch name), with one line per entry:
 
 ```markdown
-[BREAKING][rename][rust] Renamed `Foo` to `Bar`.
+[BREAKING][rename][lib] Renamed `Foo` to `Bar`.
 ```
 
 [`Changelog.Format.md`](../Changelog.Format.md) describes the tags. The PR link is added at release, so the file

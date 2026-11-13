@@ -29,22 +29,22 @@ The LLM will then explore the codebase to generate before/after examples, migrat
 
 **Categories:** `rename` | `removal` | `param` | `type` | `behavior` | `arch`
 
-**Scopes:** `rust` | `cli` | `store`
+**Scopes:** `lib` | `cli` | `store`
 
-- `rust`: the library API of the client crates.
+- `lib`: the public APIs of the client library crates.
 - `cli`: the `miden-client` command-line interface.
 - `store`: the `Store` trait and the SQLite store. Use it for changes that a `Store` implementation must follow.
 
-An entry can have more than one scope, e.g. `[rust,store]`.
+An entry can have more than one scope, e.g. `[lib,store]`.
 
 **Examples:**
 ```markdown
-[BREAKING][rename][rust] `TonicRpcClient` → `GrpcClient`.
-[BREAKING][param][rust] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior.
-[BREAKING][removal][rust] Removed `compile_note_script()`. Use `ScriptBuilder` instead.
-[BREAKING][type][rust] `BlockNumber` unified to `u32` across all APIs.
-[BREAKING][arch][rust,store] `SqliteStore` moved to separate `miden-client-sqlite-store` crate.
-[BREAKING][behavior][rust] `get_account()` now returns `None` instead of error for unknown accounts.
+[BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][param][lib] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior.
+[BREAKING][removal][lib] Removed `compile_note_script()`. Use `ScriptBuilder` instead.
+[BREAKING][type][lib] `BlockNumber` unified to `u32` across all APIs.
+[BREAKING][arch][lib,store] `SqliteStore` moved to separate `miden-client-sqlite-store` crate.
+[BREAKING][behavior][lib] `get_account()` now returns `None` instead of error for unknown accounts.
 ```
 
 ### Features
@@ -55,8 +55,8 @@ An entry can have more than one scope, e.g. `[rust,store]`.
 
 **Examples:**
 ```markdown
-[FEATURE][rust] Added `TransactionSummary` API for previewing transactions before execution.
-[FEATURE][rust,store] New `AccountFilter` for querying accounts by type.
+[FEATURE][lib] Added `TransactionSummary` API for previewing transactions before execution.
+[FEATURE][lib,store] New `AccountFilter` for querying accounts by type.
 ```
 
 ### Fixes
@@ -67,8 +67,8 @@ An entry can have more than one scope, e.g. `[rust,store]`.
 
 **Examples:**
 ```markdown
-[FIX][rust] Fixed "Current block should be in the store" panic on concurrent syncs.
-[FIX][rust] Corrected balance calculation for fungible assets with decimals.
+[FIX][lib] Fixed "Current block should be in the store" panic on concurrent syncs.
+[FIX][lib] Corrected balance calculation for fungible assets with decimals.
 ```
 
 ---
@@ -92,18 +92,18 @@ A PR adds a file such as `.changelog/unreleased/grpc-client-rename.md`. Each lin
 and without a PR link:
 
 ```markdown
-[BREAKING][rename][rust] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient`.
 [FEATURE][cli] `--dry-run` flag for transaction commands.
-[FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays.
+[FIX][lib] `get_notes_by_filter` now correctly handles empty tag arrays.
 ```
 
 The release moves the entries to `.changelog/<tag>/<PR>.md` and adds the PR links (see
 [`.changelog/README.md`](.changelog/README.md)):
 
 ```markdown
-- [BREAKING][rename][rust] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 - [FEATURE][cli] `--dry-run` flag for transaction commands ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
-- [FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [FIX][lib] `get_notes_by_filter` now correctly handles empty tag arrays ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 ```
 
 ---
@@ -126,7 +126,7 @@ Generate a migration guide for the Miden Client SDK.
    - Parse all `[BREAKING]` entries from that version
 3. For each breaking change, generate a migration section
 4. If a breaking change is missing category/scope tags (e.g. only `[BREAKING]`), infer the scope by
-   searching the library, CLI and store code. When in doubt, treat scope as `rust`.
+   searching the library, CLI and store code. When in doubt, treat scope as `lib`.
 
 ## Target Version
 {VERSION}  (e.g., "0.13.0", "0.12.0", or "latest")
@@ -299,7 +299,7 @@ One line per breaking change with the key action required.
 For particularly complex breaking changes, authors can optionally add a note:
 
 ```markdown
-[BREAKING][behavior][rust] Transaction validation now occurs at submission time instead of build time. This may surface errors later in the workflow. See PR for migration examples.
+[BREAKING][behavior][lib] Transaction validation now occurs at submission time instead of build time. This may surface errors later in the workflow. See PR for migration examples.
 ```
 
 The "See PR for migration examples" hint tells the LLM to pay special attention to the PR description/comments for author-provided guidance.

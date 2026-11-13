@@ -120,10 +120,11 @@
 
 * [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
 
-## 0.18.2 (TBD)
+## 0.18.2 (2026-11-13)
 
 ### Fixes
 
+* [FIX][rust] The NTL note screening no longer keeps non-consumable notes that match a note-sourced or subscription-sourced tag. It keeps only consumable notes and notes that match a user-sourced tag ([#2801](https://github.com/0xMiden/rust-sdk/pull/2801)).
 * [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
 
 ## 0.18.1 (2026-11-11)

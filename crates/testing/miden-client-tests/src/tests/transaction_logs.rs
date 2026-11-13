@@ -5,7 +5,6 @@ use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountId, Accoun
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
-use miden_client::rpc::domain::transaction::TransactionLogsInfo;
 use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
@@ -15,6 +14,7 @@ use miden_client::transaction::{
     TransactionLog,
     TransactionLogDetails,
     TransactionLogs,
+    TransactionLogsInfo,
     TransactionRequestBuilder,
 };
 use miden_client::{ClientError, Felt, Word};

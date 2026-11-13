@@ -103,7 +103,6 @@ use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdates, StandardNote};
 use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
-use crate::rpc::domain::transaction::TransactionLogsInfo;
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -204,6 +203,8 @@ pub use miden_tx::{
     TransactionProverError,
 };
 pub use result::TransactionResult;
+
+pub use crate::rpc::domain::transaction::TransactionLogsInfo;
 
 // CONSTANTS
 // ================================================================================================

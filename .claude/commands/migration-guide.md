@@ -15,7 +15,7 @@ Generate a migration guide for the Miden Client SDK from the structured changelo
    - `param`: Show old vs new function signatures, explain new parameters
    - `type`: Show type conversions and import changes
    - `behavior`: Explain the behavioral difference and when code needs adaptation
-   - `arch`: Show Cargo.toml/package.json changes, new import paths
+   - `arch`: Show Cargo.toml changes, new import paths
 6. For each breaking change, use the PR number to fetch the diff via `gh pr view #NUMBER` for additional context.
 7. Explore the codebase to find real usage patterns for before/after code examples.
 8. Group related breaking changes that affect the same workflow into a single section.
@@ -42,15 +42,6 @@ old_code_example();
 new_code_example();
 ```
 
-**TypeScript:** (only if scope includes `web`)
-```typescript
-// Before (previous version)
-oldCodeExample();
-
-// After (target version)
-newCodeExample();
-```
-
 #### Migration Steps
 1. Step-by-step instructions
 2. ...
@@ -66,9 +57,9 @@ newCodeExample();
 - Use a table of contents for guides with 5+ breaking changes.
 - Order sections by impact: most disruptive changes first.
 - End with a "Need Help?" section linking to Discord/GitHub issues.
-- Include both Rust and TypeScript examples when scope includes both `rust` and `web`.
+- Cover every scope of an entry: show the CLI change for `cli` and the `Store` implementation change for `store`.
 - Use real, runnable code examples (not pseudocode). Keep examples minimal but complete.
-- Always specify language for syntax highlighting (```rust, ```typescript).
+- Always specify language for syntax highlighting (```rust, ```bash).
 - Use diff syntax (```diff) when showing inline changes.
 - Do NOT include non-breaking features or fixes.
 - Tone: direct and actionable ("Update your imports" not "You may want to consider updating").

@@ -180,35 +180,21 @@ where
         &self,
         notes: &mut Vec<(NoteId, Note, Option<BlockNumber>)>,
     ) -> Result<(), ClientError> {
-        let account_tags = self.tracked_account_tags().await?;
+        let user_tags = self.tracked_user_tags().await?;
 
         let notes_to_screen: Vec<Note> = notes
             .iter()
-            .filter(|(_, note, _)| account_tags.contains(&note.metadata().tag()))
+            .filter(|(_, note, _)| !user_tags.contains(&note.metadata().tag()))
             .map(|(_, note, _)| note.clone())
             .collect();
         let consumable = self.note_screener().get_batch_consumability(&notes_to_screen).await?;
 
-        let user_tags = self.tracked_user_tags().await?;
         // Keep the notes whose tag match a user-defined tag and the ones that are consumable
         notes.retain(|(_, note, _)| {
             user_tags.contains(&note.metadata().tag()) || consumable.contains_key(&note.id())
         });
 
         Ok(())
-    }
-
-    /// Returns the tracked tags that were registered for an account, i.e. derived from its ID.
-    async fn tracked_account_tags(&self) -> Result<BTreeSet<NoteTag>, ClientError> {
-        let tags = self
-            .store
-            .get_note_tags()
-            .await?
-            .into_iter()
-            .filter(|record| matches!(record.source, NoteTagSource::Account(_)))
-            .map(|record| record.tag)
-            .collect();
-        Ok(tags)
     }
 
     /// Returns the tags that the user added with [`Client::add_note_tag`].

@@ -2667,7 +2667,7 @@ mod tests {
         let faucet = builder
             .add_existing_basic_faucet(
                 miden_testing::Auth::BasicAuth {
-                    auth_scheme: miden_protocol::account::auth::AuthScheme::Falcon512Poseidon2,
+                    auth_scheme: miden_protocol::account::auth::AuthScheme::Falcon512Eidos,
                 },
                 "TST",
                 10_000,

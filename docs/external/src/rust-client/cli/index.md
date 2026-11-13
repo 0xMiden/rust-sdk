@@ -129,7 +129,7 @@ On a network that does not enforce the allowlist the node already allows every a
 
 Creates a new wallet account.
 
-A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Poseidon2 authentication key by default.
+A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Eidos authentication key by default.
 
 The command accepts these options:
 
@@ -138,7 +138,7 @@ The command accepts these options:
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
-- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+- `--falcon512-eidos`, alias `--falcon`: Generates and stores a Falcon512/Eidos authentication key. This is also the default when no scheme flag or authentication component package is given.
 
 The authentication scheme flags are mutually exclusive. They also cannot be combined with an extra package that contributes an authentication component. An account that uses an external public key requires an external signer to authorize transactions.
 
@@ -161,7 +161,7 @@ There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If 
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
-- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+- `--falcon512-eidos`, alias `--falcon`: Generates and stores a Falcon512/Eidos authentication key. This is also the default when no scheme flag or authentication component package is given.
 
 The authentication scheme flags are mutually exclusive. They also cannot be combined with a package that contributes an authentication component. Without a scheme flag, a package authentication component takes precedence. If no package supplies one, the CLI generates and stores a Falcon key. An account that uses an external public key requires an external signer to authorize transactions.
 
@@ -497,7 +497,7 @@ If a remote prover is configured, the CLI can offload the proving process to it.
 
 Manage authentication keys in the configured filesystem keystore.
 
-Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
+Supported authentication schemes are `falcon512-eidos` and `ecdsa-k256-keccak`.
 
 #### `keys --list`
 
@@ -516,7 +516,7 @@ The command reads the keystore directory and skips every file that does not hold
 Generate a key for the selected authentication scheme and store it in the keystore:
 
 ```sh
-miden-client keys --generate falcon512-poseidon2
+miden-client keys --generate falcon512-eidos
 miden-client keys --generate ecdsa-k256-keccak
 ```
 

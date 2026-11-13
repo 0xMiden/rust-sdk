@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, ValueEnum};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, PublicKeyCommitment};
-use miden_client::crypto::rpo_falcon512;
+use miden_client::crypto::falcon512_eidos;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::utils::{ByteReader, Deserializable, hex_to_bytes};
 use miden_client::{SliceReader, Word};
@@ -17,20 +17,20 @@ use crate::utils::{
 };
 use crate::{Parser, create_dynamic_table};
 
-/// Length of a serialized Falcon public key. It matches the form that `rpo_falcon512::PublicKey`
+/// Length of a serialized Falcon public key. It matches the form that `falcon512_eidos::PublicKey`
 /// reads.
 const FALCON_PUBLIC_KEY_BYTES: usize = 897;
 
 // Command modules share these names. Keep them internal to the CLI crate.
 /// Name of the Falcon scheme in the command line and in the command output.
-pub(crate) const FALCON_SCHEME_NAME: &str = "falcon512-poseidon2";
+pub(crate) const FALCON_SCHEME_NAME: &str = "falcon512-eidos";
 /// Name of the ECDSA scheme in the command line and in the command output.
 pub(crate) const ECDSA_SCHEME_NAME: &str = "ecdsa-k256-keccak";
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum KeyScheme {
     #[value(name = FALCON_SCHEME_NAME)]
-    Falcon512Poseidon2,
+    Falcon512Eidos,
     #[value(name = ECDSA_SCHEME_NAME)]
     EcdsaK256Keccak,
 }
@@ -38,7 +38,7 @@ enum KeyScheme {
 impl KeyScheme {
     fn name(self) -> &'static str {
         match self {
-            Self::Falcon512Poseidon2 => FALCON_SCHEME_NAME,
+            Self::Falcon512Eidos => FALCON_SCHEME_NAME,
             Self::EcdsaK256Keccak => ECDSA_SCHEME_NAME,
         }
     }
@@ -47,7 +47,7 @@ impl KeyScheme {
 impl From<KeyScheme> for AuthSchemeId {
     fn from(value: KeyScheme) -> Self {
         match value {
-            KeyScheme::Falcon512Poseidon2 => Self::Falcon512Poseidon2,
+            KeyScheme::Falcon512Eidos => Self::Falcon512Eidos,
             KeyScheme::EcdsaK256Keccak => Self::EcdsaK256Keccak,
         }
     }
@@ -58,7 +58,7 @@ impl TryFrom<AuthSchemeId> for KeyScheme {
 
     fn try_from(value: AuthSchemeId) -> Result<Self, Self::Error> {
         match value {
-            AuthSchemeId::Falcon512Poseidon2 => Ok(Self::Falcon512Poseidon2),
+            AuthSchemeId::Falcon512Eidos => Ok(Self::Falcon512Eidos),
             AuthSchemeId::EcdsaK256Keccak => Ok(Self::EcdsaK256Keccak),
             _ => Err(()),
         }
@@ -241,10 +241,10 @@ fn print_commitment(public_key: &str) -> Result<(), CliError> {
             parse_ecdsa_public_key(public_key)?.to_commitment()
         },
         length if length == FALCON_PUBLIC_KEY_BYTES * 2 => {
-            let scheme = KeyScheme::Falcon512Poseidon2;
+            let scheme = KeyScheme::Falcon512Eidos;
             let bytes = hex_to_bytes::<FALCON_PUBLIC_KEY_BYTES>(public_key)
                 .map_err(|err| invalid_public_key(scheme, err))?;
-            rpo_falcon512::PublicKey::read_from_bytes(&bytes)
+            falcon512_eidos::PublicKey::read_from_bytes(&bytes)
                 .map_err(|err| invalid_public_key(scheme, err))?
                 .to_commitment()
         },

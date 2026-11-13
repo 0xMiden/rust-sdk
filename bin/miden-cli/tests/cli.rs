@@ -92,10 +92,10 @@ fn cli_manages_keys() {
         PublicKey::EcdsaK256Keccak(public_key) => public_key.to_string(),
         _ => unreachable!("the test key uses ECDSA"),
     };
-    let falcon_key = AuthSecretKey::new_falcon512_poseidon2();
+    let falcon_key = AuthSecretKey::new_falcon512_eidos();
     let falcon_commitment = Word::from(falcon_key.public_key().to_commitment()).to_hex();
     let falcon_public_key = match falcon_key.public_key() {
-        PublicKey::Falcon512Poseidon2(public_key) => public_key.to_string(),
+        PublicKey::Falcon512Eidos(public_key) => public_key.to_string(),
         _ => unreachable!("the test key uses Falcon"),
     };
     fs::write(temp_dir.join(KEY_FILENAME), imported_key.to_bytes()).unwrap();
@@ -126,12 +126,12 @@ fn cli_manages_keys() {
     associate_cmd.current_dir(&temp_dir).assert().success();
 
     let mut generate_cmd = cargo_bin_cmd!("miden-client");
-    generate_cmd.args(["keys", "--generate", "falcon512-poseidon2"]);
+    generate_cmd.args(["keys", "--generate", "falcon512-eidos"]);
     generate_cmd
         .current_dir(&temp_dir)
         .assert()
         .success()
-        .stdout(contains("Generated falcon512-poseidon2 key."));
+        .stdout(contains("Generated falcon512-eidos key."));
 
     let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
     fs::write(keystore_dir.join(".DS_Store"), []).unwrap();
@@ -152,7 +152,7 @@ fn cli_manages_keys() {
         .success()
         .stdout(contains(&imported_commitment))
         .stdout(contains("ecdsa-k256-keccak"))
-        .stdout(contains("falcon512-poseidon2"))
+        .stdout(contains("falcon512-eidos"))
         .stdout(contains(&account_id));
 
     let mut disassociate_cmd = cargo_bin_cmd!("miden-client");
@@ -2256,7 +2256,7 @@ fn cli_generates_falcon_key_when_no_public_key_is_given() {
         .current_dir(&temp_dir)
         .assert()
         .success()
-        .stdout(contains("Generated and stored falcon512-poseidon2 authentication key"));
+        .stdout(contains("Generated and stored falcon512-eidos authentication key"));
 
     let keystore_dir = temp_dir.join(MIDEN_DIR).join(KEYSTORE_DIRECTORY);
     let keystore_entries = fs::read_dir(&keystore_dir).unwrap().count();

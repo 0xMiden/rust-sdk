@@ -2,10 +2,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::block::{BlockHeader, BlockNumber, ValidatorConfig};
-use miden_protocol::crypto::hash::rpo::Rpo256;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, Hasher, Word};
 use tracing::warn;
 
 use crate::rpc::NodeRpcClient;
@@ -155,7 +154,7 @@ impl<AUTH> Client<AUTH> {
             .iter()
             .map(|&n| Felt::from(u32::try_from(n).expect("block number fits in u32")))
             .collect();
-        Ok(Rpo256::hash_elements(&elements))
+        Ok(Hasher::hash_elements(&elements))
     }
 
     /// Tracks each fetched note block in `partial_mmr` and stores its header together with the

@@ -21,7 +21,7 @@
 //! use miden_client::{
 //!     auth::TransactionAuthenticator,
 //!     Client,
-//!     crypto::FeltRng,
+//!     crypto::Rng,
 //!     note::{NoteScreener, get_input_note_with_id_prefix},
 //!     store::NoteFilter,
 //! };

@@ -42,7 +42,7 @@ pub async fn test_agglayer_update_ger(client_config: ClientConfig) -> Result<()>
     let ger_elements = ger.to_elements();
     let ger_lower: Word = ger_elements[0..4].try_into().expect("to_elements returns 8 felts");
     let ger_upper: Word = ger_elements[4..8].try_into().expect("to_elements returns 8 felts");
-    let ger_key = Hasher::merge(&[ger_lower, ger_upper]);
+    let ger_key = Hasher::hash_double_word(&[ger_lower, ger_upper]);
 
     let mut is_registered = false;
     for _ in 0..MAX_POLL_BLOCKS {

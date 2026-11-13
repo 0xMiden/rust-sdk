@@ -19,13 +19,15 @@ use miden_protocol::account::{
     StorageSlotType,
 };
 use miden_protocol::asset::{AssetId, AssetWitness, PartialVault};
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::smt::{PartialSmt, SmtProof};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{EMPTY_WORD, Word, ZERO};
+use miden_protocol::{EMPTY_WORD, MastForest, Word, ZERO};
 use miden_tx::{
     DataStore,
     DataStoreError,
@@ -461,6 +463,21 @@ impl DataStore for InMemoryBatchDataStore {
         script_root: NoteScriptRoot,
     ) -> impl FutureMaybeSend<Result<Option<NoteScript>, DataStoreError>> {
         self.inner.get_note_script(script_root)
+    }
+
+    fn get_code_witnesses(
+        &self,
+        code_tree_root: CodeTreeRoot,
+        procedure_roots: Vec<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<CodeWitness>, DataStoreError>> {
+        self.inner.get_code_witnesses(code_tree_root, procedure_roots)
+    }
+
+    fn get_code_to_register(
+        &self,
+        procedure_roots: BTreeSet<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
+        self.inner.get_code_to_register(procedure_roots)
     }
 }
 

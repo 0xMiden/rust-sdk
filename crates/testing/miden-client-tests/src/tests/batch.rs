@@ -444,7 +444,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
     // The executing account: a wallet that also owns a storage map.
     let map_component = batch_bump_map_component();
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -454,7 +454,7 @@ async fn batch_builder_serves_witnesses_for_state_untouched_by_prior_push() {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .with_component(map_component)

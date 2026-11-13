@@ -10,7 +10,6 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note,
@@ -31,6 +30,7 @@ use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use rand::{Rng, RngExt};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
@@ -440,7 +440,7 @@ impl TransactionRequestBuilder {
         asset: FungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
         // path for the same reason: it costs a transaction and leaves the target a note with
@@ -478,7 +478,7 @@ impl TransactionRequestBuilder {
         asset: NonFungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
@@ -510,7 +510,7 @@ impl TransactionRequestBuilder {
         self,
         asset: NonFungibleAsset,
         sender: AccountId,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = BurnNote::builder()
             .sender(sender)
@@ -537,7 +537,7 @@ impl TransactionRequestBuilder {
         self,
         payment_data: PaymentNoteDescription,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         if payment_data
             .assets()
@@ -569,7 +569,7 @@ impl TransactionRequestBuilder {
         swap_data: &SwapTransactionData,
         note_type: NoteType,
         payback_note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
         // P2ID payback carrying the requested one. A zero amount on either side leaves one of those
@@ -618,12 +618,12 @@ impl TransactionRequestBuilder {
         self,
         sender_account_id: AccountId,
         scripts: Vec<NoteScript>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let registration_notes: Vec<Note> = scripts
             .into_iter()
             .map(|script| {
-                let serial_num = rng.draw_word();
+                let serial_num = rng.random::<Word>();
                 let note_storage = NoteStorage::new(vec![])?;
                 let recipient = NoteRecipient::new(serial_num, script, note_storage);
                 let note_assets = NoteAssets::new(vec![])?;
@@ -656,7 +656,7 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         payback_note_type: NoteType,
         note_attachment: Option<NoteAttachment>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
         if is_zero_fungible(&pswap_data.offered_asset().into()) {
@@ -675,7 +675,7 @@ impl TransactionRequestBuilder {
         let pswap_note = PswapNote::builder()
             .sender(pswap_data.creator_account_id())
             .storage(storage)
-            .serial_number(rng.draw_word())
+            .serial_number(rng.random::<Word>())
             .note_type(note_type)
             .offered_asset(pswap_data.offered_asset())
             .maybe_attachment(note_attachment)
@@ -952,7 +952,7 @@ impl PaymentNoteDescription {
     pub(crate) fn into_note(
         self,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note

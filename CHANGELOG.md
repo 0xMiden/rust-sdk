@@ -36,7 +36,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][arch][all] Moved hashing and Falcon signatures to Eidos. Commitments, account IDs, note IDs, nullifiers. ([#2789](https://github.com/0xMiden/rust-sdk/issues/2789)).
+* [BREAKING][arch][all] Moved hashing and Falcon signatures to Eidos, changing commitments, account IDs, note IDs, and nullifiers ([#2789](https://github.com/0xMiden/rust-sdk/issues/2789)).
 * [BREAKING][rename][rust] Renamed the Falcon scheme from Poseidon2 to Eidos. `AuthSchemeId::Falcon512Poseidon2` is `AuthSchemeId::Falcon512Eidos`, `AuthSecretKey::new_falcon512_poseidon2` and `new_falcon512_poseidon2_with_rng` are `new_falcon512_eidos` and `new_falcon512_eidos_with_rng`, `miden_client::auth::RPO_FALCON_SCHEME_ID` is `FALCON512_EIDOS_SCHEME_ID`, and the `miden_client::crypto::rpo_falcon512` module is `miden_client::crypto::falcon512_eidos` ([#2789](https://github.com/0xMiden/rust-sdk/issues/2789)).
 * [BREAKING][rename][cli] Renamed the `--falcon512-poseidon2` flag of `new-wallet` and `new-account` to `--falcon512-eidos`. The `--falcon` alias stays ([#2789](https://github.com/0xMiden/rust-sdk/issues/2789)).
 * [BREAKING][removal][rust] Removed the `Rpo256` and `Poseidon2` exports from `miden_client::crypto`. Use `miden_client::crypto::Hasher`, which is the Eidos hasher of the protocol ([#2789](https://github.com/0xMiden/rust-sdk/issues/2789)).

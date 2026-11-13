@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.2 (TBD)
+
+### Fixes
+
+* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+
 ## 0.18.1 (2026-11-11)
 
 ### Features

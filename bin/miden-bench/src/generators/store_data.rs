@@ -220,7 +220,7 @@ pub fn wallet_accounts(count: usize) -> anyhow::Result<Vec<Account>> {
 
             let auth = AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             ));
 
             AccountBuilder::new(init_seed)

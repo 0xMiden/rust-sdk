@@ -614,6 +614,7 @@ mod tests {
         NoteRecipient,
         NoteStorage,
         NoteType,
+        Nullifier,
         PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::ACCOUNT_ID_SENDER;
@@ -710,6 +711,43 @@ mod tests {
             vec![id],
             "an externally consumed note must still be reported by its id"
         );
+    }
+
+    /// The node filters nullifiers by their 16-bit prefix, so it also returns nullifiers of notes
+    /// that the client does not track. The tracker must compare the full nullifier.
+    #[test]
+    fn nullifier_with_a_shared_prefix_does_not_consume_the_note() {
+        let sender: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+        let note = processing_note(3, sender);
+        let nullifier = note.nullifier().expect("processing note has metadata");
+
+        // Change only the low bits of the element that holds the prefix.
+        let mut word = nullifier.as_word();
+        word[3] = Felt::new_unchecked(word[3].as_canonical_u64() ^ 1);
+        let other_nullifier = Nullifier::from_raw(word);
+        assert_ne!(other_nullifier, nullifier);
+        assert_eq!(other_nullifier.prefix(), nullifier.prefix());
+
+        let mut tracker = NoteUpdateTracker::new(vec![note], vec![]);
+        let consume = |tracker: &mut NoteUpdateTracker, nullifier| {
+            tracker
+                .apply_note_consumption(
+                    &NoteConsumption {
+                        nullifier,
+                        block_num: BlockNumber::from(5u32),
+                        external_consumer: None,
+                    },
+                    core::iter::empty::<&TransactionRecord>(),
+                )
+                .expect("consumption should apply");
+        };
+
+        consume(&mut tracker, other_nullifier);
+        assert_eq!(tracker.clone().into_note_updates().consumed_input_note_ids().count(), 0);
+        assert_eq!(tracker.unspent_nullifiers().collect::<alloc::vec::Vec<_>>(), vec![nullifier]);
+
+        consume(&mut tracker, nullifier);
+        assert_eq!(tracker.into_note_updates().consumed_input_note_ids().count(), 1);
     }
 
     #[test]

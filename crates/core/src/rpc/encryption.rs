@@ -279,7 +279,7 @@ fn validate_key_id_len(key_id_len: usize, field: &str) -> Result<(), String> {
 ///
 /// Mirrors the validator's `attestation_commitment` (`signers::attestation_commitment` in the
 /// `miden-validator` crate of `0xMiden/node`) so the layout is duplicated here and pinned against
-/// the validator's output by the golden-vector tests below: the Poseidon2 hash of
+/// the validator's output by the golden-vector tests below: the Eidos hash of
 /// `ATTESTATION_DOMAIN || scheme || len(key_id) || key_id || genesis_commitment || len(public_key)
 /// || public_key || next_key_transcript`, where the scheme, rotation block number and length
 /// prefixes are 4 bytes little-endian. The length prefixes keep the payload injective, and the
@@ -539,21 +539,37 @@ mod tests {
     // VALIDATOR PARITY
     // --------------------------------------------------------------------------------------------
 
-    /// Expected values produced by the validator's own implementation over these exact inputs
-    /// (`miden_validator::attestation_commitment`, `0xMiden/node` rev `5066b383`, identical on
-    /// `next` at `da261511`). The commitment layout is duplicated on both sides, so these vectors
-    /// are what ties them together: if either side changes its layout, this test fails rather than
-    /// every attestation quietly failing to verify. Regenerate by feeding the same inputs to the
-    /// node's function.
+    /// The commitment layout is duplicated in the validator (`attestation_commitment` in
+    /// `crates/proto/src/domain/encryption.rs` of `0xMiden/node`). These vectors tie both sides
+    /// together. If one side changes its layout, this test fails.
+    ///
+    /// The first vector is the one that the node pins in its
+    /// `encryption_key_attestation_eidos_vector` test at rev `27a3f658`. The other two vectors are
+    /// the output of this function, so they pin the layout only on this side. To verify them
+    /// against the node, give the same inputs to the function of the node.
     #[test]
     fn attestation_commitment_matches_the_validator_implementation() {
+        let node_public_key =
+            KeyExchangeKey::read_from_bytes(&[7u8; 32]).unwrap().public_key().to_bytes();
+        let node_vector = attestation_commitment(
+            1,
+            &[0xde, 0xad, 0xbe, 0xef],
+            Word::from([1u32, 2, 3, 4]),
+            &node_public_key,
+            None,
+        );
+        assert_eq!(
+            node_vector.to_hex(),
+            "0x231080e939d67a4d34957d2615d79b1dfe9eb2e864efde4b38bfd5ddc5f6e941"
+        );
+
         let genesis = Word::from([101u32, 102, 103, 104]);
 
         let no_rotation =
             attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", None);
         assert_eq!(
             no_rotation.to_hex(),
-            "0x245d1f2d45d4a60d9edd4576691244d6b9ee16fe67635425dc685cd54918a970"
+            "0x76473f6f58e8477216eacd042d52ea437efd9ebf1e187209e6614b693967fb55"
         );
 
         let next = NextTransactionEncryptionKey {
@@ -566,7 +582,7 @@ mod tests {
             attestation_commitment(1, b"golden-key-id", genesis, b"golden-public-key", Some(&next));
         assert_eq!(
             with_rotation.to_hex(),
-            "0xddfd7907b6a1ea6f294809ff0ed775f270b649ca15b21f88127c8335945e4752"
+            "0x26c4bfbb2c3f236b30db9c5190d84313607495629aa4ab67a549acc7563d8c42"
         );
     }
 }

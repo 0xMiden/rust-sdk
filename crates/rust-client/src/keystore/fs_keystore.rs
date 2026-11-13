@@ -593,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn key_commitments_are_scoped_to_their_account() {
         let (keystore, _dir) = test_keystore();
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let commitment = key.public_key().to_commitment();
 
         keystore.add_key(&key, test_account_id()).await.unwrap();
@@ -616,7 +616,7 @@ mod tests {
     #[tokio::test]
     async fn key_commitments_are_empty_after_the_last_key_is_removed() {
         let (keystore, _dir) = test_keystore();
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
 
         keystore.add_key(&key, test_account_id()).await.unwrap();
         keystore.remove_key(key.public_key().to_commitment()).await.unwrap();
@@ -633,7 +633,7 @@ mod tests {
     #[tokio::test]
     async fn disassociating_a_key_affects_only_the_named_account() {
         let (keystore, _dir) = test_keystore();
-        let shared_key = AuthSecretKey::new_falcon512_poseidon2();
+        let shared_key = AuthSecretKey::new_falcon512_eidos();
         let shared_commitment = shared_key.public_key().to_commitment();
 
         keystore.add_key(&shared_key, test_account_id()).await.unwrap();
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn unreadable_key_file_is_skipped_by_the_listing() {
         let (keystore, dir) = test_keystore();
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let commitment = key.public_key().to_commitment();
 
         keystore.store_key(&key).unwrap();

@@ -226,7 +226,7 @@ fn generate_faucet(
     max_supply: u64,
 ) -> anyhow::Result<(Account, AuthSecretKey)> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
 
     let symbol = TokenSymbol::try_from(symbol).expect("faucet symbol should be valid");
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -241,7 +241,7 @@ fn generate_faucet(
         faucet,
         AuthSingleSig::new(Approver::new(
             secret.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         )),
         allow_all_policy_manager(),
         AccountType::Public,
@@ -253,9 +253,8 @@ fn generate_faucet(
 /// Builds a public basic wallet, with the key that signs for it.
 fn generate_wallet() -> anyhow::Result<(Account, AuthSecretKey)> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
-    let approver =
-        Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
+    let approver = Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Eidos);
     let wallet = create_basic_wallet(rng.random(), approver, AccountType::Public)?;
 
     Ok((wallet, secret))
@@ -346,7 +345,7 @@ const ASSET_AMOUNT_PER_FAUCET: u64 = 75;
 /// the node. This is used to test edge cases in account retrieval and asset handling.
 fn build_test_faucets_and_account() -> anyhow::Result<Vec<Account>> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
 
     let faucets = create_test_faucets(&secret)?;
     let account = create_test_account_with_many_assets(&faucets)?;
@@ -379,7 +378,7 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
 
     let auth_component = AuthSingleSig::new(Approver::new(
         secret.public_key().to_commitment(),
-        AuthScheme::Falcon512Poseidon2,
+        AuthScheme::Falcon512Eidos,
     ));
 
     let symbol = TokenSymbol::new("TKN")?;
@@ -406,9 +405,8 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
 /// Creates a test account holding assets from all provided faucets. The account also includes a
 /// large storage map to test storage capacity limits.
 fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<Account> {
-    let sk = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut ChaCha20Rng::from_seed(
-        TEST_ACCOUNT_SEED,
-    ));
+    let sk =
+        AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::from_seed(TEST_ACCOUNT_SEED));
 
     let storage_map = create_large_storage_map();
     let acc_component = AccountComponent::new(
@@ -428,7 +426,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     let account = AccountBuilder::new(TEST_ACCOUNT_SEED)
         .with_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         )))
         .account_type(AccountType::Public)
         .with_component(acc_component)

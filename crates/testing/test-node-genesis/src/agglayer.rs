@@ -63,13 +63,13 @@ pub fn create_agglayer_genesis_accounts(fee_balance: Asset) -> Result<AgglayerGe
     let mut rng = ChaCha20Rng::from_seed(random());
 
     // 1. Create Bridge Admin
-    let admin_secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let admin_secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
     let admin_account = build_wallet_account(&mut rng, &admin_secret)
         .context("failed to create bridge admin account")?;
     let admin_account = into_genesis_account(admin_account, fee_balance)?;
 
     // 2. Create GER Manager
-    let ger_secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let ger_secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
     let ger_account = build_wallet_account(&mut rng, &ger_secret)
         .context("failed to create GER manager account")?;
     let ger_account = into_genesis_account(ger_account, fee_balance)?;
@@ -158,7 +158,7 @@ fn build_wallet_account(rng: &mut ChaCha20Rng, secret: &AuthSecretKey) -> Result
     let account = AccountBuilder::new(seed)
         .with_component(AuthSingleSig::new(Approver::new(
             secret.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         )))
         .with_component(acc_component)
         .account_type(AccountType::Public)

@@ -1523,10 +1523,10 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     )
     .map_err(|err| anyhow::anyhow!(err))?;
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let auth_component: AccountComponent = AuthSingleSig::new(Approver::new(
         key_pair.public_key().to_commitment(),
-        AuthSchemeId::Falcon512Poseidon2,
+        AuthSchemeId::Falcon512Eidos,
     ))
     .into();
 

@@ -27,12 +27,12 @@ miden-standards = { workspace = true }
 # External dependencies
 async-trait = { workspace = true }
 chrono      = { workspace = true }
+rand        = { default-features = false, workspace = true }
 thiserror   = { workspace = true }
 
 [dev-dependencies]
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
-rand            = { workspace = true }
 rand_chacha     = { workspace = true }
 
 [lints]

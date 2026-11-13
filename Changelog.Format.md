@@ -1,7 +1,8 @@
 # Changelog Entry Format
 
 Each entry is one line of a file in `.changelog/unreleased/`, without a bullet and without a PR link. The release
-adds the PR link. See [`.changelog/README.md`](.changelog/README.md).
+adds the PR link. Migrated entries can retain their existing PR links. Blank lines and reference-only files are
+not valid. See [`.changelog/README.md`](.changelog/README.md).
 
 ### Breaking Changes
 

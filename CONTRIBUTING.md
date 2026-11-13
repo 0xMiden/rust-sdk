@@ -98,7 +98,7 @@ We use [semver](https://semver.org/) naming convention.
   - As mentioned above, `make lint` can be used for checking there.
 ### Changelog
 
-If a PR introduces anything a downstream user might notice - a new feature, a behaviour change, a bug-fix, a deprecation, or a breaking API change - add a file to [`.changelog/unreleased/`](./.changelog/unreleased) named after the change (e.g. the branch name), with one line per entry. The convention is to write a past-tense summary with the tags from [Changelog.Format.md](./Changelog.Format.md) and without a PR link (e.g. "[BREAKING][rename][rust] Renamed `foo()` to `bar()` in `Client`."). The release adds the PR link. See [.changelog/README.md](./.changelog/README.md) for the details. Internal refactors or smaller tweaks that don’t affect public behaviour can be left out; those PRs get the `no changelog` label.
+If a PR introduces anything a downstream user might notice - a new feature, a behaviour change, a bug-fix, a deprecation, or a breaking API change - add a file to [`.changelog/unreleased/`](./.changelog/unreleased) named after the change (e.g. the branch name), with one line per entry. The convention is to write a past-tense summary with the tags from [Changelog.Format.md](./Changelog.Format.md) and without a PR link (e.g. "[BREAKING][rename][lib] Renamed `foo()` to `bar()` in `Client`."). The release adds the PR link. See [.changelog/README.md](./.changelog/README.md) for the details. Internal refactors or smaller tweaks that don’t affect public behaviour can be left out; those PRs get the `no changelog` label.
 
 ### Docs
 

@@ -8,14 +8,16 @@ Every PR that changes something a downstream user notices adds a file to `unrele
 ```
 
 [`Changelog.Format.md`](../Changelog.Format.md) describes the tags. The PR link is added at release, so the file
-can be written before the PR exists. A PR that extends an entry still in `unreleased/` can instead add a file
-holding just that entry's file name without `.md` (e.g. `code-tree`), which adds its PR link to that entry.
+can be written before the PR exists. A follow-up PR can update an existing entry or add its own entry file.
+Each file must contain complete entries.
 
-PRs that don't need an entry get the `no changelog` label.
+PRs that do not need an entry get the `no changelog` label. CI validates entry files even with this label.
+Run `python3 scripts/changelog.py` to validate the entries locally.
 
 ## Release
 
-Before creating the GitHub release, run the following and commit the result:
+Before creating the GitHub release, run the following and commit the result. The release directory must not
+already exist:
 
 ```sh
 ./scripts/prepare-changelog.py <tag>

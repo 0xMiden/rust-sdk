@@ -9,13 +9,7 @@ Generate a migration guide for the Miden Client SDK from the structured changelo
    - Identify the previous version from the release directories and the `CHANGELOG.md` section headers.
 3. Parse all `[BREAKING]` entries from the target version section.
 4. Read `Changelog.Format.md` for the category and scope definitions.
-5. For each breaking change, apply the migration strategy based on the category tag:
-   - `rename`: Show find-replace instructions, update imports
-   - `removal`: Show replacement API with equivalent functionality
-   - `param`: Show old vs new function signatures, explain new parameters
-   - `type`: Show type conversions and import changes
-   - `behavior`: Explain the behavioral difference and when code needs adaptation
-   - `arch`: Show Cargo.toml changes, new import paths
+5. Apply the migration strategies in the [category reference](../../Changelog.Format.md#category-reference).
 6. For each breaking change, use the PR number to fetch the diff via `gh pr view #NUMBER` for additional context.
 7. Explore the codebase to find real usage patterns for before/after code examples.
 8. Group related breaking changes that affect the same workflow into a single section.

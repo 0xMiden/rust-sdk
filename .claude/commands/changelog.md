@@ -7,17 +7,13 @@ Generate changelog entries for the current branch following the project's Change
 3. Run `git diff --stat origin/<base>...HEAD` to understand the scope of changes.
 4. Read `Changelog.Format.md` for the exact format specification and `.changelog/README.md` for where entries go.
 5. Read a few files in `.changelog/unreleased/` to match the existing style.
-6. Analyze the commits and diff to categorize changes into:
-   - **Breaking Changes**: `[BREAKING][category][scope] Description.`
-   - **Features**: `[FEATURE][scope] Description.`
-   - **Fixes**: `[FIX][scope] Description.`
+6. Categorize the changes with the tags defined in `Changelog.Format.md`.
 7. Write the generated entries to `.changelog/unreleased/<name>.md`, one entry per line, without a bullet and without a PR link. `<name>` is the last segment of the branch name. If the branch already added an entry file, add the new lines to that file. Do not duplicate entries that are already present.
 8. Show the user the entries that were added.
 
 ## Rules
 
-- Use the categories from Changelog.Format.md: `rename`, `removal`, `param`, `type`, `behavior`, `arch`
-- Use the scopes: `lib`, `cli`, `store`
+- Use the categories and scopes defined in [Changelog.Format.md](../../Changelog.Format.md).
 - Do not add a PR number or link. The release adds it.
 - Do not edit `CHANGELOG.md`. It is the archive of the releases up to 0.18.0.
 - Group related commits into single entries (don't produce one entry per commit).

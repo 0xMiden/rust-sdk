@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Moves the `.changelog/unreleased/` entries into `.changelog/<tag>/<PR>.md`, adding their PR links. The PR of
-an entry is the `(#N)` that GitHub appends to the subject of the squash commit that added the file. A file
-holding just the name of another entry adds its PR to the links of that entry instead. A line that already ends
-with a PR link is kept as it is.
-"""
+"""Move unreleased entries into a release directory and add their PR links."""
 
 import re
 import subprocess
@@ -11,9 +7,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-SRC = Path(".changelog/unreleased")
+from changelog import SRC, read_entries
+
 PR_URL = "https://github.com/0xMiden/rust-sdk/pull"
-# The links at the end of a line that already has them, e.g. `([#1](url), [#2](url)).`.
 LINKED = re.compile(r"\(\[#(\d+)\]\([^()]*\)(?:, \[#\d+\]\([^()]*\))*\)\.$")
 
 
@@ -32,43 +28,33 @@ def pr_of(path: Path) -> int:
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit(f"Usage: {sys.argv[0]} <tag>")
-    nested = [str(p) for p in SRC.rglob("*.md") if p.parent != SRC]
-    if nested:
-        sys.exit(f"Entries must be directly in {SRC}/, move or remove: {', '.join(nested)}")
-    files = sorted(SRC.glob("*.md"))
+    tag = sys.argv[1]
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?", tag):
+        sys.exit("Release tags must look like v1.2.3 or v1.2.3-rc.1")
+    dst = Path(".changelog") / tag
+    if dst.exists():
+        sys.exit(f"{dst} already exists. Refusing to append release entries.")
+    files = sorted(SRC.rglob("*.md"))
     if not files:
         sys.exit(f"No changelog entries found in {SRC}/")
-    stems = {f.stem for f in files}
 
-    # Find every PR before any file is written, so that a failure leaves the entries in place.
-    links = defaultdict(set)  # The PRs of the files that reference an entry.
-    entries = {}  # The lines and the PR of every entry.
-    for f in files:
-        target = f.read_text().strip()
-        if target in stems and target != f.stem:
-            links[target].add(pr_of(f))
-            continue
-        lines = list(filter(None, f.read_text().splitlines()))
-        linked = [LINKED.search(line) for line in lines]
-        # An entry whose lines all have links is named after the PR of its first link.
-        pr = int(linked[0][1]) if lines and all(linked) else pr_of(f)
-        entries[f.stem] = (lines, pr)
+    # Validate all entries and find their PRs before writing release files.
+    entries = defaultdict(list)
+    try:
+        for path in files:
+            lines = read_entries(path)
+            linked = [LINKED.search(line) for line in lines]
+            pr = int(linked[0][1]) if all(linked) else pr_of(path)
+            for line, link in zip(lines, linked):
+                if not link:
+                    line = f"{line.removesuffix('.')} ([#{pr}]({PR_URL}/{pr}))."
+                entries[pr].append(f"- {line}\n")
+    except (OSError, ValueError) as error:
+        sys.exit(str(error))
 
-    for target in links:
-        if target not in entries:
-            sys.exit(f"{target}.md is referenced by another file but only references an entry itself")
-        if all(LINKED.search(line) for line in entries[target][0]):
-            sys.exit(f"{target}.md is referenced by another file but its lines already have PR links")
-
-    dst = Path(".changelog") / sys.argv[1]
-    dst.mkdir(exist_ok=True)
-    for stem, (lines, pr) in entries.items():
-        refs = ", ".join(f"[#{n}]({PR_URL}/{n})" for n in sorted(links[stem] | {pr}))
-        with open(dst / f"{pr}.md", "a") as out:
-            for line in lines:
-                if not LINKED.search(line):
-                    line = f"{line.removesuffix('.')} ({refs})."
-                out.write(f"- {line}\n")
+    dst.mkdir()
+    for pr, lines in entries.items():
+        (dst / f"{pr}.md").write_text("".join(lines))
 
     subprocess.run(["git", "rm", "-q", *map(str, files)], check=True)
     subprocess.run(["git", "add", str(dst)], check=True)

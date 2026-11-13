@@ -3,9 +3,10 @@ Generate a migration guide for the Miden Client SDK from the structured changelo
 ## Steps
 
 1. Determine the target version from `$ARGUMENTS` (e.g., "0.14.0", "0.13.0", or "latest"). If empty, default to "latest".
-2. Read `CHANGELOG.md` and extract the changelog section for the target version.
-   - If version is "latest", find the first version section that has a date (not "TBD").
-   - Identify the previous version from the preceding section header.
+2. Read the changelog entries of the target version from `.changelog/v<version>/*.md`. A final release also includes the entries of its pre-releases (`.changelog/v<version>-*/`).
+   - If version is "latest", use the release directory with the highest version.
+   - Releases up to 0.18.0 are sections of `CHANGELOG.md` instead.
+   - Identify the previous version from the release directories and the `CHANGELOG.md` section headers.
 3. Parse all `[BREAKING]` entries from the target version section.
 4. Read `Changelog.Format.md` for the category and scope definitions.
 5. For each breaking change, apply the migration strategy based on the category tag:

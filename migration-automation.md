@@ -24,7 +24,7 @@ The LLM will then explore the codebase to generate before/after examples, migrat
 ### Breaking Changes
 
 ```markdown
-* [BREAKING][category][scope] Description. Context if non-obvious. (#PR)
+[BREAKING][category][scope] Description. Context if non-obvious.
 ```
 
 **Categories:** `rename` | `removal` | `param` | `type` | `behavior` | `arch`
@@ -33,36 +33,36 @@ The LLM will then explore the codebase to generate before/after examples, migrat
 
 **Examples:**
 ```markdown
-* [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`. (#1360)
-* [BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior. (#1500)
-* [BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder` instead. (#1274)
-* [BREAKING][type][rust] `BlockNumber` unified to `u32` across all APIs. (#1350)
-* [BREAKING][arch][all] `SqliteStore` moved to separate `miden-client-sqlite-store` crate. (#1253)
-* [BREAKING][behavior][rust,web] `get_account()` now returns `None` instead of error for unknown accounts. (#1400)
+[BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior.
+[BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder` instead.
+[BREAKING][type][rust] `BlockNumber` unified to `u32` across all APIs.
+[BREAKING][arch][all] `SqliteStore` moved to separate `miden-client-sqlite-store` crate.
+[BREAKING][behavior][rust,web] `get_account()` now returns `None` instead of error for unknown accounts.
 ```
 
 ### Features
 
 ```markdown
-* [FEATURE][scope] Description. (#PR)
+[FEATURE][scope] Description.
 ```
 
 **Examples:**
 ```markdown
-* [FEATURE][web] Added `TransactionSummary` API for previewing transactions before execution. (#1620)
-* [FEATURE][rust,web] New `AccountFilter` for querying accounts by type. (#1580)
+[FEATURE][web] Added `TransactionSummary` API for previewing transactions before execution.
+[FEATURE][rust,web] New `AccountFilter` for querying accounts by type.
 ```
 
 ### Fixes
 
 ```markdown
-* [FIX][scope] Description. (#PR)
+[FIX][scope] Description.
 ```
 
 **Examples:**
 ```markdown
-* [FIX][web] Fixed "Current block should be in the store" panic on concurrent syncs. (#1650)
-* [FIX][rust] Corrected balance calculation for fungible assets with decimals. (#1630)
+[FIX][web] Fixed "Current block should be in the store" panic on concurrent syncs.
+[FIX][rust] Corrected balance calculation for fungible assets with decimals.
 ```
 
 ---
@@ -80,31 +80,31 @@ The LLM will then explore the codebase to generate before/after examples, migrat
 
 ---
 
-## Example Changelog Section
+## Example Entry File
+
+A PR adds a file such as `.changelog/unreleased/grpc-client-rename.md`. Each line is one entry, without a bullet
+and without a PR link:
 
 ```markdown
-## 0.14.0 (TBD)
+[BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`.
+[FEATURE][cli] `--dry-run` flag for transaction commands.
+[FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays.
+```
 
-### Breaking Changes
-* [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`. (#1360)
-* [BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior, `Latest` when freshness is critical. (#1500)
-* [BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder.build()` instead. (#1274)
-* [BREAKING][arch][rust] `SqliteStore` moved to `miden-client-sqlite-store` crate. Update Cargo.toml dependency. (#1253)
+The release moves the entries to `.changelog/<tag>/<PR>.md` and adds the PR links (see
+[`.changelog/README.md`](.changelog/README.md)):
 
-### Features
-* [FEATURE][web] `TransactionSummary` API for previewing transaction effects before execution. (#1620)
-* [FEATURE][cli] `--dry-run` flag for transaction commands. (#1615)
-
-### Fixes
-* [FIX][web] Fixed panic on concurrent sync operations. (#1650)
-* [FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays. (#1640)
+```markdown
+- [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [FEATURE][cli] `--dry-run` flag for transaction commands ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 ```
 
 ---
 
 ## LLM Prompt Template
 
-Use this prompt to generate migration guides. The LLM will automatically read the changelog.
+Use this prompt to generate migration guides. The LLM will automatically read the changelog entries.
 
 ### Full Migration Guide Prompt
 
@@ -113,9 +113,10 @@ Generate a migration guide for the Miden Client SDK.
 
 ## Instructions
 
-1. Read CHANGELOG.md from the repository root
-2. Extract the changelog section for version {VERSION} (or "latest" for the most recent release)
-   - If version is "latest", find the first version section that has a date (not "TBD")
+1. Read the entries of version {VERSION} from `.changelog/v{VERSION}/*.md` in the repository root
+   - A final release also includes the entries of its pre-releases (`.changelog/v{VERSION}-*/`)
+   - If version is "latest", use the release directory with the highest version
+   - Releases up to 0.18.0 are sections of CHANGELOG.md instead
    - Parse all `[BREAKING]` entries from that version
 3. For each breaking change, generate a migration section
 4. If a breaking change is missing category/scope tags (e.g. only `[BREAKING]`), infer scope by
@@ -171,7 +172,7 @@ newCodeExample();
 
 ## Guidelines
 
-1. **Read CHANGELOG.md first** to get the list of breaking changes
+1. **Read the changelog entries first** to get the list of breaking changes
 2. **Explore the codebase** to find real usage patterns for before/after examples
 3. **Use PR numbers** to fetch diffs via `gh pr view #NUMBER` for context
 4. **Apply migration strategy based on category tag:**
@@ -270,7 +271,7 @@ For a condensed version (e.g., release notes):
 ```
 Generate a quick migration checklist for Miden Client SDK.
 
-1. Read CHANGELOG.md and extract `[BREAKING]` entries for version {VERSION}
+1. Read `.changelog/v{VERSION}/*.md` (CHANGELOG.md for releases up to 0.18.0) and extract `[BREAKING]` entries
 2. Format as a scannable bullet list:
    - [ ] Change X: do Y
    - [ ] Change Z: do W
@@ -292,7 +293,7 @@ One line per breaking change with the key action required.
 **For LLM (rich enough to generate guides):**
 - **Category** tells it what migration pattern to apply
 - **Scope** tells it which languages to cover
-- **PR number** links to full context
+- **PR number** links to full context (the release adds it to each entry)
 - **Brief description** gives semantic understanding
 - Then LLM explores codebase to find concrete examples
 
@@ -303,7 +304,7 @@ One line per breaking change with the key action required.
 For particularly complex breaking changes, authors can optionally add a note:
 
 ```markdown
-* [BREAKING][behavior][rust,web] Transaction validation now occurs at submission time instead of build time. This may surface errors later in the workflow. See PR for migration examples. (#1700)
+[BREAKING][behavior][rust,web] Transaction validation now occurs at submission time instead of build time. This may surface errors later in the workflow. See PR for migration examples.
 ```
 
 The "See PR for migration examples" hint tells the LLM to pay special attention to the PR description/comments for author-provided guidance.

@@ -1,9 +1,12 @@
 # Changelog Entry Format
 
+Each entry is one line of a file in `.changelog/unreleased/`, without a bullet and without a PR link. The release
+adds the PR link. See [`.changelog/README.md`](.changelog/README.md).
+
 ### Breaking Changes
 
 ```markdown
-* [BREAKING][category][scope] Description. Context if non-obvious. (#PR)
+[BREAKING][category][scope] Description. Context if non-obvious.
 ```
 
 **Categories:** `rename` | `removal` | `param` | `type` | `behavior` | `arch`
@@ -12,36 +15,36 @@
 
 **Examples:**
 ```markdown
-* [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`. (#1360)
-* [BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior. (#1500)
-* [BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder` instead. (#1274)
-* [BREAKING][type][rust] `BlockNumber` unified to `u32` across all APIs. (#1350)
-* [BREAKING][arch][all] `SqliteStore` moved to separate `miden-client-sqlite-store` crate. (#1253)
-* [BREAKING][behavior][rust,web] `get_account()` now returns `None` instead of error for unknown accounts. (#1400)
+[BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior.
+[BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder` instead.
+[BREAKING][type][rust] `BlockNumber` unified to `u32` across all APIs.
+[BREAKING][arch][all] `SqliteStore` moved to separate `miden-client-sqlite-store` crate.
+[BREAKING][behavior][rust,web] `get_account()` now returns `None` instead of error for unknown accounts.
 ```
 
 ### Features
 
 ```markdown
-* [FEATURE][scope] Description. (#PR)
+[FEATURE][scope] Description.
 ```
 
 **Examples:**
 ```markdown
-* [FEATURE][web] Added `TransactionSummary` API for previewing transactions before execution. (#1620)
-* [FEATURE][rust,web] New `AccountFilter` for querying accounts by type. (#1580)
+[FEATURE][web] Added `TransactionSummary` API for previewing transactions before execution.
+[FEATURE][rust,web] New `AccountFilter` for querying accounts by type.
 ```
 
 ### Fixes
 
 ```markdown
-* [FIX][scope] Description. (#PR)
+[FIX][scope] Description.
 ```
 
 **Examples:**
 ```markdown
-* [FIX][web] Fixed "Current block should be in the store" panic on concurrent syncs. (#1650)
-* [FIX][rust] Corrected balance calculation for fungible assets with decimals. (#1630)
+[FIX][web] Fixed "Current block should be in the store" panic on concurrent syncs.
+[FIX][rust] Corrected balance calculation for fungible assets with decimals.
 ```
 
 ---
@@ -59,22 +62,22 @@
 
 ---
 
-## Example Changelog Section
+## Example Entry File
+
+A PR adds a file such as `.changelog/unreleased/grpc-client-rename.md`. Each line is one entry, without a bullet
+and without a PR link:
 
 ```markdown
-## 0.14.0 (TBD)
+[BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`.
+[FEATURE][cli] `--dry-run` flag for transaction commands.
+[FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays.
+```
 
-### Breaking Changes
-* [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient`. (#1360)
-* [BREAKING][param][rust,web] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior, `Latest` when freshness is critical. (#1500)
-* [BREAKING][removal][web] Removed `compileNoteScript()`. Use `ScriptBuilder.build()` instead. (#1274)
-* [BREAKING][arch][rust] `SqliteStore` moved to `miden-client-sqlite-store` crate. Update Cargo.toml dependency. (#1253)
+The release moves the entries to `.changelog/<tag>/<PR>.md` and adds the PR links (see
+[`.changelog/README.md`](.changelog/README.md)):
 
-### Features
-* [FEATURE][web] `TransactionSummary` API for previewing transaction effects before execution. (#1620)
-* [FEATURE][cli] `--dry-run` flag for transaction commands. (#1615)
-
-### Fixes
-* [FIX][web] Fixed panic on concurrent sync operations. (#1650)
-* [FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays. (#1640)
+```markdown
+- [BREAKING][rename][all] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [FEATURE][cli] `--dry-run` flag for transaction commands ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [FIX][rust] `get_notes_by_filter` now correctly handles empty tag arrays ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 ```

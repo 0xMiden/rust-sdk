@@ -94,7 +94,7 @@ crates/
 - **Commit format:** `type(scope): description`
   - Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
   - Example: `fix(rust-client): handle store race condition`
-- **Always update CHANGELOG.md** for user-visible changes
+- **Always add a `.changelog/unreleased/<name>.md` entry** for user-visible changes (see `.changelog/README.md`)
 - **Rebase before PR** (avoid merge commits)
 
 ## Common Patterns

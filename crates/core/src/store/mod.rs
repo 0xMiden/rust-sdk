@@ -36,6 +36,7 @@ use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::{Felt, Word};
 
 use crate::errors::StoreError;
@@ -117,6 +118,15 @@ pub trait Store: Send + Sync {
         &self,
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, StoreError>;
+
+    /// Retrieves the logs that a stored transaction emitted, in emission order.
+    ///
+    /// Returns `None` if the store does not hold the transaction. Returns an empty collection if
+    /// the transaction emitted no logs.
+    async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, StoreError>;
 
     /// Applies a transaction, atomically updating the current state based on the
     /// [`TransactionStoreUpdate`].

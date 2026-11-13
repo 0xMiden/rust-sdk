@@ -248,6 +248,10 @@ impl NoteScreener {
     /// standard ones are answered without it. The auth args come from
     /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
     ///
+    /// A multisig account is an exception. Its auth procedure pays the fee after the signature
+    /// check, and the trial has no signatures. The trial thus stops before the fee payment, and
+    /// screening does not detect a fee that the account cannot pay.
+    ///
     /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
     /// make the fee irrelevant to screening rather than something to satisfy:
     /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
@@ -286,7 +290,8 @@ impl NoteScreener {
 
         // A multisig component requires a declared salt. The trial is never submitted, so any salt
         // works. With auth args, the trial reaches the signature check, and the checker reports the
-        // note as consumable with authorization.
+        // note as consumable with authorization. The signature check comes before the fee payment,
+        // so this trial does not pay a fee.
         //
         // TODO: find a way to screen notes for multisig accounts without placeholder auth args.
         let salt = multisig.then_some(NATIVE_FEE_CONVERSION_SALT);

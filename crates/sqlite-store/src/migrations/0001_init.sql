@@ -163,6 +163,19 @@ CREATE TABLE transactions (
 CREATE INDEX idx_transactions_pending ON transactions(status_variant) WHERE status_variant = 0;
 
 
+CREATE TABLE transaction_logs (
+    transaction_id BLOB NOT NULL,                    -- ID of the transaction that emitted the log
+    log_index INTEGER NOT NULL,                      -- Position of the log in emission order
+    emitter BLOB NOT NULL,                           -- ID of the account that emitted the log
+    topic BLOB NOT NULL,                             -- Log topic (suffix, then prefix)
+    content BLOB NOT NULL,                           -- Content words of the log, concatenated
+    FOREIGN KEY (transaction_id) REFERENCES transactions(id),
+    PRIMARY KEY (transaction_id, log_index)
+) WITHOUT ROWID, STRICT;
+CREATE INDEX idx_transaction_logs_topic ON transaction_logs(topic);
+CREATE INDEX idx_transaction_logs_emitter ON transaction_logs(emitter);
+
+
 CREATE TABLE transaction_scripts (
     script_root BLOB NOT NULL,                       -- Transaction script root
     script BLOB,                                     -- serialized Transaction script

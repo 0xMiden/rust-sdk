@@ -232,7 +232,7 @@ pub mod block {
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup network. It re-exports
-/// commonly used types from the `miden_protocol` crate and the [`Rng`](crypto::Rng) trait.
+/// commonly used types from the `miden_protocol` crate and the [`Rng`] trait.
 pub mod crypto {
     pub mod ecdsa_k256_keccak {
         pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{

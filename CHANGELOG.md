@@ -114,12 +114,17 @@
 * [FIX][rust] Submitting a transaction batch calls the registered `TransactionObserver`s for each of its transactions, as `submit_new_transaction` does ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FIX][rust] `Client::submit_transaction_batch` anchors the batch at the sync height of the client. A batch no longer fails with `StoreError::BlockHeaderNotFound` when the client syncs between the pushes and the submission ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FIX][rust] Sync no longer stores public notes whose tag matches a tracked account's tag without checking that a tracked account can consume them. Only tags added by the user skip the check ([#2684](https://github.com/0xMiden/rust-sdk/pull/2684)).
-* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
 * [FIX][rust] Reused the kernel and standard-library MAST store across `NoteScreener` calls. Each screening pass reads current account state ([#2711](https://github.com/0xMiden/rust-sdk/pull/2711)).
 
 ### Fixes
 
 * [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
+
+## 0.18.2 (TBD)
+
+### Fixes
+
+* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
 
 ## 0.18.1 (2026-11-11)
 

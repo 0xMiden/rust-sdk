@@ -69,26 +69,26 @@ struct AuthArgs {
         visible_alias = "ecdsa",
         value_name = "PUBLIC_KEY",
         num_args = 0..=1,
-        conflicts_with = "falcon512_poseidon2"
+        conflicts_with = "falcon512_eidos"
     )]
     ecdsa_k256_keccak: Option<Option<String>>,
 
-    /// Generate and store a Falcon512/Poseidon2 authentication key.
+    /// Generate and store a Falcon512/Eidos authentication key.
     #[arg(
         long = FALCON_SCHEME_NAME,
         visible_alias = "falcon",
         default_value_t = false,
         conflicts_with = "ecdsa_k256_keccak"
     )]
-    falcon512_poseidon2: bool,
+    falcon512_eidos: bool,
 }
 
 impl AuthArgs {
     fn choice(&self) -> Result<AuthChoice, CliError> {
-        match (&self.ecdsa_k256_keccak, self.falcon512_poseidon2) {
+        match (&self.ecdsa_k256_keccak, self.falcon512_eidos) {
             (Some(Some(key)), false) => parse_ecdsa_public_key(key).map(AuthChoice::ExternalEcdsa),
             (Some(None), false) => Ok(AuthChoice::Generate(AuthSchemeId::EcdsaK256Keccak)),
-            (None, true) => Ok(AuthChoice::Generate(AuthSchemeId::Falcon512Poseidon2)),
+            (None, true) => Ok(AuthChoice::Generate(AuthSchemeId::Falcon512Eidos)),
             (None, false) => Ok(AuthChoice::Default),
             (Some(_), true) => Err(CliError::InvalidArgument(format!(
                 "--{ECDSA_SCHEME_NAME} and --{FALCON_SCHEME_NAME} cannot be used together"
@@ -291,8 +291,8 @@ impl NewWalletCmd {
 /// automatically.
 ///
 /// An authentication scheme can also be selected explicitly with `--ecdsa-k256-keccak [PUBLIC_KEY]`
-/// or `--falcon512-poseidon2` (aliases: `--ecdsa`, `--falcon`). These flags are mutually exclusive
-/// with each other and with auth component packages. When an ECDSA public key is given, the account
+/// or `--falcon512-eidos` (aliases: `--ecdsa`, `--falcon`). These flags are mutually exclusive with
+/// each other and with auth component packages. When an ECDSA public key is given, the account
 /// commits to that externally-held key and no secret key is stored; otherwise a key of the selected
 /// scheme is generated and stored in the keystore.
 ///
@@ -501,7 +501,7 @@ fn load_init_storage_data(
 }
 
 /// The user's authentication scheme selection for a new account, from the mutually exclusive
-/// `--ecdsa-k256-keccak` and `--falcon512-poseidon2` flags.
+/// `--ecdsa-k256-keccak` and `--falcon512-eidos` flags.
 enum AuthChoice {
     /// No scheme flag given: an auth component from the packages wins, otherwise a Falcon key is
     /// generated.
@@ -551,7 +551,7 @@ fn add_auth_component<R: Rng + CryptoRng>(
             return Ok((builder, AuthOutcome::External));
         },
         (AuthChoice::Generate(scheme), true) => scheme,
-        (AuthChoice::Default, true) => AuthSchemeId::Falcon512Poseidon2,
+        (AuthChoice::Default, true) => AuthSchemeId::Falcon512Eidos,
     };
 
     debug!("Adding auth component with a generated {scheme} key");

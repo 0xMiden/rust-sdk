@@ -11,7 +11,6 @@ use miden_client::account::{
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::TransactionAuthenticator;
-use miden_client::crypto::FeltRng;
 use miden_client::note::{
     Note,
     NoteAssets,
@@ -31,7 +30,7 @@ use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
 use miden_protocol::MAX_TX_EXECUTION_CYCLES;
 use miden_protocol::transaction::TransactionFee;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use tracing::info;
 
 use crate::ClientConfig;
@@ -283,7 +282,7 @@ fn create_pass_through_note(
     let asset_key: Word = asset.to_id_word();
     let asset_value: Word = asset.to_value_word();
 
-    let target_recipient = P2idNoteStorage::new(target).into_recipient(rng.draw_word());
+    let target_recipient = P2idNoteStorage::new(target).into_recipient(rng.random::<Word>());
 
     let inputs = NoteStorage::new(vec![
         asset_key[0],
@@ -302,7 +301,7 @@ fn create_pass_through_note(
         NoteTag::with_account_target(target).into(),
     ])?;
 
-    let serial_num = rng.draw_word();
+    let serial_num = rng.random::<Word>();
     let pass_through_recipient = NoteRecipient::new(serial_num, note_script, inputs);
 
     let metadata = PartialNoteMetadata::new(sender, NoteType::Public)

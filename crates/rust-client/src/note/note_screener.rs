@@ -233,9 +233,11 @@ impl NoteScreener {
         let consumption_checker = NoteConsumptionChecker::new(&transaction_executor);
 
         data_store.mast_store().load_account_code(&account_code);
-        let note_consumption_info = consumption_checker
-            .check_notes_consumability(account_id, block_ref, notes, tx_args)
-            .await?;
+        // The future of the trial execution is large, so it lives on the heap.
+        let note_consumption_info = Box::pin(
+            consumption_checker.check_notes_consumability(account_id, block_ref, notes, tx_args),
+        )
+        .await?;
 
         Ok(note_consumption_info)
     }

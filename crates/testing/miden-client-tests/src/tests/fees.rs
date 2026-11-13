@@ -68,7 +68,7 @@ fn fee_charging_chain(balance: u64) -> (MockChain, Account, AccountId) {
     let account = builder
         .add_existing_wallet_with_assets(
             Auth::BasicAuth {
-                auth_scheme: AuthSchemeId::Falcon512Poseidon2,
+                auth_scheme: AuthSchemeId::Falcon512Eidos,
             },
             [fee_asset],
         )
@@ -149,7 +149,7 @@ async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
     // Deliberately no assets: the account starts unable to pay anything.
     let account = builder
         .add_existing_wallet(Auth::BasicAuth {
-            auth_scheme: AuthSchemeId::Falcon512Poseidon2,
+            auth_scheme: AuthSchemeId::Falcon512Eidos,
         })
         .unwrap();
     let funding_note = builder.add_p2id_note_with_fee(account.id(), FEE_ASSET_BALANCE).unwrap();
@@ -219,9 +219,8 @@ async fn fee_payment_fails_without_fee_asset_balance() {
 /// client's keystore: the client signs with its own authenticator, and a chain-generated key is not
 /// reachable from outside the chain.
 async fn fee_charging_client() -> (TestClient, Account) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
-    let approver =
-        Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Poseidon2);
+    let key = AuthSecretKey::new_falcon512_eidos();
+    let approver = Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos);
 
     Box::pin(fee_charging_client_with_auth(AuthSingleSig::new(approver), key)).await
 }
@@ -250,12 +249,9 @@ async fn fee_charging_client_with_auth_and_rpc(
 /// Builds a fee-charging chain and a client whose `AuthMultisig` account holds `balance` of the fee
 /// asset.
 async fn multisig_client_with_fee_balance(balance: u64) -> (TestClient, Arc<MockRpcApi>, Account) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let key = AuthSecretKey::new_falcon512_eidos();
     let approvers = ApproverSet::new(
-        vec![Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )],
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
         1,
     )
     .unwrap();
@@ -480,16 +476,13 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
 async fn serialized_multisig_request_uses_native_auth_args(
     #[case] auth_component: AccountComponentInterface,
 ) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let key = AuthSecretKey::new_falcon512_eidos();
     let approvers = ApproverSet::new(
-        vec![Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )],
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
         1,
     )
     .unwrap();
-    let guardian_key = AuthSecretKey::new_falcon512_poseidon2();
+    let guardian_key = AuthSecretKey::new_falcon512_eidos();
     let auth: AccountComponent = match &auth_component {
         AccountComponentInterface::AuthMultisig => {
             AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap().into()
@@ -497,7 +490,7 @@ async fn serialized_multisig_request_uses_native_auth_args(
         AccountComponentInterface::AuthGuardedMultisig => {
             let guardian = GuardianConfig::new(Approver::new(
                 guardian_key.public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             ));
             AuthGuardedMultisig::new(AuthGuardedMultisigConfig::new(approvers, guardian).unwrap())
                 .unwrap()

@@ -942,7 +942,7 @@ mod tests {
     use miden_protocol::block::BlockNumber;
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::MerkleTree;
-    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -960,6 +960,7 @@ mod tests {
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
+    use rand::RngExt;
 
     use super::{
         AccountFetch,
@@ -1084,7 +1085,7 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let mut notes = notes(8, &mut rng);
 
         let private_account = mock_private_account([0; 32]);
@@ -1098,24 +1099,28 @@ mod tests {
             (&prefetched_account).into(),
             account_tree.open(prefetched_account.id()),
         );
-        let merkle_tree =
-            MerkleTree::new([rng.draw_word(), rng.draw_word(), rng.draw_word(), rng.draw_word()])
-                .unwrap();
+        let merkle_tree = MerkleTree::new([
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+        ])
+        .unwrap();
 
         let request = TransactionRequestBuilder::new()
             .block_numbers([BlockNumber::from(1u32), BlockNumber::from(3u32)])
             .input_notes([(notes.pop().unwrap(), None)])
             .explicit_input_notes([(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.draw_word()),
+                Some(rng.random::<Word>()),
             )])
-            .input_notes([(notes.pop().unwrap(), Some(rng.draw_word()))])
+            .input_notes([(notes.pop().unwrap(), Some(rng.random::<Word>()))])
             .expected_output_recipients([notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
                 notes.pop().unwrap().into(),
                 NoteTag::with_account_target(sender_id),
             )])
-            .extend_advice_map([(rng.draw_word(), vec![Felt::from(1u32), Felt::from(2u32)])])
+            .extend_advice_map([(rng.random::<Word>(), vec![Felt::from(1u32), Felt::from(2u32)])])
             .extend_merkle_store(merkle_tree.inner_nodes())
             .foreign_accounts([
                 ForeignAccount::public(
@@ -1135,8 +1140,8 @@ mod tests {
             ])
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
-            .script_arg(rng.draw_word())
-            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
+            .script_arg(rng.random::<Word>())
+            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.random::<Word>()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
             .build()
@@ -1148,7 +1153,7 @@ mod tests {
     /// A request with a custom script and the fields that a send notes request cannot have.
     #[test]
     fn transaction_request_with_custom_script_round_trips() {
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let note_script = NoteScript::mock();
         let script =
             TransactionScript::from_parts(note_script.mast(), note_script.entrypoint()).unwrap();
@@ -1157,7 +1162,7 @@ mod tests {
             .input_notes(notes(2, &mut rng).into_iter().map(|note| (note, None)))
             .custom_script(script)
             .ignore_invalid_input_notes()
-            .fee_conversion_salt(rng.draw_word())
+            .fee_conversion_salt(rng.random::<Word>())
             .build()
             .unwrap();
 
@@ -1178,7 +1183,7 @@ mod tests {
             .with_component(MockAccountComponent::with_empty_slots())
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .account_type(AccountType::Private)
             .build_existing()
@@ -1186,7 +1191,7 @@ mod tests {
     }
 
     /// Returns `count` P2ID notes with different serial numbers and amounts.
-    fn notes(count: u64, rng: &mut RandomCoin) -> Vec<Note> {
+    fn notes(count: u64, rng: &mut EidosRandomCoin) -> Vec<Note> {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();

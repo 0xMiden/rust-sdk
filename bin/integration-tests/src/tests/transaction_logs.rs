@@ -8,7 +8,7 @@ use miden_client::account::{
     AccountType,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::auth::FALCON512_EIDOS_SCHEME_ID;
 use miden_client::store::TransactionFilter;
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
 use miden_client::transaction::{
@@ -82,7 +82,7 @@ async fn deploy_log_account(
         .map_err(|err| anyhow!(err))
         .context("failed to create the log component")?;
 
-    let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
+    let (auth, key) = auth_component(FALCON512_EIDOS_SCHEME_ID)?;
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
     let account = AccountBuilder::new(init_seed)

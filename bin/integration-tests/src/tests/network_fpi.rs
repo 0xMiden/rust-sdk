@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use miden_client::account::AccountType;
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::auth::FALCON512_EIDOS_SCHEME_ID;
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
 
@@ -58,7 +58,7 @@ pub async fn test_network_fpi(client_config: ClientConfig) -> Result<()> {
             "#,
             map_key = Word::from(MAP_KEY)
         ),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
 

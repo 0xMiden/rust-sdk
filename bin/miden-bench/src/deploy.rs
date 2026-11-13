@@ -53,7 +53,7 @@ fn create_account_with_empty_maps(
     num_maps: usize,
     seed: [u8; 32],
 ) -> anyhow::Result<(Account, AuthSecretKey)> {
-    let sk = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut ChaCha20Rng::from_seed(seed));
+    let sk = AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::from_seed(seed));
 
     // Create empty storage map slots
     let storage_slots: Vec<StorageSlot> = (0..num_maps)
@@ -107,7 +107,7 @@ fn create_account_with_empty_maps(
     let account = AccountBuilder::new(seed)
         .with_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .account_type(AccountType::Public)
         .with_component(wallet_component)

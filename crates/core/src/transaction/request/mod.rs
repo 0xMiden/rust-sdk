@@ -637,7 +637,7 @@ mod tests {
             .with_component(MockAccountComponent::with_empty_slots())
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .account_type(AccountType::Private)
             .build_existing()

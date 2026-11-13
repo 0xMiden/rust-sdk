@@ -16,14 +16,16 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{AssetId, AssetWitness};
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{Word, ZERO};
+use miden_protocol::{MastForest, Word, ZERO};
 use miden_tx::{
     DataStore,
     DataStoreError,
@@ -592,6 +594,23 @@ impl DataStore for ClientDataStore {
 
         self.fetch_and_cache_foreign_account(foreign_account_id, AccountStateAt::Block(ref_block))
             .await
+    }
+
+    /// The client stores no code tree, so it cannot open code witnesses.
+    fn get_code_witnesses(
+        &self,
+        _code_tree_root: CodeTreeRoot,
+        _procedure_roots: Vec<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<CodeWitness>, DataStoreError>> {
+        async move { Err(DataStoreError::other("code witnesses are unavailable in this data store")) }
+    }
+
+    /// The client has no code designated for publication in the code registry.
+    fn get_code_to_register(
+        &self,
+        _procedure_roots: BTreeSet<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
+        async move { Ok(Vec::new()) }
     }
 
     /// Returns the [`NoteScript`] for the given script root from the registered session scripts,

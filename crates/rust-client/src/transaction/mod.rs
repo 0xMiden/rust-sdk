@@ -22,7 +22,7 @@
 //! ```rust
 //! use miden_client::Client;
 //! use miden_client::auth::TransactionAuthenticator;
-//! use miden_client::crypto::FeltRng;
+//! use miden_client::crypto::Rng;
 //! use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
 //! use miden_protocol::account::AccountId;
 //! use miden_protocol::asset::FungibleAsset;
@@ -1395,7 +1395,7 @@ where
         data_store: &'store STORE,
     ) -> Result<TransactionExecutor<'store, 'auth, STORE, AUTH>, TransactionExecutorError> {
         let mut executor = TransactionExecutor::new(data_store)
-            .with_options(self.exec_options)?
+            .with_options(self.exec_options.clone())?
             .with_source_manager(self.source_manager.clone());
         if let Some(authenticator) = self.authenticator.as_deref() {
             executor = executor.with_authenticator(authenticator);
@@ -2187,10 +2187,10 @@ mod tests {
 
     #[test]
     fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let auth = AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         try_injected_auth_arg(fee_conversion_request(), &account_with_auth(auth), 500).unwrap();
@@ -2287,26 +2287,26 @@ mod tests {
     }
 
     fn singlesig_account() -> Account {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         account_with_auth(AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
     }
 
     fn guarded_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
         .unwrap();
 
         let guardian = GuardianConfig::new(Approver::new(
-            AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         account_with_auth(
@@ -2376,8 +2376,8 @@ mod tests {
     fn multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
@@ -2450,8 +2450,8 @@ mod tests {
     fn smart_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )

@@ -135,9 +135,8 @@ mod tests {
     fn create_large_account(
         config: &LargeAccountConfig,
     ) -> anyhow::Result<(Account, AuthSecretKey)> {
-        let sk = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut ChaCha20Rng::from_seed(
-            config.seed,
-        ));
+        let sk =
+            AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::from_seed(config.seed));
 
         // Create storage map slots
         let mut storage_slots = Vec::new();
@@ -179,7 +178,7 @@ mod tests {
         let account = AccountBuilder::new(config.seed)
             .with_component(AuthSingleSig::new(Approver::new(
                 sk.public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             )))
             .account_type(AccountType::Public)
             .with_component(wallet_component)

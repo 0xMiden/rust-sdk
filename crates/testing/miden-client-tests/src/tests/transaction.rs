@@ -54,7 +54,6 @@ use miden_protocol::account::{
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
 use miden_protocol::asset::{Asset, FungibleAsset, PartialVault};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -65,6 +64,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
+use rand::RngExt;
 
 use super::PaymentNoteDescription;
 use crate::tests::{TX_DISCARD_DELTA, create_test_client, mock_client_builder, prebuilt_rpc_api};
@@ -135,14 +135,14 @@ async fn transaction_creates_two_notes() {
             .unwrap()
             .into();
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let pub_key = secret_key.public_key();
 
     let account = AccountBuilder::new(Default::default())
         .with_component(BasicWallet)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_assets([asset_1, asset_2])
         .build_existing()
@@ -247,7 +247,7 @@ async fn execute_transaction_failure_leaves_store_unchanged() {
         )
         .unwrap();
     let script_root = output_note_script.root();
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let output_recipient =
         NoteRecipient::new(serial_num, output_note_script, NoteStorage::new(vec![]).unwrap());
 
@@ -519,13 +519,13 @@ async fn deploy_fpi_fixture(client: &mut TestClient, rpc_api: &MockRpcApi) -> Fp
     .unwrap();
     let proc_root = fpi_component.mast_forest().procedure_digests().next().unwrap();
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let foreign_account = AccountBuilder::new(Default::default())
         .account_type(AccountType::Public)
         .with_component(fpi_component)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_with_schema_commitment()
         .unwrap();
@@ -788,13 +788,13 @@ async fn deploy_fpi_account(
     let proc_root = fpi_component.mast_forest().procedure_digests().next().unwrap();
 
     // The key is stored so the account can sign its own deploy transaction.
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let foreign_account = AccountBuilder::new(Default::default())
         .account_type(account_type)
         .with_component(fpi_component)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_with_schema_commitment()
         .unwrap();
@@ -1472,12 +1472,12 @@ async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block(
 async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let account = AccountBuilder::new(Default::default())
         .with_component(BasicWallet)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_existing()
         .unwrap();

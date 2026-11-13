@@ -21,7 +21,6 @@ use miden_client::account::{
 };
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_client::crypto::FeltRng;
 use miden_client::note::{
     FeeSponsorshipNote,
     MintNote,
@@ -416,7 +415,7 @@ fn build_non_standard_mint(
     amount: Felt,
     nonce: u32,
 ) -> Result<(NoteScript, Note, NoteDetailsCommitment)> {
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let (custom_script, custom_storage) = build_non_standard_claim_note(client, target, nonce)?;
     assert!(
         StandardNote::from_script(&custom_script).is_none(),
@@ -731,7 +730,7 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
 
     // Build the standard MINT note. Precompute Bob's P2ID recipient and details commitment so we
     // can poll for the emitted public note on client_2.
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let bob_recipient = P2idNoteStorage::new(bob.id()).into_recipient(serial_num);
     let expected_asset = FungibleAsset::new(faucet.id(), 100)?;
     let expected_assets = NoteAssets::new(vec![expected_asset.into()])?;

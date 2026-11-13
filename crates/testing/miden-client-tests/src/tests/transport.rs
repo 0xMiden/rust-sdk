@@ -23,8 +23,7 @@ use miden_client::note_transport::{
     NoteTransportError,
     NoteTransportSyncState,
 };
-use miden_client::store::input_note_states::{InvalidNoteState, UnverifiedNoteState};
-use miden_client::store::{InputNoteRecord, NoteFilter, StoreError};
+use miden_client::store::{InputNoteState, NoteFilter, StoreError};
 use miden_client::sync::{NoteTagRecord, NoteTagSource};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::{MockClient, MockRpcApi};
@@ -202,40 +201,35 @@ async fn unavailable_attachments_do_not_fail_sync() {
 /// Repeated transport deliveries can repair unverified and invalid records.
 #[tokio::test]
 async fn transport_repeated_delivery_repairs_incomplete_records() {
-    let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
-    transport
-        .write()
-        .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
-    client.fetch_private_notes().await.unwrap();
-    let committed = client.get_input_note(note.id()).await.unwrap().unwrap();
-    assert!(committed.is_committed());
+    for unverified in [true, false] {
+        let (mut client, note, transport) = committed_private_note_recipient(0, false).await;
 
-    for state in [
-        UnverifiedNoteState {
-            metadata: *note.metadata(),
-            inclusion_proof: committed.inclusion_proof().unwrap().clone(),
-        }
-        .into(),
-        InvalidNoteState {
-            metadata: *note.metadata(),
-            invalid_inclusion_proof: genesis_inclusion_proof(),
-            block_note_root: Word::default(),
-        }
-        .into(),
-    ] {
-        let record = InputNoteRecord::new(
-            committed.details().clone(),
-            committed.attachments().clone(),
-            committed.created_at(),
-            state,
-        );
-        client.test_store().upsert_input_notes(&[record]).await.unwrap();
-        let uncovered = NoteTransportSyncState {
-            cursor: transport_cursor(0),
-            covered_tags: BTreeSet::new(),
+        // Import the incomplete note record (with state `Unverified` or `Invalid`)
+        let proof = if unverified {
+            // Import the note with a proof that does not verify (a proof for a block after the sync
+            // height gives an unverified record).
+            NoteInclusionProof::new(BlockNumber::from(100u32), 0, SparseMerklePath::default())
+                .unwrap()
+        } else {
+            // The genesis block does not contain the note, so a proof for it gives an invalid
+            // record.
+            genesis_inclusion_proof()
         };
-        client.test_store().set_note_transport_sync_state(&uncovered).await.unwrap();
+        client
+            .import_notes(&[NoteFile::Committed { note: note.clone(), proof }])
+            .await
+            .unwrap();
 
+        let state = client.get_input_note(note.id()).await.unwrap().unwrap().state().clone();
+        if unverified {
+            assert!(matches!(state, InputNoteState::Unverified(_)), "got {state:?}");
+        } else {
+            assert!(matches!(state, InputNoteState::Invalid(_)), "got {state:?}");
+        }
+
+        transport
+            .write()
+            .add_note(*note.header(), NoteDetails::from(note.clone()).to_bytes());
         client.fetch_private_notes().await.unwrap();
         assert!(client.get_input_note(note.id()).await.unwrap().unwrap().is_committed());
     }

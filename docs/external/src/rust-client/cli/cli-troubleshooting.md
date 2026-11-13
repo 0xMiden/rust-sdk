@@ -139,7 +139,7 @@ Key states the CLI surfaces:
 1. Verify `rpc.endpoint` connectivity and timeouts.
 2. Run `miden-client sync` to refresh local headers/notes.
 3. For development, use `miden-client init --local` in a new directory to test with a separate store and keystore. Keep the original files for recovery.
-4. For configuration issues, check the active TOML file. If a reset is necessary, back up the selected `.miden` directory before you run `miden-client clear-config`. Then run `miden-client init` to recreate the configuration.
+4. For configuration issues, check the active TOML file. If a reset is necessary, back up the selected `.miden` directory before you run `miden-client clear-config`. To recreate a local configuration, run `miden-client init --local` from the same directory. To recreate a global configuration, run `miden-client init`.
 5. Adjust `max_block_number_delta` if strict recency checks block validation.
 6. If proving errors persist with a remote prover, confirm `remote_prover_endpoint` and consider running locally to isolate the issue.
 

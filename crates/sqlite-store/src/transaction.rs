@@ -14,9 +14,18 @@ use miden_client_core::transaction::{
     TransactionStatusVariant,
     TransactionStoreUpdate,
 };
-use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::transaction::{ExecutedTransaction, ToInputNoteCommitments, TransactionId};
+use miden_protocol::transaction::{
+    ExecutedTransaction,
+    LogTopic,
+    ToInputNoteCommitments,
+    TransactionId,
+    TransactionLog,
+    TransactionLogs,
+};
+use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
+use miden_protocol::{Felt, Word};
 use rusqlite::{Connection, ToSql, Transaction, params};
 
 use super::SqliteStore;
@@ -24,7 +33,7 @@ use super::note::apply_note_updates_tx;
 use super::sync::add_note_tag_tx;
 use crate::forest::{ScopedAccountForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{blob_array, insert_sql, proto, subst, with_write_tx, word_from_blob};
+use crate::{blob_array, insert_sql, proto, subst, u64_to_value, with_write_tx, word_from_blob};
 
 pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
     transactions {
@@ -33,6 +42,16 @@ pub(crate) const UPSERT_TRANSACTION_QUERY: &str = insert_sql!(
         script_root,
         status_variant,
         status
+    } | REPLACE
+);
+
+const INSERT_TRANSACTION_LOG_QUERY: &str = insert_sql!(
+    transaction_logs {
+        transaction_id,
+        log_index,
+        emitter,
+        topic,
+        content
     } | REPLACE
 );
 
@@ -153,6 +172,54 @@ impl SqliteStore {
         Ok(records)
     }
 
+    /// Retrieves the logs that a stored transaction emitted, in emission order.
+    ///
+    /// Returns `None` if the store does not hold the transaction.
+    pub fn get_transaction_logs(
+        conn: &mut Connection,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, StoreError> {
+        const TRANSACTION_EXISTS_QUERY: &str =
+            "SELECT EXISTS (SELECT 1 FROM transactions WHERE id = ?)";
+        const LOGS_QUERY: &str = "SELECT emitter, topic, content FROM transaction_logs \
+             WHERE transaction_id = ? ORDER BY log_index";
+
+        // A transaction without logs has no rows in the logs table, so the transactions table tells
+        // whether the store holds the transaction.
+        let is_stored: bool = conn
+            .query_row(TRANSACTION_EXISTS_QUERY, params![transaction_id.as_bytes()], |row| {
+                row.get(0)
+            })
+            .into_store_error()?;
+        if !is_stored {
+            return Ok(None);
+        }
+
+        let logs = conn
+            .prepare_cached(LOGS_QUERY)
+            .into_store_error()?
+            .query_map(params![transaction_id.as_bytes()], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>("emitter")?,
+                    row.get::<_, Vec<u8>>("topic")?,
+                    row.get::<_, Vec<u8>>("content")?,
+                ))
+            })
+            .into_store_error()?
+            .map(|result| {
+                let (emitter, topic, content) = result.into_store_error()?;
+                TransactionLog::new(
+                    AccountId::read_from_bytes(&emitter)?,
+                    log_topic_from_blob(&topic)?,
+                    log_content_from_blob(&content)?,
+                )
+                .map_err(|err| invalid_logs(&err))
+            })
+            .collect::<Result<Vec<TransactionLog>, StoreError>>()?;
+
+        TransactionLogs::new(logs).map(Some).map_err(|err| invalid_logs(&err))
+    }
+
     /// Inserts a transaction and updates the current state based on the `tx_result` changes.
     ///
     /// SQL writes and forest mutations go through the same rusqlite transaction, so they commit or
@@ -264,6 +331,7 @@ impl SqliteStore {
 
         // Insert transaction data
         upsert_transaction_record(db_tx, &transaction_record)?;
+        insert_transaction_logs(db_tx, executed_transaction.id(), executed_transaction.logs())?;
 
         // Account Data
         Self::apply_account_patch(
@@ -303,12 +371,83 @@ pub(crate) fn upsert_transaction_record(
     Ok(())
 }
 
+// TRANSACTION LOGS
+// ================================================================================================
+
+/// The size in bytes of an encoded log topic: the suffix and the prefix as little-endian `u64`.
+const LOG_TOPIC_SIZE: usize = 16;
+
+/// Inserts the logs of a transaction, one row for each log, in emission order.
+///
+/// The row of the transaction must exist before this call.
+pub(crate) fn insert_transaction_logs(
+    tx: &Transaction<'_>,
+    transaction_id: TransactionId,
+    logs: &TransactionLogs,
+) -> Result<(), StoreError> {
+    let mut stmt = tx.prepare_cached(INSERT_TRANSACTION_LOG_QUERY).into_store_error()?;
+
+    for (log_index, log) in logs.iter().enumerate() {
+        let content: Vec<u8> = log.content().iter().flat_map(Word::as_bytes).collect();
+        stmt.execute(params![
+            transaction_id.as_bytes(),
+            u64_to_value(log_index as u64),
+            log.emitter().to_bytes(),
+            log_topic_to_blob(log.topic()),
+            content,
+        ])
+        .into_store_error()?;
+    }
+
+    Ok(())
+}
+
+fn log_topic_to_blob(topic: LogTopic) -> Vec<u8> {
+    let mut blob = Vec::with_capacity(LOG_TOPIC_SIZE);
+    blob.extend_from_slice(&topic.suffix().as_canonical_u64().to_le_bytes());
+    blob.extend_from_slice(&topic.prefix().as_canonical_u64().to_le_bytes());
+    blob
+}
+
+fn log_topic_from_blob(blob: &[u8]) -> Result<LogTopic, StoreError> {
+    let felt = |bytes: &[u8]| {
+        let value = u64::from_le_bytes(bytes.try_into().expect("the chunk holds eight bytes"));
+        Felt::try_from(value).map_err(|err| invalid_logs(&err))
+    };
+
+    if blob.len() != LOG_TOPIC_SIZE {
+        return Err(invalid_logs(&format!("log topic has {} bytes", blob.len())));
+    }
+    let (suffix, prefix) = blob.split_at(LOG_TOPIC_SIZE / 2);
+
+    Ok(LogTopic::new(felt(suffix)?, felt(prefix)?))
+}
+
+fn log_content_from_blob(blob: &[u8]) -> Result<Vec<Word>, StoreError> {
+    let (words, remainder) = blob.as_chunks::<{ Word::SERIALIZED_SIZE }>();
+    if !remainder.is_empty() {
+        return Err(invalid_logs(&format!("log content has {} bytes", blob.len())));
+    }
+
+    words.iter().map(|word| word_from_blob(word)).collect()
+}
+
+fn invalid_logs(err: &impl ToString) -> StoreError {
+    StoreError::DataDeserializationError(DeserializationError::InvalidValue(err.to_string()))
+}
+
 // TESTS
 // ================================================================================================
 
 #[cfg(test)]
 mod tests {
-    use miden_client::transaction::{RawOutputNotes, TransactionId};
+    use miden_client::transaction::{
+        LogTopic,
+        RawOutputNotes,
+        TransactionId,
+        TransactionLog,
+        TransactionLogs,
+    };
     use miden_client::{Felt, Word, ZERO};
     use miden_client_core::store::{TransactionFilter, TransactionFilterQuery};
     use miden_client_core::transaction::{
@@ -326,8 +465,14 @@ mod tests {
     };
     use rusqlite::Connection;
 
-    use super::{SqliteStore, transaction_filter_to_query, upsert_transaction_record};
+    use super::{
+        SqliteStore,
+        insert_transaction_logs,
+        transaction_filter_to_query,
+        upsert_transaction_record,
+    };
     use crate::db_management::migration::SqliteMigrator;
+    use crate::sql_error::SqlResultExt;
 
     /// Builds a script-less transaction record with the given status.
     fn create_transaction_record(index: u64, status: TransactionStatus) -> TransactionRecord {
@@ -391,6 +536,97 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
+    }
+
+    fn test_logs() -> TransactionLogs {
+        let emitter =
+            AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
+        let topic = LogTopic::from_name("miden::testing::topic");
+        let other_topic = LogTopic::from_name("miden::testing::other_topic");
+        TransactionLogs::new(vec![
+            TransactionLog::new(emitter, topic, vec![Word::from([1u32, 2, 3, 4])]).unwrap(),
+            TransactionLog::new(emitter, other_topic, vec![]).unwrap(),
+            // A duplicate of the first log. The commitment covers the order and the duplicates.
+            TransactionLog::new(emitter, topic, vec![Word::from([1u32, 2, 3, 4])]).unwrap(),
+            TransactionLog::new(emitter, topic, vec![Word::from([5u32; 4]), Word::from([6u32; 4])])
+                .unwrap(),
+        ])
+        .unwrap()
+    }
+
+    fn insert_logs(conn: &mut Connection, id: TransactionId, logs: &TransactionLogs) {
+        let db_tx = conn.transaction().unwrap();
+        insert_transaction_logs(&db_tx, id, logs).unwrap();
+        db_tx.commit().unwrap();
+    }
+
+    /// The logs table must return the logs of each transaction, in emission order.
+    #[test]
+    fn transaction_logs_round_trip() {
+        let logs = test_logs();
+        let without_logs = create_transaction_record(1, TransactionStatus::Pending);
+        let mut with_logs = create_transaction_record(2, TransactionStatus::Pending);
+
+        let mut conn = create_test_connection(&[without_logs.clone(), with_logs.clone()]);
+        insert_logs(&mut conn, with_logs.id, &logs);
+
+        let stored = SqliteStore::get_transaction_logs(&mut conn, with_logs.id).unwrap().unwrap();
+        assert_eq!(stored, logs);
+        assert_eq!(stored.commitment(), logs.commitment());
+
+        let empty = SqliteStore::get_transaction_logs(&mut conn, without_logs.id).unwrap();
+        assert_eq!(empty, Some(TransactionLogs::default()));
+
+        // A status update replaces the row of the transaction and must keep the logs. The store
+        // enforces foreign keys, so the replace must also pass with them enabled.
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        with_logs.commit_transaction(BlockNumber::from(6u32), 0);
+        let db_tx = conn.transaction().unwrap();
+        upsert_transaction_record(&db_tx, &with_logs).unwrap();
+        db_tx.commit().unwrap();
+        assert_eq!(SqliteStore::get_transaction_logs(&mut conn, with_logs.id).unwrap(), Some(logs));
+    }
+
+    #[test]
+    fn transaction_logs_of_an_unknown_transaction_are_none() {
+        let record = create_transaction_record(1, TransactionStatus::Pending);
+        let unknown = create_transaction_record(2, TransactionStatus::Pending);
+        let mut conn = create_test_connection(&[record]);
+
+        assert_eq!(SqliteStore::get_transaction_logs(&mut conn, unknown.id).unwrap(), None);
+    }
+
+    /// The foreign key must reject the logs of a transaction that the store does not hold.
+    #[test]
+    fn transaction_logs_need_a_stored_transaction() {
+        let unknown = create_transaction_record(1, TransactionStatus::Pending);
+        let mut conn = create_test_connection(&[]);
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+
+        let db_tx = conn.transaction().unwrap();
+        let result = insert_transaction_logs(&db_tx, unknown.id, &test_logs())
+            .and_then(|()| db_tx.commit().into_store_error());
+        assert!(result.is_err());
+    }
+
+    /// Rows that do not decode must fail the read and not return partial logs.
+    #[test]
+    fn corrupt_transaction_logs_fail_the_read() {
+        for column in ["emitter", "topic", "content"] {
+            let record = create_transaction_record(1, TransactionStatus::Pending);
+            let mut conn = create_test_connection(std::slice::from_ref(&record));
+            insert_logs(&mut conn, record.id, &test_logs());
+            conn.execute(
+                &format!("UPDATE transaction_logs SET {column} = x'ffffff' WHERE log_index = 0"),
+                [],
+            )
+            .unwrap();
+
+            assert!(
+                SqliteStore::get_transaction_logs(&mut conn, record.id).is_err(),
+                "a corrupt {column} must fail the read"
+            );
+        }
     }
 
     #[test]

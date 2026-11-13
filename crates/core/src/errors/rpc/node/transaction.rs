@@ -54,3 +54,36 @@ impl AddTransactionError {
         }
     }
 }
+
+// GET TRANSACTION LOGS ERROR
+// ================================================================================================
+
+// Error codes match `GetTransactionLogsErrorCode` in
+// `miden-node/crates/rpc/src/server/api/error_codes.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum GetTransactionLogsError {
+    /// Internal server error (code 0)
+    #[error("internal server error")]
+    Internal,
+    /// Failed to deserialize data
+    #[error("deserialization failed")]
+    DeserializationFailed,
+    /// The node has no committed transaction with the requested ID for the requested account
+    #[error("transaction not found for the account")]
+    TransactionNotFound,
+    /// Error code not recognized by this client version. This can happen if the node is newer than
+    /// the client and has added new error variants.
+    #[error("unknown error code {code}: {message}")]
+    Unknown { code: u8, message: String },
+}
+
+impl GetTransactionLogsError {
+    pub fn from_code(code: u8, message: &str) -> Self {
+        match code {
+            0 => Self::Internal,
+            1 => Self::DeserializationFailed,
+            2 => Self::TransactionNotFound,
+            _ => Self::Unknown { code, message: String::from(message) },
+        }
+    }
+}

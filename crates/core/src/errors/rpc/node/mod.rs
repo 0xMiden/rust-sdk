@@ -16,7 +16,7 @@ pub use sync::{
     SyncTransactionsError,
 };
 use thiserror::Error;
-pub use transaction::AddTransactionError;
+pub use transaction::{AddTransactionError, GetTransactionLogsError};
 
 /// Application-level error returned by the node for a specific RPC endpoint.
 ///
@@ -63,4 +63,7 @@ pub enum EndpointError {
     /// Error from the `RegisterAccount` endpoint
     #[error(transparent)]
     RegisterAccount(#[from] RegisterAccountError),
+    /// Error from the `GetTransactionLogs` endpoint
+    #[error(transparent)]
+    GetTransactionLogs(#[from] GetTransactionLogsError),
 }

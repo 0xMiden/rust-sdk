@@ -103,6 +103,7 @@ use super::Client;
 use crate::ClientError;
 use crate::note::{NoteScreenerError, NoteUpdates, StandardNote};
 use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
+use crate::rpc::domain::transaction::TransactionLogsInfo;
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::data_store::{ClientDataStore, build_partial_mmr_and_headers_with_fallback};
@@ -164,10 +165,12 @@ pub use miden_protocol::transaction::{
     ExecutedTransaction,
     InputNote,
     InputNotes,
+    LogTopic,
     OutputNote,
     OutputNotes,
     ProvenTransaction,
     PublicOutputNote,
+    PublicTransactionLogs,
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
@@ -176,6 +179,10 @@ pub use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
     TransactionKernel,
+    TransactionLog,
+    TransactionLogDetails,
+    TransactionLogError,
+    TransactionLogs,
     TransactionScript,
     TransactionScriptRoot,
     TransactionSummary,
@@ -221,6 +228,72 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
+    }
+
+    /// Returns the logs that a tracked transaction emitted, in emission order.
+    ///
+    /// The store records the logs when the transaction is applied, so this method does not contact
+    /// the node. It returns `None` if the client does not track the transaction.
+    pub async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, ClientError> {
+        self.store.get_transaction_logs(transaction_id).await.map_err(Into::into)
+    }
+
+    /// Fetches the logs of a committed transaction from the node.
+    ///
+    /// - `account_id`: The account that executed the transaction.
+    /// - `transaction_id`: The transaction that emitted the logs.
+    ///
+    /// The transaction does not need to be tracked by the client. The node returns the logs of a
+    /// public account. For a private account, it returns only the commitment to the logs.
+    ///
+    /// Returns `None` if the node has no committed transaction with this ID for this account.
+    ///
+    /// If the client tracks the transaction, this method compares the logs commitment of the node
+    /// with the stored logs. If the store cannot read the stored logs, this method skips the
+    /// comparison and returns the response of the node.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::RpcError`] if the request fails.
+    /// - Returns [`ClientError::RpcError`] with [`RpcError::InvalidResponse`] if the client tracks
+    ///   the transaction and the node returns a different logs commitment.
+    pub async fn fetch_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, ClientError> {
+        let Some(info) = self.rpc_api.get_transaction_logs(account_id, transaction_id).await?
+        else {
+            return Ok(None);
+        };
+
+        // The stored logs are a second source for the commitment. A store failure must not hide the
+        // response of the node.
+        let local_logs = match self.get_transaction_logs(transaction_id).await {
+            Ok(local_logs) => local_logs,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to read the stored logs of transaction {transaction_id}: {err}"
+                );
+                None
+            },
+        };
+
+        if let Some(local_logs) = local_logs
+            && local_logs.commitment() != info.logs_commitment()
+        {
+            return Err(ClientError::RpcError(RpcError::InvalidResponse(format!(
+                "node returned logs commitment {} for transaction {transaction_id}, but the \
+                 store holds logs with commitment {}",
+                info.logs_commitment(),
+                local_logs.commitment()
+            ))));
+        }
+
+        Ok(Some(info))
     }
 
     // TRANSACTION
@@ -1603,8 +1676,9 @@ pub(crate) enum AuthArgsLayout {
     /// `[SALT, CONVERSION_INFO]`. The salt does not constrain anything, so the client's fixed
     /// default salt works where the caller declares none.
     SingleSig,
-    /// `[BLOCK_WORD, SALT, CONVERSION_INFO]`. The salt is the replay guard of the account, so the
-    /// caller must declare it. Carries the component's name for the error.
+    /// `[[bound_block_num, approval_expiration_block_num, max_fee, 0], SALT, CONVERSION_INFO]`. The
+    /// salt is the replay guard of the account, so the caller must declare it. Carries the
+    /// component's name for the error.
     Multisig(String),
     /// The component does not read the auth args, and settles the fee some other way. Carries the
     /// auth component's name, or `"unrecognized"` when the client recognizes no auth component.
@@ -1657,7 +1731,8 @@ impl AuthArgsLayout {
     /// not need auth args.
     ///
     /// The auth args pay the fee in the native fee asset of `protocol_config` at rate 1/1. Multisig
-    /// auth args bind the block of `reference_header`.
+    /// auth args bind the block of `reference_header` and set no max fee, so the auth procedure
+    /// estimates the fee on each execution and binds the estimate in the transaction summary.
     ///
     /// # Errors
     /// - If the component is a multisig and `declared_salt` is `None`. Multisig components always

@@ -5,7 +5,7 @@ use miden_client_core::rpc::AccountStateAt;
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
-use miden_client_core::rpc::domain::transaction::TransactionRecord;
+use miden_client_core::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::code_tree::CodePatch;
@@ -22,10 +22,19 @@ use miden_protocol::note::{
     PartialNoteMetadata,
 };
 use miden_protocol::testing::account_id::{
+    ACCOUNT_ID_PRIVATE_SENDER,
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
     ACCOUNT_ID_SENDER,
 };
-use miden_protocol::transaction::{InputNotes, OrderedTransactionHeaders, TransactionHeader};
+use miden_protocol::transaction::{
+    InputNotes,
+    OrderedTransactionHeaders,
+    PublicTransactionLogs,
+    TransactionHeader,
+    TransactionId,
+    TransactionLogDetails,
+    TransactionLogs,
+};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
 
@@ -36,6 +45,7 @@ use super::{
     GetBlockHeaderByNumber,
     GetNoteScriptByRoot,
     GetNotesById,
+    GetTransactionLogs,
     SyncNotes,
     SyncNullifiers,
     SyncTransactions,
@@ -78,6 +88,7 @@ fn signed_block(block_num: u32) -> SignedBlock {
         Vec::new(),
         Vec::new(),
         vec![OrderedTransactionHeaders::new_unchecked(Vec::new())],
+        PublicTransactionLogs::default(),
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
@@ -156,6 +167,36 @@ fn account_proof() -> AccountProof {
         .expect("the path depth matches the account tree depth");
 
     AccountProof::new(witness, None).expect("a proof without details has nothing to cross-check")
+}
+
+fn private_account_id() -> AccountId {
+    AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).expect("test private sender ID is well formed")
+}
+
+fn transaction_id(value: u32) -> TransactionId {
+    TransactionId::from_raw(Word::from([value; 4]))
+}
+
+fn transaction_logs_info(
+    account_id: AccountId,
+    transaction_id: TransactionId,
+    log_details: TransactionLogDetails,
+) -> TransactionLogsInfo {
+    TransactionLogsInfo {
+        transaction_id,
+        account_id,
+        block_num: BlockNumber::from(3u32),
+        transaction_index: 0,
+        log_details,
+    }
+}
+
+fn public_logs() -> TransactionLogDetails {
+    TransactionLogDetails::Public(TransactionLogs::default())
+}
+
+fn private_logs() -> TransactionLogDetails {
+    TransactionLogDetails::Private(Word::empty())
 }
 
 fn is_invalid_response(result: Result<(), RpcError>) -> bool {
@@ -352,4 +393,60 @@ fn sync_transactions_accepts_empty_response() {
     };
 
     method.validate(&Vec::new()).expect("an empty response must be accepted");
+}
+
+#[test]
+fn get_transaction_logs_verifies_transaction_and_account() {
+    let public_account = other_account_id();
+    let method = GetTransactionLogs {
+        account_id: public_account,
+        transaction_id: transaction_id(1),
+    };
+
+    method.validate(&None).expect("an unknown transaction must pass through");
+    method
+        .validate(&Some(transaction_logs_info(public_account, transaction_id(1), public_logs())))
+        .expect("the logs of the requested transaction must be accepted");
+
+    // A different transaction.
+    assert!(is_invalid_response(method.validate(&Some(transaction_logs_info(
+        public_account,
+        transaction_id(2),
+        public_logs()
+    )))));
+    // A different account.
+    assert!(is_invalid_response(method.validate(&Some(transaction_logs_info(
+        private_account_id(),
+        transaction_id(1),
+        private_logs()
+    )))));
+}
+
+#[test]
+fn get_transaction_logs_verifies_log_visibility() {
+    let public_account = other_account_id();
+    let private_account = private_account_id();
+    assert!(public_account.is_public());
+    assert!(!private_account.is_public());
+
+    let method = |account_id| GetTransactionLogs {
+        account_id,
+        transaction_id: transaction_id(1),
+    };
+    let info = |account_id, log_details| {
+        Some(transaction_logs_info(account_id, transaction_id(1), log_details))
+    };
+
+    method(private_account)
+        .validate(&info(private_account, private_logs()))
+        .expect("a commitment must be accepted for a private account");
+
+    // A public account must come with its logs.
+    assert!(is_invalid_response(
+        method(public_account).validate(&info(public_account, private_logs()))
+    ));
+    // The node does not hold the logs of a private account.
+    assert!(is_invalid_response(
+        method(private_account).validate(&info(private_account, public_logs()))
+    ));
 }

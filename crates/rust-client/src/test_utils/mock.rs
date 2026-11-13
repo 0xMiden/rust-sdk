@@ -31,6 +31,8 @@ use miden_protocol::transaction::{
     OrderedTransactionHeaders,
     OutputNote,
     ProvenTransaction,
+    TransactionId,
+    TransactionLogDetails,
 };
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
@@ -55,7 +57,7 @@ use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
@@ -417,6 +419,55 @@ impl MockRpcApi {
         }
 
         transactions
+    }
+
+    /// Retrieves the logs of a committed transaction, as the node reports them.
+    fn get_transaction_logs_request(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Option<TransactionLogsInfo> {
+        let mock_chain = self.mock_chain.read();
+        for block in mock_chain.proven_blocks() {
+            let position = block
+                .body()
+                .transactions()
+                .iter()
+                .flat_map(OrderedTransactionHeaders::as_slice)
+                .enumerate()
+                .find(|(_, header)| {
+                    header.id() == transaction_id && header.account_id() == account_id
+                });
+            let Some((transaction_index, header)) = position else {
+                continue;
+            };
+
+            // A block holds the logs of public accounts only. A private account commits to its logs
+            // in the transaction header.
+            let log_details = if account_id.is_public() {
+                let (_, logs) = block
+                    .body()
+                    .public_logs()
+                    .entries()
+                    .iter()
+                    .find(|(id, _)| *id == transaction_id)
+                    .expect("a block holds the logs of each public account transaction");
+                TransactionLogDetails::Public(logs.clone())
+            } else {
+                TransactionLogDetails::Private(header.logs_commitment())
+            };
+
+            return Some(TransactionLogsInfo {
+                transaction_id,
+                account_id,
+                block_num: block.header().block_num(),
+                transaction_index: u32::try_from(transaction_index)
+                    .expect("a block holds fewer than 2^32 transactions"),
+                log_details,
+            });
+        }
+
+        None
     }
 
     /// Retrieves storage map updates in a given block range.
@@ -979,6 +1030,18 @@ impl NodeRpcClient for MockRpcApi {
             .map(|n| n.script().clone());
 
         Ok(script)
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::GetTransactionLogs) {
+            return Err(error);
+        }
+
+        Ok(self.get_transaction_logs_request(account_id, transaction_id))
     }
 
     async fn sync_storage_maps(

@@ -41,13 +41,13 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::vm::ExecutionProof;
 
 use crate::errors::RpcError;
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
-use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 
 /// Contains domain types related to RPC requests and responses, as well as utility functions for
 /// dealing with them.
@@ -93,6 +93,7 @@ pub enum RpcEndpoint {
     GetLimits,
     GetNetworkNoteStatus,
     GetTransactionEncryptionKey,
+    GetTransactionLogs,
 }
 
 impl RpcEndpoint {
@@ -119,6 +120,7 @@ impl RpcEndpoint {
             RpcEndpoint::SyncTransactions => "SyncTransactions",
             RpcEndpoint::GetLimits => "GetLimits",
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
+            RpcEndpoint::GetTransactionLogs => "GetTransactionLogs",
         }
     }
 
@@ -152,7 +154,8 @@ impl RpcEndpoint {
             | RpcEndpoint::SyncTransactions
             | RpcEndpoint::GetLimits
             | RpcEndpoint::GetNetworkNoteStatus
-            | RpcEndpoint::GetTransactionEncryptionKey => true,
+            | RpcEndpoint::GetTransactionEncryptionKey
+            | RpcEndpoint::GetTransactionLogs => true,
         }
     }
 }
@@ -186,6 +189,7 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::SyncTransactions => write!(f, "sync_transactions"),
             RpcEndpoint::GetLimits => write!(f, "get_limits"),
             RpcEndpoint::GetNetworkNoteStatus => write!(f, "get_network_note_status"),
+            RpcEndpoint::GetTransactionLogs => write!(f, "get_transaction_logs"),
         }
     }
 }
@@ -636,6 +640,22 @@ pub trait NodeRpcClient: Send + Sync {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError>;
+
+    /// Fetches the logs of a committed transaction, using the `/GetTransactionLogs` RPC endpoint.
+    ///
+    /// - `account_id`: The account that executed the transaction.
+    /// - `transaction_id`: The transaction that emitted the logs.
+    ///
+    /// Returns `None` if the node has no committed transaction with this ID for this account. The
+    /// node holds only the commitment to the logs of a private account.
+    ///
+    /// Implementations must reject a response for a different transaction or account. They must
+    /// also reject logs that do not match the returned commitment.
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError>;
 
     /// Fetches the network ID of the node.
     /// Errors:

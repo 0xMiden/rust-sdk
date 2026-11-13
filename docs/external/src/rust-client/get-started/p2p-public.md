@@ -32,7 +32,7 @@ To do this, we use two terminals with their own state (using their own `miden-cl
 2. Initialize a local configuration for the second client.
 
     ```sh
-    miden-client init --local
+    miden-client init --local --network testnet
     ```
 
 3. On the new client, create a new [basic account](https://docs.miden.xyz/builder/smart-contracts/accounts):
@@ -86,7 +86,7 @@ To do this, we use two terminals with their own state (using their own `miden-cl
     ```
 
     :::tip
-    It's possible to use a short version of the note id: 7 characters after the `0x` is sufficient, e.g. `0x6ae613a`.
+    You can use a note ID prefix, such as `0x6ae613a`, if it identifies exactly one note in the local store. Use a longer prefix or the full ID if the prefix is ambiguous.
     :::
 
 That's it!
@@ -99,6 +99,6 @@ miden-client account --show <account-ID>
 
 ## Clear state
 
-All state is maintained in `store.sqlite3`, located in the directory defined in the `miden-client.toml` file.
+The database path is set by `store_filepath` in `miden-client.toml`. Secret keys are stored separately in `secret_keys_directory`. Relative paths resolve from the `.miden` directory that contains the configuration.
 
-To clear all state, delete this file. It recreates on any command execution.
+Back up both the database and the keystore before you reset the client. Sync cannot recover private account and note data from a deleted database. To test with a separate client, run `miden-client init --local --network testnet` in a new directory.

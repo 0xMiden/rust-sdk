@@ -12,17 +12,19 @@ not valid. See [`.changelog/README.md`](.changelog/README.md).
 
 **Categories:** `rename` | `removal` | `param` | `type` | `behavior` | `arch`
 
-**Scopes:** `lib` | `cli` | `store`
+**Scopes:** `lib` | `rpc` | `cli` | `store`
 
-- `lib`: the public APIs of the client library crates.
+- `lib`: the general public APIs of the client library crates.
+- `rpc`: RPC client APIs, request and response validation, and node communication.
 - `cli`: the `miden-client` command-line interface.
 - `store`: the `Store` trait and the SQLite store. Use it for changes that a `Store` implementation must follow.
 
-An entry can have more than one scope, e.g. `[lib,store]`.
+Use `[rpc]` for changes confined to the RPC component. Use `[lib,rpc]` when a change also affects the general
+client API. An entry can have more than one scope, e.g. `[lib,store]`.
 
 **Examples:**
 ```markdown
-[BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][rename][rpc] `TonicRpcClient` → `GrpcClient`.
 [BREAKING][param][lib] `sync_state()` now requires `AccountStateAt` parameter. Use `Synced` for previous default behavior.
 [BREAKING][removal][lib] Removed `compile_note_script()`. Use `ScriptBuilder` instead.
 [BREAKING][type][lib] `BlockNumber` unified to `u32` across all APIs.
@@ -75,7 +77,7 @@ A PR adds a file such as `.changelog/unreleased/grpc-client-rename.md`. Each lin
 and without a PR link:
 
 ```markdown
-[BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient`.
+[BREAKING][rename][rpc] `TonicRpcClient` → `GrpcClient`.
 [FEATURE][cli] `--dry-run` flag for transaction commands.
 [FIX][lib] `get_notes_by_filter` now correctly handles empty tag arrays.
 ```
@@ -84,7 +86,7 @@ The release moves the entries to `.changelog/<tag>/<PR>.md` and adds the PR link
 [`.changelog/README.md`](.changelog/README.md)):
 
 ```markdown
-- [BREAKING][rename][lib] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
+- [BREAKING][rename][rpc] `TonicRpcClient` → `GrpcClient` ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 - [FEATURE][cli] `--dry-run` flag for transaction commands ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 - [FIX][lib] `get_notes_by_filter` now correctly handles empty tag arrays ([#1360](https://github.com/0xMiden/rust-sdk/pull/1360)).
 ```

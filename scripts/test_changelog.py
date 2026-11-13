@@ -54,6 +54,8 @@ class ChangelogTests(unittest.TestCase):
             "[BREAKING][param][lib,store] Added a required parameter.",
             "[FEATURE][cli] Added a command.",
             "[FIX][lib] Fixed a panic.",
+            "[FIX][rpc] Rejected an invalid response.",
+            "[BREAKING][behavior][lib,rpc] Changed account fetching.",
         ]
         self.path.write_text("\n".join(lines) + "\n")
         self.assertEqual(read_entries(self.path), lines)

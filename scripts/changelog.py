@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 SRC = Path(".changelog/unreleased")
-SCOPES = r"(?:lib|cli|store)(?:,(?:lib|cli|store))*"
+SCOPES = r"(?:lib|rpc|cli|store)(?:,(?:lib|rpc|cli|store))*"
 ENTRY = re.compile(
     rf"(?:\[BREAKING\]\[(?:rename|removal|param|type|behavior|arch)\]|\[(?:FEATURE|FIX)\])"
     rf"\[{SCOPES}\] \S.*"

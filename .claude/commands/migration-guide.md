@@ -51,7 +51,7 @@ new_code_example();
 - Use a table of contents for guides with 5+ breaking changes.
 - Order sections by impact: most disruptive changes first.
 - End with a "Need Help?" section linking to Discord/GitHub issues.
-- Cover every scope of an entry: show the CLI change for `cli` and the `Store` implementation change for `store`.
+- Cover every scope of an entry: show the RPC client change for `rpc`, the CLI change for `cli`, and the `Store` implementation change for `store`.
 - Use real, runnable code examples (not pseudocode). Keep examples minimal but complete.
 - Always specify language for syntax highlighting (```rust, ```bash).
 - Use diff syntax (```diff) when showing inline changes.

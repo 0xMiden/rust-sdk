@@ -25,6 +25,7 @@ use crate::codecs::with_cli_codecs;
 use crate::commands::account::get_default_account_id;
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::fee_faucet;
 use crate::packages::load_packages;
 use crate::utils::{
     is_empty_transaction_error,
@@ -406,7 +407,8 @@ async fn resolve_call_target<AUTH: Keystore + Sync + 'static>(
 /// Picks the local account the FPI call runs from, preferring the default account.
 ///
 /// Any account works: the script calls the foreign procedure, not the native account's code. Locked
-/// accounts are skipped because their local state doesn't match the node's.
+/// accounts are skipped because their local state doesn't match the node's. The fee token faucet is
+/// skipped because the CLI watches it and it is not an account of the user.
 async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
     client: &Client<AUTH>,
 ) -> Result<AccountId, CliError> {
@@ -418,10 +420,11 @@ async fn pick_local_executor<AUTH: Keystore + Sync + 'static>(
         return Ok(default_id);
     }
 
+    let fee_faucet_id = fee_faucet::tracked_faucet_id(client).await?;
     let local_accounts = client.get_account_headers().await?;
     local_accounts
         .iter()
-        .find(|(_, status)| !status.is_locked())
+        .find(|(header, status)| !status.is_locked() && Some(header.id()) != fee_faucet_id)
         .map(|(header, _)| header.id())
         .ok_or_else(|| {
             CliError::InvalidArgument(

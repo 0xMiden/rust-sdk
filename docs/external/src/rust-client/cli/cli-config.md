@@ -174,6 +174,14 @@ If not set, the default behavior is to ignore the block difference between the c
 miden-client init --block-delta 256
 ```
 
+### Fee token faucet
+
+The `track_fee_faucet` field is optional and is `false` by default. Set it to `true` to keep the fee token faucet in the store. When the faucet has asset callbacks, each sync then adds the faucet as a watched account and keeps its account witness up to date. A transaction that pays a fee then reads the faucet from the store and does not fetch it from the node. If the protocol configuration changes the faucet, the next sync follows the new one. If you set the field back to `false`, the next sync stops keeping the witness of the faucet.
+
+```sh
+track_fee_faucet = true
+```
+
 ### Environment variables
 
 - `MIDEN_CLIENT_HOME`: Overrides the default global `.miden` directory (`~/.miden`). When set, all commands that reference the global directory will use the specified path instead. This is useful for keeping separate environments or storing the client data in a non-default location. For example:

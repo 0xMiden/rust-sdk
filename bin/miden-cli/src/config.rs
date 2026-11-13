@@ -101,6 +101,9 @@ pub struct CliConfig {
     pub note_transport: Option<NoteTransportConfig>,
     /// Timeout for the remote prover requests.
     pub remote_prover_timeout: Duration,
+    /// Makes each sync keep the fee token faucet in the store.
+    #[serde(default)]
+    pub track_fee_faucet: bool,
 }
 
 // Make `ClientConfig` a provider itself for composability.
@@ -141,6 +144,7 @@ impl Default for CliConfig {
             max_block_number_delta: None,
             note_transport: None,
             remote_prover_timeout: DEFAULT_REMOTE_PROVER_TIMEOUT,
+            track_fee_faucet: false,
         }
     }
 }

@@ -3,6 +3,7 @@ use miden_client::Client;
 use miden_client::keystore::Keystore;
 
 use crate::errors::CliError;
+use crate::fee_faucet;
 
 #[derive(Debug, Parser, Clone)]
 #[command(about = "Sync this client with the latest state of the Miden network")]
@@ -13,7 +14,7 @@ impl SyncCmd {
         &self,
         mut client: Client<AUTH>,
     ) -> Result<(), CliError> {
-        let new_details = client.sync_state().await?;
+        let new_details = fee_faucet::sync(&mut client).await?;
 
         println!("State synced to block {}", new_details.block_num);
         println!("New public notes: {}", new_details.new_public_notes.len());

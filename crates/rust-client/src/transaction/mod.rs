@@ -80,6 +80,7 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteId,
+    NoteInclusionProof,
     NoteRecipient,
     NoteScript,
     NoteTag,
@@ -352,6 +353,58 @@ where
             Ok(_) => Err(ClientError::NoSignaturesRequired),
             Err(err) => Err(err),
         }
+    }
+
+    /// Returns `transaction_request` with every input note consumed as authenticated, so that any
+    /// executor consumes the notes in the same mode.
+    ///
+    /// A note keeps the inclusion proof that the request or the store holds. For the other notes,
+    /// the client fetches the inclusion proofs from the node.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::NoteNotFoundOnChain`] if the node has no inclusion proof for a note.
+    pub async fn pin_input_notes(
+        &self,
+        mut transaction_request: TransactionRequest,
+    ) -> Result<TransactionRequest, ClientError> {
+        let inferred_notes: Vec<Note> = transaction_request
+            .input_notes()
+            .iter()
+            .filter_map(|request_note| match request_note.authentication() {
+                InputNoteAuthentication::Inferred(note) => Some(note.clone()),
+                InputNoteAuthentication::Explicit(_) => None,
+            })
+            .collect();
+        if inferred_notes.is_empty() {
+            return Ok(transaction_request);
+        }
+
+        let note_ids: Vec<NoteId> = inferred_notes.iter().map(Note::id).collect();
+        let mut proofs: BTreeMap<NoteId, NoteInclusionProof> = self
+            .store
+            .get_input_notes(NoteFilter::List(note_ids.clone()))
+            .await?
+            .into_iter()
+            .filter(InputNoteRecord::is_authenticated)
+            .filter_map(|record| Some((record.id()?, record.inclusion_proof()?.clone())))
+            .collect();
+
+        let missing: Vec<NoteId> =
+            note_ids.into_iter().filter(|note_id| !proofs.contains_key(note_id)).collect();
+        if !missing.is_empty() {
+            for fetched in self.rpc_api.get_notes_by_id(&missing).await? {
+                proofs.insert(fetched.id(), fetched.inclusion_proof().clone());
+            }
+        }
+
+        for note in inferred_notes {
+            let note_id = note.id();
+            let proof = proofs.remove(&note_id).ok_or(ClientError::NoteNotFoundOnChain(note_id))?;
+            transaction_request.pin_input_note(InputNote::authenticated(note, proof))?;
+        }
+
+        Ok(transaction_request)
     }
 
     /// Creates and executes a transaction specified by the request against the specified account,

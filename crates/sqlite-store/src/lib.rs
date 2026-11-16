@@ -71,6 +71,7 @@ use crate::settings::{
 
 mod account;
 mod chain_data;
+mod code;
 mod db_management;
 mod forest;
 mod note;
@@ -99,6 +100,8 @@ pub struct SqliteStore {
     database_filepath: PathBuf,
     /// Held by a read-write store. Released when the store is dropped.
     _writer_lock: Option<WriterLock>,
+    /// The connection that serves `MastForestStore::get`. It opens on the first call.
+    mast_reader: std::sync::Mutex<Option<Connection>>,
 }
 
 impl SqliteStore {
@@ -161,6 +164,7 @@ impl SqliteStore {
             pool,
             database_filepath,
             _writer_lock: writer_lock,
+            mast_reader: std::sync::Mutex::new(None),
         })
     }
 

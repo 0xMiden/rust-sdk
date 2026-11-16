@@ -2985,6 +2985,8 @@ dependencies = [
  "miden-client-proto",
  "miden-protocol",
  "miden-standards",
+ "miden-testing",
+ "miden-tx",
  "rusqlite",
  "rusqlite_migration",
  "thiserror",

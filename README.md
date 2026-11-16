@@ -33,8 +33,8 @@ For more info check:
 ## Workspace structure
 
 The workspace is organized as follows:
-- The `bin` folder contains crates that are meant to be compiled into binaries (like the CLI).
-- The `crates` folder contains the library crates that are meant to be used as dependencies (like the Rust client library).
+- The `bin` folder contains crates that are meant to be compiled into binaries (like the CLI, the benchmarks and the integration tests).
+- The `crates` folder contains the library crates that are meant to be used as dependencies (like the Rust client library, its core traits, the gRPC client and the SQLite store).
 
 ### Makefile
 

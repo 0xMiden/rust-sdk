@@ -1,6 +1,6 @@
 # Historical State Storage Design
 
-This document explains the design rationale behind the historical state storage model used in the SQLite store (and mirrored in the IndexedDB store).
+This document explains the design rationale behind the historical state storage model used in the SQLite store.
 
 ## Objectives
 
@@ -62,7 +62,7 @@ Using the same sequence of changes, the historical table would contain:
 
 At nonce 0 nothing is recorded because nothing was replaced; the account was just created.
 
-**Why this makes pruning safe:** if we prune nonces <= 1, we delete entries with `replaced_at_nonce <= 1`, i.e., values that were replaced at or before nonce 1. These are values we would never need when reverting to nonce 2 or later, because they were already gone by then. Pruning becomes a simple `DELETE WHERE replaced_at_nonce < threshold`.
+**Why this makes pruning safe:** if we prune nonces <= 1, we delete entries with `replaced_at_nonce <= 1`, i.e., values that were replaced at or before nonce 1. These are values we would never need when reverting to nonce 2 or later, because they were already gone by then. Pruning becomes a simple `DELETE WHERE replaced_at_nonce <= threshold`.
 
 This solution satisfies all objectives and, while still relatively simple, has enough subtlety to warrant this documentation.
 

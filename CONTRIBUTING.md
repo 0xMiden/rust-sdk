@@ -44,7 +44,7 @@ i.e. this branches state:
 
 ### Commit messages
 - Commit messages should be written in a short, descriptive manner and be prefixed with tags for the change type and scope (if possible) according to the [semantic commit](https://gist.github.com/joshbuchea/6f47e86d2510bce28f8e7f42ae84c716) scheme.
-For example, a new change to the `miden-node-store` crate might have the following message: `feat(miden-node-store): fix block-headers database schema`
+For example, a change to the `miden-client-sqlite-store` crate might have the following message: `fix(sqlite-store): handle a missing block header`
 
 - Also squash commits to logically separated, distinguishable stages to keep git log clean:
     ```
@@ -73,10 +73,11 @@ For example, a new change to the `miden-node-store` crate might have the followi
 
 - [Rustfmt](https://github.com/rust-lang/rustfmt), [Clippy](https://github.com/rust-lang/rust-clippy), [Rustdoc](https://doc.rust-lang.org/rustdoc/index.html), [Typos](https://github.com/crate-ci/typos) and [Taplo](https://github.com/tamasfe/taplo) linting is included in the CI pipeline. 
 
-You can run all checks locally before opening a PR. To simplify running all checks in a reproducible manner we use `make` commands:
+You can run all checks locally before opening a PR. To simplify running all checks in a reproducible manner we use `make` commands. `make lint` runs every check except Rustdoc, and `make doc` runs Rustdoc:
 
 ```
 make lint
+make doc
 ```
 
 You can find more information about other `make` commands in the [Makefile](Makefile).

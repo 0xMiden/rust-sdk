@@ -7,7 +7,7 @@ In this section, we show you how to execute transactions and send funds to anoth
 
 :::info Important: Prerequisite steps
 - You should have already followed the [prerequisite steps](index.md#prerequisites) and [create account](create-account-use-faucet) documents.
-- You should have *not* reset the state of your local client.
+- You should *not* have reset the state of your local client.
 :::
 
 ## Create a second client

@@ -26,7 +26,7 @@ These actions can also be executed when inside the repository via the Makefile w
 
 ### Using the CLI
 
-To have a fully-functional client CLI, you would need to set it up first. You can accomplish that with:
+A command initializes the client with default settings (a global `.miden` directory, configured for testnet) if no configuration file exists yet. To select the network or other settings yourself, run `init` first:
 
 ```sh
 miden-client init --network {mainnet/testnet/devnet/localhost/custom_rpc_endpoint}
@@ -42,7 +42,7 @@ miden-client
 miden-client --help
 ```
 
-The first time that you sync your client (`miden-client sync`) a new file will be generated based on the configurations set on `miden-client.toml`. This file is the database of the client.
+The first command that opens the client (for example, `miden-client sync`) generates a new file based on the configurations set on `miden-client.toml`. This file is the database of the client.
 
 ## License
 This project is [MIT licensed](../../LICENSE).

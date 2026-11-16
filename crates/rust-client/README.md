@@ -10,7 +10,7 @@ In order to utilize the `miden-client` library, you can add the dependency to yo
 miden-client = { version = "0.18", features = ["tonic"] }
 ````
 
-Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations.
+Talking to a node requires the `tonic` feature, which is not part of the default set. Leave it out only when supplying your own `NodeRpcClient` implementation. The client then proves transactions locally unless you set your own `TransactionProver`.
 
 ## Crate Features
 

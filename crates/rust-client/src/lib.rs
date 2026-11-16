@@ -48,8 +48,11 @@
 //!
 //! ```toml
 //! [dependencies]
-//! miden-client = "0.10"
+//! miden-client = { version = "0.18", features = ["tonic"] }
 //! ```
+//!
+//! The `tonic` feature is not enabled by default. It enables the gRPC client that the example below
+//! uses.
 //!
 //! ## Example
 //!

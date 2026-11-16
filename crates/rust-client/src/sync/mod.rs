@@ -50,7 +50,7 @@
 //! # }
 //! ```
 //!
-//! The `sync_state` method loops internally until the client is fully synced to the network tip.
+//! One call to `sync_state` syncs the client to the network tip.
 //!
 //! For more advanced usage, refer to the individual functions (such as `committed_note_updates` and
 //! `consumed_note_updates`) to understand how the sync data is processed and applied to the local

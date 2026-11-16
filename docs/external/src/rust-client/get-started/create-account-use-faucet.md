@@ -48,9 +48,7 @@ Check the [Miden client documentation](https://docs.miden.xyz/builder/tools/clie
    miden-client account -l
    ```
 
-   You should see something like this:
-
-     <!-- ![Result of listing miden accounts](../img/get-started/miden-account-list.png) -->
+   The command prints a table that lists your new account and its account ID.
 
 Save the account ID for a future step.
 
@@ -100,9 +98,7 @@ You can also click **Send Public Note**. If you do this, the note's details will
    miden-client notes
    ```
 
-4. You should see something like this:
-
-  <!-- ![Result of viewing miden notes](../img/get-started/note-view.png) -->
+4. The note is listed under `Input Notes`, with a state such as `Expected (after block <N>)`.
 
 :::tip The importance of syncing
 
@@ -125,6 +121,7 @@ You will see something like this as output:
 ```sh
 State synced to block 179672
 New public notes: 0
+New private notes: 0
 Committed notes: 1
 Tracked notes consumed: 0
 Tracked accounts updated: 0
@@ -140,9 +137,7 @@ Committed transactions: 0
    miden-client notes
    ```
 
-2. You should see something like this:
-
-  <!-- ![Viewing commit height info](../img/get-started/commit-height.png) -->
+2. The note state is now `Committed (at block height <N>)`.
 
 3. Find your account and note id by listing both `accounts` and `notes`:
 
@@ -157,9 +152,7 @@ Committed transactions: 0
    miden-client consume-notes --account <Account-Id> <Note-Id>
    ```
 
-5. You should see a confirmation message like this:
-
-  <!-- ![Transaction confirmation message](../img/get-started/transaction-confirmation.png) -->
+5. The command prints the effects of the transaction and asks you to confirm them with `Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)`. Type `y` to continue.
 
 6. After confirming you can view the new note status by running the following command:
 
@@ -167,9 +160,7 @@ Committed transactions: 0
    miden-client notes
    ```
 
-7. You should see something like this:
-
-  <!-- ![Viewing process info](../img/get-started/processing-note.png) -->
+7. The note state is now `Processing (submitted at <TIME> by account <Account-Id>)`.
 
 8. The note is `Processing`. This means that the proof of the transaction was sent, but there is no network confirmation yet. You can update your view of the rollup by syncing again:
 
@@ -183,9 +174,8 @@ Committed transactions: 0
    miden-client notes
    ```
 
-     <!-- ![Viewing consumed note](../img/get-started/consumed-note.png) -->
 
-Amazing! You just have created a client-side zero-knowledge proof locally on your machine and submitted it to the Miden rollup.
+Amazing! You have just created a client-side zero-knowledge proof locally on your machine and submitted it to the Miden rollup.
 
 :::tip
 You only need to copy the top line of characters of the Note ID.
@@ -199,9 +189,7 @@ You only need to copy the top line of characters of the Note ID.
    miden-client account --show <Account-Id>
    ```
 
-6. You should now see your accounts vault containing the funds sent by the faucet.
-
-  <!-- ![Viewing account vault with funds](../img/get-started/view-account-vault.png) -->
+6. You should now see your account's vault containing the funds sent by the faucet.
 
 ## Congratulations!
 

@@ -84,7 +84,7 @@ The note sweep seeds three quarters of the notes as consumed by a single account
 - a full `InputNoteReader` walk, reported as a total and per note
 - `upsert_input_notes` and `apply_state_sync` for a fixed batch of new notes
 
-The account sweep seeds wallets that share one account code, and measures `SqliteStore::new` (which rebuilds the SMT forest on open), `get_account_headers`, `get_account_header` and `prune_account_history`.
+The account sweep seeds wallets that share one account code, and measures `SqliteStore::new` (which opens the store and applies the schema migrations), `get_account_headers`, `get_account_header` and `prune_account_history`.
 
 Reads run before writes within a size, so every read measures exactly the seeded database.
 
@@ -150,7 +150,7 @@ miden-bench transaction --account-id 0x...
 
 ## Global Options
 
-These options apply to all commands and must be specified before the subcommand.
+These options apply to all commands. You can specify them before or after the subcommand.
 
 ### Network Environment (`-n, --network`)
 

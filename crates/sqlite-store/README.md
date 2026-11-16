@@ -27,9 +27,9 @@ file's four-digit prefix is its schema version, which is the value SQLite record
 `PRAGMA user_version`.
 
 Migrations are **append-only**. Every store on a user's disk was built by replaying these exact
-files. On open the client replays the migrations against an in-memory database to derive the
-fingerprint each version should have, and verifies that the schema it finds on disk matches the one
-for the version the database claims. A store that was altered outside the migrations is rejected
+files. Each migration pins the fingerprint of the schema that its version builds. On open the client
+verifies that the schema it finds on disk matches the fingerprint pinned for the version the
+database claims. A store that was altered outside the migrations is rejected
 rather than migrated further. Unlike chain state, a store holds private notes and account seeds
 that cannot be recovered from the network.
 

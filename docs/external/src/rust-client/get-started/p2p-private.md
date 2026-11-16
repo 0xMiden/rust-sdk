@@ -29,9 +29,7 @@ Remember to use the [Miden client documentation](https://docs.miden.xyz/builder/
    miden-client account -l
    ```
 
-3. You should see two accounts:
-
-  <!-- ![Result of listing miden accounts](../img/get-started/two-accounts.png) -->
+3. The table lists both accounts.
 
 ## Transfer assets between accounts
 
@@ -79,7 +77,6 @@ Remember to use the [Miden client documentation](https://docs.miden.xyz/builder/
    miden-client account --show <regular-account-ID-B>
    ```
 
-   <!-- ![Result of listing miden accounts](../img/get-started/account-b.png) -->
 
 6. Check the original account:
 
@@ -87,7 +84,6 @@ Remember to use the [Miden client documentation](https://docs.miden.xyz/builder/
    miden-client account --show <regular-account-ID-A>
    ```
 
-   <!-- ![Result of listing miden accounts](../img/get-started/account-a.png) -->
 
 Wanna do more? [Sending public notes](p2p-public)
 
@@ -95,7 +91,7 @@ Wanna do more? [Sending public notes](p2p-public)
 
 The steps above assume that the client owns both accounts. To exchange notes with other users, the note transport network can be used.
 For this the sender (`Account A`) will need the address (bech32 string) of the recipient (`Account B`).
-After creating the note (step 1 above), get the created note ID with `miden-client notes --list`. Then send that note through the note transport network,
+After creating the note (step 1 above), wait until its transaction is committed and run `miden-client sync`. The note transport network accepts a note only with its inclusion proof, and the client has the proof only after it syncs past the block that contains the note. Then get the created note ID with `miden-client notes --list` and send that note through the note transport network:
 ```sh
 miden-client notes --send <note-id> <address-B>
 ```

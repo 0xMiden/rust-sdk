@@ -87,6 +87,7 @@ miden-client clear-config --global
 An `rpc` section is used to configure the connection to the Miden node. It contains the following fields:
 
 - `endpoint`: The Miden node endpoint as a URL, such as `"https://rpc.devnet.miden.io"`.
+- `timeout_ms` (optional): The timeout for requests to the node, in milliseconds. The default is `10000`.
 - `network_id` (optional): The bech32 human-readable part (HRP) of the network the node serves, such as `"mm"`. The CLI uses it to encode and validate addresses. When it is not set, the network ID is derived from `endpoint`: the built-in `mainnet`, `testnet`, `devnet` and `localhost` endpoints map to `mm`, `mtst`, `mdev` and `mlcl`, and any other endpoint maps to `mcst`. Set it when `endpoint` points at your own node of a known network.
 
 The `endpoint` field can be set with the `--network` flag when running the `miden-client init` command. The flag accepts `mainnet`, `testnet`, `devnet`, `localhost` or a custom endpoint URL. For example, to set the testnet endpoint, you can run: `miden-client init --network testnet`.
@@ -133,15 +134,15 @@ The `token_symbol_map_filepath` field is used to configure the path to the TOML 
 This file must be updated manually with known token symbol mappings. A sample token symbol map file looks like this:
 
 ```toml
-# This addresses in this file are not real and are only for demonstration purposes.
-ETH = { address = "mlcl1qru2e5yvx40ndgqqqzusrryr0ucyd0uj", decimals = 18 }
-BTC = { address = "mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq", decimals = 8 }
+# The addresses in this file are examples. Replace them with the addresses of faucets on your network.
+USDC = { address = "mtst1azcg68n0ry7fw52ly9zyf2k9hsf2rqa9", decimals = 6 }
+BTC = { address = "mtst1azquums3kn0nyyt6cq2h65w7zq4le7l3", decimals = 8 }
 ```
 
-The `address` field must be the faucet account's full Bech32 address; hexadecimal account IDs are not accepted in this file. The `decimals` field is the number of decimals used by the token.
+The `address` field must be the faucet account's full Bech32 address; hexadecimal account IDs are not accepted in this file. The `decimals` field is the number of decimals used by the token, and it must not be more than 12. Each address must belong to the network that the client is configured for, and each faucet can appear only once.
 
 When the client is configured with a token symbol map, any transaction command that specifies an asset can use the token symbol instead of the asset ID. For example, when specifying an asset normally you would use something like:
-`1::mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq`
+`1::mtst1azquums3kn0nyyt6cq2h65w7zq4le7l3`
 
 But if the faucet is included in the token symbol map (using the sample above as the mapping), you would use:
 `0.00000001::BTC`
@@ -151,6 +152,8 @@ Notice how the amount specified when using the token symbol takes into account t
 ### Remote prover endpoint
 
 The `remote_prover_endpoint` field is used to configure a remote prover. Set it by calling `miden-client init --remote-prover-endpoint <PROVER_URL>`. To use the configured remote prover, pass `--delegate-proving` to a transaction-creation command, for example `miden-client transfer <OTHER_ARGUMENTS> --delegate-proving`. Without this flag, transactions are proved locally.
+
+The `remote_prover_timeout` table (with `secs` and `nanos` fields) sets the timeout for requests to the remote prover. The table is required in the configuration file. `miden-client init` writes it with a default of 20 seconds, and `--remote-prover-timeout-ms <MS>` sets another value.
 
 ### Package directory
 `Packages` are Miden's native packaging format.
@@ -199,6 +202,9 @@ A `note_transport` section is used to configure the connection to the Miden Note
 - `endpoint`: The endpoint of the Miden Note Transport node;
 - `timeout_ms`: The timeout employed in client requests to the node, in milliseconds. Optional, defaults to `10000`.
 
-> [!Note]
-> - Running the node locally for development is encouraged.
-> - However, the endpoint can point to any remote node.
+:::note
+
+- Running the node locally for development is encouraged.
+- However, the endpoint can point to any remote node.
+
+:::

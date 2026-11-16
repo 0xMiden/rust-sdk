@@ -11,12 +11,13 @@ The Miden client has the following architectural components:
 - [Keystore](#keystore)
 - [Note screener](#note-screener)
 - [Note reader](#note-reader)
+- [State sync](#state-sync-component)
 - [Note transport](#note-transport)
 
 :::tip
 
 - The RPC client and the store are Rust traits.
-- This allow developers and users to easily customize their implementations.
+- This allows developers and users to easily customize their implementations.
 
 :::
 
@@ -52,13 +53,13 @@ When executing, the executor needs access to relevant blockchain history. The ex
 
 The keystore is responsible for storing and managing the private keys of the accounts tracked by the client.
 
-These private keys are used by the executor to sign and authenticate transactions. Implementations for both rust and web keystores are provided.
+These private keys are used by the executor to sign and authenticate transactions. The client provides `FilesystemKeyStore`, which stores the keys in files. The client accepts any `TransactionAuthenticator`, so a signer that holds no local keys also works, for example `Web3SignerAuthenticator` from the `miden-web3signer-authenticator` crate.
 
 ## Note Screener
 
 The note screener is used to check the consumability of notes by tracked accounts. It can find the tracked accounts that can consume a note, and whether the note can be consumed at the moment or in the future.
 
-For each candidate note the screener first runs a static input check. It resolves P2ID and P2IDE notes this way, without running the VM. Every other note is screened by trial-executing a consumption transaction against the account at a single reference block, the client's current sync height. Screening a set of notes therefore runs one trial execution per (account, note) pair that the static check does not resolve.
+For each candidate note the screener first runs a static input check. It resolves P2ID, P2IDE and TX_FEE notes this way, without running the VM. Every other note is screened by trial-executing a consumption transaction against the account at a single reference block, the client's current sync height. Screening a set of notes therefore runs one trial execution per (account, note) pair that the static check does not resolve.
 
 Within a single screening call, the transaction inputs that stay constant across the pass are read from the store once instead of once per trial execution: each account's state, the reference block header and its partial blockchain, and the vault asset witnesses (including the fee asset). This is sound because screening commits no state, so those inputs do not change between executions, and it is not applied to real transaction execution, where account state evolves. Screening a batch therefore amortizes each account's input fetch across every note checked against it, and the larger an account's vault, the more a batch saves over screening notes one at a time.
 
@@ -72,7 +73,7 @@ Usage examples for the note reader can be found in the [Reading consumed notes s
 
 ## State Sync component
 
-The state sync component encapsulates the logic for dealing with synchronization of the client state with the network. It repeatedly queries the node with sync state requests until the chain tip is reached. On every requests it updates the provided tracked elements (accounts, notes, transactions, etc.) and returns an updated state at the end which can be used to update the store (this component does not modify the store directly).
+The state sync component encapsulates the logic for dealing with synchronization of the client state with the network. One sync covers the range from the client's sync height to the chain tip. The component first requests the chain MMR update, which also gives the chain tip. It then requests the note inclusions and the transaction records for that range. From the responses it derives the updates for the tracked elements (accounts, notes, transactions, etc.) and returns them at the end, which can be used to update the store (this component does not modify the store directly).
 
 The component also exposes a specific customizable callback which can be used to react to new note arrivals.
 

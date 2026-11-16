@@ -12,7 +12,7 @@ miden-client = { version = "0.18", features = ["tonic"] }
 miden-client-sqlite-store = "0.18"
 ```
 
-The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
+The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` implementation. The client then proves transactions locally unless you set your own `TransactionProver`. See [Features](./features.md#crate-features) for the full list.
 
 ## Client instantiation
 
@@ -131,19 +131,46 @@ The account's state is also tracked locally, but during sync the client updates 
 
 ### Network accounts
 
-A network account is a public account that the node drives automatically: it consumes matching notes on the network's behalf via network transactions (NTX). A network account is built by using the `NetworkAccount::builder` method, which takes a standardized allowlist of note script roots. The node uses that allowlist to identify the account and route only allowlisted notes to it; the auth procedure additionally enforces that consumed notes are allowlisted and that no transaction script runs.
+A network account is a public account that the node drives automatically: it consumes matching notes on the network's behalf via network transactions (NTX). A network account is built by using the `NetworkAccount::builder` method, which takes a standardized allowlist of note script roots and a `FeePolicyManager`. The node uses that allowlist to identify the account and route only allowlisted notes to it; the auth procedure additionally enforces that consumed notes are allowlisted and that only an allowlisted transaction script runs.
+
+The `FeePolicyManager` names the faucet of the asset that the account charges fees in, and the fee policy that sets the fee for each note script. With a `BasicConstantFeePolicy`, set a fee, which can be zero, for every note script that the account consumes: the account cannot consume a note whose script has no fee. The builder also allowlists the note scripts that `AuthNetworkAccount::default_allowed_note_scripts` returns, so set a fee for them too.
 
 ```rust
-let network_account = NetworkAccount::builder(init_seed, allowed_note_script_roots)?
-    .with_component(/* your contract component */)
-    .build_with_schema_commitment()?;
+use miden_client::account::AccountBuilderSchemaCommitmentExt;
+use miden_client::account::standards::auth::{AuthNetworkAccount, NetworkAccount};
+use miden_client::account::standards::fees::{BasicConstantFeePolicy, FeePolicy, FeePolicyManager};
+use miden_client::asset::AssetAmount;
+use miden_client::transaction::TransactionRequestBuilder;
+
+// Charge no fee for the note scripts that the account consumes. `fee_faucet_id` is the faucet
+// of the asset that the network charges fees in.
+let fee_policy: FeePolicy = BasicConstantFeePolicy::new()
+    .with_fees(
+        allowed_note_script_roots
+            .iter()
+            .copied()
+            .chain(AuthNetworkAccount::default_allowed_note_scripts())
+            .map(|script_root| (script_root, AssetAmount::ZERO)),
+    )
+    .into();
+let fee_policy_manager = FeePolicyManager::builder()
+    .fee_faucet_id(fee_faucet_id)
+    .active_fee_policy(fee_policy)
+    .build();
+
+let network_account =
+    NetworkAccount::builder(init_seed, allowed_note_script_roots, fee_policy_manager)?
+        .with_component(/* your contract component */)
+        .build_with_schema_commitment()?;
 client.add_account(&network_account, false).await?;
 
-// Deploy with an empty (scriptless) transaction: `AuthNetworkAccount` forbids transaction
-// scripts, and its auth procedure bumps the nonce from 0 to 1, which registers the account.
+// Deploy with an empty (scriptless) transaction: the auth procedure of `AuthNetworkAccount`
+// bumps the nonce from 0 to 1, which registers the account.
 let deploy = TransactionRequestBuilder::new().build()?;
 let tx_id = client.submit_new_transaction(network_account.id(), deploy).await?;
 ```
+
+A new account has an empty vault, so an empty transaction cannot pay a fee. On a network that charges fees, send the account a P2ID note with the fee asset, and deploy the account with a transaction that consumes that note.
 
 After deployment the account is a network account, so the node rejects user-submitted transactions against it; all further state changes happen through network transactions.
 
@@ -273,6 +300,8 @@ You can use note screening when you need to decide whether a note is relevant to
 
 Screening cost depends on each screened note's script. A few well-known scripts, such as P2ID, can be checked statically. Every other note is trial-executed against every tracked account, so cost grows with the number of tracked accounts multiplied by the number of notes screened. Use screening when you need consumability information for planning, filtering, or building a consume transaction.
 
+Screening runs without the client's authenticator, so it never asks a signer for a signature. For this reason, a note that an account can consume now usually has the status `ConsumableWithAuthorization`. The static check of a well-known script returns this status. A trial execution returns this status when the auth component of the account, such as `AuthSingleSig`, needs a signature. The status `Consumable` means that a trial execution completed without a signature. To find the notes that an account can consume now, accept both statuses.
+
 ### Use the Client helpers first
 
 For notes already tracked by the client, you should usually start with the helper methods on `Client`. These cover the common case without creating a `NoteScreener` directly.
@@ -284,10 +313,16 @@ use miden_client::note::NoteConsumptionStatus;
 let consumable_notes = client.get_consumable_notes(None).await?;
 
 for (note, accounts) in consumable_notes {
+    // A committed note has metadata, so it has an ID.
+    let note_id = note.id().expect("a committed note has an ID");
+
     for (account_id, status) in accounts {
-        if matches!(status, NoteConsumptionStatus::Consumable) {
+        if matches!(
+            status,
+            NoteConsumptionStatus::Consumable | NoteConsumptionStatus::ConsumableWithAuthorization
+        ) {
             // This account can consume the note at the current sync height.
-            println!("{} can consume {}", account_id, note.id().to_hex());
+            println!("{account_id} can consume {}", note_id.to_hex());
         }
     }
 }
@@ -335,7 +370,7 @@ let account_statuses = screener.get_consumability(&note).await?;
 
 for (account_id, status) in account_statuses {
     match status {
-        NoteConsumptionStatus::Consumable => {
+        NoteConsumptionStatus::Consumable | NoteConsumptionStatus::ConsumableWithAuthorization => {
             // The note can be consumed now by this account.
             println!("{account_id} can consume {}", note.id().to_hex());
         },
@@ -403,16 +438,18 @@ let consumption_info: NoteConsumptionInfo = screener
     .check_notes_consumability(account_id, notes)
     .await?;
 
-for successful_note in &consumption_info.successful {
+for successful_note in consumption_info.successful() {
     // These notes can be included together in the consume transaction.
-    println!("can consume {}", successful_note.id().to_hex());
+    println!("can consume {}", successful_note.note().id().to_hex());
 }
 
-for failed_note in &consumption_info.failed {
-    // Failed notes include the note and the execution error.
-    println!("cannot consume {}: {}", failed_note.note.id().to_hex(), failed_note.error);
+for failed_note in consumption_info.failed() {
+    // Failed notes include the note and the reason for the failure.
+    println!("cannot consume {}: {:?}", failed_note.note().id().to_hex(), failed_note.failure());
 }
 ```
+
+`check_notes_consumability` accepts from 1 to 20 notes in one call (`miden_tx::MAX_NUM_CHECKER_NOTES`). It returns an error for an empty list and for a longer list, so split a longer list into chunks.
 
 ## Reading consumed notes
 

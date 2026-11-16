@@ -54,7 +54,8 @@ miden-client init --network http://18.203.155.106 --store-path db/store.sqlite3
 # You can set a remote prover to offload the proving process (along with the `--delegate-proving` flag in transaction commands)
 miden-client init --remote-prover-endpoint <PROVER_URL>
 
-# To enable the transport layer, specify the endpoint
+# The CLI sets the note transport endpoint for mainnet, testnet and devnet.
+# Use this flag to change it, or to enable the transport layer for localhost or a custom network
 miden-client init --note-transport-endpoint <MIDEN_NOTE_TRANSPORT_URL>
 ```
 
@@ -77,18 +78,18 @@ Inspect account details, and register an account on the network allowlist.
 The `--show` flag also accepts a partial ID instead of the full ID. For example, instead of:
 
 ```sh
-miden-client account --show 0x8fd4b86a6387f8d8
+miden-client account --show 0xe38d16fa30ed2f016011dcb59bbd3a
 ```
 
 You can call:
 
 ```sh
-miden-client account --show 0x8fd4b86
+miden-client account --show 0xe38d16f
 ```
 
 For the `--default` flag, if `<ID>` is "none" then the previous default account is cleared. If no `<ID>` is specified then the default account is shown.
 
-The `--inspect` flag lists the procedures an account exposes, grouped into resolved procedures (shown in a table with their name, signature, and MAST root) and unresolved ones (listed by their MAST root under a hint to pass `--package`). Pass `<ID>:<PROCEDURE>` to resolve a single procedure by name; if no procedure with that name can be resolved (the account does not expose it, or its defining package was not provided) the command fails with an error. Like `--show`, it accepts a partial ID. It supports two additional flags:
+The `--inspect` flag lists the procedures an account exposes, grouped into resolved procedures (shown in a table with their name, package, signature, and MAST root) and unresolved ones (listed by their MAST root under a hint to pass `--package`). Pass `<ID>:<PROCEDURE>` to resolve a single procedure by name; if no procedure with that name can be resolved (the account does not expose it, or its defining package was not provided) the command fails with an error. Like `--show`, it accepts a partial ID. It supports two additional flags:
 
 - `-p, --package <PACKAGE>`: Supplies an additional `.masp` package, given as a [package argument](#package-arguments), used to resolve procedure MAST roots to their names and signatures, on top of the packages in the configured packages directory. It is repeatable (pass it once per package); when the same MAST root is exported by more than one package the first-loaded one wins (passed packages are consulted first) and a warning lists the packages involved. Procedures whose name cannot be resolved are still listed by their MAST root.
 - `-v, --verbose`: Prints the MASM disassembly of each procedure.
@@ -150,14 +151,14 @@ On a network that enforces an account allowlist, register the account before its
 
 Creates a new account and saves it locally.
 
-An account may be composed of one or more components, each with its own storage and distinct functionality. This command lets you build a custom account by selecting an account type and optionally adding extra component packages.
+An account may be composed of one or more components, each with its own storage and distinct functionality. This command lets you build a custom account by selecting an account type and one or more component packages.
 
 The command accepts these options:
 
 - `-t, --account-type <ACCOUNT_TYPE>`: Specifies the account visibility. It accepts either "private" or "public", with "private" as the default. This is the only thing the protocol's `AccountType` encodes.
 
 There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If any package contributes the `FungibleFaucet` component, the resulting account is treated as a fungible faucet and an implicit `TokenPolicyManager` is installed when one is not already provided. `--account-type` only selects visibility.
-- `--packages <PACKAGES>`: Specifies a list of packages, each given as a [package argument](#package-arguments), holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
+- `-p, --packages <PACKAGES>`: Required. Specifies a list of packages, each given as a [package argument](#package-arguments), holding account components to include in the account. If the packages contain placeholders, the CLI will prompt the user to enter the required data for instantiating storage appropriately.
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
@@ -201,15 +202,15 @@ miden-client new-wallet --ecdsa
 miden-client new-wallet --ecdsa 0x02...
 
 # Create a fungible faucet with interactive input
-# (the resulting account is a faucet because basic-fungible-faucet.masp contributes the
+# (the resulting account is a faucet because the basic-fungible-faucet package contributes the
 # `FungibleFaucet` component — no extra flag is needed)
-miden-client new-account --packages packages/basic-fungible-faucet.masp
+miden-client new-account --packages basic-fungible-faucet
 
 # Create a public account with a component from the local package registry
 miden-client new-account -t public -p auth/no-auth -p basic-wallet -p counter-contract@0.1.0
 
 # Create a fungible faucet with preset fields
-miden-client new-account --packages packages/basic-fungible-faucet.masp --init-storage-data-path init_data.toml
+miden-client new-account --packages basic-fungible-faucet --init-storage-data-path init_data.toml
 
 # Create an account with init storage values set on the command line
 miden-client new-account --packages packages/my-component.masp --init-slot 'my_project::my_component::slot="0x1234"'
@@ -217,9 +218,12 @@ miden-client new-account --packages packages/my-component.masp --init-slot 'my_p
 
 where `init_data.toml` is a TOML file with the following example content:
 ```toml
-token_metadata.max_supply = 1000000000
-token_metadata.decimals = 6
-token_metadata.ticker = "TEST"
+[fungible-faucet-metadata]
+symbol = "TEST"
+decimals = 6
+max_supply = 1000000000
+# Optional. The default value is the symbol.
+name = "Test token"
 ```
 
 ### `info`
@@ -236,7 +240,7 @@ When using the `--rpc-status` flag, the command displays additional information 
 
 - Node version
 - Genesis commitment
-- Store connection status and chain tip
+- Chain tip
 - Block producer status and chain tip
 
 ### `notes`
@@ -247,12 +251,20 @@ View and manage notes. Also, exchange private notes using the note transport net
 
 | Flags                   | Description                                              | Short Flag |
 | ----------------------- | -------------------------------------------------------- | ---------- |
-| `--list [<filter>]`     | List input notes                                         | `-l`       |
-| `--show <ID>`           | Show details of the input note for the specified note ID | `-s`       |
+| `--list [<filter>]`     | List input and output notes                              | `-l`       |
+| `--show <ID>`           | Show details of the note for the specified note ID       | `-s`       |
 | `--send <ID> <address>` | Send a note using the note transport network             |            |
 | `--fetch`               | Fetch notes from the note transport network              |            |
 
-The `--list` flag receives an optional filter: - expected: Only lists expected notes. - committed: Only lists committed notes. - consumed: Only lists consumed notes. - processing: Only lists processing notes. - consumable: Only lists consumable notes. An additional `--account-id <ID>` flag may be added to only show notes consumable by the specified account.
+The `--list` flag receives an optional filter:
+
+- `all`: Lists all notes.
+- `expected`: Only lists expected notes.
+- `committed`: Only lists committed notes.
+- `consumed`: Only lists consumed notes.
+- `processing`: Only lists processing notes.
+- `consumable`: Only lists consumable notes. An additional `--account-id <ID>` flag may be added to only show notes consumable by the specified account.
+
 If no filter is specified then all notes are listed.
 
 The `--show` flag also accepts a partial ID instead of the full ID. For example, instead of:
@@ -278,15 +290,15 @@ shows its fields instead of the raw words. Pass `--with-code` to also print the 
 
 To send a private note, the `--send` flag sends a note using the note transport network.
 The note ID (hex, in full or a prefix) and recipient's address (bech32) must be provided.
-The note is assumed to be stored in the store (e.g., imported using [`import`](#import)).
+The note must be in the store, as an output note of this client or as an imported note (see [`import`](#import)), and it must have an inclusion proof. Wait until the transaction that created the note is committed, run `sync`, and then send the note. The address must belong to the configured network.
 
 You can call:
 
 ```sh
-miden-client notes --send 0xc1234567 mm1qpkdyek2c0ywwvzupakc7zlzty8qn2qnfc
+miden-client notes --send 0xc1234567 mtst1armwn7uruxw68yg6kzv8vnyw6cxa0agl
 ```
 
-To fetch private notes, the `--fetch` allows to download notes from the note transport network.
+To fetch private notes, the `--fetch` flag downloads notes from the note transport network.
 Only notes for tracked tags will be fetched (e.g. `miden-client tags --list`).
 The downloaded notes will be added to the store.
 
@@ -304,7 +316,11 @@ miden-client network-note-status <NOTE_ID>
 
 The command displays a table with the following information:
 
-- **Status**: The current processing state of the note (`Pending`, `Processed`, `Discarded`, or `Committed`).
+- **Status**: The current processing state of the note:
+  - `Pending`: The note awaits execution, or the node retries it after a failure.
+  - `NullifierInflight`: A transaction that the node sent to the block producer consumed the note.
+  - `Discarded`: The note exceeded the maximum number of attempts. The node does not retry it.
+  - `NullifierCommitted`: The transaction that consumed the note is committed on chain.
 - **Attempt Count**: The number of times the node has attempted to process the note.
 - **Last Error**: The last error encountered during processing, if any.
 - **Last Attempt Block**: The block number of the most recent processing attempt.
@@ -365,18 +381,18 @@ miden-client tx --show 0x0c97ec
 ```
 
 The transaction records an input note only by its nullifier. The note ID comes from the tracked
-notes with that nullifier. An untracked private note shows as `<private>`.
+notes with that nullifier. A note that the client does not track shows as `<untracked>`.
 
 After a transaction gets executed, two entities start being tracked:
 
-- The transaction itself: It follows a lifecycle from `Pending` (initial state) and `Committed` (after the node receives it). It may also be `Discarded` if the transaction was not included in a block.
+- The transaction itself: It is `Pending` after submission and becomes `Committed` when a sync finds it in a block. It becomes `Discarded` if it can no longer be included in a block, for example because it expired or because another transaction consumed one of its input notes.
 - Output notes that might have been created as part of the transaction (for example, when executing a pay-to-id transaction).
 
 ### Transaction creation commands
 
 #### `mint`
 
-Creates a note that contains a specific amount tokens minted by a faucet, that the target Account ID can consume.
+Creates a note that contains a specific amount of tokens minted by a faucet, that the target Account ID can consume.
 
 Usage: `miden-client mint --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET ID> --note-type <NOTE_TYPE>`
 
@@ -400,7 +416,7 @@ miden-client consume-notes --account <some-account-id> 0x70b7ecb 0x80b7ecb
 
 Additionally, you can optionally not specify note IDs, in which case any note that is known to be consumable by the executor account ID will be consumed.
 
-Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
+Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. Their state is updated to `Consumed` after the next sync.
 
 One transaction consumes at most `--notes-per-tx` notes. The default value is 40 and the largest value is 1024. If there are more notes, the command consumes them in more than one transaction. A larger value makes fewer transactions, but each transaction needs more time and memory to prove. The node rejects a transaction that is larger than its request size limit, so a large value can fail with large notes. If there is more than one transaction, the command asks for confirmation one time for all of them, unless you use `--force`. If a transaction fails, the command stops. The notes of that transaction and of the transactions after it are not consumed. To consume them, run `consume-notes` again without note IDs.
 
@@ -416,11 +432,52 @@ Usage: `miden-client transfer --sender <SENDER ACCOUNT ID> --target <TARGET ACCO
 
 #### `swap`
 
-The source account creates a `SWAP` note that offers some asset in exchange for some other asset. When another account consumes that note, it will receive the offered asset amount and the requested asset will removed from its vault (and put into a new note which the first account can then consume). Consuming the note will fail if the account doesn't have enough of the requested asset.
+The source account creates a `SWAP` note that offers some asset in exchange for some other asset. When another account consumes that note, it will receive the offered asset amount and the requested asset will be removed from its vault (and put into a new note which the first account can then consume). Consuming the note will fail if the account doesn't have enough of the requested asset.
 
 Usage: `miden-client swap --source <SOURCE ACCOUNT ID> --offered-asset <OFFERED AMOUNT>::<OFFERED FAUCET ID> --requested-asset <REQUESTED AMOUNT>::<REQUESTED FAUCET ID> --note-type <NOTE_TYPE> [--payback-note-type <NOTE_TYPE>]`
 
 The `--payback-note-type` option controls the visibility of the payback note created when the swap is consumed. It defaults to `private`.
+
+#### Tips
+
+For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the client's [default account](cli-config.md#default-account-id). If you omit the flag but have no default account set, you'll get an error instead.
+
+For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
+
+```sh
+miden-client transfer --sender 0x7741267087a56c016cede2985c292f --target 0xe38d16fa30ed2f016011dcb59bbd3a --asset 100::0xcedb70264fc177911a96bda38027cd --note-type private
+```
+
+You can do:
+
+```sh
+miden-client transfer --sender 0x77412 --target 0xe38d1 --asset 100::0xcedb70264fc177911a96bda38027cd --note-type private
+```
+
+:::note
+The client resolves a partial ID against the accounts that it tracks. This also applies to the faucet ID in an asset: use the full faucet ID or the faucet's bech32 address unless the client tracks the faucet.
+:::
+
+#### Transaction confirmation
+
+When creating a new transaction, a summary of the transaction updates will be shown and confirmation for those updates will be prompted:
+
+```sh
+miden-client <tx command> ...
+
+Executing transaction...
+The transaction will have the following effects:
+
+...
+
+Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)
+```
+
+This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client transfer --force ...`).
+
+#### Delegated proving
+
+If a remote prover is configured, the CLI can offload the proving process to it. This is done by providing the `--delegate-proving` flag when creating a transaction. The CLI will then send the transaction to the remote prover for processing.
 
 ### `address`
 
@@ -438,7 +495,7 @@ View and manage addresses.
 The `list` subcommand optionally takes an account ID to only show the addresses of that account, if it is not provided, it will show all addresses of all accounts.
 
 ```sh
-miden-client address list 0x17f13f4f83a8e8100c19d2961dfda2
+miden-client address list 0xf6e9fb83e19da3911ab098764c8ed6
 ```
 
 `add` and `remove` take the account ID and a bech32-encoded address as arguments. `add` validates that the bech32 address encodes the same account ID and that its network matches the CLI's configured network.
@@ -450,54 +507,15 @@ Note: `Unspecified` (shown by `address list`) denotes an address not bound to an
 
 ```sh
 # Produce a bech32 address for the given account, interface, and tag length
-miden-client address encode 0x17f13f4f83a8e8100c19d2961dfda2 basic-wallet 10
+miden-client address encode 0xf6e9fb83e19da3911ab098764c8ed6 basic-wallet 10
 
 # Track that address on the account
-miden-client address add 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq_qruqqypuyph
+miden-client address add 0xf6e9fb83e19da3911ab098764c8ed6 mtst1armwn7uruxw68yg6kzv8vnyw6cxa0agl_qq5qqw94ltl
 ```
 
 ```sh
-miden-client address remove 0x17f13f4f83a8e8100c19d2961dfda2 mlcl1qple0ejnutx8zyp0cm0pme9wjfgqz0u9djq
+miden-client address remove 0xf6e9fb83e19da3911ab098764c8ed6 mtst1armwn7uruxw68yg6kzv8vnyw6cxa0agl
 ```
-
-#### Tips
-
-For `transfer` and `consume-notes`, you can omit the `--sender` and `--account` flags to use the client's [default account](cli-config.md#default-account-id). If you omit the flag but have no default account set, you'll get an error instead.
-
-For every command which needs an account ID (either wallet or faucet), you can also provide a partial ID instead of the full ID for each account. So instead of
-
-```sh
-miden-client transfer --sender 0x80519a1c5e3680fc --target 0x8fd4b86a6387f8d8 --asset 100::0xa99c5c8764d4e011 --note-type private
-```
-
-You can do:
-
-```sh
-miden-client transfer --sender 0x80519 --target 0x8fd4b --asset 100::0xa99c5c8764d4e011 --note-type private
-```
-
-!!! note
-The only exception is for using IDs as part of the asset, those should have the full faucet's account ID.
-
-#### Transaction confirmation
-
-When creating a new transaction, a summary of the transaction updates will be shown and confirmation for those updates will be prompted:
-
-```sh
-miden-client <tx command> ...
-
-TX Summary:
-
-...
-
-Continue with proving and submission? Changes will be irreversible once the proof is finalized on the network (y/N)
-```
-
-This confirmation can be skipped in non-interactive environments by providing the `--force` flag (`miden-client transfer --force ...`).
-
-#### Delegated proving
-
-If a remote prover is configured, the CLI can offload the proving process to it. This is done by providing the `--delegate-proving` flag when creating a transaction. The CLI will then send the transaction to the remote prover for processing.
 
 ### `keys`
 
@@ -615,7 +633,7 @@ miden-client export <NOTE_ID> --note --export-type partial
 The user needs to specify how the note should be exported via the `--export-type` flag. The following options are available:
 
 - `id`: Only the note ID is exported. When importing, if the note ID is already tracked by the client, the note will be updated with missing information fetched from the node. This works for both public and private notes. If the note isn't tracked and the note is public, the whole note is fetched from the node and is stored for later use.
-- `full`: The note is exported with all of its information (metadata and inclusion proof). When importing, the note is considered unverified. The note may not be consumed directly after importing as its block header will not be stored in the client. The block header will be fetched and be used to verify the note during the next sync. At this point the note will be committed and may be consumed.
+- `full`: The note is exported with all of its information (metadata and inclusion proof), so the note must already be committed. When importing, if the block of the note is not after the client's sync height, the client fetches the block header, verifies the note, and stores the note as committed. The note can be consumed immediately. If the block of the note is after the client's sync height, the note is stored as unverified, and the next sync verifies it. If the nullifier of the note is already on chain, the note is stored as consumed.
 - `partial`: The note is exported with minimal information and may be imported even if the note is not yet committed on chain. At the moment of importing the note, the client will check the state of the note by doing a note sync, using the note's tag. Depending on the response, the note will be either stored as "Expected" or "Committed".
 
 #### `import`
@@ -656,9 +674,12 @@ Without `--submit`, the command only executes the script and prints the output s
 
 With the `dap` feature, add `--start-debug-adapter <ADDR>` to debug the package. Compile with debug information for source stepping. A restart reloads the package without compiling sources; rebuild it first to apply source changes. See the [debugging guide](../debugging.md).
 
-The file referenced by `--inputs-path` should contain a TOML array of inline tables, where each table has two fields: - `key`: a 256-bit hexadecimal string representing a word to be used as a key for the input entry. The hexadecimal value must be prefixed with 0x. - `values`: an array of 64-bit unsigned integers representing field elements to be used as values for the input entry. Each integer must be written as a separate string, within double quotes.
+The file referenced by `--inputs-path` should contain a TOML array of inline tables, where each table has two fields:
 
-The input file should contain a TOML table called `inputs`, as in the following example:
+- `key`: a 256-bit hexadecimal string representing a word to be used as a key for the input entry. The hexadecimal value must be prefixed with 0x.
+- `values`: an array of 64-bit unsigned integers representing field elements to be used as values for the input entry. Each integer must be written as a separate string, within double quotes.
+
+The input file should contain a TOML array called `inputs`, as in the following example:
 
 ```toml
 inputs = [ { key = "0x0000000000000000000000000000000000000000000000000000001000000000", values = ["13", "9"]}, { key = "0x0000000000000000000000000000000000000000000000000000000000000000" , values = ["1", "2"]}, ]
@@ -688,7 +709,7 @@ Arguments are passed positionally after the target, one token per value in the p
 | `bool` | `true`, `false`, `1` or `0` | `true` |
 | `word` | hex | `0x00..` |
 | `account-id` | hex account ID, or a bech32 address naming one | `0x4614b8bf575eab71455e97bd394e90` |
-| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only, the faucet in either account ID spelling | `100::0xabcdef0123456789` |
+| `asset` | `<AMOUNT>::<FAUCET_ID>`, fungible only, the faucet in either account ID spelling | `100::0xcedb70264fc177911a96bda38027cd` |
 | records and fixed arrays | one token per field, in order | `3 4` for `point { x, y }` |
 
 An `account-id` argument takes the same two spellings the target does, so both can be written the same way in one command line. A hex prefix of a tracked account is not one of them: resolving a prefix reads the client's store, and an argument is read on its own.
@@ -735,7 +756,7 @@ Storage map changes:
 │                                  ┆ 00                               ┆ 0000                            │
 └──────────────────────────────────┴──────────────────────────────────┴─────────────────────────────────┘
 Account Vault will not be changed.
-Nonce incremented by: 1.
+New account nonce: 2.
 ```
 
 A procedure that only reads leaves the transaction with no effects at all, which the transaction kernel does not allow. The result is still printed, followed by a note that the transaction was rejected for having no effects.
@@ -755,10 +776,9 @@ miden-client call 0x4614b8bf575eab71455e97bd394e90:get-count --package target/mi
 ```
 
 ```sh
-Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x8fa1c2....
-
 Signature: get-count() -> felt
 
+Account 0x4614b8bf575eab71455e97bd394e90 isn't tracked locally; reading its state from the network and running the call from your account 0x7741267087a56c016cede2985c292f.
 Result: 1
 
 A call on an account read from the network can only read it; no state delta.
@@ -767,7 +787,3 @@ A call on an account read from the network can only read it; no state delta.
 :::note
 The account state read this way comes from the transaction's reference block, which the wallet running the call picks. It is not revalidated against the account's current on-chain state, so run `miden-client sync` first if you need a recent value.
 :::
-
-### `note-transport`
-
-Send and fetch private notes using the transport layer.

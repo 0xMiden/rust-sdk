@@ -36,7 +36,8 @@ use crate::store::{AccountStatus, Store};
 /// let balance = reader.get_balance(faucet_id).await?;
 ///
 /// // Storage access
-/// let value = reader.get_storage_item("my_slot").await?;
+/// let slot_name = StorageSlotName::new("my_project::my_slot")?;
+/// let value = reader.get_storage_item(slot_name).await?;
 /// ```
 pub struct AccountReader {
     store: Arc<dyn Store>,

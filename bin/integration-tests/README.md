@@ -9,7 +9,7 @@ the environment the tests need:
 
 ```bash
 make start-node-background
-make integration-test-non-agglayer   # everything except agglayer
+make integration-test-non-agglayer   # everything except the agglayer and allowlist tests
 make integration-test-agglayer       # only agglayer, serialized
 make stop-node
 ```
@@ -28,7 +28,7 @@ The following environment variables configure the generated test wrappers:
 - `TEST_MIDEN_RPC_URL` - Overrides the RPC endpoint from the network preset
 - `TEST_MIDEN_PROVER_URL` - Overrides the prover: `devnet`, `testnet`, `localhost`, or a custom URL (default: derived from network)
 - `TEST_MIDEN_NOTE_TRANSPORT_URL` - Overrides note transport: `devnet`, `testnet`, or a custom URL (default: derived from network)
-- `MIDEN_TEST_TIMEOUT` - Test timeout in milliseconds (default: `10000`)
+- `MIDEN_TEST_TIMEOUT` - gRPC request timeout of the test clients in milliseconds (default: `10000`)
 ### Network Presets
 
 | Network | RPC | Prover | Note Transport |
@@ -135,16 +135,16 @@ Three properties of the service a test can notice:
   account it targets, so a test must identify a note by ID rather than by position or by counting
   the committed notes.
 
-The `insert_new_*` helpers pay each account they create. The account is deployed by whichever
+The `insert_wallet`, `insert_faucet` and `insert_non_fungible_faucet` helpers pay each account they create. The account is deployed by whichever
 transaction first consumes that note, as described below. An account a test builds itself can be
 funded and deployed on the spot with `TestClient::deploy_account`, whose deploy transaction
 consumes the funding note and thereby settles its own fee.
 
 The service builds one transaction at a time and waits for each to commit before it builds the
-next, so accounts are funded in batches wherever a test creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
-variants and then pass the whole set to `TestClient::fund_if_needed`, which asks for them all at
+next, so accounts are funded in batches wherever a test creates more than one: the `setup_*` helpers create their accounts with `TestClient::insert_account` and an
+`AccountSetup` marked `unfunded()`, and then pass the whole set to `TestClient::fund_if_needed`, which asks for them all at
 once so they share one transaction. A test creating several accounts of its own should do the same
-rather than calling the funding `insert_new_*` helpers in a row.
+rather than calling the funding `insert_*` helpers in a row.
 
 The service creates the funding notes in a transaction of its own. A test spends no extra
 transaction to receive them. Each account's note is held until the account's next transaction and
@@ -178,17 +178,18 @@ To add a new integration test:
 1. Create a public async function that starts with `test_`
 2. The function should take a `ClientConfig` parameter
 3. The function should return `Result<()>`
-4. Place the function in any `.rs` file under `src/`
+4. Place the function in a `.rs` file under `src/tests/`, but not in a `mod.rs`. Declare a new file with `pub mod` in the `mod.rs` of its directory
 
 Example:
 ```rust
 pub async fn test_my_feature(client_config: ClientConfig) -> Result<()> {
-    let (mut client, authenticator) = client_config.into_client().await?;
+    let mut client = client_config.into_client().await?;
     // test logic here
+    Ok(())
 }
 ```
 
-The build system will automatically discover this function and include it in both the test registry and generate tokio test wrappers.
+The build script discovers this function and generates a `#[tokio::test]` wrapper for it.
 
 ## License
 This project is [MIT licensed](../../LICENSE).

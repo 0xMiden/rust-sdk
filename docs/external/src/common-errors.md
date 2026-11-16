@@ -5,20 +5,16 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 ### Actionable error hints
 
 #### `ClientError::MissingOutputRecipients`
-- Cause: The MASM program emitted an output note whose recipient was not listed in `TransactionRequestBuilder::expected_output_recipients(...)`.
+- Cause: The transaction did not create an output note for one or more recipients that the request expects. The request expects the recipients set with `TransactionRequestBuilder::expected_output_recipients(...)` and the recipients of the notes set with `own_output_notes(...)`. An output note that the request does not expect does not cause this error.
 - Fix: Reconcile the MASM recipient data with the Rust note structs and update the expected recipients so that the expected recipients are part of the transaction outputs.
 
-#### `TransactionRequestError::NoInputNotesNorAccountChange`
-- Cause: The transaction neither consumes input notes nor mutates tracked account state.
-- Fix: Add at least one authenticated/unauthenticated input note or include an explicit account state update in the request.
+#### Empty transaction (`executed transaction neither changed the account state, nor consumed any notes`)
+- Cause: The transaction did not consume a note and did not change the account state. The transaction kernel rejects such a transaction with this assertion, and the client returns `TransactionExecutorError::TransactionProgramExecutionFailed`.
+- Fix: Add an input note or an account state change to the request.
 
-#### `TransactionRequestError::StorageSlotNotFound`
-- Cause: The request referenced an account storage slot that does not exist, often because the ABI layout is incorrectly addressed (auth component is always the first component in the account component list).
-- Fix: Verify the account ABI and component ordering, then adjust the slot index used in the transaction.
-
-#### `TransactionExecutorError::ForeignAccountNotAnchoredInReference`
-- Cause: The foreign account proof was generated against a different block than the request’s reference block.
-- Fix: Re-fetch the foreign account proof anchored at the correct reference block and retry.
+#### `TransactionRequestError::ForeignAccountNotAtReferenceBlock`
+- Cause: The request carries prefetched foreign account inputs (`ForeignAccount::Prefetched`) that do not open against the account tree of the transaction's reference block. This occurs, for example, when the client syncs between fetching the inputs and executing the transaction.
+- Fix: Fetch the foreign account inputs again at the reference block and retry. Do not sync between fetching and executing. As an alternative, declare the account with `ForeignAccount::public(...)` or `ForeignAccount::private(...)`, so that the client fetches the inputs itself.
 
 #### `TransactionExecutorError::TransactionProgramExecutionFailed`
 - Cause: The MASM kernel failed during execution (e.g., failed assertion or constraint violation).
@@ -26,7 +22,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 
 #### `ClientError::NoteNotFoundOnChain(Note ID)`/`RpcError::NoteNotFound(Note ID)`
 - Cause: The note has not been found on chain, or the input ID is incorrect.
-- Fix: Verify the note ID, ensure it has been committed, and run sync the client before retrying.
+- Fix: Verify the note ID, ensure it has been committed, and sync the client before retrying.
 
 #### `RpcError::RequestError` with a `FutureBlock` endpoint error
 - Cause: A sync request asked for a block that is ahead of the chain tip of the node that served it. This usually happens when a follower node is behind the network.

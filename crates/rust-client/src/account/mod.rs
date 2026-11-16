@@ -792,8 +792,11 @@ impl<AUTH> Client<AUTH> {
     /// let balance = reader.get_balance(faucet_id).await?;
     ///
     /// // Storage access is integrated
-    /// let value = reader.get_storage_item("my_slot").await?;
-    /// let (map_value, witness) = reader.get_storage_map_witness("balances", key).await?;
+    /// let slot_name = StorageSlotName::new("my_project::my_slot")?;
+    /// let value = reader.get_storage_item(slot_name).await?;
+    ///
+    /// let map_slot_name = StorageSlotName::new("my_project::balances")?;
+    /// let (map_value, witness) = reader.get_storage_map_witness(map_slot_name, key).await?;
     /// ```
     pub fn account_reader(&self, account_id: AccountId) -> AccountReader {
         AccountReader::new(self.store.clone(), account_id)

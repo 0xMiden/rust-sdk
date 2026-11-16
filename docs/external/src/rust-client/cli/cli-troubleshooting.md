@@ -33,32 +33,37 @@ If you see a gRPC error, it may include a status-derived kind (e.g. `Unavailable
 
 Below are representative errors you may encounter, their likely causes, and suggested fixes.
 
-#### `RpcError.GrpcError: Unavailable` / `DeadlineExceeded`
-- Cause: Node is down, unreachable, or behind a load balancer that blocked the request.
+#### `RpcError.ConnectionError` (`failed to connect to the Miden node`)
+- Cause: The client cannot connect to the node. The endpoint is wrong, or the node is down or unreachable.
 - Fix: Check `rpc.endpoint` in your configuration file (local `.miden/miden-client.toml` or global `~/.miden/miden-client.toml`), verify the node is running/accessible, and retry.
 
-#### `RpcError.GrpcError: InvalidArgument` / `RpcError.ExpectedDataMissing` / `RpcError.InvalidResponse`
+#### `RpcError.RequestError` with `GrpcError.Unavailable` / `GrpcError.DeadlineExceeded`
+- Cause: The node, or a load balancer in front of it, rejected the request or did not answer in time.
+- Fix: Retry. If the error continues, check `rpc.endpoint` and verify that the node is running.
+
+#### `RpcError.RequestError` with `GrpcError.InvalidArgument` / `RpcError.ExpectedDataMissing` / `RpcError.InvalidResponse`
 - Cause: Malformed request parameters or unexpected server response.
 - Fix: Re-check command flags/inputs. If using partial IDs, ensure they map to a single entity. Update to the latest client if the server API has changed.
 
 #### Client/network compatibility mismatch
-- Cause: The configured genesis commitment does not match the node, or the client does not support the node RPC API version.
+- Cause: The genesis commitment that the client stored on its first sync does not match the node, or the client does not support the node RPC API version.
 - Symptoms: CLI may report messages like:
 
   ```
-  accept header validation failed: server rejected request - please check your version and network settings
+  accept header validation failed
+  server rejected request - please check your network settings (genesis commitment: 0x...)
   ```
 
   or requests being rejected due to a mismatched genesis header commitment.
 - Details: The `accept` header carries the genesis commitment. The protobuf package selects the RPC API version. The client does not send its crate version in the `accept` header.
-- Fix: Ensure your client version matches the target network. Switch to the correct network or upgrade/downgrade the client accordingly. Verify the configured genesis header commitment matches the network, then retry.
+- Fix: Ensure your client version matches the target network. Switch to the correct network or upgrade/downgrade the client accordingly. Run `miden-client info --rpc-status` and compare `Genesis commitment` (the local store) with `Node genesis` (the node). If they differ, the store belongs to another network: point `rpc.endpoint` at that network, or use a new store for this network.
 
 #### `ClientError.AccountDataNotFound(<account_id>)`
 - Cause: The account is not known to the local store yet.
 - Fix: Create/import the account first, then run `miden-client sync` to update its tracked state. Sync does not discover arbitrary accounts on chain.
 
 #### `ClientError.AccountLocked(<account_id>)`
-- Cause: Attempting to modify a locked account.
+- Cause: A sync found that the on-chain commitment of a private account does not match the local state, for example because another client executed a transaction with the account. The client locks the account and rejects its transactions.
 - Fix: Use another account while you investigate the state mismatch. Compare the local account state with the state on the node before you replace local data.
 
 #### `ClientError.AccountNotAllowlisted(<account_id>)`
@@ -69,7 +74,7 @@ Below are representative errors you may encounter, their likely causes, and sugg
 - Cause: The node does not know the invitation code, the code is bound to a different account, or the account is already registered. Codes are case-sensitive and bind to one account only.
 - Fix: Send the code exactly as you received it. If the account is already registered, no action is needed. Run `miden-client sync` to receive the funding note the network may have paid it.
 
-#### `RpcError.GrpcError: Unavailable` after `account --register`
+#### `RpcError.RequestError` with `GrpcError.Unavailable` after `account --register`
 - Cause: The node registered the account, but the funding service that pays registered accounts failed.
 - Fix: The account stays registered, so a retry fails with `AccountAlreadyAllowed`. Fund the account another way, for example through a faucet, then create it on chain by consuming a note.
 
@@ -91,7 +96,7 @@ Below are representative errors you may encounter, their likely causes, and sugg
 
 #### Recency/block delta errors
 - Cause: Client is too far behind the network and validation enforces a max delta.
-- Fix: Run `miden-client sync` or increase `max_block_number_delta` via `miden-client init --block-delta <N>` and re-run.
+- Fix: Run `miden-client sync` and retry. If the limit is too strict, raise `max_block_number_delta` in `miden-client.toml`, or remove the key to turn the check off. `miden-client init --block-delta <N>` sets the value only when it creates a configuration file.
 
 ### Transaction lifecycle (CLI-oriented overview)
 
@@ -116,7 +121,7 @@ flowchart LR
 
 Key states the CLI surfaces:
 
-- Transaction status: `Pending` (after execution), `Committed` (after node inclusion), `Discarded` (not included).
+- Transaction status: `Pending` (after submission), `Committed` (after node inclusion), `Discarded` (not included).
 - Input notes: `Expected` → `Processing` → `Consumed` (after sync) or `Committed` if fetched with inclusion.
 
 ### Configuration troubleshooting

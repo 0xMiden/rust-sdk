@@ -12,7 +12,7 @@ This guide helps you troubleshoot common issues and understand the end-to-end li
 > Note: This section applies to the Miden CLI client. Guidance for the Rust and Web clients may differ.
 
 - Ensure you have a proper configuration setup: either a global config at `~/.miden/miden-client.toml` or a local config at `./.miden/miden-client.toml`. Local config takes priority if both exist.
-- If you need a clean local state, delete the SQLite store file referenced by `store_filepath` (default: `.miden/store.sqlite3`). It will be recreated automatically on the next command.
+- Before resetting local state, back up the database and keystore. The database contains private account and note data that sync cannot recover. Use a separate local configuration for a clean test environment.
 - Verify your node RPC endpoint is reachable and correct in your configuration file (local `.miden/miden-client.toml` or global `~/.miden/miden-client.toml`).
 - Run `miden-client sync` to refresh local state after errors involving missing data or outdated heights.
 - On a network that enforces an account allowlist, register a new account with `miden-client account --register <ID> --invitation-code <CODE>` before its first transaction, then `sync` to receive the funding note the network pays it.
@@ -42,7 +42,7 @@ Below are representative errors you may encounter, their likely causes, and sugg
 - Fix: Re-check command flags/inputs. If using partial IDs, ensure they map to a single entity. Update to the latest client if the server API has changed.
 
 #### Client/network compatibility mismatch
-- Cause: Client and network versions or the genesis header commitment are incompatible.
+- Cause: The configured genesis commitment does not match the node, or the client does not support the node RPC API version.
 - Symptoms: CLI may report messages like:
 
   ```
@@ -50,16 +50,16 @@ Below are representative errors you may encounter, their likely causes, and sugg
   ```
 
   or requests being rejected due to a mismatched genesis header commitment.
-- Details: These are validated by the node by verifying client headers on gRPC requests.
+- Details: The `accept` header carries the genesis commitment. The protobuf package selects the RPC API version. The client does not send its crate version in the `accept` header.
 - Fix: Ensure your client version matches the target network. Switch to the correct network or upgrade/downgrade the client accordingly. Verify the configured genesis header commitment matches the network, then retry.
 
 #### `ClientError.AccountDataNotFound(<account_id>)`
 - Cause: The account is not known to the local store yet.
-- Fix: Create/import the account first, or run `miden-client sync` to fetch it if it exists on-chain.
+- Fix: Create/import the account first, then run `miden-client sync` to update its tracked state. Sync does not discover arbitrary accounts on chain.
 
 #### `ClientError.AccountLocked(<account_id>)`
 - Cause: Attempting to modify a locked account.
-- Fix: Unlock or use another account as appropriate.
+- Fix: Use another account while you investigate the state mismatch. Compare the local account state with the state on the node before you replace local data.
 
 #### `ClientError.AccountNotAllowlisted(<account_id>)`
 - Cause: The network enforces an account allowlist, and the transaction would create an account that is not registered on it. Only the first transaction of an account is affected. Network accounts are exempt.
@@ -121,6 +121,8 @@ Key states the CLI surfaces:
 
 ### Configuration troubleshooting
 
+`clear-config` deletes the selected `.miden` directory, including the database and secret keys stored there. Back up these files before you reset the configuration. Reinitialization does not recover private data.
+
 #### Config priority confusion
 - **Issue**: Unclear which configuration is being used (local vs global)
 - **Check**: Run commands from different directories to see if behavior changes
@@ -136,10 +138,10 @@ Key states the CLI surfaces:
 
 1. Verify `rpc.endpoint` connectivity and timeouts.
 2. Run `miden-client sync` to refresh local headers/notes.
-3. If local DB is inconsistent for development purposes, delete the store file (`.miden/store.sqlite3` in local config or `~/.miden/store.sqlite3` in global config) and retry.
-5. For configuration issues, use `miden-client clear-config` to reset config and `miden-client init` to recreate.
-6. Adjust `max_block_number_delta` if strict recency checks block validation.
-7. If proving errors persist with a remote prover, confirm `remote_prover_endpoint` and consider running locally to isolate the issue.
+3. For development, use `miden-client init --local` in a new directory to test with a separate store and keystore. Keep the original files for recovery.
+4. For configuration issues, check the active TOML file. If a reset is necessary, back up the selected `.miden` directory before you run `miden-client clear-config`. To recreate a local configuration, run `miden-client init --local` from the same directory. To recreate a global configuration, run `miden-client init`.
+5. Adjust `max_block_number_delta` if strict recency checks block validation.
+6. If proving errors persist with a remote prover, confirm `remote_prover_endpoint` and consider running locally to isolate the issue.
 
 ### References
 

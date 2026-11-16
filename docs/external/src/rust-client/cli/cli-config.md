@@ -19,7 +19,7 @@ We configure the client using a [TOML](https://en.wikipedia.org/wiki/TOML) file 
 
 Paths in the configuration file are relative to the `.miden` directory containing it.
 
-```sh
+```toml
 store_filepath = "store.sqlite3"
 secret_keys_directory = "keystore"
 token_symbol_map_filepath = "token_symbol_map.toml"
@@ -65,7 +65,7 @@ The global configuration approach reduces per-project setup overhead while still
 
 #### Clear Command
 
-The `clear-config` command helps manage configuration by removing existing setups:
+The `clear-config` command removes the selected `.miden` directory and all files in it. This includes the database, secret keys, token symbol map, and packages stored in that directory. Back up the files you need before you run this command. Files stored outside that directory are not removed.
 
 ```bash
 # Remove local config if present, otherwise remove global config

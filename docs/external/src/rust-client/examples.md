@@ -19,12 +19,12 @@ use miden_client::{
     ClientError,
     RemoteTransactionProver,
     builder::ClientBuilder,
-    transaction::{LocalTransactionProver, ProvingOptions},
+    transaction::LocalTransactionProver,
 };
 
 // Create provers
 let remote_prover = Arc::new(RemoteTransactionProver::new("https://prover.example.com"));
-let local_prover = Arc::new(LocalTransactionProver::new(ProvingOptions::default()));
+let local_prover = Arc::new(LocalTransactionProver::default());
 
 // Build client with remote prover as default
 let mut client = ClientBuilder::new()

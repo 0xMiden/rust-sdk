@@ -9,6 +9,7 @@ In your project's `Cargo.toml`, add:
 
 ```toml
 miden-client = { version = "0.18", features = ["tonic"] }
+miden-client-sqlite-store = "0.18"
 ```
 
 The `tonic` feature is not enabled by default and gates everything that speaks gRPC to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up. Leave it out only when supplying your own `NodeRpcClient` and `TransactionProver` implementations. See [Features](./features.md#crate-features) for the full list.
@@ -27,7 +28,7 @@ let sqlite_store = SqliteStore::new("path/to/store".try_into()?).await?;
 let store = Arc::new(sqlite_store);
 
 // Build client for testnet (pre-configured RPC, prover, and note transport)
-let client = ClientBuilder::for_testnet()
+let mut client = ClientBuilder::for_testnet()
     .store(store)
     .filesystem_keystore("path/to/keys")?
     .build()
@@ -45,7 +46,7 @@ For custom configurations, use `ClientBuilder::new()` and configure each compone
 ```rust
 use std::sync::Arc;
 use miden_client::builder::ClientBuilder;
-use miden_client::rpc::{Endpoint, GrpcClient};
+use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
 
 // Create store
@@ -53,9 +54,9 @@ let sqlite_store = SqliteStore::new("path/to/store".try_into()?).await?;
 let store = Arc::new(sqlite_store);
 
 // Setup the gRPC endpoint
-let endpoint = Endpoint::new("https".into(), "localhost".into(), Some(57291));
+let endpoint = Endpoint::new("http".into(), "localhost".into(), Some(57291));
 
-let client = ClientBuilder::new()
+let mut client = ClientBuilder::new()
     .grpc_client(&endpoint, None)
     .store(store)
     .filesystem_keystore("path/to/keys")?
@@ -93,33 +94,38 @@ With the Miden client, you can create and track any number of public and local a
 The `AccountBuilder` can be used to create a new account with the specified parameters and components. The following code creates a new local account:
 
 ```rust
-let key_pair = SecretKey::with_rng(client.rng());
+use miden_client::account::standards::{
+    auth::{Approver, AuthSingleSig},
+    wallets::BasicWallet,
+};
+use miden_client::account::{AccountBuilder, AccountBuilderSchemaCommitmentExt, AccountType};
+use miden_client::auth::{AuthScheme, AuthSecretKey};
+use miden_client::keystore::Keystore;
 
-let new_account = AccountBuilder::new(init_seed) // Seed should be random for each account
+// Use a different random seed for each account.
+let init_seed = rand::random::<[u8; 32]>();
+let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+let auth_component = AuthSingleSig::new(Approver::new(
+    secret_key.public_key().to_commitment(),
+    AuthScheme::Falcon512Poseidon2,
+));
+
+let new_account = AccountBuilder::new(init_seed)
     .account_type(AccountType::Private)
-    .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+    .with_component(auth_component)
     .with_component(BasicWallet)
-    .build()?;
-keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair), new_account.id()).await?;
+    .build_with_schema_commitment()?;
+
+let keystore = client.authenticator().expect("the client has a keystore").clone();
+keystore.add_key(&secret_key, new_account.id()).await?;
 client.add_account(&new_account, false).await?;
 ```
-Once an account is created, it is kept locally and its state is automatically tracked by the client.
 
-To create a public account, specify `AccountType::Public`:
+Add `rand = "0.10"` to your dependencies to generate the account seed in this example. The account stores a commitment to the public key. The keystore stores the secret key used to sign transactions.
 
-```Rust
-let key_pair = SecretKey::with_rng(client.rng());
-let anchor_block = client.get_latest_epoch_block().await.unwrap();
+Once an account is created, the client stores it locally and tracks its state.
 
-let new_account = AccountBuilder::new(init_seed) // Seed should be random for each account
-    .anchor((&anchor_block).try_into().unwrap())
-    .account_type(AccountType::Public)
-    .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
-    .with_component(BasicWallet)
-    .build()?;
-keystore.add_key(&AuthSecretKey::RpoFalcon512(key_pair), new_account.id()).await?;
-client.add_account(&new_account, false).await?;
-```
+To create a public account, use `AccountType::Public` in the same example. Generate a new seed and secret key for each account, then add the key to the keystore and the account to the client.
 
 The account's state is also tracked locally, but during sync the client updates the account state by querying the node for the most recent account data.
 
@@ -197,9 +203,14 @@ In order to execute a transaction, you first need to define which type of transa
 Here is an example for a `pay-to-id` transaction type:
 
 ```rust
+use miden_client::account::AccountId;
+use miden_client::asset::FungibleAsset;
+use miden_client::note::NoteType;
+use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
+
 // Define asset
 let faucet_id = AccountId::from_hex(faucet_id)?;
-let fungible_asset = FungibleAsset::new(faucet_id, *amount)?.into();
+let fungible_asset = FungibleAsset::new(faucet_id, amount)?;
 
 let sender_account_id = AccountId::from_hex(bob_account_id)?;
 let target_account_id = AccountId::from_hex(alice_account_id)?;
@@ -211,17 +222,17 @@ let payment_description = PaymentNoteDescription::new(
 
 let transaction_request = TransactionRequestBuilder::new().build_pay_to_id(
     payment_description,
-    None,
     NoteType::Private,
     client.rng(),
 )?;
 
-// Execute transaction. No information is tracked after this.
-let transaction_execution_result = client.new_transaction(sender_account_id, transaction_request.clone()).await?;
-
-// Prove and submit the transaction, which is stored alongside created notes (if any)
-client.submit_transaction(transaction_execution_result).await?
+// Execute, prove, submit, and store the transaction locally.
+let tx_id = client.submit_new_transaction(sender_account_id, transaction_request).await?;
 ```
+
+A successful submission means the node accepted the transaction. Run `client.sync_state().await?` to update its status after the node commits it.
+
+For separate execution, proving, and submission steps, use `execute_transaction`, `prove_transaction`, and `submit_proven_transaction`. Then call `apply_transaction` with the execution result and the submission height to store the effects locally.
 
 You can decide whether you want the note details to be public or private through the `note_type` parameter.
 You may also customize the transaction request with the other `TransactionRequestBuilder` methods. This allows you to run custom code, with custom note arguments and additional output/input notes as well.
@@ -444,7 +455,7 @@ reader.reset();
 
 ## Supply foreign account inputs yourself
 
-A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched` and nothing is fetched for that account. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. Under `Client::execute_transaction_at` the reference block is the anchor's block. Otherwise it is the sync height at execution time, so do not sync between fetching and executing.
+A request normally declares foreign accounts as `ForeignAccount::public` or `ForeignAccount::private`, and the client fetches their state and inclusion witnesses from the node at the transaction's reference block. When you already hold that data, declare it as `ForeignAccount::Prefetched`. The client uses the supplied account state and inclusion witness, but it can still fetch storage map keys and vault assets absent from the inputs during execution. A witness opens against the account tree of exactly one block, so inputs fetched at block `N` are only valid for a transaction whose reference block is `N`; the client rejects a mismatch before execution. Under `Client::execute_transaction_at` the reference block is the anchor's block. Otherwise it is the sync height at execution time, so do not sync between fetching and executing.
 
 `Client::get_foreign_account_inputs` fetches inputs for a set of declarations at a given block, and `AccountInputs` serializes, so one party can fetch and another can execute:
 
@@ -471,4 +482,4 @@ Declaring an account ID more than once keeps the last declaration, so prefetched
 
 `GetAccountRequest::new(account_id).with_fetch(fetch)` builds an RPC request with the same `AccountFetch`. Pass the request to `NodeRpcClient::get_account(request)`. Both policies default to `Skip`, so a declaration without them fetches the account header, code, and witness only. Execution then reads each skipped map entry or asset through its own lookup, from the store for a tracked account and from the node otherwise. Set `VaultFetch::Always` or `VaultFetch::Assets` to carry the assets with the inputs instead.
 
-Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor.
+Prefetching is what lets a request executed with `Client::execute_transaction_at` run after the node stopped serving account state at the anchor's block: fetch the inputs at `ChainAnchor::block_num` while the node still has them, and ship them with the anchor. Include every storage map key and vault asset the transaction reads. A valid inclusion witness does not guarantee that the inputs contain these entries. A missing entry still requires a lookup from the node.

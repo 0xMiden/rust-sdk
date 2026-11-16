@@ -115,12 +115,26 @@
 * [FIX][rust] Submitting a transaction batch calls the registered `TransactionObserver`s for each of its transactions, as `submit_new_transaction` does ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FIX][rust] `Client::submit_transaction_batch` anchors the batch at the sync height of the client. A batch no longer fails with `StoreError::BlockHeaderNotFound` when the client syncs between the pushes and the submission ([#2677](https://github.com/0xMiden/rust-sdk/pull/2677)).
 * [FIX][rust] Sync no longer stores public notes whose tag matches a tracked account's tag without checking that a tracked account can consume them. Only tags added by the user skip the check ([#2684](https://github.com/0xMiden/rust-sdk/pull/2684)).
-* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
 * [FIX][rust] Reused the kernel and standard-library MAST store across `NoteScreener` calls. Each screening pass reads current account state ([#2711](https://github.com/0xMiden/rust-sdk/pull/2711)).
 
 ### Fixes
 
 * [FIX][store] `SqliteStore` now compares nonces as unsigned values when it prunes account history. Before, it deleted the wrong historical states when a nonce was above `i64::MAX` ([#2669](https://github.com/0xMiden/rust-sdk/pull/2669)).
+
+## 0.18.2 (2026-11-13)
+
+### Fixes
+
+* [FIX][rust] The NTL note screening no longer keeps non-consumable notes that match a note-sourced or subscription-sourced tag. It keeps only consumable notes and notes that match a user-sourced tag ([#2801](https://github.com/0xMiden/rust-sdk/pull/2801)).
+* [FIX][rust] Released input notes when their local transaction was discarded. Notes retain inclusion proofs received while processing. Authenticated notes return to `Committed`. Unauthenticated notes return to `Expected`. Notes consumed on chain remain consumed ([#2585](https://github.com/0xMiden/rust-sdk/pull/2585)).
+
+## 0.18.1 (2026-11-11)
+
+### Features
+
+* [FEATURE][cli] `consume-notes` consumes any number of notes. It splits the notes into transactions of at most `--notes-per-tx` notes, which is 40 by default and 1024 at most. If there is more than one transaction, the command asks for confirmation one time and syncs before each transaction after the first. It stops at the first transaction that fails, and a new run consumes the notes that are left. `--filter` limits the notes to the ones that use the given note scripts, each given by a standard note name or a hex script root. Before it consumes the notes, the command prints a table with the number of notes for each note script ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
+* [FEATURE][cli] Added the `track_fee_faucet` configuration field, which is `false` by default. When it is `true` and the fee token faucet has asset callbacks, a sync adds the faucet as a watched account and keeps its state and account witness up to date. A transaction that pays a fee then reads the faucet from the store and does not fetch it from the node. If the protocol configuration changes the faucet, the next sync drops the witness of the old faucet and sets up the new one. If the field changes back to `false`, the next sync drops the witness of the faucet ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
+* [FEATURE][rust] Re-exported `MAX_INPUT_NOTES_PER_TX`, the largest number of input notes in one transaction ([#2776](https://github.com/0xMiden/rust-sdk/pull/2776)).
 
 ## 0.18.0 (2026-10-27)
 

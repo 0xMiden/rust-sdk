@@ -333,7 +333,8 @@ async fn transport_fetch_chunks_tracked_tags() {
     let head = transport_cursor(3);
     assert_eq!(transport.fetch_tag_counts(), [128, 1]);
     assert_eq!(transport.fetch_bounds(), [None, Some(head)]);
-    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 3);
+    // The note screening only keeps the notes that match tracked tags with `NoteTagSource::User`
+    assert_eq!(recipient.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
     let (cursor, covered) = stored_note_transport_state(&mut recipient).await.unwrap();
     assert_eq!(cursor, head);
     assert_eq!(covered.len(), 129);
@@ -1103,6 +1104,79 @@ async fn note_delivered_by_tag_match_is_only_kept_when_a_tracked_account_can_con
     client.sync_state().await.unwrap();
     let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
     assert_eq!(notes.len(), 1, "a note the tracked account can consume must be stored");
+}
+
+/// The transport screening keeps a note that no tracked account can consume only when its tag was
+/// added by the user. Such notes delivered for a note-source or a subscription-source tag are
+/// discarded.
+#[tokio::test]
+async fn non_consumable_note_is_only_kept_when_delivered_by_user_tag() {
+    let mock_node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let (mut sender, sender_account) = create_test_user_transport(mock_node.clone()).await;
+    let (mut client, _account) = create_test_user_transport(mock_node.clone()).await;
+
+    // P2ID notes with the given tag, for an account that the client does not track.
+    let unrelated_account: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+    let mut unrelated_note = |tag: NoteTag| -> Note {
+        let note: Note = P2idNote::builder()
+            .sender(sender_account.id())
+            .target(unrelated_account)
+            .asset(dummy_asset())
+            .note_type(NoteType::Private)
+            .generate_serial_number(sender.rng())
+            .build()
+            .unwrap()
+            .into();
+        let (assets, _, recipient, attachments) = note.into_parts();
+        let metadata =
+            PartialNoteMetadata::new(sender_account.id(), NoteType::Private).with_tag(tag);
+        Note::with_attachments(assets, metadata, recipient, attachments)
+    };
+    let user_note = unrelated_note(NoteTag::new(1));
+    let note_source_note = unrelated_note(NoteTag::new(2));
+    let subscription_note = unrelated_note(NoteTag::new(3));
+    // The note that the note-source tag was registered for. It is never delivered.
+    let expected_note = unrelated_note(NoteTag::new(2));
+
+    let unrelated_address = Address::new(unrelated_account)
+        .with_routing_parameters(RoutingParameters::new(AddressInterface::BasicWallet));
+    for note in [&user_note, &note_source_note, &subscription_note] {
+        sender
+            .send_private_note_with_proof(
+                note.clone(),
+                &unrelated_address,
+                genesis_inclusion_proof(),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Add the note tag with `NoteTagSource::User`, `NoteTagSource::Note` and
+    // `NoteTagSource::Subscription`
+    client.add_note_tag(user_note.metadata().tag()).await.unwrap();
+    client
+        .test_store()
+        .add_note_tag(NoteTagRecord {
+            tag: note_source_note.metadata().tag(),
+            source: NoteTagSource::Note(expected_note.details_commitment()),
+        })
+        .await
+        .unwrap();
+    client
+        .test_store()
+        .add_note_tag(NoteTagRecord {
+            tag: subscription_note.metadata().tag(),
+            source: NoteTagSource::Subscription(Word::default()),
+        })
+        .await
+        .unwrap();
+    client.sync_state().await.unwrap();
+
+    let notes = client.get_input_notes(NoteFilter::All).await.unwrap();
+
+    // Check the only note that is stored is the one whose tag matches `NoteTagSource::User`
+    assert_eq!(notes.len(), 1, "only the note with a user tag must be stored");
+    assert_eq!(notes[0].details_commitment(), user_note.details_commitment());
 }
 
 /// A private note committed more than the fallback lookback window before the recipient's sync

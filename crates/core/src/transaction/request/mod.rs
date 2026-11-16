@@ -312,6 +312,24 @@ impl TransactionRequest {
         Ok(())
     }
 
+    /// Replaces the authentication of the input note that has the ID of `input_note`, so that every
+    /// executor consumes the note in the mode that `input_note` carries. The note keeps its
+    /// arguments.
+    ///
+    /// # Errors
+    /// - If the request does not consume the note.
+    pub fn pin_input_note(&mut self, input_note: InputNote) -> Result<(), TransactionRequestError> {
+        let note_id = input_note.note().id();
+        let request_note = self
+            .input_notes
+            .iter_mut()
+            .find(|request_note| request_note.id() == note_id)
+            .ok_or(TransactionRequestError::InputNoteNotInRequest(note_id))?;
+
+        request_note.authentication = InputNoteAuthentication::Explicit(input_note);
+        Ok(())
+    }
+
     /// Returns this request with `auth_args` as its explicit auth args.
     ///
     /// The executing party can use this method to set auth args that only it can choose, for
@@ -523,6 +541,8 @@ pub enum TransactionRequestError {
     AssetError(#[from] AssetError),
     #[error("duplicate input note: note {0} was added more than once to the transaction")]
     DuplicateInputNote(NoteId),
+    #[error("the request does not consume note {0}")]
+    InputNoteNotInRequest(NoteId),
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error("cannot set both explicit auth args and a fee conversion salt")]

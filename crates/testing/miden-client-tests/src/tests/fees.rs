@@ -5,11 +5,13 @@
 //! against a `MockChain` with a non-zero `verification_base_fee`, which is the only switch that
 //! turns fee collection on.
 
+use core::num::NonZeroU32;
 use std::sync::Arc;
 
 use miden_client::ClientError;
 use miden_client::account::standards::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
+use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, BoundSignature, SignatureKey};
 use miden_client::keystore::Keystore;
@@ -28,7 +30,7 @@ use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
-use miden_standards::account::auth::multisig_smart::DelayedExecutionPolicy;
+use miden_standards::account::auth::multisig_smart::{DelayedExecutionPolicy, ProcedurePolicy};
 use miden_standards::account::auth::{
     Approver,
     ApproverSet,
@@ -587,6 +589,88 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
         .await
         .expect("the signed proposal should execute at the new tip");
     assert_eq!(result.executed_transaction().block_header().block_num(), sync_height);
+}
+
+/// A smart multisig transaction runs on the delayed path. One approver proposes its summary
+/// commitment, and the transaction executes after the timelock at a newer reference block.
+#[tokio::test]
+async fn smart_multisig_proposal_executes_after_the_timelock() {
+    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let approvers = ApproverSet::new(
+        vec![Approver::new(
+            key.public_key().to_commitment(),
+            AuthSchemeId::Falcon512Poseidon2,
+        )],
+        1,
+    )
+    .unwrap();
+    let config =
+        AuthMultisigSmartConfig::new(approvers, DelayedExecutionPolicy::new(1, 1, 1).unwrap())
+            .with_proc_policies(vec![(
+                AuthMultisigSmart::update_delayed_execution_policy_root(),
+                ProcedurePolicy::with_delay_threshold(1).unwrap(),
+            )])
+            .unwrap();
+    let auth = AuthMultisigSmart::new(config).unwrap();
+    let (mut client, rpc_api, account) =
+        Box::pin(fee_charging_client_with_auth_and_rpc(auth, key.clone())).await;
+    let compile = |body: String| {
+        CodeBuilder::default()
+            .with_dynamically_linked_package(AuthMultisigSmart::code())
+            .unwrap()
+            .compile_tx_script(format!("@transaction_script\npub proc main\n{body}\nend"))
+            .unwrap()
+    };
+    let procedures = "::miden::standards::components::auth::multisig_smart";
+
+    // The delayed path requires an approval expiration.
+    let bound_block = client.get_sync_height().await.unwrap();
+    let auth_args = MultisigAuthArgs::new(bound_block, Word::from([1u32, 0, 0, 0]))
+        .with_approval_expiration_delta(NonZeroU32::new(100).unwrap())
+        .unwrap();
+    let mut execute = TransactionRequestBuilder::new()
+        .custom_script(compile(format!(
+            "push.1 push.2 push.40 call.{procedures}::update_delayed_execution_policy drop drop drop"
+        )))
+        .auth_args(&auth_args)
+        .build()
+        .unwrap();
+    let commitment = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), execute.clone()))
+            .await
+            .unwrap_err(),
+    )
+    .to_commitment();
+
+    let mut propose = TransactionRequestBuilder::new()
+        .custom_script(compile(format!(
+            "push.{commitment} call.{procedures}::propose_transaction dropw dropw dropw dropw dropw"
+        )))
+        .auth_args(&MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0])))
+        .build()
+        .unwrap();
+
+    // The proposal and the execution are signed over the same commitment. The executor signs only
+    // the summary of the current transaction, so the propose request must carry the signature.
+    let signature_key = SignatureKey::new(key.public_key().to_commitment(), commitment);
+    let signature = BoundSignature::new(signature_key, key.sign(commitment)).unwrap();
+    for request in [&mut propose, &mut execute] {
+        request
+            .advice_map_mut()
+            .insert(signature_key.to_advice_map_key(), signature.to_encoded_signature());
+    }
+
+    Box::pin(client.submit_new_transaction(account.id(), propose)).await.unwrap();
+    // The proposal unlocks at its reference block + propose_expiration_delta + min_delay.
+    rpc_api.advance_blocks(3);
+    client.sync_state().await.unwrap();
+    Box::pin(client.submit_new_transaction(account.id(), execute)).await.unwrap();
+
+    let account = client.get_account(account.id()).await.unwrap().unwrap();
+    assert_eq!(
+        account.storage().get_item(AuthMultisigSmart::delay_config_slot()).unwrap(),
+        Word::from([40u32, 2, 1, 0]),
+    );
 }
 
 fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {

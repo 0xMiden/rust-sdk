@@ -76,6 +76,9 @@ pub use note_record::{
 mod note_updates;
 pub use note_updates::{InputNoteUpdate, NoteUpdateType, NoteUpdates, OutputNoteUpdate};
 
+mod code_smt_forest;
+pub use code_smt_forest::CodeSmtForest;
+
 mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};
 

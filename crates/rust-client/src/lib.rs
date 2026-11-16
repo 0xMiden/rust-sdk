@@ -278,7 +278,6 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::EidosRandomCoin;
     pub use rand::{Rng, RngExt};
 }
 

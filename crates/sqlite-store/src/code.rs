@@ -16,7 +16,7 @@ use miden_tx::{LoadedMastForest, MastForestStore};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db_management::pool_manager::{Access, SqlitePoolManager};
-use crate::forest::{ScopedCodeForest, SqliteForestBackend, allocate_forest_revision};
+use crate::forest::{ScopedCodeForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, with_write_tx};
 
@@ -78,9 +78,8 @@ impl SqliteStore {
         }
 
         with_write_tx(conn, |tx| {
-            let version = allocate_forest_revision(tx).into_store_error()?;
             let mut forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
-            forest.add_procedure(version, procedure)?;
+            forest.add_procedure(procedure)?;
 
             let commitment = procedure.commitment();
             tx.execute(

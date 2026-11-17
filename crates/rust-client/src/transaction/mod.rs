@@ -1037,6 +1037,9 @@ where
     /// - The recording of the run. A failed run keeps the recording up to the failure. The
     ///   recording is `None` if the program never ran.
     ///
+    /// `package` gives the replay the debug info that names the frames. The run does not load the
+    /// package, so it executes the same account code as [`execute_program`](Self::execute_program).
+    ///
     /// The recording is kept in one slot per process, so only one traced execution can run at a
     /// time. A second one fails with [`trace::TraceError::Busy`] and leaves no recording.
     #[cfg(feature = "trace")]
@@ -1055,11 +1058,6 @@ where
         let outcome = async {
             let (data_store, block_ref) =
                 self.prepare_program_execution(account_id, foreign_accounts).await?;
-
-            // Same procedure roots as the account code, so this forest with debug info wins.
-            if let Some(package) = package {
-                data_store.mast_store().insert_package(package);
-            }
 
             Ok(self
                 .build_executor(&data_store)?

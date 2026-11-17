@@ -242,6 +242,36 @@ where
         Ok(sync_summary)
     }
 
+    /// Replaces the state of the guarded account `account_id` with the state that Guardian holds.
+    ///
+    /// Sync locks a private account when its commitment on chain changes because another party
+    /// executed a transaction, for example Guardian. This call unlocks it. [`Client::add_account`]
+    /// stores the state only if it matches the commitment on chain.
+    ///
+    /// The request to Guardian is signed with the cosigner key of the account, so an external
+    /// signer prompts once per call.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::AccountNotGuarded`] if the account is not guarded.
+    /// - Returns [`ClientError::GuardianError`] if the request to Guardian fails.
+    /// - Returns the errors of [`Client::add_account`], for example if the state does not match the
+    ///   commitment on chain.
+    #[cfg(feature = "tonic")]
+    pub async fn refresh_from_guardian(
+        &mut self,
+        account_id: AccountId,
+    ) -> Result<(), ClientError> {
+        if !self.is_guarded_account(account_id).await? {
+            return Err(ClientError::AccountNotGuarded(account_id));
+        }
+
+        let (guardian, authenticator, cosigner, now_ms) =
+            self.guardian_request_context(account_id).await?;
+        let account = guardian.get_state(account_id, authenticator, cosigner, now_ms).await?;
+        self.add_account(&account, true).await
+    }
+
     /// Fetches private notes from the Note Transport Layer for the tracked note tags.
     ///
     /// Returns the IDs of notes imported in this call. No-op (returns an empty vec) if note

@@ -1,4 +1,6 @@
 use alloc::boxed::Box;
+#[cfg(feature = "tonic")]
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
@@ -22,7 +24,7 @@ use crate::rpc::NodeRpcClient;
 #[cfg(feature = "tonic")]
 use crate::rpc::{Endpoint, GrpcClient};
 use crate::store::{Store, StoreError};
-use crate::transaction::{TransactionObserver, TransactionProver};
+use crate::transaction::{SubmissionMode, TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
 
 // CONSTANTS
@@ -139,6 +141,11 @@ pub struct ClientBuilder<AUTH> {
     note_transport_config: Option<NoteTransportConfig>,
     /// An optional custom transaction prover.
     tx_prover: Option<Arc<dyn TransactionProver + Send + Sync>>,
+    /// Who proves and submits the transactions of guarded accounts.
+    submission_mode: SubmissionMode,
+    /// The endpoint of the Guardian that guards the accounts of the client.
+    #[cfg(feature = "tonic")]
+    guardian_endpoint: Option<String>,
     /// The endpoint used by the builder for network configuration.
     #[cfg(feature = "tonic")]
     endpoint: Option<Endpoint>,
@@ -162,6 +169,9 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             note_transport_api: None,
             note_transport_config: None,
             tx_prover: None,
+            submission_mode: SubmissionMode::default(),
+            #[cfg(feature = "tonic")]
+            guardian_endpoint: None,
             #[cfg(feature = "tonic")]
             endpoint: None,
             source_manager: None,
@@ -460,6 +470,26 @@ where
         self
     }
 
+    /// Sets who proves and submits the transactions of guarded accounts. The default is
+    /// [`SubmissionMode::SelfExecuted`]. [`SubmissionMode::GuardianExecutable`] needs a Guardian
+    /// endpoint.
+    #[must_use]
+    pub fn submission_mode(mut self, mode: SubmissionMode) -> Self {
+        self.submission_mode = mode;
+        self
+    }
+
+    /// Sets the endpoint of the Guardian that guards the accounts of the client.
+    ///
+    /// The client uses it to execute transactions through Guardian and to refresh the state of
+    /// locked private guarded accounts during sync.
+    #[must_use]
+    #[cfg(feature = "tonic")]
+    pub fn guardian_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.guardian_endpoint = Some(endpoint.into());
+        self
+    }
+
     /// Sets the genesis block header and its protocol configuration, which are stored when the
     /// client is built.
     #[must_use]
@@ -489,8 +519,23 @@ where
     ///
     /// - Returns an error if no RPC client was provided.
     /// - Returns an error if the store cannot be instantiated.
+    /// - Returns an error if the submission mode is [`SubmissionMode::GuardianExecutable`] and no
+    ///   Guardian endpoint was provided.
     #[allow(clippy::unused_async, unused_mut)]
     pub async fn build(mut self) -> Result<Client<AUTH>, ClientError> {
+        // The Guardian executable mode delegates proving, so it needs a Guardian to delegate to.
+        #[cfg(feature = "tonic")]
+        let has_guardian = self.guardian_endpoint.is_some();
+        #[cfg(not(feature = "tonic"))]
+        let has_guardian = false;
+        if self.submission_mode == SubmissionMode::GuardianExecutable && !has_guardian {
+            return Err(ClientError::ClientInitializationError(
+                "The Guardian executable mode needs a Guardian endpoint. Call \
+                 `.guardian_endpoint(...)`."
+                    .into(),
+            ));
+        }
+
         // Determine the RPC client to use.
         let rpc_api: Arc<dyn NodeRpcClient> = if let Some(client) = self.rpc_api {
             client
@@ -564,6 +609,9 @@ where
             rng: ClientRng::new(rng),
             rpc_api,
             tx_prover,
+            submission_mode: self.submission_mode,
+            #[cfg(feature = "tonic")]
+            guardian: self.guardian_endpoint.map(crate::guardian::GuardianClient::new),
             authenticator: self.authenticator,
             source_manager,
             exec_options: ExecutionOptions::new(

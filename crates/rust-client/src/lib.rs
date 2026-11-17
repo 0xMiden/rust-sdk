@@ -118,6 +118,8 @@ extern crate std;
 
 pub mod account;
 pub mod grpc_support;
+#[cfg(feature = "tonic")]
+mod guardian;
 pub mod keystore;
 pub mod note;
 pub mod note_transport;
@@ -370,7 +372,7 @@ use rpc::NodeRpcClient;
 use store::Store;
 
 use crate::note_transport::NoteTransportClient;
-use crate::transaction::TransactionProver;
+use crate::transaction::{SubmissionMode, TransactionProver};
 
 // MIDEN CLIENT
 // ================================================================================================
@@ -393,6 +395,11 @@ pub struct Client<AUTH> {
     rpc_api: Arc<dyn NodeRpcClient>,
     /// An instance of a [`TransactionProver`] which will be the default prover for the client.
     tx_prover: Arc<dyn TransactionProver + Send + Sync>,
+    /// Who proves and submits the transactions of guarded accounts.
+    submission_mode: SubmissionMode,
+    /// The client of the Guardian that guards the accounts of the client.
+    #[cfg(feature = "tonic")]
+    guardian: Option<guardian::GuardianClient>,
     /// An instance of a [`TransactionAuthenticator`] which will be used by the transaction executor
     /// whenever a signature is requested from within the VM.
     authenticator: Option<Arc<AUTH>>,
@@ -485,6 +492,11 @@ where
 
     pub fn prover(&self) -> Arc<dyn TransactionProver + Send + Sync> {
         self.tx_prover.clone()
+    }
+
+    /// Returns who proves and submits the transactions of guarded accounts.
+    pub fn submission_mode(&self) -> SubmissionMode {
+        self.submission_mode
     }
 
     pub fn authenticator(&self) -> Option<&Arc<AUTH>> {

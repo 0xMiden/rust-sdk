@@ -8,11 +8,17 @@ const NOTE_TRANSPORT_STD_DIR: &str = "note_transport/std";
 const NOTE_TRANSPORT_NOSTD_DIR: &str = "note_transport/nostd";
 const REMOTE_PROVER_STD_DIR: &str = "remote_prover/std";
 const REMOTE_PROVER_NOSTD_DIR: &str = "remote_prover/nostd";
+const GUARDIAN_STD_DIR: &str = "guardian/std";
+const GUARDIAN_NOSTD_DIR: &str = "guardian/nostd";
+
+const GUARDIAN_PROTO: &str = "proto/guardian/guardian.proto";
 
 const NOTE_TRANSPORT_STD_WRAPPER: &str = "note_transport_std.rs";
 const NOTE_TRANSPORT_NOSTD_WRAPPER: &str = "note_transport_nostd.rs";
 const REMOTE_PROVER_STD_WRAPPER: &str = "remote_prover_std.rs";
 const REMOTE_PROVER_NOSTD_WRAPPER: &str = "remote_prover_nostd.rs";
+const GUARDIAN_STD_WRAPPER: &str = "guardian_std.rs";
+const GUARDIAN_NOSTD_WRAPPER: &str = "guardian_nostd.rs";
 
 fn main() -> miette::Result<()> {
     // Proto definitions come from build-dependency crates. Cargo automatically re-runs this
@@ -20,19 +26,25 @@ fn main() -> miette::Result<()> {
     // re-running on every source file change.
     // https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-changed
     println!("cargo::rerun-if-changed=build.rs");
+    // The Guardian schema is vendored in this crate, so changes to it must re-run the script.
+    println!("cargo::rerun-if-changed=proto");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").into_diagnostic()?);
 
     compile_tonic_note_transport_proto(&out_dir)?;
     compile_tonic_remote_prover_proto(&out_dir)?;
+    compile_tonic_guardian_proto(&out_dir)?;
 
     replace_no_std_types_in_dir(&out_dir.join(NOTE_TRANSPORT_NOSTD_DIR))?;
     replace_no_std_types_in_dir(&out_dir.join(REMOTE_PROVER_NOSTD_DIR))?;
+    replace_no_std_types_in_dir(&out_dir.join(GUARDIAN_NOSTD_DIR))?;
 
     generate_wrapper(&out_dir, NOTE_TRANSPORT_STD_DIR, NOTE_TRANSPORT_STD_WRAPPER)?;
     generate_wrapper(&out_dir, NOTE_TRANSPORT_NOSTD_DIR, NOTE_TRANSPORT_NOSTD_WRAPPER)?;
     generate_wrapper(&out_dir, REMOTE_PROVER_STD_DIR, REMOTE_PROVER_STD_WRAPPER)?;
     generate_wrapper(&out_dir, REMOTE_PROVER_NOSTD_DIR, REMOTE_PROVER_NOSTD_WRAPPER)?;
+    generate_wrapper(&out_dir, GUARDIAN_STD_DIR, GUARDIAN_STD_WRAPPER)?;
+    generate_wrapper(&out_dir, GUARDIAN_NOSTD_DIR, GUARDIAN_NOSTD_WRAPPER)?;
 
     Ok(())
 }
@@ -84,6 +96,38 @@ fn compile_tonic_remote_prover_proto(out_dir: &Path) -> miette::Result<()> {
         .build_server(false)
         .out_dir(&std_out)
         .compile_fds_with_config(file_descriptors, canonical_object_config())
+        .into_diagnostic()?;
+
+    Ok(())
+}
+
+// GUARDIAN CLIENT PROTO CODEGEN
+// ===============================================================================================
+
+/// Generates the Rust protobuf bindings for the Guardian client from the vendored schema.
+fn compile_tonic_guardian_proto(out_dir: &Path) -> miette::Result<()> {
+    let file_descriptors = protox::compile([GUARDIAN_PROTO], ["proto"]).into_diagnostic()?;
+
+    let std_out = out_dir.join(GUARDIAN_STD_DIR);
+    let nostd_out = out_dir.join(GUARDIAN_NOSTD_DIR);
+    fs::create_dir_all(&std_out).into_diagnostic()?;
+    fs::create_dir_all(&nostd_out).into_diagnostic()?;
+
+    // The `nostd` bindings target `wasm32`, where the transport is provided by
+    // `tonic-web-wasm-client`, so tonic's own transport codegen must be disabled.
+    tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
+        .build_transport(false)
+        .build_server(false)
+        .out_dir(&nostd_out)
+        .compile_fds(file_descriptors.clone())
+        .into_diagnostic()?;
+
+    tonic_prost_build::configure()
+        .build_client(tonic_client_codegen_enabled())
+        .build_server(false)
+        .out_dir(&std_out)
+        .compile_fds(file_descriptors)
         .into_diagnostic()?;
 
     Ok(())

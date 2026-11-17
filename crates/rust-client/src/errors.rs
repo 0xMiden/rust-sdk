@@ -37,6 +37,8 @@ use crate::store::{NoteRecordError, StoreError};
 use crate::transaction::{
     BatchBuilderError,
     ChainAnchorError,
+    GuardianError,
+    GuardianRequestError,
     ProvenBatchSubmission,
     TransactionRequestError,
     TransactionStoreUpdateError,
@@ -186,6 +188,18 @@ pub enum ClientError {
     TransactionExecutorError(#[from] TransactionExecutorError),
     #[error("the transaction executed without asking for signatures, so it has no summary to sign")]
     NoSignaturesRequired,
+    #[error(
+        "account {0} is guarded and Guardian proves its transactions, so the client does not prove them"
+    )]
+    ProvingDelegatedToGuardian(AccountId),
+    #[error("Guardian cannot reproduce the transaction request")]
+    GuardianRequestError(#[from] GuardianRequestError),
+    #[error("Guardian request failed")]
+    GuardianError(#[from] GuardianError),
+    #[error("account {0} is not guarded by Guardian")]
+    AccountNotGuarded(AccountId),
+    #[error("the transaction changes the Guardian of account {0}, so the client must prove it")]
+    GuardianSwitchExecutesLocally(AccountId),
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
     #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]

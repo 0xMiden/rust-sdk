@@ -203,6 +203,10 @@ pub trait Store: Send + Sync {
     /// exists, it will be replaced.
     async fn upsert_input_notes(&self, notes: &[InputNoteRecord]) -> Result<(), StoreError>;
 
+    /// Inserts the provided output notes into the database. If a note with the same ID already
+    /// exists, it will be replaced.
+    async fn upsert_output_notes(&self, notes: &[OutputNoteRecord]) -> Result<(), StoreError>;
+
     /// Returns the note script associated with the given root.
     async fn get_note_script(&self, script_root: Word) -> Result<NoteScript, StoreError>;
 

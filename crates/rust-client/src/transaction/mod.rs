@@ -69,6 +69,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_client_core::store::AccountRecord;
+#[cfg(feature = "tonic")]
+use miden_protocol::account::StorageMapKey;
+#[cfg(feature = "tonic")]
+use miden_protocol::account::auth::PublicKeyCommitment;
 use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, PartialAccount};
 use miden_protocol::asset::Asset;
 use miden_protocol::block::account_tree::AccountWitness;
@@ -89,6 +93,8 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
 use miden_protocol::{Felt, Word};
+#[cfg(feature = "tonic")]
+use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::auth::{
     FeeConversionInfo,
     MultisigAuthArgs,
@@ -128,6 +134,14 @@ pub use chain_anchor::{ChainAnchor, ChainAnchorError};
 
 #[cfg(feature = "dap")]
 mod dap_executor;
+mod guardian;
+pub use guardian::{
+    GuardianError,
+    GuardianExecution,
+    GuardianExecutionState,
+    GuardianRequestError,
+    SubmissionMode,
+};
 mod prover;
 pub use miden_client_core::transaction::{
     BatchStoreUpdate,
@@ -233,11 +247,17 @@ where
     /// submits it to the network, and updates the local database.
     ///
     /// Uses the client's default prover (configured via [`crate::builder::ClientBuilder::prover`]).
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::ProvingDelegatedToGuardian`] if Guardian proves the transactions of
+    ///   the account. See [`SubmissionMode`].
     pub async fn submit_new_transaction(
         &mut self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionId, ClientError> {
+        self.ensure_self_executed(account_id).await?;
         let prover = self.tx_prover.clone();
         self.submit_new_transaction_with_prover(account_id, transaction_request, prover)
             .await
@@ -248,6 +268,10 @@ where
     ///
     /// This is useful for falling back to a different prover (e.g., local) when the default prover
     /// (e.g., remote) fails with a [`ClientError::TransactionProvingError`].
+    ///
+    /// This function ignores the [`SubmissionMode`] of the client. A call with an explicit prover
+    /// asks the client to prove the transaction, also for a guarded account, for example for a
+    /// guardian switch or when Guardian cannot prove.
     pub async fn submit_new_transaction_with_prover(
         &mut self,
         account_id: AccountId,
@@ -336,16 +360,27 @@ where
     /// The auth procedure of the account stops the execution when the signatures are missing, and
     /// reports the summary of the transaction.
     ///
+    /// If Guardian proves the transactions of the account, the request must be one that Guardian
+    /// can reproduce without a store, so that the cosigners sign a summary that Guardian can
+    /// execute. Use [`Self::pin_input_notes`] to pin the input notes before this call. See
+    /// [`SubmissionMode`].
+    ///
     /// # Errors
     ///
     /// - Returns [`ClientError::NoSignaturesRequired`] if the execution succeeds, because
     ///   the auth procedure of the account needs no more signatures.
+    /// - Returns [`ClientError::GuardianRequestError`] if Guardian proves the transactions of the
+    ///   account and cannot reproduce the request.
     /// - Returns the errors of [`Self::execute_transaction`].
     pub async fn execute_for_summary(
         &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionSummary, ClientError> {
+        if self.is_guardian_executed(account_id).await? {
+            guardian::check_guardian_request(&transaction_request)?;
+        }
+
         match self.execute_transaction(account_id, transaction_request).await {
             Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
                 summary,
@@ -406,6 +441,136 @@ where
         }
 
         Ok(transaction_request)
+    }
+
+    /// Asks Guardian to execute, prove and submit a transaction of a guarded account after the
+    /// cosigners signed its `summary`.
+    ///
+    /// Guardian executes the request stored with the proposal, and refuses it if it does not give
+    /// `summary`.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::AccountNotGuarded`] if the account is not guarded.
+    /// - Returns [`ClientError::GuardianSwitchExecutesLocally`] if the transaction changes the
+    ///   Guardian of the account.
+    /// - Returns [`ClientError::GuardianError`] if the request to Guardian fails.
+    #[cfg(feature = "tonic")]
+    pub async fn request_guardian_execution(
+        &self,
+        account_id: AccountId,
+        summary: &TransactionSummary,
+    ) -> Result<GuardianExecution, ClientError> {
+        if !self.is_guarded_account(account_id).await? {
+            return Err(ClientError::AccountNotGuarded(account_id));
+        }
+        if guardian::changes_guardian(summary) {
+            return Err(ClientError::GuardianSwitchExecutesLocally(account_id));
+        }
+
+        let execution = self.send_guardian_execution(account_id, summary.to_commitment()).await?;
+        self.track_expected_output_notes(summary).await?;
+
+        Ok(execution)
+    }
+
+    /// Asks Guardian to execute the signed summary with commitment `summary_commitment`.
+    #[cfg(feature = "tonic")]
+    async fn send_guardian_execution(
+        &self,
+        account_id: AccountId,
+        summary_commitment: Word,
+    ) -> Result<GuardianExecution, ClientError> {
+        let (guardian, authenticator, cosigner, now_ms) =
+            self.guardian_request_context(account_id).await?;
+        Ok(guardian
+            .execute(account_id, summary_commitment, authenticator, cosigner, now_ms)
+            .await?)
+    }
+
+    /// Returns what a signed Guardian request about `account_id` needs: the Guardian client, the
+    /// authenticator, the cosigner key, and the current time in milliseconds.
+    #[cfg(feature = "tonic")]
+    pub(crate) async fn guardian_request_context(
+        &self,
+        account_id: AccountId,
+    ) -> Result<(&crate::guardian::GuardianClient, &AUTH, PublicKeyCommitment, u64), ClientError>
+    {
+        let guardian = self.guardian.as_ref().ok_or(GuardianError::NotConfigured)?;
+        let authenticator =
+            self.authenticator.as_deref().ok_or(GuardianError::MissingAuthenticator)?;
+        let cosigner = self.cosigner_key(account_id, authenticator).await?;
+        let now_ms = self.store.get_current_timestamp().ok_or(GuardianError::MissingClock)? * 1000;
+
+        Ok((guardian, authenticator, cosigner, now_ms))
+    }
+
+    /// Returns the approver key of `account_id` that `authenticator` holds.
+    ///
+    /// The approver keys are in the account storage. Exactly one of them must be in the keystore,
+    /// so that the cosigner of a request is never ambiguous.
+    #[cfg(feature = "tonic")]
+    async fn cosigner_key(
+        &self,
+        account_id: AccountId,
+        authenticator: &AUTH,
+    ) -> Result<PublicKeyCommitment, ClientError> {
+        let account = self
+            .get_account(account_id)
+            .await?
+            .ok_or(ClientError::AccountDataNotFound(account_id))?;
+        let storage = account.storage();
+        let threshold_config = storage.get_item(AuthGuardedMultisig::threshold_config_slot())?;
+        let num_approvers = u32::try_from(threshold_config[1].as_canonical_u64())
+            .map_err(|_| GuardianError::NoCosignerKey(account_id))?;
+
+        let mut held_keys = Vec::new();
+        for index in 0..num_approvers {
+            let commitment = PublicKeyCommitment::from(storage.get_map_item(
+                AuthGuardedMultisig::approver_public_keys_slot(),
+                StorageMapKey::from_index(index),
+            )?);
+            if authenticator.get_public_key(commitment).await.is_some() {
+                held_keys.push(commitment);
+            }
+        }
+
+        match held_keys.as_slice() {
+            [key] => Ok(*key),
+            [] => Err(GuardianError::NoCosignerKey(account_id).into()),
+            _ => Err(GuardianError::MultipleCosignerKeys(account_id).into()),
+        }
+    }
+
+    /// Stores the output notes of `summary` that the store does not track yet. Sync commits them
+    /// when the transaction is included in a block, also when another party submitted it.
+    ///
+    /// Notes that the store already tracks are left unchanged, so that a repeated call does not
+    /// replace a committed note with an expected one.
+    #[cfg(feature = "tonic")]
+    async fn track_expected_output_notes(
+        &self,
+        summary: &TransactionSummary,
+    ) -> Result<(), ClientError> {
+        let note_ids: Vec<NoteId> = summary.output_notes().iter().map(RawOutputNote::id).collect();
+        let tracked: BTreeSet<NoteId> = self
+            .store
+            .get_output_notes(NoteFilter::List(note_ids))
+            .await?
+            .iter()
+            .map(OutputNoteRecord::id)
+            .collect();
+
+        let expected_height = self.store.get_sync_height().await?;
+        let new_notes = summary
+            .output_notes()
+            .iter()
+            .filter(|note| !tracked.contains(&note.id()))
+            .map(|note| OutputNoteRecord::try_from_output_note(note.clone(), expected_height))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.store.upsert_output_notes(&new_notes).await?;
+        Ok(())
     }
 
     /// Creates and executes a transaction specified by the request against the specified account,
@@ -823,14 +988,23 @@ where
     }
 
     /// Proves the specified transaction using the prover configured for this client.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::ProvingDelegatedToGuardian`] if Guardian proves the transactions of
+    ///   the account. See [`SubmissionMode`].
     pub async fn prove_transaction(
         &self,
         tx_result: &TransactionResult,
     ) -> Result<ProvenTransaction, ClientError> {
+        self.ensure_self_executed(tx_result.executed_transaction().account_id()).await?;
         self.prove_transaction_with(tx_result, self.tx_prover.clone()).await
     }
 
     /// Proves the specified transaction using the provided prover.
+    ///
+    /// This function ignores the [`SubmissionMode`] of the client. A call with an explicit prover
+    /// asks the client to prove the transaction, also for a guarded account.
     ///
     /// # Errors
     ///
@@ -1427,6 +1601,31 @@ where
             return Err(ClientError::AccountIsWatched(account_id));
         }
         Ok(account_record)
+    }
+
+    /// Returns `true` if Guardian proves and submits the transactions of `account_id`: the client
+    /// is in [`SubmissionMode::GuardianExecutable`] and the account is guarded.
+    async fn is_guardian_executed(&self, account_id: AccountId) -> Result<bool, ClientError> {
+        Ok(self.submission_mode == SubmissionMode::GuardianExecutable
+            && self.is_guarded_account(account_id).await?)
+    }
+
+    /// Returns `true` if the auth component of `account_id` is `AuthGuardedMultisig`.
+    pub(crate) async fn is_guarded_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<bool, ClientError> {
+        let account: PartialAccount =
+            self.get_native_account_record(account_id).await?.try_into()?;
+        Ok(guardian::is_guarded(&account.code_interface()))
+    }
+
+    /// Returns an error if Guardian proves the transactions of `account_id`.
+    async fn ensure_self_executed(&self, account_id: AccountId) -> Result<(), ClientError> {
+        if self.is_guardian_executed(account_id).await? {
+            return Err(ClientError::ProvingDelegatedToGuardian(account_id));
+        }
+        Ok(())
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.

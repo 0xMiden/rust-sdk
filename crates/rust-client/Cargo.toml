@@ -77,7 +77,7 @@ testing = [
   "miden-tx/testing",
   "miden-usdcx/testing",
 ]
-tonic = ["dep:miden-client-grpc", "dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
+tonic = ["dep:base64", "dep:miden-client-grpc", "dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
 
 [dependencies]
 # Miden dependencies
@@ -99,6 +99,7 @@ miden-usdcx           = { workspace = true }
 # External dependencies
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
+base64       = { optional = true, workspace = true }
 futures      = { workspace = true }
 prost        = { features = ["derive"], workspace = true }
 prost-types  = { version = "0.14" }
@@ -127,6 +128,7 @@ miden-objects          = { workspace = true }
 miden-protocol         = { workspace = true }
 miden-standards        = { workspace = true }
 miette                 = { workspace = true }
+protox                 = { workspace = true }
 tonic-prost-build      = { workspace = true }
 
 [dev-dependencies]

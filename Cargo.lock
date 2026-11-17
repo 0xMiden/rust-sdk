@@ -2802,6 +2802,7 @@ version = "0.18.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",
@@ -2823,6 +2824,7 @@ dependencies = [
  "miette",
  "prost",
  "prost-types",
+ "protox",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "serde",

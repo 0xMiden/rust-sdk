@@ -331,6 +331,31 @@ where
         .await
     }
 
+    /// Executes a transaction that needs signatures and returns the [`TransactionSummary`] that the
+    /// signers sign. It doesn't change the local database.
+    ///
+    /// The auth procedure of the account stops the execution when the signatures are missing, and
+    /// reports the summary of the transaction.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::NoSignaturesRequired`] if the execution succeeds, because
+    ///   the auth procedure of the account needs no more signatures.
+    /// - Returns the errors of [`Self::execute_transaction`].
+    pub async fn execute_for_summary(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionSummary, ClientError> {
+        match self.execute_transaction(account_id, transaction_request).await {
+            Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
+                summary,
+            ))) => Ok(*summary),
+            Ok(_) => Err(ClientError::NoSignaturesRequired),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Returns the block header at the client's current sync height and a partial blockchain
     /// consistent with it, tracking the blocks in `tracked_blocks` (in addition to the reference
     /// block itself, which needs no tracking).

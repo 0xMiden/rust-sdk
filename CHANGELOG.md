@@ -9,7 +9,7 @@
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][rust] Added `Client::execute_for_summary`, which executes a transaction that needs signatures and returns the `TransactionSummary` to sign without changing the store. It returns `ClientError::NoSignaturesRequired` when the transaction needs no signatures ([#2820](https://github.com/0xMiden/rust-sdk/pull/2820)).
-* [FEATURE][rust] Added `Client::pin_input_notes`, which returns the request with every input note authenticated, fetching from the node the inclusion proofs that the store does not hold, and `TransactionRequest::pin_input_note` for a single note ([#2820](https://github.com/0xMiden/rust-sdk/pull/2820)).
+* [FEATURE][rust] Added `Client::pin_input_notes`, which returns the request with every inferred input note pinned as authenticated, fetching from the node the inclusion proofs that the store does not hold, and `TransactionRequest::pin_input_note` for a single note ([#2820](https://github.com/0xMiden/rust-sdk/pull/2820)).
 
 ### Fixes
 

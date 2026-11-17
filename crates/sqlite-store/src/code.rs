@@ -24,12 +24,21 @@ impl SqliteStore {
     // PUBLIC API
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the local procedures of `procedure` to the code registry and to the code tree.
+    /// Adds the procedures of the MAST forest to the code registry and to the code tree.
     ///
-    /// The registry and the code tree change in the same database transaction. A procedure that is
-    /// already registered keeps the forest that it was first registered with.
+    /// The registry and the code tree are updated in the same database transaction. A procedure
+    /// that is already registered keeps the forest that it was first registered with.
     pub async fn add_procedure(&self, procedure: Arc<MastForest>) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| SqliteStore::insert_procedure(conn, &procedure))
+        self.add_procedures(vec![procedure]).await
+    }
+
+    /// Adds the procedures of all MAST forests to the code registry and to the code tree.
+    ///
+    /// The registry and the code tree are updated in one database transaction. If one forest fails,
+    /// no forest is added. A procedure that is already registered keeps the forest that it was
+    /// first registered with.
+    pub async fn add_procedures(&self, procedures: Vec<Arc<MastForest>>) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| SqliteStore::insert_procedures(conn, &procedures))
             .await
     }
 
@@ -71,33 +80,47 @@ impl SqliteStore {
     // HELPERS
     // --------------------------------------------------------------------------------------------
 
-    fn insert_procedure(conn: &mut Connection, procedure: &MastForest) -> Result<(), StoreError> {
-        let procedure_roots: Vec<_> = procedure.local_procedure_digests().collect();
-        if procedure_roots.is_empty() {
+    fn insert_procedures(
+        conn: &mut Connection,
+        procedures: &[Arc<MastForest>],
+    ) -> Result<(), StoreError> {
+        if procedures
+            .iter()
+            .all(|procedure| procedure.local_procedure_digests().next().is_none())
+        {
             return Ok(());
         }
 
         with_write_tx(conn, |tx| {
             let mut forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
-            forest.add_procedure(procedure)?;
+            forest.add_procedures(procedures.iter().map(AsRef::as_ref))?;
 
-            let commitment = procedure.commitment();
-            tx.execute(
-                "INSERT OR IGNORE INTO code_mast_forests (commitment, mast) VALUES (?1, ?2)",
-                params![commitment.as_bytes(), procedure.to_bytes()],
-            )
-            .into_store_error()?;
-
-            let mut insert = tx
+            let mut insert_forest = tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO code_mast_forests (commitment, mast) VALUES (?1, ?2)",
+                )
+                .into_store_error()?;
+            let mut insert_procedure = tx
                 .prepare_cached(
                     "INSERT OR IGNORE INTO code_procedures (procedure_root, commitment) \
                      VALUES (?1, ?2)",
                 )
                 .into_store_error()?;
-            for procedure_root in procedure_roots {
-                insert
-                    .execute(params![procedure_root.as_bytes(), commitment.as_bytes()])
+            for procedure in procedures {
+                let mut procedure_roots = procedure.local_procedure_digests().peekable();
+                if procedure_roots.peek().is_none() {
+                    continue;
+                }
+
+                let commitment = procedure.commitment();
+                insert_forest
+                    .execute(params![commitment.as_bytes(), procedure.to_bytes()])
                     .into_store_error()?;
+                for procedure_root in procedure_roots {
+                    insert_procedure
+                        .execute(params![procedure_root.as_bytes(), commitment.as_bytes()])
+                        .into_store_error()?;
+                }
             }
             Ok(())
         })
@@ -218,6 +241,56 @@ mod tests {
         }
     }
 
+    /// Adding forests in one batch gives the same registry and code tree as adding them one by one.
+    /// A forest that is in the batch twice is added once.
+    #[tokio::test]
+    async fn added_procedure_batch_matches_single_adds() {
+        let protocol = ProtocolLib::default().mast_forest().clone();
+        let standards = StandardsLib::default().mast_forest().clone();
+
+        let single = create_test_store().await;
+        single.add_procedure(protocol.clone()).await.unwrap();
+        single.add_procedure(standards.clone()).await.unwrap();
+
+        let batch = create_test_store().await;
+        batch
+            .add_procedures(vec![protocol.clone(), standards.clone(), protocol.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            batch.get_code_tree_root().await.unwrap(),
+            single.get_code_tree_root().await.unwrap()
+        );
+        assert_eq!(row_counts(&batch).await, row_counts(&single).await);
+        for procedure_root in local_roots(&protocol).union(&local_roots(&standards)) {
+            let from_batch = batch.get_procedure(*procedure_root).await.unwrap().unwrap();
+            let from_single = single.get_procedure(*procedure_root).await.unwrap().unwrap();
+            assert_eq!(from_batch.commitment(), from_single.commitment());
+        }
+    }
+
+    /// A procedure that two forests share stays bound to the forest that was added first.
+    #[tokio::test]
+    async fn shared_procedure_keeps_the_first_forest() {
+        let protocol = ProtocolLib::default().mast_forest().clone();
+        let standards = StandardsLib::default().mast_forest().clone();
+        let shared_roots: Vec<ProcedureRoot> =
+            local_roots(&protocol).intersection(&local_roots(&standards)).copied().collect();
+        assert!(!shared_roots.is_empty(), "the forests must share a procedure");
+
+        for (first, second) in [(&protocol, &standards), (&standards, &protocol)] {
+            let store = create_test_store().await;
+            store.add_procedure(first.clone()).await.unwrap();
+            store.add_procedure(second.clone()).await.unwrap();
+
+            for procedure_root in &shared_roots {
+                let stored = store.get_procedure(*procedure_root).await.unwrap().unwrap();
+                assert_eq!(stored.commitment(), first.commitment());
+            }
+        }
+    }
+
     #[tokio::test]
     async fn adding_the_same_procedure_twice_changes_nothing() {
         let store = create_test_store().await;
@@ -244,7 +317,7 @@ mod tests {
         let result = store
             .interact_with_connection(move |conn| {
                 conn.execute_batch("DROP TABLE code_procedures").into_store_error()?;
-                Ok(SqliteStore::insert_procedure(conn, &protocol))
+                Ok(SqliteStore::insert_procedures(conn, &[protocol]))
             })
             .await
             .unwrap();

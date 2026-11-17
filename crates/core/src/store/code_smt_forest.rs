@@ -8,7 +8,6 @@ use miden_protocol::crypto::merkle::smt::{
     Smt,
     SmtForestUpdateBatch,
     TreeId,
-    VersionId,
 };
 use miden_protocol::{Felt, Hasher, MastForest, Word};
 
@@ -82,17 +81,11 @@ impl<B: Backend> CodeSmtForest<B> {
     // MUTATORS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the local procedures of `procedure` to the code tree, at the given version.
+    /// Adds the local procedures of `procedure` to the code tree.
     ///
     /// The procedures that are only external references are not added, because their code is not in
     /// `procedure`. A procedure root that is already in the tree is left as it is.
-    ///
-    /// `new_version` must be greater than the latest version of the code tree.
-    pub fn add_procedure(
-        &mut self,
-        new_version: VersionId,
-        procedure: &MastForest,
-    ) -> Result<(), StoreError> {
+    pub fn add_procedure(&mut self, procedure: &MastForest) -> Result<(), StoreError> {
         let mut batch = SmtForestUpdateBatch::empty();
         let operations = batch.operations(code_tree_lineage_id());
         let mut is_empty = true;
@@ -104,6 +97,7 @@ impl<B: Backend> CodeSmtForest<B> {
             return Ok(());
         }
 
+        let new_version = self.forest.latest_version(code_tree_lineage_id()).map_or(0, |v| v + 1);
         let mutations =
             self.forest.compute_forest_mutations(new_version, batch).map_err(forest_error)?;
         self.forest.apply_mutations(mutations).map_err(forest_error)?;
@@ -161,8 +155,8 @@ mod tests {
         let standards = StandardsLib::default();
         let mut forest = forest();
 
-        forest.add_procedure(1, protocol.mast_forest()).unwrap();
-        forest.add_procedure(2, standards.mast_forest()).unwrap();
+        forest.add_procedure(protocol.mast_forest()).unwrap();
+        forest.add_procedure(standards.mast_forest()).unwrap();
 
         let roots = procedure_roots(&[protocol.mast_forest(), standards.mast_forest()]);
         let code_tree = CodeTree::with_entries(roots.iter().copied()).unwrap();
@@ -183,9 +177,9 @@ mod tests {
         let protocol = ProtocolLib::default();
         let mut forest = forest();
 
-        forest.add_procedure(1, protocol.mast_forest()).unwrap();
+        forest.add_procedure(protocol.mast_forest()).unwrap();
         let root = forest.code_tree_root();
-        forest.add_procedure(2, protocol.mast_forest()).unwrap();
+        forest.add_procedure(protocol.mast_forest()).unwrap();
 
         assert_eq!(forest.code_tree_root(), root);
     }

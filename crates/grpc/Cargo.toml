@@ -36,6 +36,7 @@ miden-protocol    = { workspace = true }
 
 # External dependencies
 async-trait = { workspace = true }
+futures     = { workspace = true }
 prost       = { features = ["derive"], workspace = true }
 tokio       = { features = ["time"], optional = true, workspace = true }
 tonic       = { features = ["codegen"], workspace = true }
@@ -53,7 +54,6 @@ miette                 = { workspace = true }
 tonic-prost-build      = { workspace = true }
 
 [dev-dependencies]
-futures         = { workspace = true }
 miden-protocol  = { default-features = false, features = ["testing"], workspace = true }
 miden-standards = { workspace = true }
 miden-testing   = { default-features = false, workspace = true }

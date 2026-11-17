@@ -18,6 +18,7 @@ use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     TransactionExecutorError,
+    TransactionRequest,
     TransactionRequestBuilder,
     TransactionRequestError,
 };
@@ -518,14 +519,7 @@ async fn serialized_multisig_request_uses_native_auth_args(
     );
     assert_eq!(summary.block_number(), sync_height);
 
-    let message = summary.to_commitment();
-    for key in client.keystore().get_keys_for_account(&account.id()).await.unwrap() {
-        let public_key: Word = key.public_key().to_commitment().into();
-        request.advice_map_mut().insert(
-            Hasher::merge(&[public_key, message]),
-            key.sign(message).to_encoded_signature(message),
-        );
-    }
+    sign_summary(&client, account.id(), &mut request, &summary).await;
     let result = Box::pin(client.execute_transaction(account.id(), request))
         .await
         .expect("the signed request should execute");
@@ -540,7 +534,9 @@ async fn serialized_multisig_request_uses_native_auth_args(
 }
 
 /// A multisig proposal can bind its summary to an old block and execute against the current chain
-/// tip. The node does not need to retain account state for the bound block.
+/// tip. The summary does not change when the client syncs, so signatures collected before a sync
+/// authorize the execution after it. The node does not need to retain account state for the bound
+/// block.
 #[tokio::test]
 async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     let (mut client, rpc_api, account) = Box::pin(fee_charging_multisig_client()).await;
@@ -555,7 +551,7 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
     // The executing party sets the auth args on a request that it received. The request does not
     // declare the bound block, so the client must track it.
-    let request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
+    let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
     let original_summary = unauthorized_summary(
         Box::pin(client.execute_transaction(account.id(), request.clone()))
@@ -573,12 +569,20 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     rpc_api.prune_account_state_at(bound_block_num);
 
     let later_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request))
+        Box::pin(client.execute_transaction(account.id(), request.clone()))
             .await
             .expect_err("the proposal should still reach multisig authorization at the new tip"),
     );
 
     assert_eq!(later_summary, original_summary);
+
+    // The signatures over the summary from before the sync authorize the execution at the new tip.
+    sign_summary(&client, account.id(), &mut request, &original_summary).await;
+    let sync_height = client.get_sync_height().await.unwrap();
+    let result = Box::pin(client.execute_transaction(account.id(), request))
+        .await
+        .expect("the signed proposal should execute at the new tip");
+    assert_eq!(result.executed_transaction().block_header().block_num(), sync_height);
 }
 
 fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
@@ -587,6 +591,24 @@ fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
             summary
         },
         other => panic!("expected an unauthorized multisig summary, got {other:?}"),
+    }
+}
+
+/// Adds a signature over `summary` to the advice map of `request` for each key that the client
+/// keystore holds for `account_id`.
+async fn sign_summary(
+    client: &TestClient,
+    account_id: AccountId,
+    request: &mut TransactionRequest,
+    summary: &TransactionSummary,
+) {
+    let message = summary.to_commitment();
+    for key in client.keystore().get_keys_for_account(&account_id).await.unwrap() {
+        let public_key: Word = key.public_key().to_commitment().into();
+        request.advice_map_mut().insert(
+            Hasher::merge(&[public_key, message]),
+            key.sign(message).to_encoded_signature(message),
+        );
     }
 }
 

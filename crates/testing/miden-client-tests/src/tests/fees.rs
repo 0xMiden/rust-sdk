@@ -513,11 +513,9 @@ async fn serialized_multisig_request_uses_native_auth_args(
         .unwrap();
     let sync_height = client.get_sync_height().await.unwrap();
 
-    let summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("an unsigned multisig request should return its summary"),
-    );
+    let summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("an unsigned multisig request should return its summary");
     assert_eq!(summary.block_number(), sync_height);
 
     sign_summary(&client, account.id(), &mut request, &summary).await;
@@ -554,11 +552,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // declare the bound block, so the client must track it.
     let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
-    let original_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the unsigned multisig proposal should return its summary"),
-    );
+    let original_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the unsigned multisig proposal should return its summary");
     assert_eq!(original_summary.block_number(), bound_block_num);
 
     rpc_api.prove_block();
@@ -569,11 +565,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // the summary. Foreign account inputs, including the fee faucet, must use the current tip.
     rpc_api.prune_account_state_at(bound_block_num);
 
-    let later_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the proposal should still reach multisig authorization at the new tip"),
-    );
+    let later_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the proposal should still reach multisig authorization at the new tip");
 
     assert_eq!(later_summary, original_summary);
 
@@ -584,15 +578,6 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
         .await
         .expect("the signed proposal should execute at the new tip");
     assert_eq!(result.executed_transaction().block_header().block_num(), sync_height);
-}
-
-fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
-    match error {
-        ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(summary)) => {
-            summary
-        },
-        other => panic!("expected an unauthorized multisig summary, got {other:?}"),
-    }
 }
 
 /// Adds a signature over `summary` to the advice map of `request` for each key that the client

@@ -357,11 +357,12 @@ where
         }
     }
 
-    /// Returns `transaction_request` with every input note consumed as authenticated, so that any
-    /// executor consumes the notes in the same mode.
+    /// Returns `transaction_request` with every inferred input note pinned as authenticated, so
+    /// that any executor consumes the notes in the same mode. Explicit input notes are left
+    /// unchanged.
     ///
-    /// A note keeps the inclusion proof that the request or the store holds. For the other notes,
-    /// the client fetches the inclusion proofs from the node.
+    /// The client takes the inclusion proofs from the store, and fetches from the node the proofs
+    /// that the store does not hold.
     ///
     /// # Errors
     ///

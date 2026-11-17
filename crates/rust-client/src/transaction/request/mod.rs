@@ -9,7 +9,7 @@ pub use miden_client_core::transaction::{
     PswapTransactionData,
     RequestAuthArgs,
     RequestInputNote,
-    RequestScript,
+    RequestTransactionScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,

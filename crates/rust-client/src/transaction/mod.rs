@@ -148,7 +148,7 @@ pub use request::{
     PswapTransactionData,
     RequestAuthArgs,
     RequestInputNote,
-    RequestScript,
+    RequestTransactionScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -1627,9 +1627,10 @@ impl AuthArgsLayout {
             return None;
         }
 
-        let RequestAuthArgs::Explicit { preimage, .. } = transaction_request.auth_args() else {
+        let RequestAuthArgs::Explicit(commitment) = transaction_request.auth_args() else {
             return None;
         };
+        let preimage = transaction_request.advice_map().get(commitment)?;
         let bound_block = u32::try_from(preimage.first()?.as_canonical_u64()).ok()?;
 
         Some(BlockNumber::from(bound_block))
@@ -2194,7 +2195,7 @@ mod tests {
     /// Returns the commitment of the explicit auth args of `request`, if it has explicit auth args.
     fn explicit_commitment(request: &TransactionRequest) -> Option<Word> {
         match request.auth_args() {
-            RequestAuthArgs::Explicit { commitment, .. } => Some(*commitment),
+            RequestAuthArgs::Explicit(commitment) => Some(*commitment),
             _ => None,
         }
     }

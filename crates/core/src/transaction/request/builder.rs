@@ -38,7 +38,7 @@ use super::{
     NoteArgs,
     RequestAuthArgs,
     RequestInputNote,
-    RequestScript,
+    RequestTransactionScript,
     TransactionRequest,
     TransactionRequestError,
 };
@@ -86,9 +86,9 @@ pub struct TransactionRequestBuilder {
     /// execution. If the advice map is extended with some user defined entries, this script
     /// argument could be used as a key to access the corresponding value.
     script_arg: Option<Word>,
-    /// Explicit auth args that the executing client passes to the auth procedure of the account, as
-    /// their commitment and preimage.
-    auth_args: Option<(Word, Vec<Felt>)>,
+    /// Commitment of the explicit auth args that the executing client passes to the auth procedure
+    /// of the account.
+    auth_args: Option<Word>,
     /// Salt the client commits the fee conversion info under when it builds the default auth args.
     fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
@@ -322,8 +322,8 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Sets `auth_args` as the explicit auth args of the request. The executing client passes their
-    /// commitment to the auth procedure and adds their preimage to the advice map.
+    /// Sets `auth_args` as the explicit auth args of the request and adds their preimage to the
+    /// advice map. The executing client passes their commitment to the auth procedure.
     ///
     /// Use this method for auth components that load their auth args from the advice map, for
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
@@ -332,7 +332,9 @@ impl TransactionRequestBuilder {
     /// of multisig auth args. [`Self::build`] fails if a fee conversion salt is also set.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
-        self.auth_args = Some((auth_args.to_commitment(), auth_args.to_elements()));
+        let commitment = auth_args.to_commitment();
+        self.advice_map.insert(commitment, auth_args.to_elements());
+        self.auth_args = Some(commitment);
         self
     }
 
@@ -848,14 +850,12 @@ fn check_no_duplicate_input_notes(
 /// Builds the auth args of the request. The client builds the default auth args with the fee
 /// conversion salt, so a salt together with explicit auth args has no effect.
 fn build_auth_args(
-    explicit: Option<(Word, Vec<Felt>)>,
+    explicit: Option<Word>,
     fee_conversion_salt: Option<Word>,
 ) -> Result<RequestAuthArgs, TransactionRequestError> {
     match (explicit, fee_conversion_salt) {
         (Some(_), Some(_)) => Err(TransactionRequestError::AuthArgsWithFeeConversionSalt),
-        (Some((commitment, preimage)), None) => {
-            Ok(RequestAuthArgs::Explicit { commitment, preimage })
-        },
+        (Some(commitment), None) => Ok(RequestAuthArgs::Explicit(commitment)),
         (None, Some(salt)) => Ok(RequestAuthArgs::DefaultWithSalt(salt)),
         (None, None) => Ok(RequestAuthArgs::Default),
     }
@@ -872,17 +872,20 @@ fn build_transaction_script(
     script_arg: Option<Word>,
     own_output_notes: Vec<Note>,
     expiration_delta: Option<NonZeroU16>,
-) -> Result<Option<RequestScript>, TransactionRequestError> {
+) -> Result<RequestTransactionScript, TransactionRequestError> {
     match (custom_script, own_output_notes.is_empty()) {
         (Some(_), false) => Err(TransactionRequestError::ScriptTemplateError(
             "Cannot set both a custom script and own output notes".to_string(),
         )),
-        (Some(script), true) => Ok(Some(RequestScript::Custom { script, arg: script_arg })),
+        (Some(script), true) => Ok(RequestTransactionScript::Custom {
+            script,
+            arg: script_arg.unwrap_or_default(),
+        }),
         (None, _) if script_arg.is_some() => Err(TransactionRequestError::ScriptTemplateError(
             "Cannot set a script argument without a custom script".to_string(),
         )),
-        (None, true) if expiration_delta.is_none() => Ok(None),
-        (None, _) => Ok(Some(RequestScript::Generated { own_output_notes, expiration_delta })),
+        (None, true) if expiration_delta.is_none() => Ok(RequestTransactionScript::Empty),
+        (None, _) => Ok(RequestTransactionScript::Generated { own_output_notes, expiration_delta }),
     }
 }
 

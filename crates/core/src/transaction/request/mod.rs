@@ -63,7 +63,9 @@ pub type NoteArgs = Word;
 /// A transaction script is a program which is executed after scripts of all input notes have been
 /// executed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RequestScript {
+pub enum RequestTransactionScript {
+    /// The transaction runs no transaction script.
+    Empty,
     /// The executing client generates the script. The script creates `own_output_notes` and expires
     /// the transaction after `expiration_delta` blocks if it is set. At least one of them is set.
     ///
@@ -74,11 +76,7 @@ pub enum RequestScript {
         expiration_delta: Option<NonZeroU16>,
     },
     /// The exact script to execute, and the word that the script receives as its `TX_SCRIPT_ARGS`.
-    /// `None` gives the script an empty word.
-    Custom {
-        script: TransactionScript,
-        arg: Option<Word>,
-    },
+    Custom { script: TransactionScript, arg: Word },
 }
 
 /// An input note of a [`TransactionRequest`], with its arguments.
@@ -134,8 +132,9 @@ pub enum RequestAuthArgs {
     Default,
     /// The executing client builds the default auth args with this salt.
     DefaultWithSalt(Word),
-    /// The caller sets the auth args. The executing client does not change them.
-    Explicit { commitment: Word, preimage: Vec<Felt> },
+    /// The caller sets the auth args to this commitment. The advice map of the request holds their
+    /// preimage. The executing client does not change them.
+    Explicit(Word),
 }
 
 /// Specifies a transaction request that can be executed by an account.
@@ -149,8 +148,8 @@ pub struct TransactionRequest {
     block_numbers: BTreeSet<BlockNumber>,
     /// Notes to be consumed by the transaction, in consumption order.
     input_notes: Vec<RequestInputNote>,
-    /// Transaction script to execute, or `None` to run no transaction script.
-    transaction_script: Option<RequestScript>,
+    /// Transaction script to execute.
+    transaction_script: RequestTransactionScript,
     /// Recipients of the output notes that a custom script or the scripts of the input notes are
     /// expected to create, keyed by recipient digest.
     expected_output_recipients: BTreeMap<Word, NoteRecipient>,
@@ -211,7 +210,7 @@ impl TransactionRequest {
     /// `None` if the transaction does not expire.
     pub fn expiration_delta(&self) -> Option<u16> {
         match &self.transaction_script {
-            Some(RequestScript::Generated { expiration_delta, .. }) => {
+            RequestTransactionScript::Generated { expiration_delta, .. } => {
                 expiration_delta.map(NonZeroU16::get)
             },
             _ => None,
@@ -224,7 +223,9 @@ impl TransactionRequest {
     /// transaction script, rather than notes that are created as a result of consuming other notes.
     pub fn expected_output_own_notes(&self) -> Vec<Note> {
         match &self.transaction_script {
-            Some(RequestScript::Generated { own_output_notes, .. }) => own_output_notes.clone(),
+            RequestTransactionScript::Generated { own_output_notes, .. } => {
+                own_output_notes.clone()
+            },
             _ => vec![],
         }
     }
@@ -241,8 +242,8 @@ impl TransactionRequest {
         self.expected_future_notes.values()
     }
 
-    /// Returns the [`RequestScript`], or `None` if the transaction runs no transaction script.
-    pub fn transaction_script(&self) -> &Option<RequestScript> {
+    /// Returns the [`RequestTransactionScript`].
+    pub fn transaction_script(&self) -> &RequestTransactionScript {
         &self.transaction_script
     }
 
@@ -323,10 +324,11 @@ impl TransactionRequest {
         self
     }
 
-    /// Sets the explicit auth args to `commitment` and its `preimage`. The new auth args replace
-    /// the previous auth args.
+    /// Sets the explicit auth args to `commitment` and adds its `preimage` to the advice map. The
+    /// new auth args replace the previous auth args.
     pub fn commit_auth_args(&mut self, commitment: Word, preimage: Vec<Felt>) {
-        self.auth_args = RequestAuthArgs::Explicit { commitment, preimage };
+        self.advice_map.insert(commitment, preimage);
+        self.auth_args = RequestAuthArgs::Explicit(commitment);
     }
 
     /// Builds the [`InputNotes`] needed for the transaction execution.
@@ -409,9 +411,8 @@ impl TransactionRequest {
 
         // Default auth args pass nothing. The client commits the defaults as explicit auth args
         // before it converts a request that needs them.
-        if let RequestAuthArgs::Explicit { commitment, preimage } = auth_args {
+        if let RequestAuthArgs::Explicit(commitment) = auth_args {
             tx_args = tx_args.with_auth_args(commitment);
-            tx_args.extend_advice_map([(commitment, preimage)]);
         }
 
         if let Some(account_code_upgrade) = account_code_upgrade {
@@ -431,24 +432,23 @@ impl TransactionRequest {
 
     /// Builds the transaction script based on the account capabilities and the transaction request.
     ///
-    /// Returns the script together with the `TX_SCRIPT_ARGS` word it must be executed with. A
-    /// request without a [`RequestScript`] runs without a transaction script.
+    /// Returns the script together with the `TX_SCRIPT_ARGS` word it must be executed with, or
+    /// `None` for [`RequestTransactionScript::Empty`].
     ///
     /// A generated script determines its own argument. The script that creates notes reads them
     /// from the advice provider and receives only their payload commitment on the stack. The script
     /// that only expires the transaction reads the delta from its argument.
     ///
-    /// Scripts supplied by the caller via [`RequestScript::Custom`] are expected to have already
-    /// been compiled against the client's source manager (e.g. via `Client::code_builder`).
+    /// Scripts supplied by the caller via [`RequestTransactionScript::Custom`] are expected to have
+    /// already been compiled against the client's source manager (e.g. via `Client::code_builder`).
     pub fn build_transaction_script(
         &self,
         code_interface: &AccountCodeInterface,
     ) -> Result<Option<(TransactionScript, Word)>, TransactionRequestError> {
         match &self.transaction_script {
-            Some(RequestScript::Custom { script, arg }) => {
-                Ok(Some((script.clone(), arg.unwrap_or_default())))
-            },
-            Some(RequestScript::Generated { own_output_notes, expiration_delta }) => {
+            RequestTransactionScript::Empty => Ok(None),
+            RequestTransactionScript::Custom { script, arg } => Ok(Some((script.clone(), *arg))),
+            RequestTransactionScript::Generated { own_output_notes, expiration_delta } => {
                 let notes: Vec<PartialNote> =
                     own_output_notes.iter().cloned().map(Into::into).collect();
                 let script = match expiration_delta {
@@ -471,7 +471,6 @@ impl TransactionRequest {
                 };
                 Ok(Some(script))
             },
-            None => Ok(None),
         }
     }
 }
@@ -637,12 +636,11 @@ mod tests {
 
         let request = TransactionRequestBuilder::new().auth_args(&auth_args).build().unwrap();
 
+        let commitment = auth_args.to_commitment();
+        assert_eq!(request.auth_args(), &RequestAuthArgs::Explicit(commitment));
         assert_eq!(
-            request.auth_args(),
-            &RequestAuthArgs::Explicit {
-                commitment: auth_args.to_commitment(),
-                preimage: auth_args.to_elements(),
-            }
+            request.advice_map().get(&commitment).unwrap().as_ref(),
+            auth_args.to_elements()
         );
     }
 

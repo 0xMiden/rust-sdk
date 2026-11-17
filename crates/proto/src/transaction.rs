@@ -23,7 +23,7 @@ use miden_client_core::transaction::{
     NoteArgs,
     RequestAuthArgs,
     RequestInputNote,
-    RequestScript,
+    RequestTransactionScript,
     TransactionDetails,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -31,6 +31,7 @@ use miden_client_core::transaction::{
     TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
+use miden_protocol::Word;
 use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
@@ -38,7 +39,6 @@ use miden_protocol::note::{Note, NoteDetails, NoteRecipient, NoteTag};
 use miden_protocol::transaction::{AccountInputs, TransactionScript};
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::vm::AdviceMap;
-use miden_protocol::{Felt, Word};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
@@ -189,7 +189,7 @@ impl ProtobufValue for TransactionRequest {
                 .map(|block_num| (*block_num).into())
                 .collect(),
             input_notes: self.input_notes().iter().map(Into::into).collect(),
-            transaction_script: self.transaction_script().as_ref().map(Into::into),
+            transaction_script: Some(self.transaction_script().into()),
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
             expected_future_notes: self
                 .expected_future_notes()
@@ -243,7 +243,8 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(DecodeMessageExt::decode_and_verify)
         .collect::<Result<Vec<NoteRecipient>, _>>()?;
-    let script = decode_script(request.transaction_script)?;
+    let script =
+        decode_script(required(request.transaction_script, MESSAGE, "transaction script")?)?;
     let expected_future_notes = request
         .expected_future_notes
         .into_iter()
@@ -314,8 +315,18 @@ fn decode_transaction_request_v1(
     let mut transaction_request =
         builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
     // The builder takes explicit auth args only as a type that commits to them, so the decoded
-    // commitment and preimage are set on the built request.
-    if let RequestAuthArgs::Explicit { commitment, preimage } = auth_args {
+    // commitment is set on the built request. The decoded advice map must hold its preimage.
+    if let RequestAuthArgs::Explicit(commitment) = auth_args {
+        let preimage = transaction_request
+            .advice_map()
+            .get(&commitment)
+            .ok_or_else(|| {
+                ProtoDecodeError::InvalidValue(format!(
+                    "advice map holds no preimage for the auth args {}",
+                    commitment.to_hex()
+                ))
+            })?
+            .to_vec();
         transaction_request.commit_auth_args(commitment, preimage);
     }
 
@@ -334,29 +345,18 @@ fn decode_auth_args(
 
     match required(auth_args.auth_args, "request auth args", "auth args")? {
         AuthArgs::DefaultWithSalt(salt) => Ok(RequestAuthArgs::DefaultWithSalt(salt.try_into()?)),
-        AuthArgs::Explicit(explicit) => Ok(RequestAuthArgs::Explicit {
-            commitment: required(explicit.commitment, "explicit auth args", "commitment")?
-                .try_into()?,
-            preimage: explicit
-                .preimage
-                .into_iter()
-                .map(Felt::try_from)
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
+        AuthArgs::Explicit(commitment) => Ok(RequestAuthArgs::Explicit(commitment.try_into()?)),
     }
 }
 
 /// Encodes the auth args of a request. The default auth args have no message.
 fn encode_auth_args(auth_args: &RequestAuthArgs) -> Option<proto::RequestAuthArgs> {
-    use proto::request_auth_args::{AuthArgs, Explicit};
+    use proto::request_auth_args::AuthArgs;
 
     let auth_args = match auth_args {
         RequestAuthArgs::Default => return None,
         RequestAuthArgs::DefaultWithSalt(salt) => AuthArgs::DefaultWithSalt(salt.into()),
-        RequestAuthArgs::Explicit { commitment, preimage } => AuthArgs::Explicit(Explicit {
-            commitment: Some(commitment.into()),
-            preimage: preimage.iter().map(Into::into).collect(),
-        }),
+        RequestAuthArgs::Explicit(commitment) => AuthArgs::Explicit(commitment.into()),
     };
 
     Some(proto::RequestAuthArgs { auth_args: Some(auth_args) })
@@ -411,14 +411,13 @@ struct DecodedScript {
 
 /// Decodes the script of a request into the values that the builder takes. Every value is empty
 /// when the request has no script.
-fn decode_script(script: Option<proto::RequestScript>) -> Result<DecodedScript, ProtoDecodeError> {
-    use proto::request_script::Script;
+fn decode_script(
+    script: proto::RequestTransactionScript,
+) -> Result<DecodedScript, ProtoDecodeError> {
+    use proto::request_transaction_script::Script;
 
-    let Some(script) = script else {
-        return Ok(DecodedScript::default());
-    };
-
-    match required(script.script, "request script", "variant")? {
+    match required(script.script, "request transaction script", "variant")? {
+        Script::Empty(_) => Ok(DecodedScript::default()),
         Script::Generated(generated) => Ok(DecodedScript {
             own_output_notes: generated
                 .own_output_notes
@@ -435,7 +434,7 @@ fn decode_script(script: Option<proto::RequestScript>) -> Result<DecodedScript, 
             custom_script: Some(
                 required(custom.script, "custom script", "script")?.decode_and_verify()?,
             ),
-            script_arg: custom.arg.map(Word::try_from).transpose()?,
+            script_arg: Some(required(custom.arg, "custom script", "arg")?.try_into()?),
             ..Default::default()
         }),
     }
@@ -450,20 +449,21 @@ fn decode_expiration_delta(expiration_delta: u32) -> Result<u16, ProtoDecodeErro
     })
 }
 
-impl From<&RequestScript> for proto::RequestScript {
-    fn from(script: &RequestScript) -> Self {
-        use proto::request_script::{Custom, Generated, Script};
+impl From<&RequestTransactionScript> for proto::RequestTransactionScript {
+    fn from(script: &RequestTransactionScript) -> Self {
+        use proto::request_transaction_script::{Custom, Empty, Generated, Script};
 
         let script = match script {
-            RequestScript::Generated { own_output_notes, expiration_delta } => {
+            RequestTransactionScript::Empty => Script::Empty(Empty {}),
+            RequestTransactionScript::Generated { own_output_notes, expiration_delta } => {
                 Script::Generated(Generated {
                     own_output_notes: own_output_notes.iter().map(Into::into).collect(),
                     expiration_delta: expiration_delta.map(|delta| u32::from(delta.get())),
                 })
             },
-            RequestScript::Custom { script, arg } => Script::Custom(Custom {
+            RequestTransactionScript::Custom { script, arg } => Script::Custom(Custom {
                 script: Some(script.into()),
-                arg: arg.map(Into::into),
+                arg: Some((*arg).into()),
             }),
         };
 

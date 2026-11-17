@@ -89,8 +89,7 @@ message TransactionRequestV1 {
   repeated blockchain.BlockNumber block_numbers = 1;
   // Notes that the transaction consumes, in consumption order.
   repeated RequestInputNote input_notes = 2;
-  // An absent value means that the transaction runs no transaction script.
-  RequestScript transaction_script = 3;
+  RequestTransactionScript transaction_script = 3;
   // Recipients of the notes that a custom script or the scripts of the input notes are expected to
   // create.
   repeated note.NoteRecipient expected_output_recipients = 4;
@@ -109,17 +108,12 @@ message TransactionRequestV1 {
 
 // Auth args that the executing client passes to the auth procedure of the account.
 message RequestAuthArgs {
-  // Auth args that the caller sets.
-  message Explicit {
-    // Word that the auth procedure receives on the operand stack.
-    primitives.Word commitment = 1;
-    repeated primitives.Felt preimage = 2;
-  }
-
   oneof auth_args {
     // Salt that the executing client builds the default auth args with.
     primitives.Word default_with_salt = 1;
-    Explicit explicit = 2;
+    // Commitment of the auth args that the caller sets. The advice map of the request holds their
+    // preimage.
+    primitives.Word explicit = 2;
   }
 }
 
@@ -136,7 +130,10 @@ message RequestInputNote {
 }
 
 // Transaction script of a transaction request.
-message RequestScript {
+message RequestTransactionScript {
+  // The transaction runs no transaction script.
+  message Empty {}
+
   // A script that the executing client generates.
   message Generated {
     // Notes that the script creates.
@@ -149,13 +146,14 @@ message RequestScript {
   // The exact transaction script to execute.
   message Custom {
     .transaction.TransactionScript script = 1;
-    // Word that the script receives on the operand stack. An absent value means an empty word.
+    // Word that the script receives on the operand stack.
     primitives.Word arg = 2;
   }
 
   oneof script {
     Generated generated = 1;
     Custom custom = 2;
+    Empty empty = 3;
   }
 }
 

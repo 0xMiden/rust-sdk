@@ -21,7 +21,7 @@ pub use request::{
     PswapTransactionData,
     RequestAuthArgs,
     RequestInputNote,
-    RequestScript,
+    RequestTransactionScript,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,

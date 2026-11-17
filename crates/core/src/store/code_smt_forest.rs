@@ -1,3 +1,5 @@
+use alloc::collections::BTreeSet;
+
 use miden_protocol::block::code_tree::{CodeTree, CodeTreeRoot, CodeWitness};
 use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::smt::{
@@ -86,15 +88,28 @@ impl<B: Backend> CodeSmtForest<B> {
     /// The procedures that are only external references are not added, because their code is not in
     /// `procedure`. A procedure root that is already in the tree is left as it is.
     pub fn add_procedure(&mut self, procedure: &MastForest) -> Result<(), StoreError> {
+        self.add_procedures([procedure])
+    }
+
+    /// Adds the local procedures of all `procedures` to the code tree, as one new version of the
+    /// tree.
+    ///
+    /// The procedures that are only external references are not added. A procedure root that is
+    /// already in the tree is left as it is.
+    pub fn add_procedures<'a>(
+        &mut self,
+        procedures: impl IntoIterator<Item = &'a MastForest>,
+    ) -> Result<(), StoreError> {
+        let procedure_roots: BTreeSet<Word> =
+            procedures.into_iter().flat_map(MastForest::local_procedure_digests).collect();
+        if procedure_roots.is_empty() {
+            return Ok(());
+        }
+
         let mut batch = SmtForestUpdateBatch::empty();
         let operations = batch.operations(code_tree_lineage_id());
-        let mut is_empty = true;
-        for procedure_root in procedure.local_procedure_digests() {
+        for procedure_root in procedure_roots {
             operations.add_insert(procedure_root, PRESENT_VALUE);
-            is_empty = false;
-        }
-        if is_empty {
-            return Ok(());
         }
 
         let new_version = self.forest.latest_version(code_tree_lineage_id()).map_or(0, |v| v + 1);

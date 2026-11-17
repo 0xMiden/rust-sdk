@@ -121,34 +121,21 @@ impl SqliteStore {
         mast.map(|bytes| MastForest::read_from_bytes(&bytes).map_err(StoreError::from))
             .transpose()
     }
-
-    /// Runs `f` on the connection that serves [`MastForestStore::get`].
-    ///
-    /// The executor calls [`MastForestStore::get`] synchronously, so it cannot use the async
-    /// connection pool. The connection is read-only and opens on the first call.
-    fn with_mast_reader<R>(
-        &self,
-        f: impl FnOnce(&Connection) -> Result<R, StoreError>,
-    ) -> Result<R, StoreError> {
-        let mut reader = self
-            .mast_reader
-            .lock()
-            .map_err(|_| StoreError::DatabaseError("MAST reader lock is poisoned".into()))?;
-        if reader.is_none() {
-            let manager = SqlitePoolManager::new(self.database_filepath.clone(), Access::ReadOnly);
-            *reader = Some(manager.new_connection().into_store_error()?);
-        }
-        f(reader.as_ref().expect("the reader connection is open"))
-    }
 }
 
 // MAST FOREST STORE
 // ================================================================================================
 
+/// The executor calls [`MastForestStore::get`] synchronously, so it cannot use the async connection
+/// pool. Each call reads through a new read-only connection.
 impl MastForestStore for SqliteStore {
     fn get(&self, procedure_hash: &miden_protocol::Word) -> Option<LoadedMastForest> {
         let procedure_root = ProcedureRoot::from_raw(*procedure_hash);
-        match self.with_mast_reader(|conn| SqliteStore::query_procedure(conn, procedure_root)) {
+        let mast = SqlitePoolManager::new(self.database_filepath.clone(), Access::ReadOnly)
+            .new_connection()
+            .into_store_error()
+            .and_then(|conn| SqliteStore::query_procedure(&conn, procedure_root));
+        match mast {
             Ok(mast) => mast.map(|mast| LoadedMastForest::new(Arc::new(mast))),
             Err(err) => {
                 tracing::warn!(%err, %procedure_root, "failed to read a procedure from the store");

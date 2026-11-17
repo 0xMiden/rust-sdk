@@ -562,11 +562,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // declare the bound block, so the client must track it.
     let request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
-    let original_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the unsigned multisig proposal should return its summary"),
-    );
+    let original_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the unsigned multisig proposal should return its summary");
     assert_eq!(original_summary.block_number(), bound_block_num);
 
     rpc_api.prove_block();
@@ -577,11 +575,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // the summary. Foreign account inputs, including the fee faucet, must use the current tip.
     rpc_api.prune_account_state_at(bound_block_num);
 
-    let later_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request))
-            .await
-            .expect_err("the proposal should still reach multisig authorization at the new tip"),
-    );
+    let later_summary = Box::pin(client.execute_for_summary(account.id(), request))
+        .await
+        .expect("the proposal should still reach multisig authorization at the new tip");
 
     assert_eq!(later_summary, original_summary);
 }

@@ -644,11 +644,51 @@ mod tests {
     use super::{
         BlockNumber,
         ExpirationTransactionScript,
+        InputNote,
+        InputNoteAuthentication,
         NonZeroU16,
         RequestAuthArgs,
         TransactionRequestBuilder,
+        TransactionRequestError,
         TransactionScript,
     };
+
+    fn p2id_note(rng: &mut ChaCha20Rng) -> Note {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        P2idNote::builder()
+            .sender(AccountId::try_from(ACCOUNT_ID_SENDER).unwrap())
+            .target(AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap())
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(NoteType::Private)
+            .serial_number(rng.random())
+            .build()
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn pin_input_note_replaces_the_authentication_and_keeps_the_args() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let note = p2id_note(&mut rng);
+        let args = Word::from([1u32, 2, 3, 4]);
+        let mut request = TransactionRequestBuilder::new()
+            .input_notes([(note.clone(), Some(args))])
+            .build()
+            .unwrap();
+
+        let pinned = InputNote::unauthenticated(note);
+        request.pin_input_note(pinned.clone()).unwrap();
+
+        let request_note = &request.input_notes()[0];
+        assert_eq!(request_note.authentication(), &InputNoteAuthentication::Explicit(pinned));
+        assert_eq!(request_note.args(), Some(args));
+
+        let other = p2id_note(&mut rng);
+        let err = request.pin_input_note(InputNote::unauthenticated(other.clone())).unwrap_err();
+        assert!(
+            matches!(err, TransactionRequestError::InputNoteNotInRequest(id) if id == other.id())
+        );
+    }
 
     #[test]
     fn auth_args_set_the_commitment_and_its_preimage() {

@@ -164,7 +164,7 @@ mod tests {
         procedure.local_procedure_digests().map(ProcedureRoot::from_raw).collect()
     }
 
-    fn unknown_root() -> ProcedureRoot {
+    fn absent_procedure_root() -> ProcedureRoot {
         ProcedureRoot::from_raw(Word::from([1u32, 2, 3, 4]))
     }
 
@@ -192,7 +192,7 @@ mod tests {
             let stored = store.get_procedure(procedure_root).await.unwrap().unwrap();
             assert_eq!(stored.commitment(), protocol.commitment());
         }
-        assert!(store.get_procedure(unknown_root()).await.unwrap().is_none());
+        assert!(store.get_procedure(absent_procedure_root()).await.unwrap().is_none());
     }
 
     /// The code tree must have the same root and witnesses as the protocol's code tree with the
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
 
         let present = *roots.first().unwrap();
-        for procedure_root in [present, unknown_root()] {
+        for procedure_root in [present, absent_procedure_root()] {
             let witness = store.get_procedure_witness(procedure_root).await.unwrap();
             assert_eq!(witness, code_tree.open(&procedure_root));
         }

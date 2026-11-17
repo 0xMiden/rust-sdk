@@ -119,7 +119,7 @@ mod tests {
 
     use super::*;
 
-    fn forest() -> CodeSmtForest<ForestInMemoryBackend> {
+    fn code_smt_forest() -> CodeSmtForest<ForestInMemoryBackend> {
         CodeSmtForest::new(ForestInMemoryBackend::new()).unwrap()
     }
 
@@ -136,14 +136,14 @@ mod tests {
 
     #[test]
     fn empty_forest_matches_empty_code_tree() {
-        let forest = forest();
+        let code_smt_forest = code_smt_forest();
         let code_tree = CodeTree::<Smt>::default();
-        let procedure_root = ProcedureRoot::from_raw(Word::from([1u32, 2, 3, 4]));
+        let absent_procedure_root = ProcedureRoot::from_raw(Word::from([1u32, 2, 3, 4]));
 
-        assert_eq!(forest.code_tree_root(), code_tree.root());
+        assert_eq!(code_smt_forest.code_tree_root(), code_tree.root());
         assert_eq!(
-            forest.get_procedure_witness(procedure_root).unwrap(),
-            code_tree.open(&procedure_root)
+            code_smt_forest.get_procedure_witness(absent_procedure_root).unwrap(),
+            code_tree.open(&absent_procedure_root)
         );
     }
 
@@ -153,20 +153,20 @@ mod tests {
     fn added_procedures_match_code_tree() {
         let protocol = ProtocolLib::default();
         let standards = StandardsLib::default();
-        let mut forest = forest();
+        let mut code_smt_forest = code_smt_forest();
 
-        forest.add_procedure(protocol.mast_forest()).unwrap();
-        forest.add_procedure(standards.mast_forest()).unwrap();
+        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
+        code_smt_forest.add_procedure(standards.mast_forest()).unwrap();
 
         let roots = procedure_roots(&[protocol.mast_forest(), standards.mast_forest()]);
         let code_tree = CodeTree::with_entries(roots.iter().copied()).unwrap();
-        assert_eq!(forest.code_tree_root(), code_tree.root());
+        assert_eq!(code_smt_forest.code_tree_root(), code_tree.root());
 
         let present = roots[0];
         let absent = ProcedureRoot::from_raw(Word::from([1u32, 2, 3, 4]));
         for procedure_root in [present, absent] {
             assert_eq!(
-                forest.get_procedure_witness(procedure_root).unwrap(),
+                code_smt_forest.get_procedure_witness(procedure_root).unwrap(),
                 code_tree.open(&procedure_root)
             );
         }
@@ -175,12 +175,12 @@ mod tests {
     #[test]
     fn adding_the_same_procedure_twice_keeps_the_root() {
         let protocol = ProtocolLib::default();
-        let mut forest = forest();
+        let mut code_smt_forest = code_smt_forest();
 
-        forest.add_procedure(protocol.mast_forest()).unwrap();
-        let root = forest.code_tree_root();
-        forest.add_procedure(protocol.mast_forest()).unwrap();
+        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
+        let root = code_smt_forest.code_tree_root();
+        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
 
-        assert_eq!(forest.code_tree_root(), root);
+        assert_eq!(code_smt_forest.code_tree_root(), root);
     }
 }

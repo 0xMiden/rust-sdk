@@ -796,8 +796,7 @@ pub(crate) async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
     options: &SubmitOptions,
 ) -> Result<(), CliError> {
     println!("Executing transaction...");
-    let transaction_result =
-        Box::pin(client.execute_transaction(account_id, transaction_request)).await?;
+    let transaction_result = client.execute_transaction(account_id, transaction_request).await?;
 
     let executed_transaction = transaction_result.executed_transaction().clone();
 
@@ -823,13 +822,13 @@ pub(crate) async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
 
     let prover = transaction_prover(client, options.delegate_proving)?;
 
-    let proven_transaction =
-        Box::pin(client.prove_transaction_with(&transaction_result, prover)).await?;
+    let proven_transaction = client.prove_transaction_with(&transaction_result, prover).await?;
 
     println!("Submitting transaction to node...");
 
-    let submission_height =
-        Box::pin(client.submit_proven_transaction(proven_transaction, &transaction_result)).await?;
+    let submission_height = client
+        .submit_proven_transaction(proven_transaction, &transaction_result)
+        .await?;
     println!("Applying transaction to store...");
     Box::pin(client.apply_transaction(&transaction_result, submission_height)).await?;
 

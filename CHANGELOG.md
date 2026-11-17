@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][cli] `network-note-status` shows the fee sponsorship notes that the node binds to the network note, with their fee asset, reclaim height, commit block and last execution error ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).

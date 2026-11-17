@@ -4,6 +4,7 @@ use miden_client::rpc::{GrpcClient, NodeRpcClient};
 
 use crate::config::CliConfig;
 use crate::errors::CliError;
+use crate::utils::{FormattedAsset, ResolvedFaucet};
 use crate::{Parser, create_dynamic_table};
 
 #[derive(Debug, Parser, Clone)]
@@ -44,12 +45,46 @@ impl NetworkNoteStatusCmd {
         ]);
         table.add_row(vec![
             Cell::new("Last Attempt Block"),
-            Cell::new(
-                status_info.last_attempt_block_num.map_or("-".to_string(), |b| b.to_string()),
-            ),
+            Cell::new(format_block_num(status_info.last_attempt_block_num)),
         ]);
 
         println!("{table}");
+
+        if !status_info.sponsorships.is_empty() {
+            let network_id = cli_config.network_id()?;
+            let mut sponsorships_table = create_dynamic_table(&[
+                "Fee Sponsorship Note ID",
+                "Fee Asset",
+                "Reclaim Height",
+                "Committed Block",
+                "Last Error",
+                "Last Attempt Block",
+            ]);
+            for sponsorship in &status_info.sponsorships {
+                // The command does not create a client, so it shows the fee asset in base units
+                // with the faucet address.
+                let fee_asset = FormattedAsset::new(
+                    &sponsorship.fee_asset,
+                    &ResolvedFaucet::default(),
+                    &network_id,
+                );
+                sponsorships_table.add_row(vec![
+                    sponsorship.note_id.to_hex(),
+                    fee_asset.to_string(),
+                    format_block_num(sponsorship.reclaim_height),
+                    format_block_num(sponsorship.committed_block_num),
+                    sponsorship.last_error.clone().unwrap_or_else(|| "-".to_string()),
+                    format_block_num(sponsorship.last_attempt_block_num),
+                ]);
+            }
+            println!("{sponsorships_table}");
+        }
+
         Ok(())
     }
+}
+
+/// Returns the block number as a string, or `-` when it is `None`.
+fn format_block_num(block_num: Option<u32>) -> String {
+    block_num.map_or_else(|| "-".to_string(), |block_num| block_num.to_string())
 }

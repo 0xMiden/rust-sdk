@@ -309,6 +309,8 @@ The command displays a table with the following information:
 - **Last Error**: The last error encountered during processing, if any.
 - **Last Attempt Block**: The block number of the most recent processing attempt.
 
+If the node binds fee sponsorship notes to the note, a second table lists each sponsorship note with its fee asset, reclaim height, commit block, last error and last attempt block. The fee asset shows the amount in base units and the faucet address.
+
 The note ID must be provided as a full hex string:
 
 ```sh

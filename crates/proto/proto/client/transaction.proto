@@ -11,9 +11,6 @@ import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
-import "client/input_note.proto";
-import "client/output_note.proto";
-import "client/sync.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -195,77 +192,4 @@ message AccountStorageRequirements {
   }
 
   repeated SlotKeys slots = 1;
-}
-
-// Cycle counts of the stages of a transaction execution.
-message TransactionMeasurements {
-  // Cycle count of the execution of one input note.
-  message NoteExecution {
-    note.NoteId note_id = 1;
-    uint64 cycles = 2;
-  }
-
-  uint64 prologue = 1;
-  uint64 notes_processing = 2;
-  repeated NoteExecution note_execution = 3;
-  uint64 tx_script_processing = 4;
-  uint64 epilogue = 5;
-  uint64 auth_procedure = 6;
-}
-
-// A transaction that the client executed, with the inputs to execute it again.
-message ExecutedTransaction {
-  .transaction.TransactionInputs inputs = 1;
-  // Header of the account after the transaction.
-  account.AccountHeader final_account = 2;
-  .transaction.RawOutputNotes output_notes = 3;
-  // Block at which the transaction expires.
-  blockchain.BlockNumber expiration_block_num = 4;
-  .transaction.TransactionLogs logs = 5;
-  .transaction.CodePatch code_patch = 6;
-  // Changes that the transaction makes to the account. The reader computes the commitment to the
-  // patch from this field.
-  account.AccountPatch account_patch = 7;
-  TransactionMeasurements measurements = 8;
-}
-
-// An executed transaction with the notes that later transactions create from it.
-message TransactionResult {
-  ExecutedTransaction executed_transaction = 1;
-  repeated ExpectedFutureNote future_notes = 2;
-}
-
-// Store changes that an executed transaction makes.
-message TransactionStoreUpdate {
-  ExecutedTransaction executed_transaction = 1;
-  // Block at which the transaction was submitted.
-  blockchain.BlockNumber submission_height = 2;
-  repeated ExpectedFutureNote future_notes = 3;
-  repeated InputNoteUpdate input_notes = 4;
-  repeated OutputNoteUpdate output_notes = 5;
-  repeated sync.NoteTagRecord new_tags = 6;
-}
-
-// How the store writes a note record.
-enum NoteUpdateType {
-  // The type is absent. Decoding rejects a value with this type.
-  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
-  // The note is new.
-  NOTE_UPDATE_TYPE_INSERT = 1;
-  // The note is tracked already.
-  NOTE_UPDATE_TYPE_UPDATE = 2;
-  // A tracked expected note is committed now.
-  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 3;
-}
-
-// An input note record to write, and how to write it.
-message InputNoteUpdate {
-  input_note.InputNoteRecord note = 1;
-  NoteUpdateType update_type = 2;
-}
-
-// An output note record to write, and how to write it.
-message OutputNoteUpdate {
-  output_note.OutputNoteRecord note = 1;
-  NoteUpdateType update_type = 2;
 }

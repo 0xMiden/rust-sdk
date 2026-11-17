@@ -24,6 +24,8 @@ The Miden client has the following architectural components:
 
 The store is central to the client's design.
 
+The `Store` trait is defined in the `miden-client-core` crate. This repository provides a SQLite implementation in the `miden-client-sqlite-store` crate. A browser storage implementation is available in the [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) repository. You can also provide your own implementation.
+
 It manages the persistence of the following entities:
 
 - Accounts; including their state history and related information such as vault assets and account code.
@@ -52,7 +54,7 @@ When executing, the executor needs access to relevant blockchain history. The ex
 
 The keystore is responsible for storing and managing the private keys of the accounts tracked by the client.
 
-These private keys are used by the executor to sign and authenticate transactions. Implementations for both rust and web keystores are provided.
+These private keys are used by the executor to sign and authenticate transactions. This library provides a filesystem keystore. A browser keystore is available in the [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) repository. To sign with keys held in a Web3Signer instance, use the `miden-web3signer-authenticator` crate.
 
 ## Note Screener
 

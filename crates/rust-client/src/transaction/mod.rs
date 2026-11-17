@@ -240,6 +240,9 @@ where
     ///
     /// The store records the logs when the transaction is applied, so this method does not contact
     /// the node. It returns `None` if the client does not track the transaction.
+    ///
+    /// The store keeps the logs of a discarded transaction, so this method also returns them. The
+    /// network did not apply these logs.
     pub async fn get_transaction_logs(
         &self,
         transaction_id: TransactionId,

@@ -172,8 +172,6 @@ CREATE TABLE transaction_logs (
     FOREIGN KEY (transaction_id) REFERENCES transactions(id),
     PRIMARY KEY (transaction_id, log_index)
 ) WITHOUT ROWID, STRICT;
-CREATE INDEX idx_transaction_logs_topic ON transaction_logs(topic);
-CREATE INDEX idx_transaction_logs_emitter ON transaction_logs(emitter);
 
 
 CREATE TABLE transaction_scripts (

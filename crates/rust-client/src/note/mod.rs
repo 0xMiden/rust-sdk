@@ -68,6 +68,7 @@ use miden_tx::auth::TransactionAuthenticator;
 use crate::store::{InputNoteRecord, NoteFilter, OutputNoteRecord};
 use crate::{Client, ClientError, IdPrefixFetchError};
 
+pub(crate) mod acquisition;
 mod import;
 mod note_reader;
 mod note_screener;

@@ -109,7 +109,10 @@ async fn retention_gate_awaits_host_before_importing_a_note() {
 }
 
 #[derive(Default)]
-struct TransportRetention(AtomicBool);
+struct TransportRetention {
+    accept: AtomicBool,
+    batch_sizes: RwLock<Vec<usize>>,
+}
 
 #[miden_client::async_trait]
 impl NoteAcquisitionGate for TransportRetention {
@@ -119,8 +122,9 @@ impl NoteAcquisitionGate for TransportRetention {
         notes: &[NoteFile],
     ) -> Result<(), NoteAcquisitionError> {
         assert_eq!(source, NoteAcquisitionSource::NoteTransport);
-        assert!(matches!(notes, [NoteFile::ExpectedNote { .. }]));
-        if self.0.load(Ordering::Relaxed) {
+        assert!(notes.iter().all(|note| matches!(note, NoteFile::ExpectedNote { .. })));
+        self.batch_sizes.write().push(notes.len());
+        if notes.len() == 32 || self.accept.load(Ordering::Relaxed) {
             Ok(())
         } else {
             Err(NoteAcquisitionError)
@@ -149,22 +153,29 @@ async fn retention_gate_refusal_keeps_transport_cursor_and_retries_note() {
     assert!(client.sync_note_transport().await.unwrap().is_empty());
     let initial = stored_note_transport_state(&mut client).await;
     assert_eq!(initial, Some((transport_cursor(0), BTreeSet::from([tag]))));
-    let retained_note = seed_transport_note(&node, tag, 1);
+    let mut retained_ids: Vec<_> =
+        (1..=33).map(|seed| seed_transport_note(&node, tag, seed).id()).collect();
+    retained_ids.sort_unstable();
 
     let result = client.sync_note_transport().await;
     assert!(
         matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError))),
         "The transport advanced without a retention acknowledgement"
     );
-    assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
+    assert_eq!(gate.batch_sizes.read().as_slice(), &[32, 1]);
+    assert!(
+        client.get_input_notes(NoteFilter::All).await.unwrap().is_empty(),
+        "A later refusal must leave every note unimported"
+    );
     assert_eq!(stored_note_transport_state(&mut client).await, initial);
 
-    gate.0.store(true, Ordering::Relaxed);
-    assert_eq!(client.sync_note_transport().await.unwrap(), [retained_note.id()]);
-    assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+    gate.accept.store(true, Ordering::Relaxed);
+    assert_eq!(client.sync_note_transport().await.unwrap(), retained_ids);
+    assert_eq!(gate.batch_sizes.read().as_slice(), &[32, 1, 32, 1]);
+    assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 33);
     assert_eq!(
         stored_note_transport_state(&mut client).await,
-        Some((transport_cursor(1), BTreeSet::from([tag])))
+        Some((transport_cursor(33), BTreeSet::from([tag])))
     );
 }
 

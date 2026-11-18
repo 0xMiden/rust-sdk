@@ -68,6 +68,7 @@ use miden_tx::auth::TransactionAuthenticator;
 use crate::store::{InputNoteRecord, NoteFilter, OutputNoteRecord};
 use crate::{Client, ClientError, IdPrefixFetchError};
 
+mod acquisition;
 mod import;
 mod note_reader;
 mod note_screener;
@@ -76,6 +77,15 @@ mod note_update_tracker;
 // RE-EXPORTS
 // ================================================================================================
 
+pub(crate) use acquisition::NoteAcquisitionConfig;
+pub use acquisition::{
+    NoteAcquisition,
+    NoteAcquisitionError,
+    NoteAcquisitionGate,
+    NoteAcquisitionLimits,
+    NoteAcquisitionSource,
+    NoteAcquisitionVariant,
+};
 pub use miden_objects::note_file::{NoteFile, NoteFileError, NoteSyncHint};
 pub use miden_protocol::block::BlockNumber;
 pub use miden_protocol::errors::NoteError;

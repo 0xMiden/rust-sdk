@@ -198,10 +198,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
+    use miden_client_core::store::Store;
+    use miden_protocol::ProtocolLib;
     use miden_protocol::block::code_tree::CodeTree;
-    use miden_protocol::transaction::TransactionKernel;
     use miden_protocol::vm::Package;
-    use miden_protocol::{CoreLibrary, ProtocolLib};
     use miden_standards::StandardsLib;
 
     use super::*;
@@ -355,6 +355,31 @@ mod tests {
 
         let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
         assert!(loaded.package_debug_info().unwrap().is_some());
+    }
+
+    /// A forest is added with its debug info, and its procedure roots are added to the code tree.
+    /// Adding it again changes nothing.
+    #[tokio::test]
+    async fn insert_procedures_with_debug_info_adds_debug_info() {
+        let store = create_test_store().await;
+        let package = protocol_package();
+        let procedure_root: Word = package.mast_forest().local_procedure_digests().next().unwrap();
+
+        let procedures =
+            vec![(package.mast_forest().clone(), package.debug_info().unwrap().unwrap())];
+        Store::insert_procedures_with_debug_info(&store, procedures.clone())
+            .await
+            .unwrap();
+
+        let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
+        assert!(loaded.package_debug_info().unwrap().is_some());
+        let code_tree = CodeTree::with_entries(procedure_roots_of(package.mast_forest())).unwrap();
+        assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
+
+        let counts = row_counts(&store).await;
+        Store::insert_procedures_with_debug_info(&store, procedures).await.unwrap();
+        assert_eq!(row_counts(&store).await, counts);
+        assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
     }
 
     #[tokio::test]

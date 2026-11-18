@@ -553,21 +553,23 @@ impl DataStore for ClientDataStore {
             .await
     }
 
-    /// The client stores no code tree, so it cannot open code witnesses.
+    /// The transaction executor does not call this method. The client stores no code tree, so it
+    /// cannot open code witnesses.
     fn get_code_witnesses(
         &self,
         _code_tree_root: CodeTreeRoot,
         _procedure_roots: Vec<ProcedureRoot>,
     ) -> impl FutureMaybeSend<Result<Vec<CodeWitness>, DataStoreError>> {
-        async move { Err(DataStoreError::other("code witnesses are unavailable in this data store")) }
+        async move { unreachable!("the transaction executor does not request code witnesses") }
     }
 
-    /// The client has no code designated for publication in the code registry.
+    /// The transaction executor does not call this method. The client has no code designated for
+    /// publication in the code registry.
     fn get_code_to_register(
         &self,
         _procedure_roots: BTreeSet<ProcedureRoot>,
     ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
-        async move { Ok(Vec::new()) }
+        async move { unreachable!("the transaction executor does not request code to register") }
     }
 
     /// Returns the [`NoteScript`] for the given script root from the registered session scripts,

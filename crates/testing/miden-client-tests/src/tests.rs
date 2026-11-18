@@ -41,7 +41,13 @@ use miden_client::store::{
     StoreError,
     TransactionFilter,
 };
-use miden_client::sync::{NoteTagRecord, NoteTagSource, NoteUpdateAction, OnNoteReceived};
+use miden_client::sync::{
+    NoteTagRecord,
+    NoteTagSource,
+    NoteUpdateAction,
+    OnNoteReceived,
+    PrivateAccountHistory,
+};
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     AccountSetup,
@@ -62,6 +68,7 @@ use miden_client::transaction::{
     TransactionExecutorError,
     TransactionRequestBuilder,
     TransactionRequestError,
+    TransactionResult,
     TransactionStatus,
 };
 use miden_client::utils::{Deserializable, Serializable};
@@ -94,7 +101,7 @@ use miden_protocol::asset::{
 };
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
-use miden_protocol::crypto::rand::FeltRng;
+use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
 use miden_protocol::note::{
     Note,
     NoteAssets,
@@ -714,6 +721,7 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
             &mut partial_mmr,
             StateSyncInput {
                 accounts: vec![],
+                account_history: PrivateAccountHistory::Commitments(BTreeSet::new()),
                 note_tags,
                 input_notes: vec![],
                 output_notes: vec![],
@@ -806,7 +814,8 @@ async fn sync_state_no_redundant_get_account_calls() {
     let note_tags = BTreeSet::from([NoteTag::new(0)]);
 
     let input = StateSyncInput {
-        accounts: vec![account_header],
+        accounts: vec![(account_header, miden_client_core::store::AccountStatus::Tracked)],
+        account_history: PrivateAccountHistory::Commitments(BTreeSet::new()),
         note_tags,
         input_notes: vec![],
         output_notes: vec![],
@@ -2645,6 +2654,167 @@ async fn get_output_notes() {
     // After executing, the note is only found in output notes
     assert!(client.get_output_note(output_note_id).await.unwrap().is_some());
     assert!(client.get_input_note(output_note_id).await.unwrap().is_none());
+}
+
+/// The losing transaction is discarded even when both transfers leave the wallet in the same state.
+#[rstest]
+#[case::same_state(1, 10)]
+#[case::shared_state_with_pending_child(2, 10)]
+#[case::different_state(1, 20)]
+#[case::longer_losing_branch(2, 20)]
+#[tokio::test]
+async fn sync_public_account_recovers_from_losing_branch(
+    #[case] losing_branch_len: usize,
+    #[case] winning_amount: u64,
+    #[values(1000, 0)] oversize_threshold: usize,
+) {
+    let mut builder = MockChainBuilder::new();
+    let faucet = builder
+        .add_existing_basic_faucet(miden_testing::Auth::IncrNonce, "TST", 1_000_000, None)
+        .unwrap();
+    let wallet = builder
+        .add_existing_wallet_with_assets(
+            miden_testing::Auth::IncrNonce,
+            [FungibleAsset::new(faucet.id(), 100).unwrap().into()],
+        )
+        .unwrap();
+    let target = builder.add_existing_wallet(miden_testing::Auth::IncrNonce).unwrap();
+    let rpc_api = Arc::new(
+        MockRpcApi::new(builder.build().unwrap()).with_oversize_threshold(oversize_threshold),
+    );
+    let mut losing_client = mock_client_builder(rpc_api.clone()).await.build().await.unwrap();
+    let mut winning_client = mock_client_builder(rpc_api.clone()).await.build().await.unwrap();
+    for client in [&mut losing_client, &mut winning_client] {
+        client.add_account(&wallet, false).await.unwrap();
+        client.sync_state().await.unwrap();
+    }
+
+    let mut rng = RandomCoin::new(Word::empty());
+    let mut transfer = |amount| {
+        TransactionRequestBuilder::new()
+            .build_pay_to_id(
+                PaymentNoteDescription::new(
+                    vec![FungibleAsset::new(faucet.id(), amount).unwrap().into()],
+                    wallet.id(),
+                    target.id(),
+                ),
+                NoteType::Public,
+                &mut rng,
+            )
+            .unwrap()
+    };
+
+    // The losing client keeps its chained transactions in the local store without sending them to
+    // the node.
+    let mut local_txs = Vec::new();
+    for amount in (10..).take(losing_branch_len) {
+        let tx = Box::pin(losing_client.execute_transaction(wallet.id(), transfer(amount)))
+            .await
+            .unwrap();
+        let submission_height = losing_client.get_sync_height().await.unwrap();
+        losing_client.apply_transaction(&tx, submission_height).await.unwrap();
+        local_txs.push(tx);
+    }
+
+    // The winning client submits one transaction from the same initial state, and the node includes
+    // it in the next block.
+    let winning_tx =
+        Box::pin(winning_client.execute_transaction(wallet.id(), transfer(winning_amount)))
+            .await
+            .unwrap();
+    let submission_height = winning_client.get_sync_height().await.unwrap();
+    winning_client.apply_transaction(&winning_tx, submission_height).await.unwrap();
+    rpc_api.add_pending_executed_transaction(winning_tx.executed_transaction());
+    rpc_api.prove_block();
+
+    let optimistic_tip = losing_client.account_reader(wallet.id()).commitment().await.unwrap();
+    let shared_state = winning_amount == 10;
+    assert_ne!(local_txs[0].id(), winning_tx.id());
+    assert_eq!(
+        local_txs[0].executed_transaction().final_account().to_commitment()
+            == winning_tx.executed_transaction().final_account().to_commitment(),
+        shared_state
+    );
+
+    let losing_summary = losing_client.sync_state().await.unwrap();
+    let winning_summary = winning_client.sync_state().await.unwrap();
+    let records = losing_client
+        .get_transactions(TransactionFilter::Ids(
+            local_txs.iter().map(TransactionResult::id).collect(),
+        ))
+        .await
+        .unwrap();
+    let status = |id| &records.iter().find(|record| record.id == id).unwrap().status;
+    assert_eq!(
+        status(local_txs[0].id()),
+        &TransactionStatus::Discarded(DiscardCause::Superseded)
+    );
+    assert_eq!(losing_summary.updated_accounts.contains(&wallet.id()), !shared_state);
+    assert!(winning_summary.committed_transactions.contains(&winning_tx.id()));
+
+    if let Some(child) = local_txs.get(1) {
+        if shared_state {
+            assert_eq!(status(child.id()), &TransactionStatus::Pending);
+            assert_eq!(
+                losing_client.account_reader(wallet.id()).commitment().await.unwrap(),
+                optimistic_tip
+            );
+            rpc_api.add_pending_executed_transaction(child.executed_transaction());
+            rpc_api.prove_block();
+            assert!(
+                losing_client
+                    .sync_state()
+                    .await
+                    .unwrap()
+                    .committed_transactions
+                    .contains(&child.id())
+            );
+            winning_client.sync_state().await.unwrap();
+        } else {
+            assert_eq!(
+                status(child.id()),
+                &TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)
+            );
+        }
+    }
+    let chain_account = rpc_api.mock_chain.read().committed_account(wallet.id()).unwrap().clone();
+    assert_same_account_state(&losing_client, &winning_client, &chain_account).await;
+
+    // Empty blocks must not undo the recovered state.
+    for _ in 0..3 {
+        rpc_api.prove_block();
+        losing_client.sync_state().await.unwrap();
+        winning_client.sync_state().await.unwrap();
+        assert_same_account_state(&losing_client, &winning_client, &chain_account).await;
+    }
+
+    // The recovered client can produce another transaction that the node accepts, and the other
+    // client follows the account to the new state.
+    let next_tx = Box::pin(losing_client.execute_transaction(wallet.id(), transfer(5)))
+        .await
+        .unwrap();
+    rpc_api.add_pending_executed_transaction(next_tx.executed_transaction());
+    let submission_height = losing_client.get_sync_height().await.unwrap();
+    losing_client.apply_transaction(&next_tx, submission_height).await.unwrap();
+    rpc_api.prove_block();
+    let summary = losing_client.sync_state().await.unwrap();
+    assert!(summary.committed_transactions.contains(&next_tx.id()));
+    winning_client.sync_state().await.unwrap();
+    let chain_account = rpc_api.mock_chain.read().committed_account(wallet.id()).unwrap().clone();
+    assert_same_account_state(&losing_client, &winning_client, &chain_account).await;
+}
+
+/// Asserts that both clients hold the same account as each other and the chain account's
+/// commitment.
+async fn assert_same_account_state(
+    first_client: &MockClient<FilesystemKeyStore>,
+    second_client: &MockClient<FilesystemKeyStore>,
+    chain_account: &Account,
+) {
+    let first = first_client.get_account(chain_account.id()).await.unwrap().unwrap();
+    let second = second_client.get_account(chain_account.id()).await.unwrap().unwrap();
+    assert_eq!(first.to_commitment(), chain_account.to_commitment());
+    assert_eq!(first, second);
 }
 
 #[tokio::test]

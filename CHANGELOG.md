@@ -11,6 +11,10 @@
 
 ### Fixes
 
+* [FIX][rust,store] Sync discarded losing transactions and kept account states confirmed by a different transaction, and preserved pending transactions that depend on those states. Public accounts recover the winning state during the same sync, including when recovery needs a patch ([#2772](https://github.com/0xMiden/rust-sdk/issues/2772), [#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+* [FIX][rust] Sync ordered passthrough transactions at their execution state. Discarding a passthrough preserves that state and independent transactions that use it ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+* [FIX][rust] `SyncSummary::locked_accounts` reports the private accounts newly locked after sync checked their proven commitment against local history ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118), [#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+
 * [FIX][cli] `timeout_ms` is optional in the `[rpc]` and `[note_transport]` sections of the config file. A missing value defaults to `10000` milliseconds, so a `[note_transport]` section added by hand with only `endpoint` loads ([#2790](https://github.com/0xMiden/rust-sdk/pull/2790)).
 
 ### Enhancements
@@ -32,6 +36,8 @@
 * [FEATURE][cli] Added `--submit` to `exec`. It proves the transaction script and submits it to the network, with `--force` and `--delegate-proving` as in the other transaction commands ([#2640](https://github.com/0xMiden/rust-sdk/pull/2640)).
 
 ### Breaking Changes
+
+* [BREAKING][type][rust,store] `AccountUpdates::accounts_to_lock` supplies the exact private accounts a store must lock. Stores apply `AccountUpdates::states_to_undo` before public account updates. Custom sync inputs supply account statuses and a `PrivateAccountHistory` ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 
 * [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed.
 

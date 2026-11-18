@@ -347,6 +347,42 @@ async fn send_upgrade_note(
 // TESTS
 // ================================================================================================
 
+/// A recovery patch must restore upgraded code after the losing transaction is rolled back.
+#[tokio::test]
+async fn same_nonce_race_recovers_code_after_rollback() {
+    let (account, upgraded_code) = upgradeable_account();
+    let rpc_api = rpc_api_with(&account).with_oversize_threshold(0);
+    let mut losing_client = client_tracking(rpc_api.clone(), &account).await;
+    let winning_client = client_tracking(rpc_api.clone(), &account).await;
+
+    let request = valid_upgrade_request(&losing_client, &upgraded_code, false);
+    let losing_tx = Box::pin(losing_client.execute_transaction(account.id(), request))
+        .await
+        .unwrap();
+    losing_client
+        .apply_transaction(&losing_tx, rpc_api.get_chain_tip_block_num())
+        .await
+        .unwrap();
+
+    // Both transactions install the same code. Only the winning transaction changes the storage.
+    let request = valid_upgrade_request(&winning_client, &upgraded_code, true);
+    let winning_tx = Box::pin(winning_client.execute_transaction(account.id(), request))
+        .await
+        .unwrap();
+    let losing_header = losing_tx.executed_transaction().final_account();
+    let winning_header = winning_tx.executed_transaction().final_account();
+    assert_eq!(losing_header.nonce(), winning_header.nonce());
+    assert_eq!(losing_header.code_commitment(), winning_header.code_commitment());
+    assert_ne!(losing_header.to_commitment(), winning_header.to_commitment());
+    rpc_api.add_pending_executed_transaction(winning_tx.executed_transaction());
+    rpc_api.prove_block();
+
+    losing_client.sync_state().await.unwrap();
+    let recovered = losing_client.get_account(account.id()).await.unwrap().unwrap();
+    assert_eq!(recovered.to_commitment(), winning_header.to_commitment());
+    assert_eq!(recovered.code(), &upgraded_code);
+}
+
 /// A local transaction that upgrades the code stores the new code. The next transaction runs
 /// against the new code, so the account can use the wallet that only the new code has.
 #[tokio::test]

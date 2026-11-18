@@ -102,18 +102,6 @@ impl SqliteStore {
         .await
     }
 
-    /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
-    /// registry has it, or `None` if the procedure is not registered.
-    pub async fn get_procedure(
-        &self,
-        procedure_root: ProcedureRoot,
-    ) -> Result<Option<LoadedMastForest>, StoreError> {
-        self.interact_with_connection(move |conn| {
-            SqliteStore::query_procedure(conn, procedure_root)
-        })
-        .await
-    }
-
     /// Returns a witness that proves the presence or absence of the procedure in the code tree.
     pub async fn get_procedure_witness(
         &self,
@@ -142,7 +130,7 @@ impl SqliteStore {
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// registry has it.
-    fn query_procedure(
+    pub(crate) fn query_procedure(
         conn: &Connection,
         procedure_root: ProcedureRoot,
     ) -> Result<Option<LoadedMastForest>, StoreError> {

@@ -16,6 +16,7 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_processor::LoadedMastForest;
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -32,6 +33,7 @@ use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
@@ -672,6 +674,20 @@ pub trait Store: Send + Sync {
         _procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
     ) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
+    /// code registry has it, or `None` if the procedure is not registered.
+    ///
+    /// The client calls this method for code that it does not have in memory. The kernel, the
+    /// libraries and the account code of a transaction are always in memory, so a store is not
+    /// required to keep a code registry. The default implementation is for a store without a code
+    /// registry: it returns `None`, as for a procedure that is not registered.
+    async fn get_procedure(
+        &self,
+        _procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError> {
+        Ok(None)
     }
 
     // RPC LIMITS

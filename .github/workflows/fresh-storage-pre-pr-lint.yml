@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Confirm the exact change under lint
-        run: git diff --exit-code dd2678bf564ee1e7be4ed53cbccd2f37732cde3d HEAD -- . ':!.github/workflows/fresh-storage-pre-pr-lint.yml'
+        run: git diff --exit-code 6f351487b3d6e82f9668b143dad72355ee5abd9a HEAD -- . ':!.github/workflows/fresh-storage-pre-pr-lint.yml'
       - name: Install the repository toolchains
         run: |
           rustup update --no-self-update

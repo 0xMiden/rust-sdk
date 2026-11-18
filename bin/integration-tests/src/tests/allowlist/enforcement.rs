@@ -16,61 +16,6 @@ use super::{
 use crate::ClientConfig;
 use crate::tests::network_transaction::add_network_counter_contract;
 
-/// A registered account can be created on chain.
-///
-/// This is the flow the whole allowlist feature exists for: claim a code, add the account with it,
-/// and deploy. The deploy pays its fee out of the note the node paid the account at registration.
-pub async fn test_allowlist_registered_account_can_deploy(
-    client_config: ClientConfig,
-) -> Result<()> {
-    let mut client = client_config.into_client().await?;
-
-    let invitation_code = create_invitation_code().await?;
-    let account = insert_unfunded_wallet(&mut client, Some(&invitation_code))
-        .await
-        .context("failed to register the account on the network allowlist")?;
-
-    let deploy = registered_deploy_request(&mut client, &account).await?;
-    let transaction_id = client
-        .submit_new_transaction(account.id(), deploy)
-        .await
-        .context("the node rejected the deploy of a registered account")?;
-    client.wait_for_tx(transaction_id).await?;
-
-    assert!(
-        client.is_deployed(account.id()).await?,
-        "a registered account should have been created on chain"
-    );
-
-    Ok(())
-}
-
-/// An account that was never registered cannot be created on chain.
-///
-/// The negative half of the test above. Without it a node that silently stopped enforcing would
-/// still pass the whole suite.
-pub async fn test_allowlist_unregistered_account_is_rejected(
-    client_config: ClientConfig,
-) -> Result<()> {
-    let mut client = client_config.into_client().await?;
-
-    let account = insert_unfunded_wallet(&mut client, None).await?;
-    // The account can pay the fee, so the only thing that stops the deploy is the allowlist.
-    let deploy = service_funded_deploy_request(&client, &account).await?;
-    let error = client
-        .submit_new_transaction(account.id(), deploy)
-        .await
-        .expect_err("an unregistered account should not be created");
-    assert_rejected_before_submission(&error, &account);
-
-    assert!(
-        !client.is_deployed(account.id()).await?,
-        "a rejected account should not have been created on chain"
-    );
-
-    Ok(())
-}
-
 /// A network account is created without any registration.
 ///
 /// The node classifies the account before it exists on chain and exempts network accounts, so this

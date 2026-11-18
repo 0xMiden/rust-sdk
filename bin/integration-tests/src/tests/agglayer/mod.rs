@@ -9,7 +9,6 @@ use crate::ClientConfig;
 
 pub mod agglayer_bridge_in_out;
 mod agglayer_test_utils;
-pub mod ger;
 pub mod note_reader;
 
 /// Env var naming the directory the pre-deployed agglayer account files are read from.

@@ -84,6 +84,15 @@ where
         note_files: &[NoteFile],
         source: NoteAcquisitionSource,
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        if self.note_acquisition_gate.is_some() && note_files.len() > NOTE_ACQUISITION_BATCH_SIZE {
+            let (first, remaining) = note_files.split_at(NOTE_ACQUISITION_BATCH_SIZE);
+            let mut imported =
+                alloc::boxed::Box::pin(self.import_notes_from_source(first, source)).await?;
+            imported.extend(
+                alloc::boxed::Box::pin(self.import_notes_from_source(remaining, source)).await?,
+            );
+            return Ok(imported);
+        }
         if let Some(gate) = &self.note_acquisition_gate {
             for files in note_files.chunks(NOTE_ACQUISITION_BATCH_SIZE) {
                 gate.retain(source, files).await?;

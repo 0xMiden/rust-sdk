@@ -1,0 +1,33 @@
+name: Retention batch assertion proof
+
+on:
+  push:
+    branches: [ci/review-note-retention-batch-red]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: warp-ubuntu-latest-x64-8x
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cleanup-runner
+      - name: Install Rust
+        run: rustup update --no-self-update
+      - uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1
+        with:
+          shared-key: rust-release-${{ runner.arch }}
+          prefix-key: rust-cache-2026.02.18
+          save-if: false
+      - name: Require the later-refusal assertion to catch the deliberate mutation
+        run: |
+          set -uo pipefail
+          cargo test --locked --release -p miden-client-unit-tests --lib retention_gate_refusal -- --nocapture 2>&1 | tee "$RUNNER_TEMP/retention-batch-red.log"
+          status=${PIPESTATUS[0]}
+          test "$status" = 101 &&
+            grep -F 'A later refusal must leave every note unimported' "$RUNNER_TEMP/retention-batch-red.log" &&
+            grep -E 'test result: FAILED\. 0 passed; 1 failed' "$RUNNER_TEMP/retention-batch-red.log"

@@ -22,8 +22,11 @@ pub struct NoteAcquisitionError;
 pub trait NoteAcquisitionGate: Send + Sync {
     /// Acknowledges retention before the client imports the candidates.
     ///
-    /// Retention does not verify that the notes are valid or committed. Do not call back into the
-    /// client from this method.
+    /// Each call receives at most 32 files. The client can deliver the same candidate again
+    /// when a later operation fails. The host must tolerate repeated delivery. Do not call back
+    /// into the client from this method.
+    ///
+    /// Retention does not verify that the notes are valid or committed.
     async fn retain(
         &self,
         source: NoteAcquisitionSource,

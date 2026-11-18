@@ -413,6 +413,7 @@ pub struct Client<AUTH> {
     /// An instance of [`NoteTransportClient`] which provides a way for the client to connect to the
     /// Miden Note Transport network.
     note_transport_api: Option<Arc<dyn NoteTransportClient>>,
+    note_acquisition_gate: Option<Arc<dyn NoteAcquisitionGate>>,
     /// Whether the client should cache the current Partial MMR in memory.
     cache_partial_mmr_in_memory: bool,
     /// Cached [`PartialMmr`] for the chain's MMR. Lazily built from the store and kept in sync

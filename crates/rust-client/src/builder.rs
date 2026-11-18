@@ -134,6 +134,7 @@ pub struct ClientBuilder<AUTH> {
     max_block_number_delta: Option<u32>,
     /// An optional custom note transport client.
     note_transport_api: Option<Arc<dyn NoteTransportClient>>,
+    note_acquisition_gate: Option<Arc<dyn NoteAcquisitionGate>>,
     /// Configuration for lazy note transport initialization (used by network constructors).
     #[allow(unused)]
     note_transport_config: Option<NoteTransportConfig>,
@@ -160,6 +161,7 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             cache_partial_mmr_in_memory: CACHE_PARTIAL_MMR_IN_MEMORY,
             max_block_number_delta: None,
             note_transport_api: None,
+            note_acquisition_gate: None,
             note_transport_config: None,
             tx_prover: None,
             #[cfg(feature = "tonic")]
@@ -455,7 +457,8 @@ where
 
     /// Sets a host that retains note candidates before the client imports them.
     #[must_use]
-    pub fn note_acquisition_gate(self, _gate: Arc<dyn NoteAcquisitionGate>) -> Self {
+    pub fn note_acquisition_gate(mut self, gate: Arc<dyn NoteAcquisitionGate>) -> Self {
+        self.note_acquisition_gate = Some(gate);
         self
     }
 
@@ -583,6 +586,7 @@ where
             last_irrelevant_block_prune_sync_height: None,
             max_block_number_delta: self.max_block_number_delta,
             note_transport_api: self.note_transport_api.clone(),
+            note_acquisition_gate: self.note_acquisition_gate,
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
             transaction_observers,

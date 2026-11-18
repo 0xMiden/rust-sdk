@@ -284,6 +284,9 @@ where
     /// A transport failure is logged and the chain sync continues. The notes of successful
     /// transport pages are imported, and the next sync reads the failed tags again. The sync sends
     /// no notes to the transport.
+    ///
+    /// If the configured acquisition gate refuses retention, the sync returns an error before
+    /// importing the delivered notes or writing the transport cursor.
     pub async fn sync_state(&mut self) -> Result<SyncSummary, ClientError> {
         // Both fetch phases need genesis in place, and connecting here means the two concurrent
         // futures never race on the RPC client's lazy connect.

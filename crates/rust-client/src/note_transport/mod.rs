@@ -303,7 +303,9 @@ where
             fetch_error,
         } = update;
 
-        let written = self.import_notes(&note_files).await?;
+        let written = self
+            .import_notes_from_source(&note_files, crate::NoteAcquisitionSource::NoteTransport)
+            .await?;
         let mut imported_ids: Vec<NoteId> = written
             .iter()
             .filter_map(|commitment| id_by_commitment.get(commitment).copied())

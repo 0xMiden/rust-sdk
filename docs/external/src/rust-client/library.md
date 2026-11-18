@@ -69,6 +69,10 @@ let mut client = ClientBuilder::new()
     .await?;
 ```
 
+### Retain incoming notes
+
+Hosts with independent recovery storage can set `ClientBuilder::note_acquisition_gate`. The client waits for the host to retain each batch of incoming note files before it imports them. If the host returns an error, the client stops the import and keeps the previous note transport cursor. The host can receive the same file again on a retry.
+
 ## Account component imports
 
 Use `account::component` for custom component code, metadata, and storage schemas. Use `account::standards` for built-in components and their configuration types. This module includes authentication, wallets, faucets, access control, fees, token policies, upgrades, note creation, and oracles. Use `auth` for authentication keys, signature schemes, and transaction signing interfaces.

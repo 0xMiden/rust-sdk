@@ -35,7 +35,9 @@ use crate::sync::{
     ResolvedSyncNotesBlock,
     sync_notes_with_content,
 };
-use crate::{Client, ClientError};
+use crate::{Client, ClientError, NoteAcquisitionSource};
+
+const NOTE_ACQUISITION_BATCH_SIZE: usize = 32;
 
 /// Note importing methods.
 impl<AUTH> Client<AUTH>
@@ -64,6 +66,7 @@ where
     /// # Errors
     ///
     /// - If an attempt is made to overwrite a note that is currently processing.
+    /// - If the configured host fails to acknowledge retention of all note candidates.
     ///
     /// Note: This operation is atomic. If any note file is invalid or any existing note is in the
     /// processing state, the entire operation fails and no notes are imported.
@@ -73,6 +76,19 @@ where
         &mut self,
         note_files: &[NoteFile],
     ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        self.import_notes_from_source(note_files, NoteAcquisitionSource::Import).await
+    }
+
+    pub(crate) async fn import_notes_from_source(
+        &mut self,
+        note_files: &[NoteFile],
+        source: NoteAcquisitionSource,
+    ) -> Result<Vec<NoteDetailsCommitment>, ClientError> {
+        if let Some(gate) = &self.note_acquisition_gate {
+            for files in note_files.chunks(NOTE_ACQUISITION_BATCH_SIZE) {
+                gate.retain(source, files).await?;
+            }
+        }
         self.ensure_genesis_in_place().await?;
 
         // Deduplicate the incoming files, keeping note IDs and details commitments in separate

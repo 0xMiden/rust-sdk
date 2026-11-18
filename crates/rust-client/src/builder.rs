@@ -23,7 +23,7 @@ use crate::rpc::NodeRpcClient;
 use crate::rpc::{Endpoint, GrpcClient};
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
-use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
+use crate::{Client, ClientError, ClientRng, ClientRngBox, NoteAcquisitionGate, grpc_support};
 
 // CONSTANTS
 // ================================================================================================
@@ -450,6 +450,12 @@ where
     #[must_use]
     pub fn note_transport(mut self, client: Arc<dyn NoteTransportClient>) -> Self {
         self.note_transport_api = Some(client);
+        self
+    }
+
+    /// Sets a host that retains note candidates before the client imports them.
+    #[must_use]
+    pub fn note_acquisition_gate(self, _gate: Arc<dyn NoteAcquisitionGate>) -> Self {
         self
     }
 

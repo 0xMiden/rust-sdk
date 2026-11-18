@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use miden_client::ClientError;
 use miden_client::account::{Account, AccountType};
 use miden_client::address::{Address, AddressInterface, RoutingParameters};
 use miden_client::keystore::FilesystemKeyStore;
@@ -35,6 +35,7 @@ use miden_client::testing::note_transport::{
 };
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::utils::RwLock;
+use miden_client::{ClientError, NoteAcquisitionError, NoteAcquisitionGate, NoteAcquisitionSource};
 use miden_protocol::Word;
 use miden_protocol::account::{
     AccountId,
@@ -54,8 +55,118 @@ use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use tokio::sync::Notify;
 
 use crate::tests::{mock_client_builder, open_store_file, prebuilt_rpc_api};
+
+#[derive(Default)]
+struct AwaitRetention {
+    started: Notify,
+    saved: Notify,
+}
+
+#[miden_client::async_trait]
+impl NoteAcquisitionGate for AwaitRetention {
+    async fn retain(
+        &self,
+        source: NoteAcquisitionSource,
+        notes: &[NoteFile],
+    ) -> Result<(), NoteAcquisitionError> {
+        assert_eq!(source, NoteAcquisitionSource::Import);
+        assert!(matches!(notes, [NoteFile::ExpectedNote { .. }]));
+        self.started.notify_one();
+        self.saved.notified().await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn retention_gate_awaits_host_before_importing_a_note() {
+    let gate = Arc::new(AwaitRetention::default());
+    let rpc_api = Arc::new(prebuilt_rpc_api().await);
+    let mut client =
+        Box::pin(mock_client_builder(rpc_api).await.note_acquisition_gate(gate.clone()).build())
+            .await
+            .unwrap();
+    let tag = NoteTag::new(808);
+    let note = private_note_with_tag(ACCOUNT_ID_SENDER.try_into().unwrap(), tag, 1);
+    let commitment = note.details_commitment();
+    let files = [NoteFile::ExpectedNote {
+        details: note.into(),
+        sync_hint: NoteSyncHint::new(BlockNumber::GENESIS, tag),
+    }];
+    let store = client.test_store().clone();
+    let mut import = Box::pin(client.import_notes(&files));
+
+    tokio::select! {
+        () = gate.started.notified() => {},
+        _ = &mut import => panic!("The import finished without a retention acknowledgement"),
+    }
+    assert!(store.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
+    gate.saved.notify_one();
+    assert_eq!(import.await.unwrap(), [commitment]);
+    assert_eq!(store.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+}
+
+#[derive(Default)]
+struct TransportRetention(AtomicBool);
+
+#[miden_client::async_trait]
+impl NoteAcquisitionGate for TransportRetention {
+    async fn retain(
+        &self,
+        source: NoteAcquisitionSource,
+        notes: &[NoteFile],
+    ) -> Result<(), NoteAcquisitionError> {
+        assert_eq!(source, NoteAcquisitionSource::NoteTransport);
+        assert!(matches!(notes, [NoteFile::ExpectedNote { .. }]));
+        if self.0.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(NoteAcquisitionError)
+        }
+    }
+}
+
+#[tokio::test]
+async fn retention_gate_refusal_keeps_transport_cursor_and_retries_note() {
+    let gate = Arc::new(TransportRetention::default());
+    let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+    let rpc_api = Arc::new(prebuilt_rpc_api().await);
+    let mut client = TestClient::from(
+        Box::pin(
+            mock_client_builder(rpc_api)
+                .await
+                .note_transport(Arc::new(MockNoteTransportApi::new(node.clone())))
+                .note_acquisition_gate(gate.clone())
+                .build(),
+        )
+        .await
+        .unwrap(),
+    );
+    let tag = NoteTag::new(809);
+    client.add_note_tag(tag).await.unwrap();
+    assert!(client.sync_note_transport().await.unwrap().is_empty());
+    let initial = stored_note_transport_state(&mut client).await;
+    assert_eq!(initial, Some((transport_cursor(0), BTreeSet::from([tag]))));
+    let note = seed_transport_note(&node, tag, 1);
+
+    let result = client.sync_note_transport().await;
+    assert!(
+        matches!(result, Err(ClientError::NoteAcquisition(NoteAcquisitionError))),
+        "The transport advanced without a retention acknowledgement"
+    );
+    assert!(client.get_input_notes(NoteFilter::All).await.unwrap().is_empty());
+    assert_eq!(stored_note_transport_state(&mut client).await, initial);
+
+    gate.0.store(true, Ordering::Relaxed);
+    assert_eq!(client.sync_note_transport().await.unwrap(), [note.id()]);
+    assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
+    assert_eq!(
+        stored_note_transport_state(&mut client).await,
+        Some((transport_cursor(1), BTreeSet::from([tag])))
+    );
+}
 
 #[tokio::test]
 async fn transport_basic() {

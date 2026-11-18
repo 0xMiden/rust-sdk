@@ -336,6 +336,7 @@ pub use miden_protocol::{
     ZERO,
 };
 pub use miden_tx::{ExecutionOptions, NetworkNotePricer, NotePricingError};
+pub use note::acquisition::{NoteAcquisitionError, NoteAcquisitionGate, NoteAcquisitionSource};
 #[cfg(feature = "tonic")]
 pub use remote_prover::RemoteTransactionProver;
 

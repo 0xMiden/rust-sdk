@@ -2898,6 +2898,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-processor",
  "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
  "miden-standards",
  "rand 0.10.3",

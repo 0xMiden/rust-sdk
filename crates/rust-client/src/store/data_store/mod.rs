@@ -621,11 +621,27 @@ impl DataStore for ClientDataStore {
         }
     }
 
+    /// Returns the MAST forest from the in-memory MAST store, which holds the kernel, the libraries
+    /// and the account code of the transaction, or else from the code registry of the store, if the
+    /// store has one.
     fn get_mast_forest(
         &self,
         procedure_root: ProcedureRoot,
     ) -> impl FutureMaybeSend<Result<Option<LoadedMastForest>, DataStoreError>> {
-        async move { Ok(self.cache.mast_store.get(&procedure_root.as_word())) }
+        let in_memory = self.cache.mast_store.get(&procedure_root.as_word());
+        let store = self.store.clone();
+
+        async move {
+            if in_memory.is_some() {
+                return Ok(in_memory);
+            }
+            store.get_procedure(procedure_root).await.map_err(|err| {
+                DataStoreError::other_with_source(
+                    format!("failed to get procedure {procedure_root} from the store"),
+                    err,
+                )
+            })
+        }
     }
 }
 

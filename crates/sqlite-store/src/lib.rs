@@ -53,12 +53,14 @@ use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::vm::PackageDebugInfo;
 use miden_protocol::{Felt, MastForest, Word};
+use miden_tx::LoadedMastForest;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -657,6 +659,16 @@ impl Store for SqliteStore {
                 &protocol_config_key(config.to_commitment()),
                 &config,
             )
+        })
+        .await
+    }
+
+    async fn get_procedure(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::query_procedure(conn, procedure_root)
         })
         .await
     }

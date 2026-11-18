@@ -48,7 +48,7 @@ pub trait RpcStreamMethod {
 
 /// Returns `items` with [`RpcStreamMethod::validate`] applied to each item.
 ///
-/// The returned stream ends after the first error.
+/// The returned stream ends after the first error. After the end, each poll returns `None`.
 pub(crate) fn validate_items<M>(method: M, items: RpcStream<M::Item>) -> RpcStream<M::Item>
 where
     M: RpcStreamMethod + Send + 'static,
@@ -56,16 +56,16 @@ where
     M::State: Send,
 {
     let state = method.initial_state();
-    let stream = futures::stream::unfold(Some((method, state, items)), |context| async move {
-        let (method, mut state, mut items) = context?;
-        let item = items.next().await?.and_then(|item| {
+    let stream = futures::stream::try_unfold(
+        (method, state, items),
+        |(method, mut state, mut items)| async move {
+            let Some(item) = items.next().await.transpose()? else {
+                return Ok(None);
+            };
             method.validate(&mut state, &item)?;
-            Ok(item)
-        });
-        // A `None` context ends the stream on the next poll.
-        let context = item.is_ok().then_some((method, state, items));
-        Some((item, context))
-    });
+            Ok(Some((item, (method, state, items))))
+        },
+    );
 
     #[cfg(not(target_arch = "wasm32"))]
     return stream.boxed();

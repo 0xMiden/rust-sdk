@@ -53,14 +53,14 @@ miden-client-proto             = { default-features = false, path = "crates/prot
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.18" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
-miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
+miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", branch = "pgackst-data-store-async-get-mast-forest" }
 
 # Miden node dependencies
 miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "7d257feaece6fb56567de33f5b6c5f1cdfc4e094" }

@@ -620,14 +620,12 @@ impl DataStore for ClientDataStore {
             Ok(Some(note_script))
         }
     }
-}
 
-// MAST FOREST STORE
-// ================================================================================================
-
-impl MastForestStore for ClientDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
-        self.cache.mast_store.get(procedure_hash)
+    fn get_mast_forest(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> impl FutureMaybeSend<Result<Option<LoadedMastForest>, DataStoreError>> {
+        async move { Ok(self.cache.mast_store.get(&procedure_root.as_word())) }
     }
 }
 

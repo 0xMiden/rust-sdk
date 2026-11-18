@@ -28,13 +28,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{EMPTY_WORD, MastForest, Word, ZERO};
-use miden_tx::{
-    DataStore,
-    DataStoreError,
-    LoadedMastForest,
-    MastForestStore,
-    TransactionMastStore,
-};
+use miden_tx::{DataStore, DataStoreError, LoadedMastForest, TransactionMastStore};
 
 use super::staged_smt::StagedSmt;
 use crate::ClientError;
@@ -479,13 +473,11 @@ impl DataStore for InMemoryBatchDataStore {
     ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
         self.inner.get_code_to_register(procedure_roots)
     }
-}
 
-// MAST FOREST STORE IMPL
-// ================================================================================================
-
-impl MastForestStore for InMemoryBatchDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
-        self.inner.get(procedure_hash)
+    fn get_mast_forest(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> impl FutureMaybeSend<Result<Option<LoadedMastForest>, DataStoreError>> {
+        self.inner.get_mast_forest(procedure_root)
     }
 }

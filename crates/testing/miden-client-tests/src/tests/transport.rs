@@ -149,7 +149,7 @@ async fn retention_gate_refusal_keeps_transport_cursor_and_retries_note() {
     assert!(client.sync_note_transport().await.unwrap().is_empty());
     let initial = stored_note_transport_state(&mut client).await;
     assert_eq!(initial, Some((transport_cursor(0), BTreeSet::from([tag]))));
-    let note = seed_transport_note(&node, tag, 1);
+    let retained_note = seed_transport_note(&node, tag, 1);
 
     let result = client.sync_note_transport().await;
     assert!(
@@ -160,7 +160,7 @@ async fn retention_gate_refusal_keeps_transport_cursor_and_retries_note() {
     assert_eq!(stored_note_transport_state(&mut client).await, initial);
 
     gate.0.store(true, Ordering::Relaxed);
-    assert_eq!(client.sync_note_transport().await.unwrap(), [note.id()]);
+    assert_eq!(client.sync_note_transport().await.unwrap(), [retained_note.id()]);
     assert_eq!(client.get_input_notes(NoteFilter::All).await.unwrap().len(), 1);
     assert_eq!(
         stored_note_transport_state(&mut client).await,

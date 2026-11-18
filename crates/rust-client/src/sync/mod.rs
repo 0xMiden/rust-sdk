@@ -97,7 +97,7 @@ pub use miden_client_core::sync::{
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
-    TransactionUpdateTracker,
+    TransactionUpdates,
 };
 pub use state_sync::{ChainSyncData, NoteUpdateAction, OnNoteReceived, StateSync, StateSyncInput};
 pub(crate) use state_sync::{
@@ -105,7 +105,10 @@ pub(crate) use state_sync::{
     block_num_from_forest,
     validate_account_witness,
 };
+mod account_update_tracker;
 mod state_sync_update;
+mod transaction_update_tracker;
+pub use transaction_update_tracker::TransactionUpdateTracker;
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
 /// that are no longer needed by any remaining tracked leaf.
@@ -496,16 +499,9 @@ where
             None => self.get_latest_block_header().await?,
         };
 
-        let already_fetched: BTreeSet<AccountId> = chain_sync_data
-            .account_updates
-            .account_witnesses()
-            .iter()
-            .map(|(account_id, _)| *account_id)
-            .collect();
-
         let mut to_fetch = Vec::new();
         for account_id in account_ids {
-            if already_fetched.contains(&account_id) {
+            if chain_sync_data.account_updates.has_account_witness(account_id) {
                 continue;
             }
             // The chain did not advance, so the client is already synced to the chain tip. A stored
@@ -529,9 +525,9 @@ where
             .try_collect()
             .await?;
 
-        chain_sync_data
-            .account_updates
-            .extend(AccountUpdates::default().with_account_witnesses(witnesses));
+        for (id, witness) in witnesses {
+            chain_sync_data.account_updates.insert_account_witness(id, witness);
+        }
 
         Ok(())
     }

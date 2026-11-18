@@ -156,6 +156,8 @@ pub enum ClientError {
     NoteCheckerError(#[from] NoteCheckerError),
     #[error("note import error: {0}")]
     NoteImportError(String),
+    #[error(transparent)]
+    NoteAcquisition(#[from] crate::NoteAcquisitionError),
     #[error("failed to convert note record")]
     NoteRecordConversionError(#[from] NoteRecordError),
     #[error("note transport error")]

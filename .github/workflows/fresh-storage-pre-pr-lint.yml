@@ -1,0 +1,35 @@
+name: Fresh Rust SDK storage pre-PR lint
+
+on:
+  push:
+    branches: [ci/fresh-storage-pre-pr-lint]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Confirm the exact change under lint
+        run: git diff --exit-code dd2678bf564ee1e7be4ed53cbccd2f37732cde3d HEAD -- . ':!.github/workflows/fresh-storage-pre-pr-lint.yml'
+      - name: Install the repository toolchains
+        run: |
+          rustup update --no-self-update
+          rustup component add clippy
+          rustup toolchain install nightly --no-self-update
+          rustup +nightly component add rustfmt
+      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486
+        with:
+          tool: cargo-shear@1.11.2,taplo-cli@0.10.0,typos@1.42.0
+      - name: Run the requested contributor lint
+        run: |
+          make lint
+          git diff --exit-code

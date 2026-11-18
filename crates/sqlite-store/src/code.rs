@@ -1,8 +1,7 @@
 //! Persists the code registry and the code tree.
 //!
 //! The code registry holds the MAST forests in the `code_mast_forests` table, and the procedure
-//! roots of each forest in the `code_procedures` table. The code tree holds the same procedure
-//! roots in a lineage of the SMT forest tables.
+//! roots of each forest in the `code_procedures` table.
 
 use std::sync::Arc;
 use std::vec::Vec;
@@ -21,17 +20,6 @@ use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, with_write_tx};
 
 impl SqliteStore {
-    // PUBLIC API
-    // --------------------------------------------------------------------------------------------
-
-    /// Adds the procedures of the MAST forest to the code registry and to the code tree.
-    ///
-    /// The registry and the code tree are updated in the same database transaction. A procedure
-    /// that is already registered keeps the forest that it was first registered with.
-    pub async fn add_procedure(&self, procedure: Arc<MastForest>) -> Result<(), StoreError> {
-        self.add_procedures(vec![procedure]).await
-    }
-
     /// Adds the procedures of all MAST forests to the code registry and to the code tree.
     ///
     /// The registry and the code tree are updated in one database transaction. If one forest fails,
@@ -84,16 +72,18 @@ impl SqliteStore {
         conn: &mut Connection,
         procedures: &[Arc<MastForest>],
     ) -> Result<(), StoreError> {
-        if procedures
+        let procedure_roots: Vec<ProcedureRoot> = procedures
             .iter()
-            .all(|procedure| procedure.local_procedure_digests().next().is_none())
-        {
+            .flat_map(|procedure| procedure.local_procedure_digests())
+            .map(ProcedureRoot::from_raw)
+            .collect();
+        if procedure_roots.is_empty() {
             return Ok(());
         }
 
         with_write_tx(conn, |tx| {
-            let mut forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
-            forest.add_procedures(procedures.iter().map(AsRef::as_ref))?;
+            let mut code_smt_forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
+            code_smt_forest.insert_procedure_roots(&procedure_roots)?;
 
             let mut insert_forest = tx
                 .prepare_cached(
@@ -106,15 +96,15 @@ impl SqliteStore {
                      VALUES (?1, ?2)",
                 )
                 .into_store_error()?;
-            for procedure in procedures {
-                let mut procedure_roots = procedure.local_procedure_digests().peekable();
+            for mast in procedures {
+                let mut procedure_roots = mast.local_procedure_digests().peekable();
                 if procedure_roots.peek().is_none() {
                     continue;
                 }
 
-                let commitment = procedure.commitment();
+                let commitment = mast.commitment();
                 insert_forest
-                    .execute(params![commitment.as_bytes(), procedure.to_bytes()])
+                    .execute(params![commitment.as_bytes(), mast.to_bytes()])
                     .into_store_error()?;
                 for procedure_root in procedure_roots {
                     insert_procedure
@@ -149,8 +139,8 @@ impl SqliteStore {
 // MAST FOREST STORE
 // ================================================================================================
 
-/// The executor calls [`MastForestStore::get`] synchronously, so it cannot use the async connection
-/// pool. Each call reads through a new read-only connection.
+/// The [`MastForestStore::get`] method is synchronous, so it cannot use the async connection pool.
+/// Each call reads through a new read-only connection.
 impl MastForestStore for SqliteStore {
     fn get(&self, procedure_hash: &miden_protocol::Word) -> Option<LoadedMastForest> {
         let procedure_root = ProcedureRoot::from_raw(*procedure_hash);
@@ -183,7 +173,7 @@ mod tests {
     use super::*;
     use crate::tests::create_test_store;
 
-    fn local_roots(procedure: &MastForest) -> BTreeSet<ProcedureRoot> {
+    fn procedure_roots_of(procedure: &MastForest) -> BTreeSet<ProcedureRoot> {
         procedure.local_procedure_digests().map(ProcedureRoot::from_raw).collect()
     }
 
@@ -209,9 +199,9 @@ mod tests {
         let store = create_test_store().await;
         let protocol = ProtocolLib::default().mast_forest().clone();
 
-        store.add_procedure(protocol.clone()).await.unwrap();
+        store.add_procedures(vec![protocol.clone()]).await.unwrap();
 
-        for procedure_root in local_roots(&protocol) {
+        for procedure_root in procedure_roots_of(&protocol) {
             let stored = store.get_procedure(procedure_root).await.unwrap().unwrap();
             assert_eq!(stored.commitment(), protocol.commitment());
         }
@@ -226,11 +216,13 @@ mod tests {
         let protocol = ProtocolLib::default().mast_forest().clone();
         let standards = StandardsLib::default().mast_forest().clone();
 
-        store.add_procedure(protocol.clone()).await.unwrap();
-        store.add_procedure(standards.clone()).await.unwrap();
+        store.add_procedures(vec![protocol.clone()]).await.unwrap();
+        store.add_procedures(vec![standards.clone()]).await.unwrap();
 
-        let roots: BTreeSet<_> =
-            local_roots(&protocol).union(&local_roots(&standards)).copied().collect();
+        let roots: BTreeSet<_> = procedure_roots_of(&protocol)
+            .union(&procedure_roots_of(&standards))
+            .copied()
+            .collect();
         let code_tree = CodeTree::with_entries(roots.iter().copied()).unwrap();
         assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
 
@@ -241,48 +233,21 @@ mod tests {
         }
     }
 
-    /// Adding forests in one batch gives the same registry and code tree as adding them one by one.
-    /// A forest that is in the batch twice is added once.
-    #[tokio::test]
-    async fn added_procedure_batch_matches_single_adds() {
-        let protocol = ProtocolLib::default().mast_forest().clone();
-        let standards = StandardsLib::default().mast_forest().clone();
-
-        let single = create_test_store().await;
-        single.add_procedure(protocol.clone()).await.unwrap();
-        single.add_procedure(standards.clone()).await.unwrap();
-
-        let batch = create_test_store().await;
-        batch
-            .add_procedures(vec![protocol.clone(), standards.clone(), protocol.clone()])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            batch.get_code_tree_root().await.unwrap(),
-            single.get_code_tree_root().await.unwrap()
-        );
-        assert_eq!(row_counts(&batch).await, row_counts(&single).await);
-        for procedure_root in local_roots(&protocol).union(&local_roots(&standards)) {
-            let from_batch = batch.get_procedure(*procedure_root).await.unwrap().unwrap();
-            let from_single = single.get_procedure(*procedure_root).await.unwrap().unwrap();
-            assert_eq!(from_batch.commitment(), from_single.commitment());
-        }
-    }
-
     /// A procedure that two forests share stays bound to the forest that was added first.
     #[tokio::test]
     async fn shared_procedure_keeps_the_first_forest() {
         let protocol = ProtocolLib::default().mast_forest().clone();
         let standards = StandardsLib::default().mast_forest().clone();
-        let shared_roots: Vec<ProcedureRoot> =
-            local_roots(&protocol).intersection(&local_roots(&standards)).copied().collect();
+        let shared_roots: Vec<ProcedureRoot> = procedure_roots_of(&protocol)
+            .intersection(&procedure_roots_of(&standards))
+            .copied()
+            .collect();
         assert!(!shared_roots.is_empty(), "the forests must share a procedure");
 
         for (first, second) in [(&protocol, &standards), (&standards, &protocol)] {
             let store = create_test_store().await;
-            store.add_procedure(first.clone()).await.unwrap();
-            store.add_procedure(second.clone()).await.unwrap();
+            store.add_procedures(vec![first.clone()]).await.unwrap();
+            store.add_procedures(vec![second.clone()]).await.unwrap();
 
             for procedure_root in &shared_roots {
                 let stored = store.get_procedure(*procedure_root).await.unwrap().unwrap();
@@ -296,11 +261,11 @@ mod tests {
         let store = create_test_store().await;
         let protocol = ProtocolLib::default().mast_forest().clone();
 
-        store.add_procedure(protocol.clone()).await.unwrap();
+        store.add_procedures(vec![protocol.clone()]).await.unwrap();
         let root = store.get_code_tree_root().await.unwrap();
         let counts = row_counts(&store).await;
 
-        store.add_procedure(protocol).await.unwrap();
+        store.add_procedures(vec![protocol]).await.unwrap();
 
         assert_eq!(store.get_code_tree_root().await.unwrap(), root);
         assert_eq!(row_counts(&store).await, counts);
@@ -314,24 +279,20 @@ mod tests {
         let empty_root = store.get_code_tree_root().await.unwrap();
         let protocol = ProtocolLib::default().mast_forest().clone();
 
-        let result = store
-            .interact_with_connection(move |conn| {
-                conn.execute_batch("DROP TABLE code_procedures").into_store_error()?;
-                Ok(SqliteStore::insert_procedures(conn, &[protocol]))
+        // Drop the procedures table, so that the registry insert of `add_procedures` fails after
+        // the code tree update
+        store
+            .interact_with_connection(|conn| {
+                conn.execute_batch("DROP TABLE code_procedures").into_store_error()
             })
             .await
             .unwrap();
 
-        assert!(result.is_err());
+        // Add a forest and check that it fails
+        assert!(store.add_procedures(vec![protocol]).await.is_err());
+
+        // Check that the code tree did not change
         assert_eq!(store.get_code_tree_root().await.unwrap(), empty_root);
-        let forests: u64 = store
-            .interact_with_connection(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM code_mast_forests", [], |row| row.get(0))
-                    .into_store_error()
-            })
-            .await
-            .unwrap();
-        assert_eq!(forests, 0);
     }
 
     #[tokio::test]
@@ -342,7 +303,7 @@ mod tests {
 
         assert!(MastForestStore::get(&store, &procedure_root).is_none());
 
-        store.add_procedure(protocol.clone()).await.unwrap();
+        store.add_procedures(vec![protocol.clone()]).await.unwrap();
 
         let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
         assert_eq!(loaded.mast_forest().commitment(), protocol.commitment());

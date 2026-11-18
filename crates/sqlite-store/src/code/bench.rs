@@ -171,9 +171,7 @@ async fn consume_p2id_notes_with_memory_and_sqlite_mast_stores() -> anyhow::Resu
 
     let sqlite_store = create_test_store().await;
     let start = Instant::now();
-    for forest in forests {
-        sqlite_store.add_procedure(forest).await?;
-    }
+    sqlite_store.add_procedures(forests).await?;
     let add_time = start.elapsed();
 
     let (memory_time, memory_gets) = execute(&tx, &memory_store).await;
@@ -182,7 +180,7 @@ async fn consume_p2id_notes_with_memory_and_sqlite_mast_stores() -> anyhow::Resu
     println!("consume {NUM_NOTES} P2ID notes, mean of {NUM_RUNS} runs:");
     println!("  memory MAST store: {memory_time:?} ({memory_gets} MAST forest requests)");
     println!("  SQLite MAST store: {sqlite_time:?} ({sqlite_gets} MAST forest requests)");
-    println!("  add_procedure for all forests: {add_time:?}");
+    println!("  add_procedures for all forests: {add_time:?}");
 
     Ok(())
 }

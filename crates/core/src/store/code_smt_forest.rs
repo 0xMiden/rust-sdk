@@ -11,7 +11,7 @@ use miden_protocol::crypto::merkle::smt::{
     SmtForestUpdateBatch,
     TreeId,
 };
-use miden_protocol::{Felt, Hasher, MastForest, Word};
+use miden_protocol::{Felt, Hasher, Word};
 
 use super::StoreError;
 use super::smt_forest::forest_error;
@@ -83,25 +83,14 @@ impl<B: Backend> CodeSmtForest<B> {
     // MUTATORS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the local procedures of `procedure` to the code tree.
+    /// Inserts the procedure roots into the code tree, as one new version of the tree.
     ///
-    /// The procedures that are only external references are not added, because their code is not in
-    /// `procedure`. A procedure root that is already in the tree is left as it is.
-    pub fn add_procedure(&mut self, procedure: &MastForest) -> Result<(), StoreError> {
-        self.add_procedures([procedure])
-    }
-
-    /// Adds the local procedures of all `procedures` to the code tree, as one new version of the
-    /// tree.
-    ///
-    /// The procedures that are only external references are not added. A procedure root that is
-    /// already in the tree is left as it is.
-    pub fn add_procedures<'a>(
+    /// A procedure root that is already in the tree is left as it is.
+    pub fn insert_procedure_roots(
         &mut self,
-        procedures: impl IntoIterator<Item = &'a MastForest>,
+        procedure_roots: &[ProcedureRoot],
     ) -> Result<(), StoreError> {
-        let procedure_roots: BTreeSet<Word> =
-            procedures.into_iter().flat_map(MastForest::local_procedure_digests).collect();
+        let procedure_roots: BTreeSet<ProcedureRoot> = procedure_roots.iter().copied().collect();
         if procedure_roots.is_empty() {
             return Ok(());
         }
@@ -109,7 +98,7 @@ impl<B: Backend> CodeSmtForest<B> {
         let mut batch = SmtForestUpdateBatch::empty();
         let operations = batch.operations(code_tree_lineage_id());
         for procedure_root in procedure_roots {
-            operations.add_insert(procedure_root, PRESENT_VALUE);
+            operations.add_insert(procedure_root.as_word(), PRESENT_VALUE);
         }
 
         let new_version = self.forest.latest_version(code_tree_lineage_id()).map_or(0, |v| v + 1);
@@ -128,8 +117,8 @@ impl<B: Backend> CodeSmtForest<B> {
 mod tests {
     use alloc::vec::Vec;
 
-    use miden_protocol::ProtocolLib;
     use miden_protocol::crypto::merkle::smt::ForestInMemoryBackend;
+    use miden_protocol::{MastForest, ProtocolLib};
     use miden_standards::StandardsLib;
 
     use super::*;
@@ -165,13 +154,17 @@ mod tests {
     /// The forest must produce the same root and witnesses as the protocol's code tree, since both
     /// are checked against the block header.
     #[test]
-    fn added_procedures_match_code_tree() {
+    fn inserted_procedure_roots_match_code_tree() {
         let protocol = ProtocolLib::default();
         let standards = StandardsLib::default();
         let mut code_smt_forest = code_smt_forest();
 
-        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
-        code_smt_forest.add_procedure(standards.mast_forest()).unwrap();
+        code_smt_forest
+            .insert_procedure_roots(&procedure_roots(&[protocol.mast_forest()]))
+            .unwrap();
+        code_smt_forest
+            .insert_procedure_roots(&procedure_roots(&[standards.mast_forest()]))
+            .unwrap();
 
         let roots = procedure_roots(&[protocol.mast_forest(), standards.mast_forest()]);
         let code_tree = CodeTree::with_entries(roots.iter().copied()).unwrap();
@@ -188,13 +181,13 @@ mod tests {
     }
 
     #[test]
-    fn adding_the_same_procedure_twice_keeps_the_root() {
-        let protocol = ProtocolLib::default();
+    fn inserting_the_same_procedure_roots_twice_keeps_the_root() {
+        let roots = procedure_roots(&[ProtocolLib::default().mast_forest()]);
         let mut code_smt_forest = code_smt_forest();
 
-        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
+        code_smt_forest.insert_procedure_roots(&roots).unwrap();
         let root = code_smt_forest.code_tree_root();
-        code_smt_forest.add_procedure(protocol.mast_forest()).unwrap();
+        code_smt_forest.insert_procedure_roots(&roots).unwrap();
 
         assert_eq!(code_smt_forest.code_tree_root(), root);
     }

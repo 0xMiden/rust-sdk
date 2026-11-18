@@ -1,0 +1,37 @@
+name: Fresh note retention assertion proof
+
+on:
+  push:
+    branches: [ci/fresh-rust-storage-red]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: warp-ubuntu-latest-x64-8x
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cleanup-runner
+      - name: Install Rust
+        run: rustup update --no-self-update
+      - uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1
+        with:
+          shared-key: rust-release-${{ runner.arch }}
+          prefix-key: rust-cache-2026.02.18
+          save-if: false
+      - name: Require both retention assertions to fail
+        run: |
+          set -uo pipefail
+          test "$(git rev-parse HEAD^)" = 7265edf57c08fb8eb7bc4757ef4597ce4721c0f7 || exit 1
+          cargo test --locked -p miden-client-unit-tests --lib retention_gate_ 2>&1 | tee "$RUNNER_TEMP/retention-red.log"
+          status=${PIPESTATUS[0]}
+          test "$status" = 101 &&
+            grep -F 'The import finished without a retention acknowledgement' "$RUNNER_TEMP/retention-red.log" &&
+            grep -F 'The transport advanced without a retention acknowledgement' "$RUNNER_TEMP/retention-red.log" &&
+            grep -E 'test result: FAILED\. 0 passed; 2 failed' "$RUNNER_TEMP/retention-red.log"

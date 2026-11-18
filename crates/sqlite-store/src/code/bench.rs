@@ -6,7 +6,6 @@
 use std::collections::BTreeSet;
 use std::println;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
@@ -33,7 +32,8 @@ use miden_tx::{
 
 use crate::tests::create_test_store;
 
-const NUM_NOTES: usize = 100;
+/// The number of transactions. Each one consumes one P2ID note.
+const NUM_TRANSACTIONS: u32 = 100;
 const NUM_RUNS: u32 = 10;
 
 // DATA STORE
@@ -43,13 +43,10 @@ const NUM_RUNS: u32 = 10;
 struct BenchDataStore<'a, M> {
     tx: &'a MockTransaction,
     mast_store: &'a M,
-    /// The number of MAST forest requests during execution.
-    gets: AtomicUsize,
 }
 
 impl<M: MastForestStore> MastForestStore for BenchDataStore<'_, M> {
     fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
-        self.gets.fetch_add(1, Ordering::Relaxed);
         self.mast_store.get(procedure_hash)
     }
 }
@@ -102,36 +99,29 @@ impl<M: MastForestStore + Sync> DataStore for BenchDataStore<'_, M> {
 // BENCHMARK
 // ================================================================================================
 
-/// Executes `tx` `NUM_RUNS` times with `mast_store`, and returns the mean execution time and the
-/// number of MAST forest requests in one execution.
-async fn execute<M: MastForestStore + Sync>(
-    tx: &MockTransaction,
-    mast_store: &M,
-) -> (Duration, usize) {
-    let data_store = BenchDataStore {
-        tx,
-        mast_store,
-        gets: AtomicUsize::new(0),
-    };
-    let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&data_store);
-
+/// Executes all `txs` `NUM_RUNS` times with `mast_store`, each one with a new executor, and returns
+/// the mean time to execute all of them.
+async fn execute<M: MastForestStore + Sync>(txs: &[MockTransaction], mast_store: &M) -> Duration {
     let mut total = Duration::ZERO;
     for _ in 0..NUM_RUNS {
-        data_store.gets.store(0, Ordering::Relaxed);
         let start = Instant::now();
-        executor
-            .execute_transaction(
-                tx.account().id(),
-                tx.tx_inputs().block_header().block_num(),
-                tx.input_notes().clone(),
-                tx.tx_args().clone(),
-            )
-            .await
-            .expect("the transaction executes");
+        for tx in txs {
+            let data_store = BenchDataStore { tx, mast_store };
+            let executor = TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&data_store);
+            executor
+                .execute_transaction(
+                    tx.account().id(),
+                    tx.tx_inputs().block_header().block_num(),
+                    tx.input_notes().clone(),
+                    tx.tx_args().clone(),
+                )
+                .await
+                .expect("the transaction executes");
+        }
         total += start.elapsed();
     }
 
-    (total / NUM_RUNS, data_store.gets.load(Ordering::Relaxed))
+    total / NUM_RUNS
 }
 
 #[tokio::test]
@@ -140,7 +130,7 @@ async fn consume_p2id_notes_with_memory_and_sqlite_mast_stores() -> anyhow::Resu
     let mut builder = MockChain::builder();
     let account = builder.add_existing_wallet(Auth::IncrNonce)?;
     let sender = AccountId::try_from(ACCOUNT_ID_SENDER)?;
-    let notes = (0..NUM_NOTES)
+    let notes = (0..NUM_TRANSACTIONS)
         .map(|_| {
             builder.add_p2id_note(
                 sender,
@@ -151,10 +141,15 @@ async fn consume_p2id_notes_with_memory_and_sqlite_mast_stores() -> anyhow::Resu
         })
         .collect::<Result<Vec<Note>, _>>()?;
     let chain = builder.build()?;
-    let tx = chain
-        .build_transaction(account.id())
-        .authenticated_input_notes(notes.iter().map(Note::id))
-        .build()?;
+    let txs = notes
+        .iter()
+        .map(|note| {
+            chain
+                .build_transaction(account.id())
+                .authenticated_input_notes([note.id()])
+                .build()
+        })
+        .collect::<Result<Vec<MockTransaction>, _>>()?;
 
     // The same MAST forests as the in-memory store, except the agglayer library, which P2ID notes
     // do not use.
@@ -174,12 +169,20 @@ async fn consume_p2id_notes_with_memory_and_sqlite_mast_stores() -> anyhow::Resu
     sqlite_store.add_procedures(forests).await?;
     let add_time = start.elapsed();
 
-    let (memory_time, memory_gets) = execute(&tx, &memory_store).await;
-    let (sqlite_time, sqlite_gets) = execute(&tx, &sqlite_store).await;
+    let memory_time = execute(&txs, &memory_store).await;
+    let sqlite_time = execute(&txs, &sqlite_store).await;
 
-    println!("consume {NUM_NOTES} P2ID notes, mean of {NUM_RUNS} runs:");
-    println!("  memory MAST store: {memory_time:?} ({memory_gets} MAST forest requests)");
-    println!("  SQLite MAST store: {sqlite_time:?} ({sqlite_gets} MAST forest requests)");
+    println!(
+        "{NUM_TRANSACTIONS} transactions that consume one P2ID note each, mean of {NUM_RUNS} runs:"
+    );
+    println!(
+        "  memory MAST store: {memory_time:?} ({:?} per transaction)",
+        memory_time / NUM_TRANSACTIONS
+    );
+    println!(
+        "  SQLite MAST store: {sqlite_time:?} ({:?} per transaction)",
+        sqlite_time / NUM_TRANSACTIONS
+    );
     println!("  add_procedures for all forests: {add_time:?}");
 
     Ok(())

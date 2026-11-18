@@ -13,6 +13,7 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::account::{
@@ -37,7 +38,8 @@ use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::{Felt, Word};
+use miden_protocol::vm::PackageDebugInfo;
+use miden_protocol::{Felt, MastForest, Word};
 
 use crate::errors::StoreError;
 use crate::note_transport::NoteTransportSyncState;
@@ -651,6 +653,23 @@ pub trait Store: Send + Sync {
     /// methods must use the same encoding, so that [`Store::get_protocol_config`] can read the
     /// configurations from both sources.
     async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError>;
+
+    // CODE REGISTRY
+    // --------------------------------------------------------------------------------------------
+
+    /// Adds the MAST forests and their debug info to the code registry, and their procedure roots
+    /// to the code tree.
+    ///
+    /// Each debug info must belong to the forest that it is paired with, because it refers to the
+    /// nodes of that forest. A forest that already has debug info in the registry is skipped.
+    ///
+    /// The default implementation does nothing, for a store that does not keep a code registry.
+    async fn insert_procedures_with_debug_info(
+        &self,
+        _procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
 
     // RPC LIMITS
     // --------------------------------------------------------------------------------------------

@@ -1,0 +1,32 @@
+name: Storage retention proof on the 0.18.2 source line
+
+on:
+  push:
+    branches: [ci/fresh-rust-storage-v0182-check]
+
+permissions:
+  contents: read
+
+jobs:
+  retention:
+    runs-on: warp-ubuntu-latest-x64-8x
+    timeout-minutes: 20
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: b6afbe02c112768338ac6bde8ee9188cfccfd446
+          persist-credentials: false
+      - uses: ./.github/actions/cleanup-runner
+      - name: Install the source toolchain
+        run: rustup update --no-self-update
+      - name: Verify both retention assertions on the pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = b6afbe02c112768338ac6bde8ee9188cfccfd446
+          cargo test --locked -p miden-client-unit-tests --lib retention_gate_ 2>&1 | tee "$RUNNER_TEMP/retention-green.log"
+          grep -F 'retention_gate_awaits_host_before_importing_a_note ... ok' "$RUNNER_TEMP/retention-green.log"
+          grep -F 'retention_gate_refusal_keeps_transport_cursor_and_retries_note ... ok' "$RUNNER_TEMP/retention-green.log"
+          grep -F 'test result: ok. 2 passed; 0 failed; 0 ignored' "$RUNNER_TEMP/retention-green.log"

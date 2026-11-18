@@ -18,3 +18,12 @@ CREATE TABLE code_procedures (
     PRIMARY KEY (procedure_root),
     FOREIGN KEY (commitment) REFERENCES code_mast_forests(commitment)
 ) WITHOUT ROWID, STRICT;
+
+-- The debug info of the MAST forests of the code registry.
+CREATE TABLE code_debug_info (
+    commitment BLOB NOT NULL,  -- commitment of the forest that the debug info describes
+    debug_info BLOB NOT NULL,  -- serialized PackageDebugInfo
+
+    PRIMARY KEY (commitment),
+    FOREIGN KEY (commitment) REFERENCES code_mast_forests(commitment)
+) WITHOUT ROWID, STRICT;

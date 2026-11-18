@@ -16,6 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          fetch-depth: 2
           persist-credentials: false
       - uses: ./.github/actions/cleanup-runner
       - name: Install Rust
@@ -28,7 +29,7 @@ jobs:
       - name: Require both retention assertions to fail
         run: |
           set -uo pipefail
-          test "$(git rev-parse HEAD^)" = 7265edf57c08fb8eb7bc4757ef4597ce4721c0f7 || exit 1
+          git merge-base --is-ancestor 7265edf57c08fb8eb7bc4757ef4597ce4721c0f7 HEAD || exit 1
           cargo test --locked -p miden-client-unit-tests --lib retention_gate_ 2>&1 | tee "$RUNNER_TEMP/retention-red.log"
           status=${PIPESTATUS[0]}
           test "$status" = 101 &&

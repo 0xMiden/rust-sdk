@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][rust] Added `ClientBuilder::note_acquisition_gate` to await host retention before note imports and note transport cursor updates.
+
 ## 0.18.2 (2026-11-13)
 
 ### Fixes

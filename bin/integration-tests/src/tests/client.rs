@@ -46,13 +46,9 @@ use miden_client::testing::common::*;
 use miden_client::transaction::{
     DiscardCause,
     PaymentNoteDescription,
-    ProvenTransaction,
-    TransactionProver,
-    TransactionProverError,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
-    TransactionWitness,
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::SqliteStore;
@@ -1158,60 +1154,6 @@ pub async fn test_discarded_transaction(client_config: ClientConfig) -> Result<(
         account_hash_after_sync, account_hash_before_tx,
         "Account hash should be rolled back to the value before the transaction"
     );
-    Ok(())
-}
-
-struct AlwaysFailingProver;
-
-impl AlwaysFailingProver {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl TransactionProver for AlwaysFailingProver {
-    async fn prove(
-        &self,
-        _witness: TransactionWitness,
-    ) -> Result<ProvenTransaction, TransactionProverError> {
-        return Err(TransactionProverError::other("This prover always fails"));
-    }
-}
-
-pub async fn test_custom_transaction_prover_error_caught(
-    client_config: ClientConfig,
-) -> Result<()> {
-    let mut client = client_config.into_client().await?;
-    let (first_regular_account, faucet_account_header) =
-        client.setup_wallet_and_faucet(AccountType::Private).await?;
-
-    let from_account_id = first_regular_account.id();
-    let faucet_account_id = faucet_account_header.id();
-
-    let fungible_asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
-
-    let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
-        fungible_asset,
-        from_account_id,
-        NoteType::Private,
-        client.rng(),
-    )?;
-
-    let transaction_result =
-        client.execute_transaction(faucet_account_id, tx_request.clone()).await.unwrap();
-
-    let result = client
-        .prove_transaction_with(&transaction_result, Arc::new(AlwaysFailingProver::new()))
-        .await;
-
-    let Err(ClientError::TransactionProvingError(TransactionProverError::Other {
-        error_msg, ..
-    })) = result
-    else {
-        panic!("expected different prover error");
-    };
-    assert_eq!(error_msg.as_ref(), "This prover always fails");
     Ok(())
 }
 

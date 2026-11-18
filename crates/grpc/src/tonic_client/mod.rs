@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+use futures::StreamExt;
 use miden_client_core::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcError};
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::domain::account_vault::AccountVaultInfo;
+use miden_client_core::rpc::domain::block::SubscribedBlock;
 use miden_client_core::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
@@ -30,7 +32,7 @@ use tonic::Status;
 
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
-use crate::rpc_stream_method::validate_items;
+use crate::rpc_stream_method::{boxed, validate_items};
 use crate::{Endpoint, RpcMethod, RpcStream, RpcStreamMethod, v1};
 
 mod api_client;
@@ -232,34 +234,7 @@ impl GrpcClient {
     }
 
     fn rpc_error_from_status(&self, endpoint: RpcEndpoint, status: Status) -> RpcError {
-        let genesis_commitment = self
-            .connection
-            .read()
-            .genesis_commitment
-            .as_ref()
-            .map_or_else(|| "none".to_string(), Word::to_hex);
-        let context = AcceptHeaderContext { genesis_commitment };
-
-        if let Some(accept_error) =
-            AcceptHeaderError::try_from_message_with_context(status.message(), context)
-        {
-            return RpcError::AcceptHeaderError(accept_error);
-        }
-
-        let error_kind = grpc_error_from_status(&status);
-
-        // Parse the application-level error from the status details
-        let endpoint_error = parse_node_error(endpoint, status.details(), status.message())
-            .or_else(|| parse_status_error(endpoint, &error_kind, status.message()));
-
-        let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
-
-        RpcError::RequestError {
-            endpoint,
-            error_kind,
-            endpoint_error,
-            source: Some(source),
-        }
+        rpc_error_from_status(endpoint, status, self.connection.read().genesis_commitment)
     }
 
     /// Executes an RPC call and automatically retries transient failures.
@@ -294,6 +269,39 @@ impl GrpcClient {
                 Err(status) => return Err(self.rpc_error_from_status(endpoint, status)),
             }
         }
+    }
+
+    /// Opens a server-streaming RPC call and returns the stream of its items, each decoded with
+    /// `decode`. A status of the stream becomes an [`RpcError`].
+    ///
+    /// The retry policy of [`Self::send_with_retry`] applies until the node accepts the call. A
+    /// failure of the open stream is not retried. On `wasm32` targets, the request timeout does not
+    /// apply to the call, because it would end the stream.
+    pub(crate) async fn open_stream<T, U, Fut>(
+        &self,
+        endpoint: RpcEndpoint,
+        mut call: impl FnMut(ApiClient) -> Fut,
+        decode: fn(T) -> Result<U, RpcError>,
+    ) -> Result<RpcStream<U>, RpcError>
+    where
+        T: Send + 'static,
+        U: 'static,
+        Fut: Future<Output = Result<tonic::Response<tonic::Streaming<T>>, Status>>,
+    {
+        let response = self
+            .send_with_retry(endpoint, |rpc_api| call(rpc_api.without_request_timeout()))
+            .await?;
+        let genesis_commitment = self.connection.read().genesis_commitment;
+
+        // The node sends `ResourceExhausted` on an open stream only when the subscriber is too
+        // slow. Before the stream opens, the same code is a rate limit.
+        Ok(boxed(response.into_inner().map(move |item| match item {
+            Ok(item) => decode(item),
+            Err(status) if status.code() == tonic::Code::ResourceExhausted => {
+                Err(RpcError::SubscriberLagged { endpoint })
+            },
+            Err(status) => Err(rpc_error_from_status(endpoint, status, genesis_commitment)),
+        })))
     }
 
     /// Fetches RPC status without injecting an Accept header.
@@ -392,6 +400,13 @@ impl NodeRpcClient for GrpcClient {
             .ok_or(RpcError::ExpectedDataMissing("ProtocolConfig".into()))?;
 
         Ok((response.block_header, protocol_config))
+    }
+
+    async fn subscribe_blocks(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedBlock>, RpcError> {
+        self.subscribe(v1::BlockSubscription { block_from }).await
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
@@ -545,6 +560,40 @@ impl NodeRpcClient for GrpcClient {
 
 // ERRORS
 // ================================================================================================
+
+/// Converts a gRPC status of a call to `endpoint` to an [`RpcError`].
+///
+/// `genesis_commitment` is the commitment that the call sent to the node.
+fn rpc_error_from_status(
+    endpoint: RpcEndpoint,
+    status: Status,
+    genesis_commitment: Option<Word>,
+) -> RpcError {
+    let genesis_commitment =
+        genesis_commitment.as_ref().map_or_else(|| "none".to_string(), Word::to_hex);
+    let context = AcceptHeaderContext { genesis_commitment };
+
+    if let Some(accept_error) =
+        AcceptHeaderError::try_from_message_with_context(status.message(), context)
+    {
+        return RpcError::AcceptHeaderError(accept_error);
+    }
+
+    let error_kind = grpc_error_from_status(&status);
+
+    // Parse the application-level error from the status details
+    let endpoint_error = parse_node_error(endpoint, status.details(), status.message())
+        .or_else(|| parse_status_error(endpoint, &error_kind, status.message()));
+
+    let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
+
+    RpcError::RequestError {
+        endpoint,
+        error_kind,
+        endpoint_error,
+        source: Some(source),
+    }
+}
 
 fn grpc_error_from_status(status: &Status) -> GrpcError {
     GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))

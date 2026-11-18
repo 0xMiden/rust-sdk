@@ -1,5 +1,6 @@
 //! Methods of the `miden.node.v1` RPC API.
 
+mod block_subscription;
 mod get_account;
 mod get_block_by_number;
 mod get_block_header_by_number;
@@ -21,6 +22,7 @@ mod sync_notes;
 mod sync_nullifiers;
 mod sync_transactions;
 
+pub use block_subscription::{BlockSubscription, BlockSubscriptionState};
 pub use get_account::GetAccount;
 pub use get_block_by_number::GetBlockByNumber;
 pub use get_block_header_by_number::{BlockHeaderResponse, GetBlockHeaderByNumber};

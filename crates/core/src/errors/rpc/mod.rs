@@ -41,6 +41,8 @@ pub enum RpcError {
         #[source]
         source: Option<Box<dyn Error + Send + Sync + 'static>>,
     },
+    #[error("the Miden node ended the {endpoint} stream because the subscriber is too slow")]
+    SubscriberLagged { endpoint: RpcEndpoint },
     #[error("note {0} was not found on the Miden node")]
     NoteNotFound(NoteId),
     #[error("failed to seal transaction inputs for submission: {0}")]

@@ -52,6 +52,7 @@ use crate::rpc::domain::account::{
     VaultFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
+use crate::rpc::domain::block::SubscribedBlock;
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
@@ -59,7 +60,7 @@ use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
-use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
+use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo, RpcStream};
 
 pub type MockClient<AUTH> = Client<AUTH>;
 
@@ -1019,6 +1020,37 @@ impl NodeRpcClient for MockRpcApi {
             SignedBlock::new_unchecked(header, body, signatures),
             include_proof.then_some(proof),
         ))
+    }
+
+    /// Returns the blocks of the mock chain from `block_from` to the chain tip. The stream ends
+    /// after the chain tip, and does not yield the blocks that the chain proves later.
+    async fn subscribe_blocks(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedBlock>, RpcError> {
+        let committed_chain_tip = self.get_chain_tip_block_num();
+        let protocol_config = self.protocol_config();
+        let blocks: Vec<_> = self
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .filter(|block| block.header().block_num() >= block_from)
+            .enumerate()
+            .map(|(index, block)| {
+                let (header, body, signatures, _proof) = block.clone().into_parts();
+
+                Ok(SubscribedBlock {
+                    block: SignedBlock::new_unchecked(header, body, signatures),
+                    committed_chain_tip,
+                    // The mock chain has one protocol configuration, so only the first block
+                    // carries it.
+                    protocol_config: (index == 0).then(|| protocol_config.clone()),
+                })
+            })
+            .collect();
+
+        Ok(Box::pin(futures::stream::iter(blocks)))
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

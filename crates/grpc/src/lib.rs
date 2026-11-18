@@ -15,7 +15,8 @@ mod rpc_method;
 pub use rpc_method::RpcMethod;
 
 mod rpc_stream_method;
-pub use rpc_stream_method::{RpcStream, RpcStreamMethod};
+pub use miden_client_core::rpc::RpcStream;
+pub use rpc_stream_method::RpcStreamMethod;
 
 mod tonic_client;
 pub use tonic_client::GrpcClient;

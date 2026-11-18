@@ -6,7 +6,7 @@ pub use state_sync_update::{
     PartialBlockchainUpdates,
     PublicAccountUpdate,
     StateSyncUpdate,
-    TransactionUpdateTracker,
+    TransactionUpdates,
 };
 
 mod tag;

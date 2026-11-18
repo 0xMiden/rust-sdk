@@ -35,6 +35,8 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed.
+
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

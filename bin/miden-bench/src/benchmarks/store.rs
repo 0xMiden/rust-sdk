@@ -21,7 +21,7 @@ use miden_client::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
-    TransactionUpdateTracker,
+    TransactionUpdates,
 };
 use miden_client_core::store::{ClientAccountType, InputNoteCursor};
 use miden_client_sqlite_store::SqliteStore;
@@ -219,7 +219,7 @@ async fn note_write_measurements(
                     sync_block,
                     PartialBlockchainUpdates::default(),
                     NoteUpdates::from_records(notes, [], []),
-                    TransactionUpdateTracker::default(),
+                    TransactionUpdates::default(),
                     AccountUpdates::default(),
                     None,
                 );

@@ -34,7 +34,7 @@ use miden_client_core::sync::{
     AccountUpdates,
     PartialBlockchainUpdates,
     StateSyncUpdate,
-    TransactionUpdateTracker,
+    TransactionUpdates,
 };
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -783,7 +783,7 @@ async fn output_notes_filtered_by_script_root() {
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [swap_note.clone(), partial_note.clone()]),
-        TransactionUpdateTracker::default(),
+        TransactionUpdates::default(),
         AccountUpdates::default(),
         None,
     );
@@ -837,7 +837,7 @@ async fn output_note_state_blob_does_not_embed_script() {
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [note.clone()]),
-        TransactionUpdateTracker::default(),
+        TransactionUpdates::default(),
         AccountUpdates::default(),
         None,
     );
@@ -872,7 +872,7 @@ async fn consumed_output_note_round_trips() {
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [note.clone()]),
-        TransactionUpdateTracker::default(),
+        TransactionUpdates::default(),
         AccountUpdates::default(),
         None,
     );
@@ -904,7 +904,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
             BlockNumber::from(0u32),
             PartialBlockchainUpdates::default(),
             NoteUpdates::from_records(notes.clone(), [], []),
-            TransactionUpdateTracker::default(),
+            TransactionUpdates::default(),
             AccountUpdates::default(),
             None,
         );
@@ -1030,7 +1030,7 @@ async fn input_note_state_update_persists_attachments() {
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [updated], []),
-        TransactionUpdateTracker::default(),
+        TransactionUpdates::default(),
         AccountUpdates::default(),
         None,
     );

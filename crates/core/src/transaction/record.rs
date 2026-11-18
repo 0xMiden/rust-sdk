@@ -50,9 +50,6 @@ impl TransactionRecord {
                 };
                 true
             },
-            // TODO: We need a better strategy here. If a transaction was discarded within this same
-            // chain of updates, it would be better to pass the state to committed and then remove
-            // the account invalid states and make them valid again
             TransactionStatus::Discarded(_) | TransactionStatus::Committed { .. } => false,
         }
     }
@@ -91,6 +88,23 @@ pub struct TransactionDetails {
     pub expiration_block_num: BlockNumber,
     /// Timestamp indicating when the transaction was created by the client.
     pub creation_timestamp: u64,
+}
+
+impl TransactionDetails {
+    /// Returns the discard cause for a transaction still pending at the sync height.
+    pub fn discard_cause_at(
+        &self,
+        height: BlockNumber,
+        stale_before: BlockNumber,
+    ) -> Option<DiscardCause> {
+        if self.submission_height < stale_before {
+            Some(DiscardCause::Stale)
+        } else if self.expiration_block_num <= height {
+            Some(DiscardCause::Expired)
+        } else {
+            None
+        }
+    }
 }
 
 /// Represents the cause of the discarded transaction.

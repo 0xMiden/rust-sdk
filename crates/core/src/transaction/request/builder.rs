@@ -171,8 +171,7 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
-    /// against.
+    /// the note's creation block.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
@@ -343,9 +342,13 @@ impl TransactionRequestBuilder {
     /// Fees are settled in the chain's native fee asset at rate 1/1. The client commits that info
     /// through the transaction's auth args when preparing the transaction.
     ///
-    /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
-    /// the transaction's reference block. Use the same reference block when collecting signatures
-    /// across repeated executions. See `Client::execute_transaction_at`.
+    /// Multisig accounts require a caller-declared salt. The client binds their auth args to the
+    /// transaction's reference block, which is the sync height at execution time. Signatures for
+    /// one execution are valid for a later execution only if the client does not sync between the
+    /// two executions. To collect signatures across syncs, use [`Self::auth_args`] to set
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) that bind a fixed
+    /// block. On a chain that charges fees, these auth args must also include the fee conversion
+    /// info.
     ///
     /// [`Self::build`] fails if explicit auth args are also set.
     #[must_use]

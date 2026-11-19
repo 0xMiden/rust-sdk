@@ -41,13 +41,7 @@ use miden_client::store::{
     StoreError,
     TransactionFilter,
 };
-use miden_client::sync::{
-    NoteTagRecord,
-    NoteTagSource,
-    NoteUpdateAction,
-    OnNoteReceived,
-    PrivateAccountHistory,
-};
+use miden_client::sync::{NoteTagRecord, NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use miden_client::testing::common::{
     ACCOUNT_ID_REGULAR,
     AccountSetup,
@@ -721,12 +715,12 @@ async fn sync_persists_auth_nodes_for_skipped_blocks() {
             &mut partial_mmr,
             StateSyncInput {
                 accounts: vec![],
-                account_history: PrivateAccountHistory::Commitments(BTreeSet::new()),
                 note_tags,
                 input_notes: vec![],
                 output_notes: vec![],
                 uncommitted_transactions: vec![],
             },
+            async |_, _| Ok(false),
         )
         .await
         .unwrap();
@@ -815,13 +809,15 @@ async fn sync_state_no_redundant_get_account_calls() {
 
     let input = StateSyncInput {
         accounts: vec![(account_header, miden_client_core::store::AccountStatus::Tracked)],
-        account_history: PrivateAccountHistory::Commitments(BTreeSet::new()),
         note_tags,
         input_notes: vec![],
         output_notes: vec![],
         uncommitted_transactions: vec![],
     };
-    let state_sync_update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+    let state_sync_update = state_sync
+        .sync_state(&mut partial_mmr, input, async |_, _| Ok(false))
+        .await
+        .unwrap();
 
     // Only 1 updated public account entry, not N duplicates
     assert_eq!(

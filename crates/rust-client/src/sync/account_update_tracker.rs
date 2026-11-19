@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
@@ -16,28 +15,8 @@ use super::{
     PublicAccountUpdate,
     TransactionUpdateTracker,
 };
-use crate::store::{AccountStatus, Store, StoreError};
+use crate::store::{AccountStatus, StoreError};
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
-
-/// The source of historical account commitments for private account sync.
-pub enum PrivateAccountHistory {
-    /// Read the matching header from the local store when a proven commitment is unfamiliar.
-    Store(Arc<dyn Store>),
-    /// Historical commitments supplied by a custom sync. Each commitment binds its account ID.
-    Commitments(BTreeSet<Word>),
-}
-
-impl PrivateAccountHistory {
-    async fn contains(&self, account_id: AccountId, commitment: Word) -> Result<bool, StoreError> {
-        match self {
-            Self::Store(store) => Ok(store
-                .get_account_header_by_commitment(commitment)
-                .await?
-                .is_some_and(|header| header.id() == account_id)),
-            Self::Commitments(states) => Ok(states.contains(&commitment)),
-        }
-    }
-}
 
 // PUBLIC ACCOUNT RECONCILIATION
 // ================================================================================================
@@ -413,22 +392,22 @@ impl AccountUpdateTracker {
         &mut self,
         id: AccountId,
         commitment: Word,
-        history: &PrivateAccountHistory,
+        is_known_private_state: impl AsyncFnOnce(AccountId, Word) -> Result<bool, StoreError>,
     ) -> Result<(), StoreError> {
         let Some(account) = self.accounts.get_mut(&id) else {
             return Ok(());
         };
-        account.proven_state = Some(commitment);
         let tip = account.local_header.to_commitment();
         account.state = if account.already_locked
             || tip == commitment
             || account.local_transitions.branch(tip).any(|(_, initial)| initial == commitment)
-            || history.contains(id, commitment).await?
+            || is_known_private_state(id, commitment).await?
         {
             AccountSyncState::Unchanged
         } else {
             AccountSyncState::Lock
         };
+        account.proven_state = Some(commitment);
         Ok(())
     }
 
@@ -634,11 +613,9 @@ mod tests {
             accounts.observe_transition(&header);
         }
         accounts
-            .apply_private_account_commitment(
-                local.id(),
-                proven.to_commitment(),
-                &PrivateAccountHistory::Commitments(BTreeSet::new()),
-            )
+            .apply_private_account_commitment(local.id(), proven.to_commitment(), async |_, _| {
+                Ok(false)
+            })
             .await
             .unwrap();
         accounts.reconcile_transactions(&mut transactions, &DiscardConditions::default());
@@ -704,20 +681,27 @@ mod tests {
     #[tokio::test]
     async fn sync_summary_reports_only_new_private_locks() {
         let local = header(private_account_id(), 2, 2);
-        let archived = header(local.id(), 1, 1).to_commitment();
+        let ancestor = header(local.id(), 1, 1);
+        let archived = header(local.id(), 1, 2).to_commitment();
         let unfamiliar = header(local.id(), 2, 9).to_commitment();
-        let history = PrivateAccountHistory::Commitments(BTreeSet::from([archived]));
-        for (status, proven, expected) in [
-            (AccountStatus::Tracked, local.to_commitment(), vec![]),
-            (AccountStatus::Tracked, archived, vec![]),
-            (AccountStatus::Tracked, unfamiliar, vec![local.id()]),
-            (AccountStatus::Locked { seed: None }, unfamiliar, vec![]),
+        for (status, proven, expect_lookup, expected) in [
+            (AccountStatus::Tracked, local.to_commitment(), false, vec![]),
+            (AccountStatus::Tracked, ancestor.to_commitment(), false, vec![]),
+            (AccountStatus::Tracked, archived, true, vec![]),
+            (AccountStatus::Tracked, unfamiliar, true, vec![local.id()]),
+            (AccountStatus::Locked { seed: None }, unfamiliar, false, vec![]),
         ] {
-            let mut accounts = AccountUpdateTracker::new([(local.clone(), status)], &[]);
+            let mut accounts =
+                AccountUpdateTracker::new([(local.clone(), status)], &[pending(&ancestor, &local)]);
+            let mut lookup = None;
             accounts
-                .apply_private_account_commitment(local.id(), proven, &history)
+                .apply_private_account_commitment(local.id(), proven, async |id, commitment| {
+                    lookup = Some((id, commitment));
+                    Ok(commitment == archived)
+                })
                 .await
                 .unwrap();
+            assert_eq!(lookup, expect_lookup.then_some((local.id(), proven)));
             let update = crate::sync::StateSyncUpdate::from_parts(
                 BlockNumber::from(1u32),
                 crate::sync::PartialBlockchainUpdates::default(),

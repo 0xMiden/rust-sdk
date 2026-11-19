@@ -80,7 +80,6 @@ use crate::rpc::domain::account::GetAccountRequest;
 use crate::store::{NoteFilter, TransactionFilter};
 use crate::{Client, ClientError};
 mod account_update_tracker;
-pub use account_update_tracker::PrivateAccountHistory;
 mod block_header;
 
 pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
@@ -177,7 +176,15 @@ where
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        let mut chain_sync_data = state_sync.fetch_state(block_from, input).await?;
+        let mut chain_sync_data = state_sync
+            .fetch_state(block_from, input, async |id, commitment| {
+                Ok(self
+                    .store
+                    .get_account_header_by_commitment(commitment)
+                    .await?
+                    .is_some_and(|header| header.id() == id))
+            })
+            .await?;
         self.collect_account_witnesses(&mut chain_sync_data).await?;
 
         Ok(chain_sync_data)
@@ -345,7 +352,6 @@ where
 
         Ok(StateSyncInput {
             accounts,
-            account_history: PrivateAccountHistory::Store(self.store.clone()),
             note_tags,
             input_notes,
             output_notes,

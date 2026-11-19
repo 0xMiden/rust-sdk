@@ -544,7 +544,7 @@ mod tests {
     /// together. If one side changes its layout, this test fails.
     ///
     /// The first vector is the one that the node pins in its
-    /// `encryption_key_attestation_eidos_vector` test at rev `27a3f658`. The other two vectors are
+    /// `encryption_key_attestation_eidos_vector` test at rev `7d257fea`. The other two vectors are
     /// the output of this function, so they pin the layout only on this side. To verify them
     /// against the node, give the same inputs to the function of the node.
     #[test]

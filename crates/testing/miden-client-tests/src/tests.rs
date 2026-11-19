@@ -136,6 +136,7 @@ mod batch;
 mod code_upgrade;
 mod fees;
 mod foreign_vault;
+mod note_acquisition;
 mod rpc;
 pub mod store;
 mod transaction;

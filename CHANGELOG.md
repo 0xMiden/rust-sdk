@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* [FEATURE][rust] Add an optional note acquisition gate. Direct imports and note transport sync wait for the gate before writing notes or advancing the transport cursor ([#2751](https://github.com/0xMiden/rust-sdk/pull/2751)).
+
 ## 0.18.2 (2026-11-13)
 
 ### Fixes

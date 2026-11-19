@@ -74,6 +74,7 @@ pub(crate) fn parse_node_error(
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::BlockSubscription
+        | RpcEndpoint::ProofSubscription
         | RpcEndpoint::RegisterAccount
         | RpcEndpoint::IsAccountAllowed
         | RpcEndpoint::IsInvitationCodeValid => None,
@@ -109,6 +110,7 @@ pub(crate) fn parse_status_error(
         | RpcEndpoint::GetTransactionEncryptionKey
         | RpcEndpoint::GetTransactionLogs
         | RpcEndpoint::BlockSubscription
+        | RpcEndpoint::ProofSubscription
         | RpcEndpoint::IsAccountAllowed
         | RpcEndpoint::IsInvitationCodeValid
         | RpcEndpoint::SubmitProvenBatch => None,

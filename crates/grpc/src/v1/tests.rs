@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use miden_client_core::errors::RpcError;
 use miden_client_core::rpc::AccountStateAt;
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
-use miden_client_core::rpc::domain::block::SubscribedBlock;
+use miden_client_core::rpc::domain::block::{SubscribedBlock, SubscribedProof};
 use miden_client_core::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
@@ -52,6 +52,7 @@ use super::{
     GetNoteScriptByRoot,
     GetNotesById,
     GetTransactionLogs,
+    ProofSubscription,
     SyncNotes,
     SyncNullifiers,
     SyncTransactions,
@@ -506,4 +507,38 @@ fn block_subscription_validates_each_block() {
     assert!(is_invalid_response(validate(0, &[item(0, Some(&other_config))])));
     // The first block has no configuration.
     assert!(matches!(validate(0, &[item(0, None)]), Err(RpcError::ExpectedDataMissing(_))));
+}
+
+#[test]
+fn proof_subscription_validates_each_proof() {
+    let mut chain = MockChain::new();
+    chain.prove_next_block().unwrap();
+    chain.prove_next_block().unwrap();
+    let item = |block_num: usize| {
+        let (header, _body, _signatures, proof) =
+            chain.proven_blocks()[block_num].clone().into_parts();
+        SubscribedProof {
+            block_num: header.block_num(),
+            proof,
+            proven_chain_tip: 2u32.into(),
+        }
+    };
+    let validate = |block_from: u32, items: &[SubscribedProof]| {
+        let method = ProofSubscription { block_from: block_from.into() };
+        let mut state = method.initial_state();
+        items.iter().try_for_each(|item| method.validate(&mut state, item))
+    };
+
+    validate(0, &[item(0), item(1), item(2)]).expect("consecutive proofs must be accepted");
+    validate(1, &[item(1), item(2)]).expect("proofs from a later block must be accepted");
+
+    // The first proof is not for the requested block.
+    assert!(is_invalid_response(validate(1, &[item(0)])));
+    // The node skips a block.
+    assert!(is_invalid_response(validate(0, &[item(0), item(2)])));
+    // The node repeats a block.
+    assert!(is_invalid_response(validate(0, &[item(0), item(0)])));
+    // The proven chain tip is below the block.
+    let stale_tip = SubscribedProof { proven_chain_tip: 1u32.into(), ..item(2) };
+    assert!(is_invalid_response(validate(2, &[stale_tip])));
 }

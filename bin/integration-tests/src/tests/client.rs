@@ -558,6 +558,27 @@ pub async fn test_subscribe_blocks_streams_past_the_request_timeout(
     Ok(())
 }
 
+/// Verifies that a proof subscription yields the proof of the requested block and that it matches
+/// `get_block_by_number`.
+pub async fn test_subscribe_proofs(client_config: ClientConfig) -> Result<()> {
+    let grpc = GrpcClient::new(&client_config.rpc_endpoint, client_config.rpc_timeout_ms);
+
+    let block_from = BlockNumber::GENESIS.child();
+    let mut proofs = grpc.subscribe_proofs(block_from).await?;
+    let item = tokio::time::timeout(Duration::from_secs(60), proofs.next())
+        .await
+        .context("no proof arrived in time")?
+        .context("the subscription ended")??;
+
+    assert_eq!(item.block_num, block_from);
+    assert!(item.proven_chain_tip >= block_from);
+
+    let (_, expected_proof) = grpc.get_block_by_number(block_from, true).await?;
+    assert_eq!(Some(item.proof), expected_proof);
+
+    Ok(())
+}
+
 /// Verifies the client chunks for an over-the-limit `sync_transactions` request
 pub async fn test_sync_transactions_chunks_when_exceeding_limits(
     client_config: ClientConfig,

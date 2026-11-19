@@ -63,7 +63,7 @@ miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/
 miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "c0ecc47e284fedd3975c437ca47af85e5c099342" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "7555658e1f4887bda16ba6537aa9bff48cad5eec" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "928e23464cba71184ca2cf05f4148ea6b60eaacb" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "0.36" }

@@ -402,7 +402,7 @@ impl MockRpcApi {
 
             let transaction_headers =
                 block.body().transactions().iter().flat_map(OrderedTransactionHeaders::as_slice);
-            for transaction_header in transaction_headers {
+            for (transaction_index, transaction_header) in transaction_headers.enumerate() {
                 if !account_ids.contains(&transaction_header.account_id()) {
                     continue;
                 }
@@ -411,6 +411,7 @@ impl MockRpcApi {
 
                 transactions.push(TransactionRecord::new(
                     block_number,
+                    u32::try_from(transaction_index).expect("block transaction count fits in u32"),
                     transaction_header.clone(),
                     vec![],
                     erased_output_notes,

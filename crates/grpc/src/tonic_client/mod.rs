@@ -5,7 +5,7 @@ use futures::StreamExt;
 use miden_client_core::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcError};
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::domain::account_vault::AccountVaultInfo;
-use miden_client_core::rpc::domain::block::SubscribedBlock;
+use miden_client_core::rpc::domain::block::{SubscribedBlock, SubscribedProof};
 use miden_client_core::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
@@ -407,6 +407,13 @@ impl NodeRpcClient for GrpcClient {
         block_from: BlockNumber,
     ) -> Result<RpcStream<SubscribedBlock>, RpcError> {
         self.subscribe(v1::BlockSubscription::new(block_from)).await
+    }
+
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError> {
+        self.subscribe(v1::ProofSubscription { block_from }).await
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {

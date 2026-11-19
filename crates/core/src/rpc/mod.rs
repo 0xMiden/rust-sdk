@@ -27,7 +27,7 @@ use domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use domain::block::SubscribedBlock;
+use domain::block::{SubscribedBlock, SubscribedProof};
 use domain::note::{FetchedNote, SyncNotesBlock};
 use domain::nullifier::NullifierUpdate;
 use domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
@@ -96,6 +96,7 @@ pub enum RpcEndpoint {
     GetTransactionEncryptionKey,
     GetTransactionLogs,
     BlockSubscription,
+    ProofSubscription,
 }
 
 impl RpcEndpoint {
@@ -124,6 +125,7 @@ impl RpcEndpoint {
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
             RpcEndpoint::GetTransactionLogs => "GetTransactionLogs",
             RpcEndpoint::BlockSubscription => "BlockSubscription",
+            RpcEndpoint::ProofSubscription => "ProofSubscription",
         }
     }
 
@@ -159,7 +161,8 @@ impl RpcEndpoint {
             | RpcEndpoint::GetNetworkNoteStatus
             | RpcEndpoint::GetTransactionEncryptionKey
             | RpcEndpoint::GetTransactionLogs
-            | RpcEndpoint::BlockSubscription => true,
+            | RpcEndpoint::BlockSubscription
+            | RpcEndpoint::ProofSubscription => true,
         }
     }
 }
@@ -195,6 +198,7 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::GetNetworkNoteStatus => write!(f, "get_network_note_status"),
             RpcEndpoint::GetTransactionLogs => write!(f, "get_transaction_logs"),
             RpcEndpoint::BlockSubscription => write!(f, "block_subscription"),
+            RpcEndpoint::ProofSubscription => write!(f, "proof_subscription"),
         }
     }
 }
@@ -318,6 +322,21 @@ pub trait NodeRpcClient: Send + Sync {
         &self,
         block_from: BlockNumber,
     ) -> Result<RpcStream<SubscribedBlock>, RpcError>;
+
+    /// Subscribes to the block proofs of the node using the `/ProofSubscription` RPC endpoint.
+    ///
+    /// The stream yields the proofs from `block_from` (inclusive) in order. It first yields the
+    /// proofs that are already available, and then yields each new proof when the node proves a
+    /// block. The genesis block has no proof. Subscribing from [`BlockNumber::GENESIS`] ends the
+    /// stream with an error.
+    ///
+    /// The stream yields the first error and then ends. It does not reconnect. To resume, subscribe
+    /// again from the block after the last block that the stream yielded. The node ends the stream
+    /// with [`RpcError::SubscriberLagged`] when the caller reads the proofs too slowly.
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError>;
 
     /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById` RPC endpoint.
     ///

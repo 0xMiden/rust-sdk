@@ -71,7 +71,9 @@ miden-debug = { default-features = false, features = [
   "dap",
   "std",
 ], git = "https://github.com/0xMiden/miden-debug", rev = "d85794bd1bf482289006610b34210c0513a4f665" }
-miden-debug-engine = { default-features = false, features = ["std"], git = "https://github.com/0xMiden/miden-debug", rev = "d85794bd1bf482289006610b34210c0513a4f665" }
+miden-debug-engine = { default-features = false, features = [
+  "std",
+], git = "https://github.com/0xMiden/miden-debug", rev = "d85794bd1bf482289006610b34210c0513a4f665" }
 miden-mast-package = { default-features = false, version = "=1.0.0-rc.0" }
 miden-processor = { default-features = false, version = "=1.0.0-rc.0" }
 

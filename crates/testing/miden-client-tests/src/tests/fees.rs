@@ -703,10 +703,7 @@ async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
 async fn smart_multisig_proposal_executes_after_the_timelock() {
     let key = AuthSecretKey::new_falcon512_eidos();
     let approvers = ApproverSet::new(
-        vec![Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Eidos,
-        )],
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
         1,
     )
     .unwrap();

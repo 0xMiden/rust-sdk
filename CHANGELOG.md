@@ -12,6 +12,7 @@
 * [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host. `replay_call_trace` replays the recording through the debug engine to produce a `CallTrace`. The replay blocks the thread, so the caller chooses where it runs ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
 * [FEATURE][rust] Added `Client::prepare_reproducible_request`, which returns a request that an executor without the client's store reproduces, and the `TransactionSummary` to sign. The request must set explicit auth args. Its steps are also public: `Client::execute_for_summary`, `Client::pin_input_notes`, `TransactionRequest::pin_input_note` and `TransactionRequest::add_block_number` ([#2820](https://github.com/0xMiden/rust-sdk/pull/2820)).
 * [FEATURE][rust] Added `Client::track_expected_output_notes`, which stores the output notes of a transaction that another party executes, so that sync commits them.
+* [FEATURE][rust] Added the `miden-guarded-client` crate. `GuardedClient` manages one guarded multisig account: it submits signed transactions itself or asks Guardian to execute them, waits for the execution, and updates a locked private account with the Guardian state on sync.
 
 ### Fixes
 

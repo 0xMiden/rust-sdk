@@ -144,6 +144,7 @@ fn sync_notes_block(block_num: u32, tags: &[NoteTag]) -> SyncNotesBlock {
 fn transaction_record(account_id: AccountId) -> TransactionRecord {
     TransactionRecord::new(
         BlockNumber::GENESIS,
+        0,
         TransactionHeader::new(
             account_id,
             Word::default(),

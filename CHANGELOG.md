@@ -39,6 +39,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][behavior][rust] `TransactionRecord` from `SyncTransactions` carries the transaction's position within its block, and `TransactionRecord::new` takes it as a parameter. Sync orders committed transactions and consumed notes by block and position instead of chaining account state commitments. Requires a node that reports the position.
 * [BREAKING][removal][rust] Removed `ChainAnchor`, `ChainAnchorError`, `Client::execute_transaction_at`, `Client::chain_anchor_for_request`, `ClientDataStore::with_chain_anchor` and `ClientError::ChainAnchorError`. A transaction always executes against the sync height of the client.
 * [BREAKING][arch][all] Moved hashing and Falcon signatures to Eidos, which changes commitments, account IDs, note IDs and nullifiers. The client requires a new store and a new keystore, and there is no migration from the old format ([#2813](https://github.com/0xMiden/rust-sdk/pull/2813)).
 * [BREAKING][rename][rust,cli] Renamed the Falcon scheme from Poseidon2 to Eidos: the `Falcon512Poseidon2` variants are `Falcon512Eidos`, `AuthSecretKey::new_falcon512_poseidon2` is `new_falcon512_eidos`, `RPO_FALCON_SCHEME_ID` is `FALCON512_EIDOS_SCHEME_ID`, `miden_client::crypto::rpo_falcon512` is `falcon512_eidos`, and the `--falcon512-poseidon2` CLI option is `--falcon512-eidos`. `miden_client::crypto` exports `Hasher` instead of `Rpo256` and `Poseidon2` ([#2813](https://github.com/0xMiden/rust-sdk/pull/2813)).

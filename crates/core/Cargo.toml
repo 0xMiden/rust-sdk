@@ -21,7 +21,6 @@ testing = ["miden-standards/testing"]
 [dependencies]
 # Miden dependencies
 miden-objects   = { workspace = true }
-miden-processor = { workspace = true }
 miden-protocol  = { workspace = true }
 miden-standards = { workspace = true }
 

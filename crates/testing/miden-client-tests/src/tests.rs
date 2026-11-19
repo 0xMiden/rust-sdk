@@ -2597,7 +2597,7 @@ async fn note_screening_is_skipped_for_user_tags() {
 /// separated per account so one account never receives another's state.
 #[tokio::test]
 async fn execution_input_cache_matches_uncached_reads() {
-    use miden_client::testing::{ClientDataStore, DataStore, MastForestCache};
+    use miden_client::testing::{ClientDataStore, DataStore};
 
     let (mut client, _mock_rpc_api) = Box::pin(create_test_client()).await;
 
@@ -2611,11 +2611,8 @@ async fn execution_input_cache_matches_uncached_reads() {
     let store = client.test_store().clone();
     let rpc_api = client.test_rpc_api().clone();
 
-    let cached =
-        ClientDataStore::new(store.clone(), rpc_api.clone(), Arc::new(MastForestCache::default()))
-            .with_execution_input_cache();
-    let uncached =
-        ClientDataStore::new(store.clone(), rpc_api, Arc::new(MastForestCache::default()));
+    let cached = ClientDataStore::new(store.clone(), rpc_api.clone()).with_execution_input_cache();
+    let uncached = ClientDataStore::new(store.clone(), rpc_api);
 
     let miss = cached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
     let fresh = uncached.get_transaction_inputs(first, blocks.clone()).await.unwrap();
@@ -2632,50 +2629,6 @@ async fn execution_input_cache_matches_uncached_reads() {
 
     let other = cached.get_transaction_inputs(second, blocks).await.unwrap();
     assert_eq!(other.0.id(), second);
-}
-
-/// A MAST forest that is not in the client's cache is read from the code registry of the store,
-/// with its debug info, and added to the cache. Account code is served from the data store and is
-/// not added to the cache.
-#[tokio::test]
-async fn data_store_reads_mast_forests_from_the_store_into_the_cache() {
-    use miden_client::testing::{ClientDataStore, DataStore, MastForestCache};
-    use miden_protocol::ProtocolLib;
-    use miden_protocol::code::ProcedureRoot;
-
-    let (mut client, _mock_rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, _faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    let cache = Arc::new(MastForestCache::default());
-    let data_store = ClientDataStore::new(
-        client.test_store().clone(),
-        client.test_rpc_api().clone(),
-        cache.clone(),
-    );
-
-    let protocol_root =
-        ProtocolLib::default().mast_forest().local_procedure_digests().next().unwrap();
-    assert!(cache.get(&protocol_root).is_none());
-
-    let forest = data_store
-        .get_mast_forest(ProcedureRoot::from_raw(protocol_root))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(forest.package_debug_info().unwrap().is_some());
-    assert!(cache.get(&protocol_root).is_some());
-
-    let account_code = wallet.code();
-    let account_root = account_code.mast().local_procedure_digests().next().unwrap();
-    data_store.account_code().load_account_code(account_code);
-    let forest = data_store
-        .get_mast_forest(ProcedureRoot::from_raw(account_root))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(forest.mast_forest().commitment(), account_code.mast().commitment());
-    assert!(cache.get(&account_root).is_none_or(|cached| {
-        cached.mast_forest().commitment() != account_code.mast().commitment()
-    }));
 }
 
 #[tokio::test]

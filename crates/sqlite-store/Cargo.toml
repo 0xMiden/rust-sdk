@@ -40,5 +40,4 @@ workspace = true
 # Enable client testing utilities only for tests
 miden-client    = { features = ["std", "testing"], workspace = true }
 miden-standards = { features = ["testing"], workspace = true }
-miden-testing   = { workspace = true }
 rusqlite        = { features = ["hooks"], workspace = true }

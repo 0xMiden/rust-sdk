@@ -20,7 +20,7 @@ pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 2] = [
     ),
     SqliteMigration::new(
         include_str!("../migrations/0002_code_registry.sql"),
-        "0xf8edb6a8a5db71800b9a4e978bcd178807827856df28bc6d35192ef58ab3b68b",
+        "0x747e26f4920b0394f2089608a4770db69cec618c95c467566e474dfd3df2e704",
     ),
 ];
 

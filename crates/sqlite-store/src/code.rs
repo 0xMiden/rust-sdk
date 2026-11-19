@@ -102,6 +102,18 @@ impl SqliteStore {
         .await
     }
 
+    /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
+    /// registry has it, or `None` if the procedure is not registered.
+    pub async fn get_procedure(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::query_procedure(conn, procedure_root)
+        })
+        .await
+    }
+
     /// Returns a witness that proves the presence or absence of the procedure in the code tree.
     pub async fn get_procedure_witness(
         &self,
@@ -130,7 +142,7 @@ impl SqliteStore {
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// registry has it.
-    pub(crate) fn query_procedure(
+    fn query_procedure(
         conn: &Connection,
         procedure_root: ProcedureRoot,
     ) -> Result<Option<LoadedMastForest>, StoreError> {
@@ -186,7 +198,6 @@ mod tests {
     use std::collections::BTreeSet;
     use std::vec::Vec;
 
-    use miden_client_core::store::Store;
     use miden_protocol::ProtocolLib;
     use miden_protocol::block::code_tree::CodeTree;
     use miden_protocol::vm::Package;
@@ -345,31 +356,6 @@ mod tests {
         assert!(loaded.package_debug_info().unwrap().is_some());
     }
 
-    /// A forest is added with its debug info, and its procedure roots are added to the code tree.
-    /// Adding it again changes nothing.
-    #[tokio::test]
-    async fn insert_procedures_with_debug_info_adds_debug_info() {
-        let store = create_test_store().await;
-        let package = protocol_package();
-        let procedure_root: Word = package.mast_forest().local_procedure_digests().next().unwrap();
-
-        let procedures =
-            vec![(package.mast_forest().clone(), package.debug_info().unwrap().unwrap())];
-        Store::insert_procedures_with_debug_info(&store, procedures.clone())
-            .await
-            .unwrap();
-
-        let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
-        assert!(loaded.package_debug_info().unwrap().is_some());
-        let code_tree = CodeTree::with_entries(procedure_roots_of(package.mast_forest())).unwrap();
-        assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
-
-        let counts = row_counts(&store).await;
-        Store::insert_procedures_with_debug_info(&store, procedures).await.unwrap();
-        assert_eq!(row_counts(&store).await, counts);
-        assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
-    }
-
     #[tokio::test]
     async fn debug_info_requires_a_stored_forest() {
         let store = create_test_store().await;
@@ -401,6 +387,3 @@ mod tests {
         assert!(roots.contains(&procedure_root));
     }
 }
-
-#[cfg(test)]
-mod bench;

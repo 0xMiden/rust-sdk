@@ -11,7 +11,7 @@ use miden_client::rpc::domain::account::{
     VaultFetch,
 };
 use miden_client::testing::mock::{MockClient, MockRpcApi};
-use miden_client::testing::{ClientDataStore, DataStore, MastForestCache};
+use miden_client::testing::{ClientDataStore, DataStore};
 use miden_client::transaction::{AdviceInputs, ForeignAccount};
 use miden_protocol::account::{
     Account,
@@ -125,7 +125,7 @@ async fn vault_witness_fallback_fetches_proofs_for_the_requested_assets() {
 
     let store = fixture.client.test_store().clone();
     let rpc_api = fixture.client.test_rpc_api().clone();
-    let data_store = ClientDataStore::new(store, rpc_api, Arc::new(MastForestCache::default()));
+    let data_store = ClientDataStore::new(store, rpc_api);
 
     let calls_before = fixture.rpc_api.get_account_call_count();
     let witnesses = data_store

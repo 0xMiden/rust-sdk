@@ -2,17 +2,11 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use core::num::NonZeroUsize;
 
-use miden_agglayer::agglayer_package;
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::TransactionKernel;
-use miden_protocol::utils::sync::LazyLock;
-use miden_protocol::vm::Package;
-use miden_protocol::{CoreLibrary, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES, ProtocolLib};
-use miden_standards::StandardsLib;
+use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
 use rand::SeedableRng;
@@ -27,7 +21,6 @@ use crate::pswap::PswapTransactionObserver;
 use crate::rpc::NodeRpcClient;
 #[cfg(feature = "tonic")]
 use crate::rpc::{Endpoint, GrpcClient};
-use crate::store::data_store::MastForestCache;
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
@@ -153,8 +146,6 @@ pub struct ClientBuilder<AUTH> {
     source_manager: Option<Arc<dyn SourceManagerSync>>,
     /// An optional genesis block header and protocol configuration to store on build.
     genesis: Option<(BlockHeader, ProtocolConfig)>,
-    /// The number of MAST forests that the client keeps in memory.
-    mast_forest_cache_capacity: NonZeroUsize,
 }
 
 impl<AUTH> Default for ClientBuilder<AUTH> {
@@ -175,7 +166,6 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             endpoint: None,
             source_manager: None,
             genesis: None,
-            mast_forest_cache_capacity: MastForestCache::DEFAULT_CAPACITY,
         }
     }
 }
@@ -415,17 +405,6 @@ where
         self
     }
 
-    /// Sets the number of MAST forests that the client keeps in memory between executions.
-    ///
-    /// The client reads the forests that a transaction needs from the code registry of its store,
-    /// and keeps the most recently used ones. By default, it keeps
-    /// [`MastForestCache::DEFAULT_CAPACITY`] forests.
-    #[must_use]
-    pub fn mast_forest_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
-        self.mast_forest_cache_capacity = capacity;
-        self
-    }
-
     /// Optionally set a maximum number of blocks that the client can be behind the network. By
     /// default, there's no maximum.
     #[must_use]
@@ -550,8 +529,6 @@ where
             store_genesis(store.as_ref(), block_header, protocol_config).await?;
         }
 
-        seed_known_procedures(store.as_ref()).await?;
-
         // Initialize genesis commitment in RPC client
         if let Some((genesis, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
             rpc_api.set_genesis_commitment(genesis.commitment()).await?;
@@ -603,44 +580,9 @@ where
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
             transaction_observers,
-            mast_forest_cache: Arc::new(MastForestCache::new(self.mast_forest_cache_capacity)),
         };
         Ok(client)
     }
-}
-
-// KNOWN PACKAGES
-// ================================================================================================
-
-/// The package of the agglayer library. [`agglayer_package`] returns a copy of the package, so it
-/// is kept here to copy it only once.
-static AGGLAYER_PACKAGE: LazyLock<Arc<Package>> = LazyLock::new(|| Arc::new(agglayer_package()));
-
-/// Returns the packages of the transaction kernel and of the libraries that the client is built
-/// with. These are the packages that [`miden_tx::TransactionMastStore::new`] loads.
-pub(crate) fn known_packages() -> Vec<Arc<Package>> {
-    vec![
-        TransactionKernel::package(),
-        CoreLibrary::default().package(),
-        ProtocolLib::default().package(),
-        StandardsLib::default().package(),
-        AGGLAYER_PACKAGE.clone(),
-    ]
-}
-
-/// Adds the code that the client is built with to the code registry and the code tree of `store`,
-/// with its debug info.
-async fn seed_known_procedures(store: &dyn Store) -> Result<(), ClientError> {
-    let mut procedures = Vec::new();
-    for package in known_packages() {
-        let debug_info =
-            package.debug_info().map_err(|err| StoreError::ParsingError(err.to_string()))?;
-        if let Some(debug_info) = debug_info {
-            procedures.push((package.mast_forest().clone(), debug_info));
-        }
-    }
-    store.insert_procedures_with_debug_info(procedures).await?;
-    Ok(())
 }
 
 // GENESIS SEEDING

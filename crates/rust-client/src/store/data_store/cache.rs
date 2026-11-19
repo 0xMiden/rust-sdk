@@ -1,4 +1,5 @@
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
@@ -7,8 +8,8 @@ use miden_protocol::asset::{AssetId, AssetWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::note::NoteScript;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
+use miden_tx::TransactionMastStore;
 
-use super::AccountCodeStore;
 use crate::utils::RwLock;
 
 // DATA STORE CACHE
@@ -34,8 +35,8 @@ type VaultWitnessCache = BTreeMap<(Word, AssetId), AssetWitness>;
 /// output note scripts) plus data cached lazily while the transaction executes (RPC-fetched foreign
 /// accounts and storage map witnesses, the reference block).
 pub(super) struct DataStoreCache {
-    /// The account code served to the executor.
-    pub(super) account_code: AccountCodeStore,
+    /// Store used to provide MAST nodes to the transaction executor.
+    pub(super) mast_store: Arc<TransactionMastStore>,
     /// Foreign account inputs that should be returned to the executor on demand.
     foreign_account_inputs: RwLock<BTreeMap<AccountId, AccountInputs>>,
     /// Note scripts known only to the in-flight transaction request (e.g. its expected output note
@@ -68,9 +69,9 @@ pub(super) struct DataStoreCache {
 }
 
 impl DataStoreCache {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(mast_store: Arc<TransactionMastStore>) -> Self {
         Self {
-            account_code: AccountCodeStore::default(),
+            mast_store,
             foreign_account_inputs: RwLock::new(BTreeMap::new()),
             note_scripts: RwLock::new(BTreeMap::new()),
             block_numbers: RwLock::new(BTreeSet::new()),

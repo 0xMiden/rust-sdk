@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::string::{String, ToString};
-use std::sync::Arc;
 use std::time::Duration;
 use std::vec::Vec;
 
@@ -53,14 +52,11 @@ use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::vm::PackageDebugInfo;
-use miden_protocol::{Felt, MastForest, Word};
-use miden_tx::LoadedMastForest;
+use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -661,50 +657,6 @@ impl Store for SqliteStore {
             )
         })
         .await
-    }
-
-    async fn get_procedure(
-        &self,
-        procedure_root: ProcedureRoot,
-    ) -> Result<Option<LoadedMastForest>, StoreError> {
-        self.interact_with_connection(move |conn| {
-            SqliteStore::query_procedure(conn, procedure_root)
-        })
-        .await
-    }
-
-    async fn insert_procedures_with_debug_info(
-        &self,
-        procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
-    ) -> Result<(), StoreError> {
-        // Skip the forests that already have debug info.
-        let commitments: Vec<Word> = procedures.iter().map(|(mast, _)| mast.commitment()).collect();
-        let has_debug_info: Vec<bool> = self
-            .interact_with_connection(move |conn| {
-                let mut query = conn
-                    .prepare_cached("SELECT 1 FROM code_debug_info WHERE commitment = ?1")
-                    .into_store_error()?;
-                commitments
-                    .iter()
-                    .map(|commitment| query.exists([commitment.as_bytes()]).into_store_error())
-                    .collect()
-            })
-            .await?;
-        let procedures: Vec<(Arc<MastForest>, PackageDebugInfo)> = procedures
-            .into_iter()
-            .zip(has_debug_info)
-            .filter_map(|(procedure, has_debug_info)| (!has_debug_info).then_some(procedure))
-            .collect();
-        if procedures.is_empty() {
-            return Ok(());
-        }
-
-        self.insert_procedures(procedures.iter().map(|(mast, _)| mast.clone()).collect())
-            .await?;
-        for (mast, debug_info) in procedures {
-            self.upsert_debug_info(mast.commitment(), debug_info).await?;
-        }
-        Ok(())
     }
 
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {

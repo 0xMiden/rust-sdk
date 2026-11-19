@@ -181,7 +181,11 @@ where
     ///
     /// See the module-level docs for usage and constraints.
     pub fn new_transaction_batch(&self) -> BatchBuilder {
-        let inner_data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
+        let inner_data_store = ClientDataStore::new(
+            self.store.clone(),
+            self.rpc_api.clone(),
+            self.mast_forest_cache.clone(),
+        );
         BatchBuilder {
             data_store: InMemoryBatchDataStore::new(inner_data_store),
             pushed_txs: Vec::new(),
@@ -512,11 +516,11 @@ where
     data_store.register_note_scripts(prep.output_note_scripts());
     data_store.register_block_numbers(prep.block_numbers.iter().copied());
     for fpi_account in &prep.foreign_account_inputs {
-        data_store.mast_store().load_account_code(fpi_account.code());
+        data_store.account_code().load_account_code(fpi_account.code());
     }
     data_store.register_foreign_account_inputs(prep.foreign_account_inputs);
 
-    data_store.mast_store().load_account_code(account.code());
+    data_store.account_code().load_account_code(account.code());
 
     let mut notes = prep.notes;
     if prep.ignore_invalid_notes {

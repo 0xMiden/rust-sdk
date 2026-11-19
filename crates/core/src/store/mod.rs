@@ -668,27 +668,22 @@ pub trait Store: Send + Sync {
     /// Each debug info must belong to the forest that it is paired with, because it refers to the
     /// nodes of that forest. A forest that already has debug info in the registry is skipped.
     ///
-    /// The default implementation does nothing, for a store that does not keep a code registry.
+    /// The client calls this method when it is built, to store the transaction kernel and the
+    /// libraries it is built with. The store is then where the client reads them from.
     async fn insert_procedures_with_debug_info(
         &self,
-        _procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
+        procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
+    ) -> Result<(), StoreError>;
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// code registry has it, or `None` if the procedure is not registered.
     ///
-    /// The client calls this method for code that it does not have in memory. The kernel, the
-    /// libraries and the account code of a transaction are always in memory, so a store is not
-    /// required to keep a code registry. The default implementation is for a store without a code
-    /// registry: it returns `None`, as for a procedure that is not registered.
+    /// The client calls this method for each MAST forest that a transaction needs and that is not
+    /// in its MAST forest cache, including the transaction kernel and the libraries.
     async fn get_procedure(
         &self,
-        _procedure_root: ProcedureRoot,
-    ) -> Result<Option<LoadedMastForest>, StoreError> {
-        Ok(None)
-    }
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError>;
 
     // RPC LIMITS
     // --------------------------------------------------------------------------------------------

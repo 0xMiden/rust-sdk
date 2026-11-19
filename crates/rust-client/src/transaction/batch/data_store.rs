@@ -28,11 +28,11 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{EMPTY_WORD, MastForest, Word, ZERO};
-use miden_tx::{DataStore, DataStoreError, LoadedMastForest, TransactionMastStore};
+use miden_tx::{DataStore, DataStoreError, LoadedMastForest};
 
 use super::staged_smt::StagedSmt;
 use crate::ClientError;
-use crate::store::data_store::ClientDataStore;
+use crate::store::data_store::{AccountCodeStore, ClientDataStore};
 
 // IN-MEMORY BATCH DATA STORE
 // ================================================================================================
@@ -258,8 +258,8 @@ impl InMemoryBatchDataStore {
 
     /// Returns the inner [`ClientDataStore`]'s MAST store so callers can load account or note code
     /// prior to execution.
-    pub(crate) fn mast_store(&self) -> Arc<TransactionMastStore> {
-        self.inner.mast_store()
+    pub(crate) fn account_code(&self) -> &AccountCodeStore {
+        self.inner.account_code()
     }
 
     /// Registers foreign account inputs on the inner [`ClientDataStore`] so the executor can

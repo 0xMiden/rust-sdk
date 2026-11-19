@@ -82,6 +82,7 @@ comfy-table           = { version = "7.1" }
 futures               = { version = "0.3" }
 gloo-timers           = { features = ["futures"], version = "0.3" }
 hex                   = { version = "0.4" }
+lru                   = { version = "0.19" }
 miette                = { features = ["fancy"], version = "7.6" }
 predicates            = { version = "3.0" }
 prost                 = { default-features = false, version = "0.14" }

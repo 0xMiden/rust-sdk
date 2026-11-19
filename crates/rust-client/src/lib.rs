@@ -344,12 +344,12 @@ pub mod testing {
     pub use miden_standards::testing as standards;
     pub use miden_standards::testing::note::NoteBuilder;
     pub use miden_testing::*;
-    /// The data store the executor reads from, the MAST forest store trait, and the MAST store that
-    /// miden-tx preloads with the known packages. Exposed here so that tests can exercise them on
-    /// their own, without going through a transaction or a note screening pass.
+    /// The data store the executor reads from, the MAST forest store trait it also serves, and the
+    /// MAST store that [`ClientDataStore::mast_store`] returns. Exposed here so that tests can
+    /// exercise them on their own, without going through a transaction or a note screening pass.
     pub use miden_tx::{DataStore, MastForestStore, TransactionMastStore};
 
-    pub use crate::store::data_store::{AccountCodeStore, ClientDataStore, MastForestCache};
+    pub use crate::store::data_store::ClientDataStore;
     pub use crate::test_utils::*;
 }
 
@@ -414,9 +414,6 @@ pub struct Client<AUTH> {
     partial_mmr: Option<CachedPartialMmr>,
     /// Observers fired by `apply_transaction`. See [`Client::with_transaction_observer`].
     transaction_observers: Vec<Arc<dyn transaction::TransactionObserver>>,
-    /// MAST forests shared by all the data stores of the client, so that a forest is read from the
-    /// store only once.
-    mast_forest_cache: Arc<store::data_store::MastForestCache>,
 }
 
 /// Cached [`PartialMmr`] with a two-part freshness fingerprint:
@@ -473,7 +470,6 @@ where
     /// Returns an instance of [`note::NoteScreener`] configured for this client.
     pub fn note_screener(&self) -> note::NoteScreener {
         note::NoteScreener::new(self.store.clone(), self.rpc_api.clone())
-            .with_mast_forest_cache(self.mast_forest_cache.clone())
     }
 
     /// Returns a reference to the client's random number generator. This can be used to generate

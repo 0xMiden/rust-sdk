@@ -73,8 +73,6 @@ use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, Part
 use miden_protocol::asset::Asset;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-#[cfg(feature = "dap")]
-use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
@@ -406,17 +404,12 @@ where
     ///
     /// This applies the same request preparation and output-recipient validation as
     /// [`Self::execute_transaction`], and returns the corresponding [`ClientError`] on failure.
-    ///
-    /// The debug adapter cannot wait for the store during the execution, so the transaction can
-    /// only use code that is in memory: the transaction kernel, the libraries and the account code.
-    /// Code that is only in the code registry is not available.
     #[cfg(feature = "dap")]
     pub async fn execute_transaction_with_dap(
         &self,
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
-        self.load_known_procedures_into_cache().await?;
         self.execute_transaction_with_mode(
             account_id,
             transaction_request,
@@ -439,19 +432,15 @@ where
 
         let prep = self.prepare_transaction(&account, transaction_request).await?;
 
-        let data_store = ClientDataStore::new(
-            self.store.clone(),
-            self.rpc_api.clone(),
-            self.mast_forest_cache.clone(),
-        );
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
         data_store.register_block_numbers(prep.block_numbers.iter().copied());
         for fpi_account in &prep.foreign_account_inputs {
-            data_store.account_code().load_account_code(fpi_account.code());
+            data_store.mast_store().load_account_code(fpi_account.code());
         }
         data_store.register_foreign_account_inputs(prep.foreign_account_inputs);
 
-        data_store.account_code().load_account_code(account.code());
+        data_store.mast_store().load_account_code(account.code());
 
         let mut notes = prep.notes;
         if prep.ignore_invalid_notes {
@@ -899,7 +888,6 @@ where
         advice_inputs: AdviceInputs,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
     ) -> Result<[Felt; MIN_STACK_DEPTH], ClientError> {
-        self.load_known_procedures_into_cache().await?;
         let (data_store, block_ref) =
             self.prepare_program_execution(account_id, foreign_accounts).await?;
 
@@ -1237,17 +1225,13 @@ where
             .await?
             .ok_or(ClientError::AccountDataNotFound(account_id))?;
 
-        let data_store = ClientDataStore::new(
-            self.store.clone(),
-            self.rpc_api.clone(),
-            self.mast_forest_cache.clone(),
-        );
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
 
         // Ensure code is loaded on MAST store
-        data_store.account_code().load_account_code(&account_code);
+        data_store.mast_store().load_account_code(&account_code);
 
         for fpi_account in &foreign_account_inputs {
-            data_store.account_code().load_account_code(fpi_account.code());
+            data_store.mast_store().load_account_code(fpi_account.code());
         }
 
         data_store.register_foreign_account_inputs(foreign_account_inputs);
@@ -1287,30 +1271,6 @@ where
             return Err(ClientError::AccountIsWatched(account_id));
         }
         Ok(account_record)
-    }
-
-    /// Adds the transaction kernel and the libraries to the client's MAST forest cache, and reads
-    /// from the store the ones that the cache does not have.
-    ///
-    /// The debug adapter polls each request to the host once and fails if the answer is not ready,
-    /// so the code that a debug execution needs must be in memory before it starts.
-    #[cfg(feature = "dap")]
-    async fn load_known_procedures_into_cache(&self) -> Result<(), ClientError> {
-        for package in crate::builder::known_packages() {
-            let Some(procedure_root) = package.mast_forest().local_procedure_digests().next()
-            else {
-                continue;
-            };
-            if self.mast_forest_cache.get(&procedure_root).is_some() {
-                continue;
-            }
-            if let Some(forest) =
-                self.store.get_procedure(ProcedureRoot::from_raw(procedure_root)).await?
-            {
-                self.mast_forest_cache.insert(&forest);
-            }
-        }
-        Ok(())
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.

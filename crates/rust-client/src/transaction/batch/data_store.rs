@@ -28,11 +28,17 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, ExecutedTransaction, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{EMPTY_WORD, MastForest, Word, ZERO};
-use miden_tx::{DataStore, DataStoreError, LoadedMastForest};
+use miden_tx::{
+    DataStore,
+    DataStoreError,
+    LoadedMastForest,
+    MastForestStore,
+    TransactionMastStore,
+};
 
 use super::staged_smt::StagedSmt;
 use crate::ClientError;
-use crate::store::data_store::{AccountCodeStore, ClientDataStore};
+use crate::store::data_store::ClientDataStore;
 
 // IN-MEMORY BATCH DATA STORE
 // ================================================================================================
@@ -258,8 +264,8 @@ impl InMemoryBatchDataStore {
 
     /// Returns the inner [`ClientDataStore`]'s MAST store so callers can load account or note code
     /// prior to execution.
-    pub(crate) fn account_code(&self) -> &AccountCodeStore {
-        self.inner.account_code()
+    pub(crate) fn mast_store(&self) -> Arc<TransactionMastStore> {
+        self.inner.mast_store()
     }
 
     /// Registers foreign account inputs on the inner [`ClientDataStore`] so the executor can
@@ -473,11 +479,13 @@ impl DataStore for InMemoryBatchDataStore {
     ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
         self.inner.get_code_to_register(procedure_roots)
     }
+}
 
-    fn get_mast_forest(
-        &self,
-        procedure_root: ProcedureRoot,
-    ) -> impl FutureMaybeSend<Result<Option<LoadedMastForest>, DataStoreError>> {
-        self.inner.get_mast_forest(procedure_root)
+// MAST FOREST STORE IMPL
+// ================================================================================================
+
+impl MastForestStore for InMemoryBatchDataStore {
+    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
+        self.inner.get(procedure_hash)
     }
 }

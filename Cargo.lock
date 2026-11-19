@@ -2647,15 +2647,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
-dependencies = [
- "hashbrown 0.17.1",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2702,7 +2693,7 @@ dependencies = [
 [[package]]
 name = "miden-agglayer"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2712,8 +2703,8 @@ dependencies = [
  "miden-crypto",
  "miden-mast-package",
  "miden-package-registry",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
+ "miden-protocol-build-utils",
  "miden-standards",
  "miden-utils-sync",
  "rand 0.10.3",
@@ -2795,10 +2786,10 @@ dependencies = [
 [[package]]
 name = "miden-block-prover"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-prover",
  "thiserror",
 ]
@@ -2812,7 +2803,6 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",
- "lru",
  "miden-agglayer",
  "miden-assembly-syntax",
  "miden-client-core",
@@ -2821,9 +2811,9 @@ dependencies = [
  "miden-debug",
  "miden-debug-engine",
  "miden-node-proto-build",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
  "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-standards",
  "miden-testing",
  "miden-tx",
@@ -2860,7 +2850,7 @@ dependencies = [
  "miden-client-core",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
  "predicates",
  "prost",
  "rand 0.10.3",
@@ -2907,9 +2897,8 @@ version = "0.18.2"
 dependencies = [
  "async-trait",
  "chrono",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
+ "miden-protocol",
  "miden-standards",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
@@ -2925,8 +2914,8 @@ dependencies = [
  "gloo-timers",
  "miden-client-core",
  "miden-node-proto-build",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
+ "miden-protocol",
  "miden-standards",
  "miden-testing",
  "miette",
@@ -2952,7 +2941,7 @@ dependencies = [
  "miden-agglayer",
  "miden-client",
  "miden-client-sqlite-store",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "reqwest",
@@ -2970,8 +2959,8 @@ name = "miden-client-proto"
 version = "0.18.2"
 dependencies = [
  "miden-client-core",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
+ "miden-protocol",
  "miden-standards",
  "miden-testing",
  "prost",
@@ -2994,9 +2983,8 @@ dependencies = [
  "miden-client",
  "miden-client-core",
  "miden-client-proto",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-standards",
- "miden-testing",
  "miden-tx",
  "rusqlite",
  "rusqlite_migration",
@@ -3014,7 +3002,7 @@ dependencies = [
  "miden-client-proto",
  "miden-client-sqlite-store",
  "miden-debug",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-standards",
  "miden-testing",
  "rand 0.10.3",
@@ -3350,7 +3338,7 @@ dependencies = [
  "build-rs",
  "codegen",
  "fs-err",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a)",
+ "miden-objects",
  "miette",
  "protox",
  "tonic-prost-build",
@@ -3359,24 +3347,10 @@ dependencies = [
 [[package]]
 name = "miden-objects"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
-dependencies = [
- "miden-protobuf 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "prost",
- "prost-build",
- "protox",
- "quote",
- "thiserror",
-]
-
-[[package]]
-name = "miden-objects"
-version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
- "miden-protobuf 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a)",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a)",
+ "miden-protobuf",
+ "miden-protocol",
  "prost",
  "prost-build",
  "protox",
@@ -3508,37 +3482,13 @@ dependencies = [
 [[package]]
 name = "miden-protobuf"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
-dependencies = [
- "miden-protobuf-derive 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "proc-macro-crate",
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
-name = "miden-protobuf"
-version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
- "miden-protobuf-derive 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a)",
+ "miden-protobuf-derive",
  "proc-macro-crate",
  "prost",
  "prost-build",
  "prost-types",
-]
-
-[[package]]
-name = "miden-protobuf-derive"
-version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
-dependencies = [
- "heck",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3556,7 +3506,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "bech32",
  "bon",
@@ -3572,7 +3522,7 @@ dependencies = [
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
- "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol-build-utils",
  "miden-utils-sync",
  "miden-verifier",
  "rand 0.10.3",
@@ -3583,51 +3533,6 @@ dependencies = [
  "serde",
  "thiserror",
  "toml 1.1.6+spec-1.1.0",
-]
-
-[[package]]
-name = "miden-protocol"
-version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
-dependencies = [
- "bech32",
- "bon",
- "fs-err",
- "getrandom 0.4.3",
- "miden-assembly",
- "miden-assembly-syntax",
- "miden-core",
- "miden-core-lib",
- "miden-crypto",
- "miden-crypto-derive",
- "miden-mast-package",
- "miden-package-registry",
- "miden-processor",
- "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a)",
- "miden-utils-sync",
- "miden-verifier",
- "rand 0.10.3",
- "regex",
- "semver 1.0.28",
- "serde",
- "thiserror",
- "toml 1.1.6+spec-1.1.0",
-]
-
-[[package]]
-name = "miden-protocol-build-utils"
-version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
-dependencies = [
- "fs-err",
- "miden-assembly",
- "miden-core",
- "miden-mast-package",
- "miden-package-registry",
- "miden-project",
- "regex",
- "toml 1.1.6+spec-1.1.0",
- "walkdir",
 ]
 
 [[package]]
@@ -3688,15 +3593,15 @@ dependencies = [
 [[package]]
 name = "miden-standards"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "bon",
  "miden-assembly",
  "miden-core-lib",
  "miden-crypto",
  "miden-package-registry",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
+ "miden-protocol-build-utils",
  "primitive-types 0.14.0",
  "rand 0.10.3",
  "thiserror",
@@ -3727,16 +3632,16 @@ dependencies = [
 [[package]]
 name = "miden-testing"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
  "miden-block-prover",
  "miden-core-lib",
  "miden-crypto",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
  "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-standards",
  "miden-tx",
  "miden-tx-batch",
@@ -3748,12 +3653,12 @@ dependencies = [
 [[package]]
 name = "miden-tx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "bon",
  "miden-agglayer",
  "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-prover",
  "miden-standards",
  "thiserror",
@@ -3762,10 +3667,10 @@ dependencies = [
 [[package]]
 name = "miden-tx-batch"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "miden-processor",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-prover",
  "miden-verifier",
  "thiserror",
@@ -3774,14 +3679,14 @@ dependencies = [
 [[package]]
 name = "miden-usdcx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest#4da6a8964117df208229caee4de0bcfa69cd4f68"
+source = "git+https://github.com/0xMiden/protocol?rev=44079e2ed39305e9ce10db7270663d568065b28a#44079e2ed39305e9ce10db7270663d568065b28a"
 dependencies = [
  "bon",
  "miden-assembly",
  "miden-core-lib",
  "miden-package-registry",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
+ "miden-protocol-build-utils",
  "miden-standards",
  "miden-tx",
  "rand 0.10.3",
@@ -3857,7 +3762,7 @@ version = "0.18.2"
 dependencies = [
  "hex",
  "k256",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-protocol",
  "miden-tx",
  "reqwest",
  "thiserror",
@@ -5996,8 +5901,8 @@ version = "0.18.2"
 dependencies = [
  "anyhow",
  "miden-agglayer",
- "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
- "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?branch=pgackst-data-store-async-get-mast-forest)",
+ "miden-objects",
+ "miden-protocol",
  "miden-standards",
  "rand 0.10.3",
  "rand_chacha 0.10.0",

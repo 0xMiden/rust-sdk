@@ -5,7 +5,7 @@ use miden_client::account::{AccountBuilderSchemaCommitmentExt, AccountId, Accoun
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
-use miden_client::rpc::{GrpcError, NodeRpcClient, RpcEndpoint, RpcError};
+use miden_client::rpc::NodeRpcClient;
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
@@ -17,13 +17,13 @@ use miden_client::transaction::{
     TransactionLogsInfo,
     TransactionRequestBuilder,
 };
-use miden_client::{ClientError, Felt, Word};
+use miden_client::{Felt, Word};
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountComponentMetadata};
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
 use rand::Rng;
 
-use super::{create_test_client, open_store_file};
+use super::create_test_client;
 
 const LOG_MODULE: &str = "miden::testing::log_component";
 const LOG_TOPIC: &str = "miden::testing::log_component::greeting";
@@ -156,11 +156,7 @@ async fn store_records_empty_logs_for_a_transaction_without_logs() {
     let logs = client.get_transaction_logs(transaction_id).await.unwrap().unwrap();
     assert!(logs.is_empty());
 
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let info = rpc_api.get_transaction_logs(account_id, transaction_id).await.unwrap().unwrap();
     assert_eq!(info.log_details, TransactionLogDetails::Public(TransactionLogs::default()));
 }
 
@@ -179,11 +175,7 @@ async fn node_returns_the_logs_of_a_public_account() {
 
     let transaction_id = submit_log_transaction(&mut client, &rpc_api, account_id).await;
 
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let info = rpc_api.get_transaction_logs(account_id, transaction_id).await.unwrap().unwrap();
     let committed_at = rpc_api.get_chain_tip_block_num();
 
     assert_eq!(
@@ -207,11 +199,7 @@ async fn node_returns_only_the_commitment_for_a_private_account() {
 
     let transaction_id = submit_log_transaction(&mut client, &rpc_api, account_id).await;
 
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let info = rpc_api.get_transaction_logs(account_id, transaction_id).await.unwrap().unwrap();
     let commitment = expected_logs(account_id).commitment();
 
     assert_eq!(info.log_details, TransactionLogDetails::Private(commitment));
@@ -227,20 +215,20 @@ async fn node_has_no_logs_for_an_unknown_transaction_or_another_account() {
 
     let transaction_id = submit_log_transaction(&mut client, &rpc_api, account_id).await;
 
-    let unknown = client
-        .fetch_transaction_logs(account_id, unknown_transaction_id())
+    let unknown = rpc_api
+        .get_transaction_logs(account_id, unknown_transaction_id())
         .await
         .unwrap();
     assert_eq!(unknown, None);
 
     let wrong_account =
-        client.fetch_transaction_logs(other_account_id, transaction_id).await.unwrap();
+        rpc_api.get_transaction_logs(other_account_id, transaction_id).await.unwrap();
     assert_eq!(wrong_account, None);
 }
 
 #[tokio::test]
 async fn pending_transaction_has_stored_logs_but_no_committed_logs() {
-    let (mut client, _rpc_api) = Box::pin(create_test_client()).await;
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
     let account_id = insert_log_account(&mut client, AccountType::Public).await;
 
     let request = TransactionRequestBuilder::new().build().unwrap();
@@ -248,88 +236,5 @@ async fn pending_transaction_has_stored_logs_but_no_committed_logs() {
         Box::pin(client.submit_new_transaction(account_id, request)).await.unwrap();
 
     assert!(client.get_transaction_logs(transaction_id).await.unwrap().is_some());
-    assert_eq!(client.fetch_transaction_logs(account_id, transaction_id).await.unwrap(), None);
-}
-
-#[tokio::test]
-async fn fetch_rejects_a_commitment_that_differs_from_the_stored_logs() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let account_id = insert_log_account(&mut client, AccountType::Public).await;
-
-    let transaction_id = submit_log_transaction(&mut client, &rpc_api, account_id).await;
-
-    // Remove the stored logs, so the store holds an empty collection for the transaction.
-    let deleted_rows = open_store_file(&mut client)
-        .execute(
-            "DELETE FROM transaction_logs WHERE transaction_id = ?",
-            [transaction_id.as_bytes()],
-        )
-        .unwrap();
-    assert_eq!(deleted_rows, 2);
-    let stored = client.get_transaction_logs(transaction_id).await.unwrap().unwrap();
-    assert!(stored.is_empty());
-
-    let err = client.fetch_transaction_logs(account_id, transaction_id).await.unwrap_err();
-    assert!(matches!(err, ClientError::RpcError(RpcError::InvalidResponse(_))), "{err:?}");
-}
-
-/// A stored log that the store cannot decode must not hide the response of the node.
-#[tokio::test]
-async fn fetch_returns_the_node_logs_when_the_stored_logs_cannot_be_read() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let account_id = insert_log_account(&mut client, AccountType::Public).await;
-
-    let transaction_id = submit_log_transaction(&mut client, &rpc_api, account_id).await;
-
-    let updated_rows = open_store_file(&mut client)
-        .execute(
-            "UPDATE transaction_logs SET topic = x'ff' WHERE transaction_id = ?",
-            [transaction_id.as_bytes()],
-        )
-        .unwrap();
-    assert_eq!(updated_rows, 2);
-    assert!(client.get_transaction_logs(transaction_id).await.is_err());
-
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(info.logs(), Some(&expected_logs(account_id)));
-}
-
-#[tokio::test]
-async fn fetch_reports_a_request_failure() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let account_id = insert_log_account(&mut client, AccountType::Public).await;
-
-    rpc_api.fail_next_call(
-        RpcEndpoint::GetTransactionLogs,
-        RpcError::RequestError {
-            endpoint: RpcEndpoint::GetTransactionLogs,
-            error_kind: GrpcError::Unavailable,
-            endpoint_error: None,
-            source: None,
-        },
-    );
-
-    let err = client
-        .fetch_transaction_logs(account_id, unknown_transaction_id())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            ClientError::RpcError(RpcError::RequestError {
-                endpoint: RpcEndpoint::GetTransactionLogs,
-                ..
-            })
-        ),
-        "{err:?}"
-    );
-
-    // The failure is served once.
-    let _ = NodeRpcClient::get_transaction_logs(&rpc_api, account_id, unknown_transaction_id())
-        .await
-        .unwrap();
+    assert_eq!(rpc_api.get_transaction_logs(account_id, transaction_id).await.unwrap(), None);
 }

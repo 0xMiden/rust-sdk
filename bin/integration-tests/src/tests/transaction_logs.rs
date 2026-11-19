@@ -9,6 +9,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::rpc::{GrpcClient, NodeRpcClient};
 use miden_client::store::TransactionFilter;
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
 use miden_client::transaction::{
@@ -168,6 +169,7 @@ async fn stored_logs(
 /// position of the transaction. The node knows no logs for another transaction ID, or for the same
 /// transaction under another account.
 pub async fn test_public_account_transaction_logs(client_config: ClientConfig) -> Result<()> {
+    let rpc = GrpcClient::new(&client_config.rpc_endpoint, client_config.rpc_timeout_ms);
     let mut client = client_config.into_client().await?;
     let account_id = deploy_log_account(&mut client, AccountType::Public).await?;
     let other_account_id = deploy_log_account(&mut client, AccountType::Public).await?;
@@ -175,8 +177,8 @@ pub async fn test_public_account_transaction_logs(client_config: ClientConfig) -
     let (transaction_id, block_num) = commit_log_transaction(&mut client, account_id).await?;
     let logs = stored_logs(&client, account_id, transaction_id).await?;
 
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
+    let info = rpc
+        .get_transaction_logs(account_id, transaction_id)
         .await?
         .context("the node should return the logs of the committed transaction")?;
     assert_eq!(info.transaction_id, transaction_id);
@@ -186,22 +188,23 @@ pub async fn test_public_account_transaction_logs(client_config: ClientConfig) -
     assert_eq!(info.logs_commitment(), logs.commitment());
 
     let unknown_id = TransactionId::from_raw(Word::from([7u32; 4]));
-    assert_eq!(client.fetch_transaction_logs(account_id, unknown_id).await?, None);
-    assert_eq!(client.fetch_transaction_logs(other_account_id, transaction_id).await?, None);
+    assert_eq!(rpc.get_transaction_logs(account_id, unknown_id).await?, None);
+    assert_eq!(rpc.get_transaction_logs(other_account_id, transaction_id).await?, None);
 
     Ok(())
 }
 
 /// A private account emits logs. The store records them. The node returns only their commitment.
 pub async fn test_private_account_transaction_logs(client_config: ClientConfig) -> Result<()> {
+    let rpc = GrpcClient::new(&client_config.rpc_endpoint, client_config.rpc_timeout_ms);
     let mut client = client_config.into_client().await?;
     let account_id = deploy_log_account(&mut client, AccountType::Private).await?;
 
     let (transaction_id, block_num) = commit_log_transaction(&mut client, account_id).await?;
     let logs = stored_logs(&client, account_id, transaction_id).await?;
 
-    let info = client
-        .fetch_transaction_logs(account_id, transaction_id)
+    let info = rpc
+        .get_transaction_logs(account_id, transaction_id)
         .await?
         .context("the node should return the logs commitment of the committed transaction")?;
     assert_eq!(info.block_num.as_u32(), block_num);

@@ -250,61 +250,6 @@ where
         self.store.get_transaction_logs(transaction_id).await.map_err(Into::into)
     }
 
-    /// Fetches the logs of a committed transaction from the node.
-    ///
-    /// - `account_id`: The account that executed the transaction.
-    /// - `transaction_id`: The transaction that emitted the logs.
-    ///
-    /// The transaction does not need to be tracked by the client. The node returns the logs of a
-    /// public account. For a private account, it returns only the commitment to the logs.
-    ///
-    /// Returns `None` if the node has no committed transaction with this ID for this account.
-    ///
-    /// If the client tracks the transaction, this method compares the logs commitment of the node
-    /// with the stored logs. If the store cannot read the stored logs, this method skips the
-    /// comparison and returns the response of the node.
-    ///
-    /// # Errors
-    ///
-    /// - Returns [`ClientError::RpcError`] if the request fails.
-    /// - Returns [`ClientError::RpcError`] with [`RpcError::InvalidResponse`] if the client tracks
-    ///   the transaction and the node returns a different logs commitment.
-    pub async fn fetch_transaction_logs(
-        &self,
-        account_id: AccountId,
-        transaction_id: TransactionId,
-    ) -> Result<Option<TransactionLogsInfo>, ClientError> {
-        let Some(info) = self.rpc_api.get_transaction_logs(account_id, transaction_id).await?
-        else {
-            return Ok(None);
-        };
-
-        // The stored logs are a second source for the commitment. A store failure must not hide the
-        // response of the node.
-        let local_logs = match self.get_transaction_logs(transaction_id).await {
-            Ok(local_logs) => local_logs,
-            Err(err) => {
-                tracing::warn!(
-                    "failed to read the stored logs of transaction {transaction_id}: {err}"
-                );
-                None
-            },
-        };
-
-        if let Some(local_logs) = local_logs
-            && local_logs.commitment() != info.logs_commitment()
-        {
-            return Err(ClientError::RpcError(RpcError::InvalidResponse(format!(
-                "node returned logs commitment {} for transaction {transaction_id}, but the \
-                 store holds logs with commitment {}",
-                info.logs_commitment(),
-                local_logs.commitment()
-            ))));
-        }
-
-        Ok(Some(info))
-    }
-
     // TRANSACTION
     // --------------------------------------------------------------------------------------------
 

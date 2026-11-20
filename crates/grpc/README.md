@@ -4,6 +4,7 @@ Default gRPC implementation of the `NodeRpcClient` trait from `miden-client-core
 
 - `GrpcClient`, which implements `NodeRpcClient` and talks to a Miden node over gRPC. It rejects node responses that do not match the request
 - `RpcMethod` and the `v1` module, with one type per endpoint of the node RPC API version, for callers that choose the API version of each call
+- `RpcStreamMethod` and `GrpcClient::subscribe`, which open a server-streaming endpoint and validate each item of the stream
 - `Endpoint`, the address of the node, with presets for the public networks
 - The protobuf code generated from the node RPC API, and the conversions between its messages and the `miden-client-core` types
 - The parsing of the typed errors that the node returns

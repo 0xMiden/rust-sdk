@@ -30,7 +30,8 @@ use tonic::Status;
 
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
-use crate::{Endpoint, RpcMethod, v1};
+use crate::rpc_stream_method::validate_items;
+use crate::{Endpoint, RpcMethod, RpcStream, RpcStreamMethod, v1};
 
 mod api_client;
 mod retry;
@@ -191,6 +192,21 @@ impl GrpcClient {
         let output = method.execute(self).await?;
         method.validate(&output)?;
         Ok(output)
+    }
+
+    /// Opens a server-streaming node endpoint and validates each item of the stream.
+    ///
+    /// The stream yields the first error and then ends. An error is a failure of the transport, a
+    /// response that does not decode, or an item that fails validation. The client does not
+    /// reconnect.
+    pub async fn subscribe<M>(&self, method: M) -> Result<RpcStream<M::Item>, RpcError>
+    where
+        M: RpcStreamMethod + Send + 'static,
+        M::Item: Send,
+        M::State: Send,
+    {
+        let items = method.open(self).await?;
+        Ok(validate_items(method, items))
     }
 
     /// Returns the cached transport or establishes a connection.

@@ -82,6 +82,7 @@ impl TryFrom<proto::node::v1::SyncChainMmrResponse> for ChainMmrInfo {
 mod tests {
     use miden_protocol::Word;
     use miden_protocol::asset::AssetId;
+    use miden_protocol::block::code_tree::CodeTreeRoot;
     use miden_protocol::block::{BlockHeader, FeeParameters};
     use miden_protocol::crypto::merkle::mmr::Forest;
     use miden_protocol::testing::account_id::{
@@ -108,6 +109,7 @@ mod tests {
             Word::empty(),
             Word::empty(),
             Word::empty(),
+            CodeTreeRoot::from_raw(Word::empty()),
             Word::empty(),
             Word::empty(),
             mock.validator_config().clone(),

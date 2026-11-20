@@ -58,7 +58,7 @@ pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 /// account `miden-faucet init --import` takes to dispense the native asset on this chain.
 pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
-/// File name of the public funding account for `miden-validator genesis`.
+/// File name of the public funding account for `miden-genesis build`.
 pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
 
 /// File name of the serialized signing key for the funding service.
@@ -83,8 +83,8 @@ const TST_FAUCET_MAX_SUPPLY: u64 = 1_000_000_000_000;
 /// Balance, in base units of the native fee asset, held by every genesis account that transacts.
 const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 
-/// Writes the genesis fixtures into `output_dir` for `miden-validator genesis`, which takes the
-/// native faucet and the funding account through `--native-faucet` and `--funding-account`, and the
+/// Writes the genesis fixtures into `output_dir` for `miden-genesis build`, which takes the native
+/// faucet and the funding account through `--native-faucet` and `--funding-account`, and the
 /// remaining accounts through `--accounts-config <output_dir>/accounts.toml`.
 ///
 /// This emits the TST genesis faucet (written with its secret key), the test faucets, and the
@@ -98,8 +98,8 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// The funding account holds [`FUNDING_ACCOUNT_BALANCE`] of the native asset. Genesis requires it
 /// on a fee-free chain too, where the funding service does not run.
 ///
-/// The fee parameters and the genesis timestamp are not fixtures: `miden-validator genesis` takes
-/// them on the command line.
+/// The fee parameters and the genesis timestamp are not fixtures: `miden-genesis build` takes them
+/// on the command line.
 ///
 /// The agglayer genesis accounts (bridge admin, GER manager, bridge, and faucet) are emitted too,
 /// and integration tests load their `.mac` files via the `AGGLAYER_ACCOUNTS_DIR` env var. They are
@@ -174,9 +174,9 @@ pub fn write_genesis_config(output_dir: &Path) -> Result<()> {
         account_files.push(file_name.to_string());
     }
 
-    // The validator set is not part of this config: `miden-validator genesis` takes the set's
-    // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
-    // there alongside the matching signing key.
+    // The validator set is not part of this config: `miden-genesis build` takes the set's public
+    // keys on the command line, and `start-test-node.sh` generates the key-pair it passes there
+    // alongside the matching signing key.
     let config = AccountsConfig {
         accounts: account_files
             .into_iter()
@@ -197,11 +197,11 @@ pub fn write_genesis_config(output_dir: &Path) -> Result<()> {
 // ACCOUNTS CONFIG
 // ================================================================================================
 
-/// File name of the additional accounts config `miden-validator genesis` loads through
+/// File name of the additional accounts config `miden-genesis build` loads through
 /// `--accounts-config`.
 pub const ACCOUNTS_CONFIG_FILE: &str = "accounts.toml";
 
-/// The `accounts.toml` that `miden-validator genesis` loads through `--accounts-config`.
+/// The `accounts.toml` that `miden-genesis build` loads through `--accounts-config`.
 #[derive(Serialize)]
 struct AccountsConfig {
     /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.

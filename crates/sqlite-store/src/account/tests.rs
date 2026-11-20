@@ -3667,6 +3667,7 @@ async fn apply_state_sync_patches_account_with_discarded_state() -> anyhow::Resu
     // Create a state sync update including the discarded transaction
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
+        BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::default(),
         TransactionUpdateTracker::new(vec![discarded_transaction]),

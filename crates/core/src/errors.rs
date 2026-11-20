@@ -134,6 +134,13 @@ pub enum StaleUpdate {
     },
     #[error("block {0} still holds an unspent note")]
     BlockWithUnspentNote(BlockNumber),
+    #[error(
+        "state sync update was built from block {block_from}, but the sync height of the store is block {sync_height}"
+    )]
+    SyncHeightMismatch {
+        block_from: BlockNumber,
+        sync_height: BlockNumber,
+    },
 }
 
 // NOTE RECORD ERROR

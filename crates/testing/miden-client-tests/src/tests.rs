@@ -824,6 +824,55 @@ async fn sync_state_no_redundant_get_account_calls() {
     );
 }
 
+/// Tests that the client applies a state sync update only if the store is at the sync height that
+/// the update was built from.
+#[tokio::test]
+async fn apply_state_sync_rejects_update_built_from_another_sync_height() {
+    use miden_client::store::StaleUpdate;
+    use miden_client::sync::StateSync;
+
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+
+    let state_sync = StateSync::new(
+        Arc::new(rpc_api.clone()),
+        Arc::new(client.note_screener()),
+        None,
+        client.get_validator_config().await.unwrap(),
+    );
+
+    // Build two updates from the same client state.
+    let block_from = client.get_sync_height().await.unwrap();
+    let mut updates = vec![];
+    for _ in 0..2 {
+        let mut partial_mmr = client.get_current_partial_mmr().await.unwrap();
+        let input = client.build_sync_input().await.unwrap();
+        let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+        assert_eq!(update.block_from(), block_from);
+        updates.push(update);
+    }
+    let stale_update = updates.pop().unwrap();
+    let update = updates.pop().unwrap();
+
+    let chain_tip = update.block_num();
+    assert!(chain_tip > block_from);
+
+    // The first update advances the store, so the second update is stale.
+    client.apply_state_sync(update).await.unwrap();
+    assert_eq!(client.get_sync_height().await.unwrap(), chain_tip);
+
+    let err = client.apply_state_sync(stale_update).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ClientError::StoreError(StoreError::StaleUpdate(StaleUpdate::SyncHeightMismatch {
+                block_from: from,
+                sync_height,
+            })) if from == block_from && sync_height == chain_tip
+        ),
+        "unexpected error: {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn sync_state_tags() {
     // generate test client with a random store name

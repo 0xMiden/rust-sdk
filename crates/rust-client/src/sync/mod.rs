@@ -77,7 +77,7 @@ use tracing::{info, warn};
 use crate::pswap::PswapChainObserver;
 use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
-use crate::store::{NoteFilter, TransactionFilter};
+use crate::store::{NoteFilter, StaleUpdate, StoreError, TransactionFilter};
 use crate::{Client, ClientError};
 mod block_header;
 
@@ -121,6 +121,12 @@ fn untrack_blocks(
         .flat_map(|block_pos| partial_mmr.untrack(block_pos))
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Returns the error for state sync data that was built from `block_from` when the client is at
+/// `sync_height`.
+fn sync_height_mismatch(block_from: BlockNumber, sync_height: BlockNumber) -> ClientError {
+    StoreError::from(StaleUpdate::SyncHeightMismatch { block_from, sync_height }).into()
 }
 
 /// Client synchronization methods.
@@ -203,8 +209,9 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if the client no longer starts where the data was fetched from, which means
-    /// another sync advanced the store in between and the data is stale.
+    /// Returns [`StaleUpdate::SyncHeightMismatch`] if the client no longer starts where the data
+    /// was fetched from, which means another sync advanced the store in between and the data is
+    /// stale.
     pub async fn apply_chain_updates(
         &mut self,
         state_sync: &StateSync,
@@ -212,12 +219,9 @@ where
     ) -> Result<SyncSummary, ClientError> {
         let mut partial_mmr = self.get_current_partial_mmr().await?;
 
-        let block_from = block_num_from_forest(&partial_mmr)?;
-        if block_from != chain_sync_data.block_from {
-            return Err(ClientError::ChainValidationError(format!(
-                "chain sync chain_sync_data starts at block {} but the client is at block {block_from}",
-                chain_sync_data.block_from
-            )));
+        let sync_height = block_num_from_forest(&partial_mmr)?;
+        if sync_height != chain_sync_data.block_from {
+            return Err(sync_height_mismatch(chain_sync_data.block_from, sync_height));
         }
 
         let state_sync_update = StateSync::build_update(chain_sync_data, &mut partial_mmr)?;
@@ -358,7 +362,17 @@ where
     /// configured cadence.
     ///
     /// See [`crate::Store::apply_state_sync()`] for what the update implies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StaleUpdate::SyncHeightMismatch`] if the sync height of the store is not the block
+    /// that the update was built from. The store is not changed.
     pub async fn apply_state_sync(&mut self, update: StateSyncUpdate) -> Result<(), ClientError> {
+        let sync_height = self.store.get_sync_height().await?;
+        if sync_height != update.block_from() {
+            return Err(sync_height_mismatch(update.block_from(), sync_height));
+        }
+
         self.store.apply_state_sync(update).await?;
 
         self.maybe_untrack_and_prune_irrelevant_blocks().await?;

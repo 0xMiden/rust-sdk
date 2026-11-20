@@ -22,6 +22,8 @@ use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 /// and seals them into this type at the end of the sync pass. Use [`Self::from_parts`] to build one
 /// directly.
 pub struct StateSyncUpdate {
+    /// The sync height of the client state that the update was built from.
+    block_from: BlockNumber,
     /// The block number of the last block that was synced.
     block_num: BlockNumber,
     /// New blocks, authentication nodes and MMR peaks.
@@ -38,10 +40,15 @@ pub struct StateSyncUpdate {
 }
 
 impl StateSyncUpdate {
-    /// Assembles an update from its constituent parts, mirroring [`Self::into_parts`].
+    /// Assembles an update from its constituent parts.
+    ///
+    /// `block_from` is the sync height of the client state that the update was built from.
+    /// `block_num` is the last block that the update syncs. The two values are equal when the node
+    /// reported no progress.
     ///
     /// The parts are stored as given: no validation or minimization is applied.
     pub fn from_parts(
+        block_from: BlockNumber,
         block_num: BlockNumber,
         partial_blockchain_updates: PartialBlockchainUpdates,
         note_updates: NoteUpdates,
@@ -50,6 +57,7 @@ impl StateSyncUpdate {
         protocol_config: Option<ProtocolConfig>,
     ) -> Self {
         Self {
+            block_from,
             block_num,
             partial_blockchain_updates,
             note_updates,
@@ -57,6 +65,13 @@ impl StateSyncUpdate {
             account_updates,
             protocol_config,
         }
+    }
+
+    /// Returns the sync height of the client state that the update was built from.
+    ///
+    /// The update is stale if the store is at a different sync height.
+    pub fn block_from(&self) -> BlockNumber {
+        self.block_from
     }
 
     /// Returns the block number of the last synced block.
@@ -89,7 +104,9 @@ impl StateSyncUpdate {
         self.protocol_config.as_ref()
     }
 
-    /// Decomposes this update into its constituent parts.
+    /// Decomposes this update into the parts that a store writes.
+    ///
+    /// The result does not include [`Self::block_from`].
     pub fn into_parts(
         self,
     ) -> (

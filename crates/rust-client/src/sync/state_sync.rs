@@ -475,6 +475,7 @@ impl StateSync {
             // No progress — already at the tip.
             return Ok(StateSyncUpdate::from_parts(
                 block_from,
+                block_from,
                 partial_blockchain_updates,
                 note_updates.into_note_updates(),
                 transaction_updates,
@@ -507,6 +508,7 @@ impl StateSync {
         )?;
 
         Ok(StateSyncUpdate::from_parts(
+            block_from,
             chain_tip,
             partial_blockchain_updates,
             note_updates.into_note_updates(),

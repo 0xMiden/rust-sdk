@@ -27,6 +27,7 @@ miden-standards = { workspace = true }
 # External dependencies
 async-trait = { workspace = true }
 chrono      = { workspace = true }
+futures     = { workspace = true }
 rand        = { default-features = false, workspace = true }
 thiserror   = { workspace = true }
 

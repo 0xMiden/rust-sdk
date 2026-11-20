@@ -1,23 +1,9 @@
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use miden_client_core::errors::RpcError;
+use miden_client_core::rpc::RpcStream;
 use miden_protocol::vm::FutureMaybeSend;
 
 use crate::GrpcClient;
-
-// RPC STREAM
-// ================================================================================================
-
-/// A stream of decoded items from a server-streaming node RPC endpoint.
-///
-/// The stream does not borrow the [`GrpcClient`] that opens it.
-#[cfg(not(target_arch = "wasm32"))]
-pub type RpcStream<T> = futures::stream::BoxStream<'static, Result<T, RpcError>>;
-
-/// A stream of decoded items from a server-streaming node RPC endpoint.
-///
-/// The stream does not borrow the [`GrpcClient`] that opens it.
-#[cfg(target_arch = "wasm32")]
-pub type RpcStream<T> = futures::stream::LocalBoxStream<'static, Result<T, RpcError>>;
 
 // RPC STREAM METHOD
 // ================================================================================================
@@ -67,8 +53,19 @@ where
         },
     );
 
-    #[cfg(not(target_arch = "wasm32"))]
-    return stream.boxed();
-    #[cfg(target_arch = "wasm32")]
-    return stream.boxed_local();
+    boxed(stream)
+}
+
+/// Boxes `stream` as an [`RpcStream`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn boxed<T>(
+    stream: impl Stream<Item = Result<T, RpcError>> + Send + 'static,
+) -> RpcStream<T> {
+    stream.boxed()
+}
+
+/// Boxes `stream` as an [`RpcStream`].
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn boxed<T>(stream: impl Stream<Item = Result<T, RpcError>> + 'static) -> RpcStream<T> {
+    stream.boxed_local()
 }

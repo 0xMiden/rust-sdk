@@ -156,6 +156,7 @@ mod foreign_vault;
 mod rpc;
 pub mod store;
 mod transaction;
+mod transaction_logs;
 mod transport;
 
 /// Constant that represents the number of blocks until the transaction is considered stale.

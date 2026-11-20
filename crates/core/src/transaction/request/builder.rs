@@ -333,7 +333,8 @@ impl TransactionRequestBuilder {
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
-    /// of multisig auth args.
+    /// of multisig auth args. Multisig auth args with a max fee let the signed transaction execute
+    /// against a later reference block than the one of the unsigned execution.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
         let auth_arg = auth_args.to_commitment();
@@ -349,12 +350,17 @@ impl TransactionRequestBuilder {
     /// through the transaction's auth args when preparing the transaction.
     ///
     /// Multisig accounts require a caller-declared salt. The client binds their auth args to the
-    /// transaction's reference block, which is the sync height at execution time. Signatures for
-    /// one execution are valid for a later execution only if the client does not sync between the
-    /// two executions. To collect signatures across syncs, use [`Self::auth_args`] to set
-    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) that bind a fixed
-    /// block. On a chain that charges fees, these auth args must also include the fee conversion
-    /// info.
+    /// transaction's reference block, which is the sync height at execution time, and sets no max
+    /// fee. The multisig auth procedure then estimates the fee on each execution, and the
+    /// transaction summary binds the bound block and the estimate. Signatures for one execution are
+    /// valid for a later execution only if the client does not sync between the two executions.
+    ///
+    /// To collect signatures across syncs, do not use this method. Build
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) with a fixed bound
+    /// block and a max fee, for example with `MultisigAuthArgs::with_estimated_max_fee`, and set
+    /// them with [`Self::auth_args`]. The summary then binds the max fee, and not the estimate of
+    /// one execution. On a chain that charges fees, these auth args must also include the fee
+    /// conversion info.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);

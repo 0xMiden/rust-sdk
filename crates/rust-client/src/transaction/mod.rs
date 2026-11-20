@@ -169,10 +169,12 @@ pub use miden_protocol::transaction::{
     ExecutedTransaction,
     InputNote,
     InputNotes,
+    LogTopic,
     OutputNote,
     OutputNotes,
     ProvenTransaction,
     PublicOutputNote,
+    PublicTransactionLogs,
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
@@ -181,6 +183,10 @@ pub use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
     TransactionKernel,
+    TransactionLog,
+    TransactionLogDetails,
+    TransactionLogError,
+    TransactionLogs,
     TransactionScript,
     TransactionScriptRoot,
     TransactionSummary,
@@ -202,6 +208,8 @@ pub use miden_tx::{
     TransactionProverError,
 };
 pub use result::TransactionResult;
+
+pub use crate::rpc::domain::transaction::TransactionLogsInfo;
 
 // CONSTANTS
 // ================================================================================================
@@ -226,6 +234,20 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
+    }
+
+    /// Returns the logs that a tracked transaction emitted, in emission order.
+    ///
+    /// The store records the logs when the transaction is applied, so this method does not contact
+    /// the node. It returns `None` if the client does not track the transaction.
+    ///
+    /// The store keeps the logs of a discarded transaction, so this method also returns them. The
+    /// network did not apply these logs.
+    pub async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, ClientError> {
+        self.store.get_transaction_logs(transaction_id).await.map_err(Into::into)
     }
 
     // TRANSACTION
@@ -1505,8 +1527,9 @@ pub(crate) enum AuthArgsLayout {
     /// `[SALT, CONVERSION_INFO]`. The salt does not constrain anything, so the client's fixed
     /// default salt works where the caller declares none.
     SingleSig,
-    /// `[BLOCK_WORD, SALT, CONVERSION_INFO]`. The salt is the replay guard of the account, so the
-    /// caller must declare it. Carries the component's name for the error.
+    /// `[[bound_block_num, approval_expiration_block_num, max_fee, 0], SALT, CONVERSION_INFO]`. The
+    /// salt is the replay guard of the account, so the caller must declare it. Carries the
+    /// component's name for the error.
     Multisig(String),
     /// The component does not read the auth args, and settles the fee some other way. Carries the
     /// auth component's name, or `"unrecognized"` when the client recognizes no auth component.
@@ -1559,7 +1582,8 @@ impl AuthArgsLayout {
     /// not need auth args.
     ///
     /// The auth args pay the fee in the native fee asset of `protocol_config` at rate 1/1. Multisig
-    /// auth args bind the block of `reference_header`.
+    /// auth args bind the block of `reference_header` and set no max fee, so the auth procedure
+    /// estimates the fee on each execution and binds the estimate in the transaction summary.
     ///
     /// # Errors
     /// - If the component is a multisig and `declared_salt` is `None`. Multisig components always

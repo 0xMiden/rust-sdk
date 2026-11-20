@@ -1,9 +1,17 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, Nullifier};
-use miden_protocol::transaction::{InputNoteCommitment, TransactionHeader};
+use miden_protocol::transaction::{
+    InputNoteCommitment,
+    TransactionHeader,
+    TransactionId,
+    TransactionLogDetails,
+    TransactionLogs,
+};
 
 use super::note::CommittedNote;
 
@@ -66,5 +74,38 @@ impl TransactionRecord {
             .iter()
             .copied()
             .filter(move |(nullifier, _)| consumed_nullifiers.contains(nullifier))
+    }
+}
+
+// TRANSACTION LOGS INFO
+// ================================================================================================
+
+/// Contains the logs of a committed transaction and the position of the transaction in the chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionLogsInfo {
+    /// ID of the transaction that emitted the logs.
+    pub transaction_id: TransactionId,
+    /// ID of the account that executed the transaction.
+    pub account_id: AccountId,
+    /// Block number in which the transaction was included.
+    pub block_num: BlockNumber,
+    /// Index of the transaction in the block.
+    pub transaction_index: u32,
+    /// The logs of a public account, or the commitment to the logs of a private account.
+    pub log_details: TransactionLogDetails,
+}
+
+impl TransactionLogsInfo {
+    /// Returns the commitment to the transaction logs.
+    pub fn logs_commitment(&self) -> Word {
+        self.log_details.commitment()
+    }
+
+    /// Returns the transaction logs, or `None` if the node holds only their commitment.
+    pub fn logs(&self) -> Option<&TransactionLogs> {
+        match &self.log_details {
+            TransactionLogDetails::Public(logs) => Some(logs),
+            TransactionLogDetails::Private(_) => None,
+        }
     }
 }

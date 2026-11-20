@@ -91,7 +91,9 @@ pub(crate) const COUNTER_CONTRACT: &str = r#"
 
 const INCR_NONCE_AUTH_CODE: &str = "
     use miden::standards::fee
+    use miden::protocol::active_account
     use miden::protocol::native_account
+    use miden::protocol::tx
 
     const POST_FEE_CYCLES = 1024
 
@@ -101,7 +103,15 @@ const INCR_NONCE_AUTH_CODE: &str = "
 
         exec.fee::native_conversion_info
         push.POST_FEE_CYCLES
-        exec.fee::pay_fee drop
+        # => [num_extra_cycles, CONVERSION_INFO]
+
+        # The serial number of the fee note is derived from the reference block and the initial
+        # nonce.
+        exec.active_account::get_nonce movdn.5
+        exec.tx::get_reference_block_number movdn.5
+        # => [num_extra_cycles, CONVERSION_INFO, serial_number_block, initial_nonce]
+
+        exec.fee::pay_fee drop drop
 
         exec.native_account::incr_nonce
         drop

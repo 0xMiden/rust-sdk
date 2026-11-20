@@ -104,7 +104,7 @@ use tracing::info;
 
 use super::Client;
 use crate::ClientError;
-use crate::note::{NoteScreenerError, NoteUpdates, StandardNote};
+use crate::note::{NoteScreenerError, NoteUpdates, StandardNote, is_fee_note};
 use crate::rpc::domain::account::{AccountFetch, GetAccountRequest, VaultFetch};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
@@ -1401,11 +1401,7 @@ where
         let new_output_notes = executed_tx
             .output_notes()
             .iter()
-            .filter(|output_note| {
-                output_note
-                    .recipient()
-                    .is_none_or(|recipient| recipient.script().root() != TxFeeNote::script_root())
-            })
+            .filter(|output_note| !is_fee_note(output_note))
             .cloned()
             .filter_map(|output_note| {
                 OutputNoteRecord::try_from_output_note(output_note, submission_height).ok()

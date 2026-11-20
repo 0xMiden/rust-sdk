@@ -306,6 +306,12 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn upsert_output_notes(&self, notes: &[OutputNoteRecord]) -> Result<(), StoreError> {
+        let notes = notes.to_vec();
+        self.interact_with_connection(move |conn| SqliteStore::upsert_output_notes(conn, &notes))
+            .await
+    }
+
     async fn get_note_script(&self, script_root: Word) -> Result<NoteScript, StoreError> {
         self.interact_with_connection(move |conn| SqliteStore::get_note_script(conn, script_root))
             .await

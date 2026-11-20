@@ -21,7 +21,6 @@ use miden_client::account::{
 };
 use miden_client::assembly::{CodeBuilder, SourceManagerSync};
 use miden_client::asset::{AssetAmount, FungibleAsset, TokenSymbol};
-use miden_client::crypto::FeltRng;
 use miden_client::note::{
     FeeSponsorshipNote,
     MintNote,
@@ -91,7 +90,9 @@ pub(crate) const COUNTER_CONTRACT: &str = r#"
 
 const INCR_NONCE_AUTH_CODE: &str = "
     use miden::standards::fee
+    use miden::protocol::active_account
     use miden::protocol::native_account
+    use miden::protocol::tx
 
     const POST_FEE_CYCLES = 1024
 
@@ -101,7 +102,15 @@ const INCR_NONCE_AUTH_CODE: &str = "
 
         exec.fee::native_conversion_info
         push.POST_FEE_CYCLES
-        exec.fee::pay_fee drop
+        # => [num_extra_cycles, CONVERSION_INFO]
+
+        # The serial number of the fee note is derived from the reference block and the initial
+        # nonce.
+        exec.active_account::get_nonce movdn.5
+        exec.tx::get_reference_block_number movdn.5
+        # => [num_extra_cycles, CONVERSION_INFO, serial_number_block, initial_nonce]
+
+        exec.fee::pay_fee drop drop
 
         exec.native_account::incr_nonce
         drop
@@ -406,7 +415,7 @@ fn build_non_standard_mint(
     amount: Felt,
     nonce: u32,
 ) -> Result<(NoteScript, Note, NoteDetailsCommitment)> {
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let (custom_script, custom_storage) = build_non_standard_claim_note(client, target, nonce)?;
     assert!(
         StandardNote::from_script(&custom_script).is_none(),
@@ -721,7 +730,7 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
 
     // Build the standard MINT note. Precompute Bob's P2ID recipient and details commitment so we
     // can poll for the emitted public note on client_2.
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let bob_recipient = P2idNoteStorage::new(bob.id()).into_recipient(serial_num);
     let expected_asset = FungibleAsset::new(faucet.id(), 100)?;
     let expected_assets = NoteAssets::new(vec![expected_asset.into()])?;

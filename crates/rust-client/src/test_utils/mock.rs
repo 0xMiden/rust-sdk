@@ -26,7 +26,14 @@ use miden_protocol::crypto::merkle::mmr::{Forest, Mmr, MmrProof};
 use miden_protocol::crypto::merkle::smt::PartialSmt;
 use miden_protocol::note::{NoteAttachments, NoteHeader, NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::{ExecutedTransaction, OutputNote, ProvenTransaction};
+use miden_protocol::transaction::{
+    ExecutedTransaction,
+    OrderedTransactionHeaders,
+    OutputNote,
+    ProvenTransaction,
+    TransactionId,
+    TransactionLogDetails,
+};
 use miden_protocol::vm::ExecutionProof;
 use miden_testing::{MockChain, MockChainNote};
 use miden_tx::utils::sync::RwLock;
@@ -50,7 +57,7 @@ use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use crate::rpc::encryption::{AttestedTransactionEncryptionKey, SealedTransactionInputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcEndpoint, RpcError, RpcStatusInfo};
 
@@ -392,7 +399,9 @@ impl MockRpcApi {
                 continue;
             }
 
-            for transaction_header in block.body().transactions().as_slice() {
+            let transaction_headers =
+                block.body().transactions().iter().flat_map(OrderedTransactionHeaders::as_slice);
+            for transaction_header in transaction_headers {
                 if !account_ids.contains(&transaction_header.account_id()) {
                     continue;
                 }
@@ -410,6 +419,55 @@ impl MockRpcApi {
         }
 
         transactions
+    }
+
+    /// Retrieves the logs of a committed transaction, as the node reports them.
+    fn get_transaction_logs_request(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Option<TransactionLogsInfo> {
+        let mock_chain = self.mock_chain.read();
+        for block in mock_chain.proven_blocks() {
+            let position = block
+                .body()
+                .transactions()
+                .iter()
+                .flat_map(OrderedTransactionHeaders::as_slice)
+                .enumerate()
+                .find(|(_, header)| {
+                    header.id() == transaction_id && header.account_id() == account_id
+                });
+            let Some((transaction_index, header)) = position else {
+                continue;
+            };
+
+            // A block holds the logs of public accounts only. A private account commits to its logs
+            // in the transaction header.
+            let log_details = if account_id.is_public() {
+                let (_, logs) = block
+                    .body()
+                    .public_logs()
+                    .entries()
+                    .iter()
+                    .find(|(id, _)| *id == transaction_id)
+                    .expect("a block holds the logs of each public account transaction");
+                TransactionLogDetails::Public(logs.clone())
+            } else {
+                TransactionLogDetails::Private(header.logs_commitment())
+            };
+
+            return Some(TransactionLogsInfo {
+                transaction_id,
+                account_id,
+                block_num: block.header().block_num(),
+                transaction_index: u32::try_from(transaction_index)
+                    .expect("a block holds fewer than 2^32 transactions"),
+                log_details,
+            });
+        }
+
+        None
     }
 
     /// Retrieves storage map updates in a given block range.
@@ -635,22 +693,22 @@ impl NodeRpcClient for MockRpcApi {
         let mut return_notes = vec![];
         for note in hit_notes {
             let fetched_note = match note {
-                MockChainNote::Private(note_id, note_metadata, _, note_inclusion_proof) => {
+                MockChainNote::Private(note, note_inclusion_proof) => {
                     let attachments = self
                         .private_note_attachments
                         .read()
-                        .get(note_id)
+                        .get(&note.id())
                         .cloned()
                         .unwrap_or_else(NoteAttachments::empty);
                     FetchedNote::Private(
-                        *note_id,
-                        *note_metadata,
+                        note.id(),
+                        *note.metadata(),
                         attachments,
                         note_inclusion_proof.clone(),
                     )
                 },
                 MockChainNote::Public(note, note_inclusion_proof) => {
-                    FetchedNote::Public(note.clone(), note_inclusion_proof.clone())
+                    FetchedNote::Public(note.as_note().clone(), note_inclusion_proof.clone())
                 },
             };
             return_notes.push(fetched_note);
@@ -972,6 +1030,18 @@ impl NodeRpcClient for MockRpcApi {
             .map(|n| n.script().clone());
 
         Ok(script)
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+        if let Some(error) = self.take_failure(RpcEndpoint::GetTransactionLogs) {
+            return Err(error);
+        }
+
+        Ok(self.get_transaction_logs_request(account_id, transaction_id))
     }
 
     async fn sync_storage_maps(

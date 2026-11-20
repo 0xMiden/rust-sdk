@@ -45,7 +45,7 @@ fn new_account() -> Account {
         ACCOUNT_ID_REGULAR,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 

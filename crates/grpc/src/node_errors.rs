@@ -7,6 +7,7 @@ use miden_client_core::errors::node::{
     GetBlockHeaderError,
     GetNoteScriptByRootError,
     GetNotesByIdError,
+    GetTransactionLogsError,
     NoteSyncError,
     RegisterAccountError,
     SyncAccountStorageMapsError,
@@ -64,6 +65,9 @@ pub(crate) fn parse_node_error(
         RpcEndpoint::SyncChainMmr => {
             Some(EndpointError::SyncChainMmr(SyncChainMmrError::from_code(code, message)))
         },
+        RpcEndpoint::GetTransactionLogs => Some(EndpointError::GetTransactionLogs(
+            GetTransactionLogsError::from_code(code, message),
+        )),
         // These endpoints don't have typed errors from the node
         RpcEndpoint::Status
         | RpcEndpoint::GetLimits
@@ -102,6 +106,7 @@ pub(crate) fn parse_status_error(
         | RpcEndpoint::GetLimits
         | RpcEndpoint::GetNetworkNoteStatus
         | RpcEndpoint::GetTransactionEncryptionKey
+        | RpcEndpoint::GetTransactionLogs
         | RpcEndpoint::IsAccountAllowed
         | RpcEndpoint::IsInvitationCodeValid
         | RpcEndpoint::SubmitProvenBatch => None,
@@ -184,5 +189,34 @@ mod tests {
             parse_node_error(RpcEndpoint::SyncTransactions, &[5], message),
             Some(EndpointError::SyncTransactions(SyncTransactionsError::FutureBlock))
         );
+    }
+
+    /// The codes of `GetTransactionLogs` must parse as the errors that the node defines for them.
+    #[test]
+    fn get_transaction_logs_codes_parse_as_typed_errors() {
+        let parse = |code| parse_node_error(RpcEndpoint::GetTransactionLogs, &[code], "message");
+
+        assert_eq!(
+            parse(0),
+            Some(EndpointError::GetTransactionLogs(GetTransactionLogsError::Internal))
+        );
+        assert_eq!(
+            parse(1),
+            Some(EndpointError::GetTransactionLogs(
+                GetTransactionLogsError::DeserializationFailed
+            ))
+        );
+        assert_eq!(
+            parse(2),
+            Some(EndpointError::GetTransactionLogs(GetTransactionLogsError::TransactionNotFound))
+        );
+        assert_eq!(
+            parse(3),
+            Some(EndpointError::GetTransactionLogs(GetTransactionLogsError::Unknown {
+                code: 3,
+                message: "message".to_string(),
+            }))
+        );
+        assert_eq!(parse_node_error(RpcEndpoint::GetTransactionLogs, &[], "message"), None);
     }
 }

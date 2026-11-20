@@ -22,7 +22,7 @@
 //! ```rust
 //! use miden_client::Client;
 //! use miden_client::auth::TransactionAuthenticator;
-//! use miden_client::crypto::FeltRng;
+//! use miden_client::crypto::Rng;
 //! use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
 //! use miden_protocol::account::AccountId;
 //! use miden_protocol::asset::FungibleAsset;
@@ -170,10 +170,12 @@ pub use miden_protocol::transaction::{
     ExecutedTransaction,
     InputNote,
     InputNotes,
+    LogTopic,
     OutputNote,
     OutputNotes,
     ProvenTransaction,
     PublicOutputNote,
+    PublicTransactionLogs,
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
@@ -182,9 +184,14 @@ pub use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
     TransactionKernel,
+    TransactionLog,
+    TransactionLogDetails,
+    TransactionLogError,
+    TransactionLogs,
     TransactionScript,
     TransactionScriptRoot,
     TransactionSummary,
+    TransactionWitness,
 };
 pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
@@ -202,6 +209,8 @@ pub use miden_tx::{
     TransactionProverError,
 };
 pub use result::TransactionResult;
+
+pub use crate::rpc::domain::transaction::TransactionLogsInfo;
 
 // CONSTANTS
 // ================================================================================================
@@ -226,6 +235,20 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
+    }
+
+    /// Returns the logs that a tracked transaction emitted, in emission order.
+    ///
+    /// The store records the logs when the transaction is applied, so this method does not contact
+    /// the node. It returns `None` if the client does not track the transaction.
+    ///
+    /// The store keeps the logs of a discarded transaction, so this method also returns them. The
+    /// network did not apply these logs.
+    pub async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, ClientError> {
+        self.store.get_transaction_logs(transaction_id).await.map_err(Into::into)
     }
 
     // TRANSACTION
@@ -1228,7 +1251,7 @@ where
         data_store: &'store STORE,
     ) -> Result<TransactionExecutor<'store, 'auth, STORE, AUTH>, TransactionExecutorError> {
         let mut executor = TransactionExecutor::new(data_store)
-            .with_options(self.exec_options)?
+            .with_options(self.exec_options.clone())?
             .with_source_manager(self.source_manager.clone());
         if let Some(authenticator) = self.authenticator.as_deref() {
             executor = executor.with_authenticator(authenticator);
@@ -1489,8 +1512,9 @@ pub(crate) enum AuthArgsLayout {
     /// `[SALT, CONVERSION_INFO]`. The salt does not constrain anything, so the client's fixed
     /// default salt works where the caller declares none.
     SingleSig,
-    /// `[BLOCK_WORD, SALT, CONVERSION_INFO]`. The salt is the replay guard of the account, so the
-    /// caller must declare it. Carries the component's name for the error.
+    /// `[[bound_block_num, approval_expiration_block_num, max_fee, 0], SALT, CONVERSION_INFO]`. The
+    /// salt is the replay guard of the account, so the caller must declare it. Carries the
+    /// component's name for the error.
     Multisig(String),
     /// The component does not read the auth args, and settles the fee some other way. Carries the
     /// auth component's name, or `"unrecognized"` when the client recognizes no auth component.
@@ -1545,7 +1569,8 @@ impl AuthArgsLayout {
     /// not need auth args.
     ///
     /// The auth args pay the fee in the native fee asset of `protocol_config` at rate 1/1. Multisig
-    /// auth args bind the block of `reference_header`.
+    /// auth args bind the block of `reference_header` and set no max fee, so the auth procedure
+    /// estimates the fee on each execution and binds the estimate in the transaction summary.
     ///
     /// # Errors
     /// - If the component is a multisig and `declared_salt` is `None`. Multisig components always
@@ -1865,6 +1890,7 @@ mod tests {
         AccountType,
     };
     use miden_protocol::asset::{AssetId, FungibleAsset};
+    use miden_protocol::block::code_tree::CodeTreeRoot;
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::note::{Note, NoteType};
@@ -1876,6 +1902,7 @@ mod tests {
         ACCOUNT_ID_SENDER,
     };
     use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+    use miden_standards::account::auth::multisig_smart::DelayedExecutionPolicy;
     use miden_standards::account::auth::{
         Approver,
         ApproverSet,
@@ -1999,10 +2026,10 @@ mod tests {
 
     #[test]
     fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let auth = AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         try_injected_auth_arg(fee_conversion_request(), &account_with_auth(auth), 500).unwrap();
@@ -2056,6 +2083,7 @@ mod tests {
             Word::empty(),
             Word::empty(),
             Word::empty(),
+            CodeTreeRoot::from_raw(Word::empty()),
             Word::empty(),
             Word::empty(),
             validator_keys,
@@ -2106,26 +2134,26 @@ mod tests {
     }
 
     fn singlesig_account() -> Account {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         account_with_auth(AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
     }
 
     fn guarded_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
         .unwrap();
 
         let guardian = GuardianConfig::new(Approver::new(
-            AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         account_with_auth(
@@ -2195,8 +2223,8 @@ mod tests {
     fn multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
@@ -2269,14 +2297,16 @@ mod tests {
     fn smart_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
         .unwrap();
 
-        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
+        let delayed_execution = DelayedExecutionPolicy::new(1, 1, 1).unwrap();
+        let config = AuthMultisigSmartConfig::new(approvers, delayed_execution);
+        account_with_auth(AuthMultisigSmart::new(config).unwrap())
     }
 
     /// Multisig components load a preimage also when the chain charges no fee.

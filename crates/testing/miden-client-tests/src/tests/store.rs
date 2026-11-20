@@ -40,11 +40,11 @@ fn create_account_data(account_id: u128) -> AccountFile {
         account_id,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
-    AccountFile::new(account.clone(), vec![AuthSecretKey::new_falcon512_poseidon2()])
+    AccountFile::new(account.clone(), vec![AuthSecretKey::new_falcon512_eidos()])
 }
 
 fn create_ecdsa_account_data(account_id: u128) -> AccountFile {
@@ -56,7 +56,7 @@ fn create_ecdsa_account_data(account_id: u128) -> AccountFile {
         ))],
     );
 
-    AccountFile::new(account.clone(), vec![AuthSecretKey::new_falcon512_poseidon2()])
+    AccountFile::new(account.clone(), vec![AuthSecretKey::new_falcon512_eidos()])
 }
 
 pub fn create_initial_accounts_data() -> Vec<AccountFile> {
@@ -90,7 +90,7 @@ pub async fn try_add_account() {
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -317,7 +317,7 @@ async fn build_three_slot_account(client: &mut crate::tests::TestClient) -> Acco
     )
     .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -327,7 +327,7 @@ async fn build_three_slot_account(client: &mut crate::tests::TestClient) -> Acco
         .account_type(AccountType::Public)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .with_component(component)

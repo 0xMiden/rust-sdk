@@ -93,8 +93,11 @@ impl ProgramExecutor for TraceProgramExecutor {
         advice_inputs: AdviceInputs,
         options: ExecutionOptions,
     ) -> Result<Self, AdviceError> {
-        let processor =
-            <FastProcessor as ProgramExecutor>::new(stack_inputs, advice_inputs.clone(), options)?;
+        let processor = <FastProcessor as ProgramExecutor>::new(
+            stack_inputs,
+            advice_inputs.clone(),
+            options.clone(),
+        )?;
         Ok(Self {
             processor,
             stack_inputs,

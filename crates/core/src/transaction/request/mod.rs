@@ -1,6 +1,5 @@
 //! Contains structures and functions related to transaction creation.
 
-use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -422,8 +421,7 @@ impl TransactionRequest {
         tx_args.extend_output_note_recipients(
             own_output_recipients
                 .into_iter()
-                .chain(expected_output_recipients.into_values())
-                .map(Box::new),
+                .chain(expected_output_recipients.into_values()),
         );
         tx_args.extend_merkle_store(merkle_store.inner_nodes());
 
@@ -650,7 +648,7 @@ mod tests {
             .with_component(MockAccountComponent::with_empty_slots())
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .account_type(AccountType::Private)
             .build_existing()

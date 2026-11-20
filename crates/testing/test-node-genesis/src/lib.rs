@@ -58,7 +58,7 @@ pub const NATIVE_FAUCET_FILE: &str = "native_faucet.mac";
 /// account `miden-faucet init --import` takes to dispense the native asset on this chain.
 pub const FAUCET_OPERATOR_FILE: &str = "faucet_operator.mac";
 
-/// File name of the public funding account for `miden-validator genesis`.
+/// File name of the public funding account for `miden-genesis build`.
 pub const FUNDING_ACCOUNT_FILE: &str = "funding_account.mac";
 
 /// File name of the serialized signing key for the funding service.
@@ -83,8 +83,8 @@ const TST_FAUCET_MAX_SUPPLY: u64 = 1_000_000_000_000;
 /// Balance, in base units of the native fee asset, held by every genesis account that transacts.
 const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 
-/// Writes the genesis fixtures into `output_dir` for `miden-validator genesis`, which takes the
-/// native faucet and the funding account through `--native-faucet` and `--funding-account`, and the
+/// Writes the genesis fixtures into `output_dir` for `miden-genesis build`, which takes the native
+/// faucet and the funding account through `--native-faucet` and `--funding-account`, and the
 /// remaining accounts through `--accounts-config <output_dir>/accounts.toml`.
 ///
 /// This emits the TST genesis faucet (written with its secret key), the test faucets, and the
@@ -98,8 +98,8 @@ const GENESIS_ACCOUNT_FEE_BALANCE: u64 = 1_000_000_000;
 /// The funding account holds [`FUNDING_ACCOUNT_BALANCE`] of the native asset. Genesis requires it
 /// on a fee-free chain too, where the funding service does not run.
 ///
-/// The fee parameters and the genesis timestamp are not fixtures: `miden-validator genesis` takes
-/// them on the command line.
+/// The fee parameters and the genesis timestamp are not fixtures: `miden-genesis build` takes them
+/// on the command line.
 ///
 /// The agglayer genesis accounts (bridge admin, GER manager, bridge, and faucet) are emitted too,
 /// and integration tests load their `.mac` files via the `AGGLAYER_ACCOUNTS_DIR` env var. They are
@@ -174,9 +174,9 @@ pub fn write_genesis_config(output_dir: &Path) -> Result<()> {
         account_files.push(file_name.to_string());
     }
 
-    // The validator set is not part of this config: `miden-validator genesis` takes the set's
-    // public keys on the command line, and `start-test-node.sh` generates the key-pair it passes
-    // there alongside the matching signing key.
+    // The validator set is not part of this config: `miden-genesis build` takes the set's public
+    // keys on the command line, and `start-test-node.sh` generates the key-pair it passes there
+    // alongside the matching signing key.
     let config = AccountsConfig {
         accounts: account_files
             .into_iter()
@@ -197,11 +197,11 @@ pub fn write_genesis_config(output_dir: &Path) -> Result<()> {
 // ACCOUNTS CONFIG
 // ================================================================================================
 
-/// File name of the additional accounts config `miden-validator genesis` loads through
+/// File name of the additional accounts config `miden-genesis build` loads through
 /// `--accounts-config`.
 pub const ACCOUNTS_CONFIG_FILE: &str = "accounts.toml";
 
-/// The `accounts.toml` that `miden-validator genesis` loads through `--accounts-config`.
+/// The `accounts.toml` that `miden-genesis build` loads through `--accounts-config`.
 #[derive(Serialize)]
 struct AccountsConfig {
     /// Rendered as `[[account]]` entries, each naming a `.mac` file the node loads verbatim.
@@ -226,7 +226,7 @@ fn generate_faucet(
     max_supply: u64,
 ) -> anyhow::Result<(Account, AuthSecretKey)> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
 
     let symbol = TokenSymbol::try_from(symbol).expect("faucet symbol should be valid");
     let name = TokenName::new(&symbol.to_string()).expect("token symbol is a valid token name");
@@ -241,7 +241,7 @@ fn generate_faucet(
         faucet,
         AuthSingleSig::new(Approver::new(
             secret.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         )),
         allow_all_policy_manager(),
         AccountType::Public,
@@ -253,9 +253,8 @@ fn generate_faucet(
 /// Builds a public basic wallet, with the key that signs for it.
 fn generate_wallet() -> anyhow::Result<(Account, AuthSecretKey)> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
-    let approver =
-        Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Poseidon2);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
+    let approver = Approver::new(secret.public_key().to_commitment(), AuthScheme::Falcon512Eidos);
     let wallet = create_basic_wallet(rng.random(), approver, AccountType::Public)?;
 
     Ok((wallet, secret))
@@ -346,7 +345,7 @@ const ASSET_AMOUNT_PER_FAUCET: u64 = 75;
 /// the node. This is used to test edge cases in account retrieval and asset handling.
 fn build_test_faucets_and_account() -> anyhow::Result<Vec<Account>> {
     let mut rng = ChaCha20Rng::from_seed(random());
-    let secret = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut rng);
+    let secret = AuthSecretKey::new_falcon512_eidos_with_rng(&mut rng);
 
     let faucets = create_test_faucets(&secret)?;
     let account = create_test_account_with_many_assets(&faucets)?;
@@ -379,7 +378,7 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
 
     let auth_component = AuthSingleSig::new(Approver::new(
         secret.public_key().to_commitment(),
-        AuthScheme::Falcon512Poseidon2,
+        AuthScheme::Falcon512Eidos,
     ));
 
     let symbol = TokenSymbol::new("TKN")?;
@@ -406,9 +405,8 @@ fn create_single_test_faucet(index: u128, secret: &AuthSecretKey) -> anyhow::Res
 /// Creates a test account holding assets from all provided faucets. The account also includes a
 /// large storage map to test storage capacity limits.
 fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<Account> {
-    let sk = AuthSecretKey::new_falcon512_poseidon2_with_rng(&mut ChaCha20Rng::from_seed(
-        TEST_ACCOUNT_SEED,
-    ));
+    let sk =
+        AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::from_seed(TEST_ACCOUNT_SEED));
 
     let storage_map = create_large_storage_map();
     let acc_component = AccountComponent::new(
@@ -428,7 +426,7 @@ fn create_test_account_with_many_assets(faucets: &[Account]) -> anyhow::Result<A
     let account = AccountBuilder::new(TEST_ACCOUNT_SEED)
         .with_component(AuthSingleSig::new(Approver::new(
             sk.public_key().to_commitment(),
-            AuthScheme::Falcon512Poseidon2,
+            AuthScheme::Falcon512Eidos,
         )))
         .account_type(AccountType::Public)
         .with_component(acc_component)

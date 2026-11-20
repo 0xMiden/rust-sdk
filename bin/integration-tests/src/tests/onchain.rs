@@ -10,7 +10,7 @@ use miden_client::account::{
     build_wallet_id,
 };
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
-use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::{ECDSA_K256_KECCAK_SCHEME_ID, FALCON512_EIDOS_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::{
     BlockNumber,
@@ -53,20 +53,20 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
     // Create faucet account
     let (faucet_account, _) = client_1
         .insert_account(
-            AccountSetup::faucet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+            AccountSetup::faucet(AccountType::Private).auth_scheme(FALCON512_EIDOS_SCHEME_ID),
         )
         .await?;
     // Create regular accounts
     let (basic_wallet_1, _) = client_2
         .insert_account(
-            AccountSetup::wallet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+            AccountSetup::wallet(AccountType::Private).auth_scheme(FALCON512_EIDOS_SCHEME_ID),
         )
         .await?;
 
     // Create regular accounts
     let (basic_wallet_2, _) = client_3
         .insert_account(
-            AccountSetup::wallet(AccountType::Private).auth_scheme(RPO_FALCON_SCHEME_ID),
+            AccountSetup::wallet(AccountType::Private).auth_scheme(FALCON512_EIDOS_SCHEME_ID),
         )
         .await?;
     client_1.sync_state().await?;

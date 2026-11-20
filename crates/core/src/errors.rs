@@ -79,6 +79,8 @@ pub enum StoreError {
     ParsingError(String),
     #[error("failed to retrieve data from the database: {0}")]
     QueryError(String),
+    #[error("the store no longer holds the state this update was derived from")]
+    StaleUpdate(#[from] StaleUpdate),
     #[error("account storage map error")]
     StorageMapError(#[from] StorageMapError),
     #[error("store {0} is locked by another store instance")]
@@ -87,6 +89,40 @@ pub enum StoreError {
     VaultKeyNotTracked(AssetId, Word),
     #[error("failed to parse word")]
     WordError(#[from] WordError),
+}
+
+// STALE UPDATE
+// ================================================================================================
+
+/// A write was rejected because the state it was derived from is no longer the state the store
+/// holds.
+///
+/// Nothing was applied. Re-read the state and rebuild the update against it.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum StaleUpdate {
+    #[error(
+        "account {account_id} update was derived from commitment {initial_commitment}, which the store no longer holds (now {stored_commitment})"
+    )]
+    AccountCommitmentMismatch {
+        account_id: AccountId,
+        initial_commitment: Word,
+        stored_commitment: Word,
+    },
+    #[error(
+        "account {account_id} update at nonce {new_nonce} is not newer than the stored nonce {stored_nonce}"
+    )]
+    AccountNonceTooLow {
+        account_id: AccountId,
+        new_nonce: u64,
+        stored_nonce: u64,
+    },
+    #[error(
+        "state sync update was built from block {block_from}, but the sync height of the store is block {sync_height}"
+    )]
+    SyncHeightMismatch {
+        block_from: BlockNumber,
+        sync_height: BlockNumber,
+    },
 }
 
 // NOTE RECORD ERROR

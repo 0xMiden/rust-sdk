@@ -33,7 +33,7 @@ use miden_client::block::AccountWitness;
 use miden_client::note::NoteTag;
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
-use miden_client_core::errors::StoreError;
+use miden_client_core::errors::{StaleUpdate, StoreError};
 use miden_client_core::store::{AccountUpdate, ClientAccountType, Store};
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
 use miden_protocol::account::{
@@ -134,7 +134,7 @@ async fn account_code_insertion_no_duplicates() -> anyhow::Result<()> {
     let account_code = AccountCode::from_components(&[
         AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))
         .into(),
         account_component,
@@ -199,7 +199,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -312,7 +312,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .build_existing()?;
@@ -415,7 +415,7 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .with_assets(assets.clone())
@@ -502,7 +502,7 @@ async fn get_account_storage_item_success() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -537,7 +537,7 @@ async fn get_account_storage_item_not_found() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -580,7 +580,7 @@ async fn get_account_map_item_success() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -616,7 +616,7 @@ async fn get_account_map_item_value_slot_error() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -649,7 +649,7 @@ async fn get_account_code() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -704,7 +704,7 @@ async fn account_reader_nonce_and_status() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_with_schema_commitment()?;
@@ -782,7 +782,7 @@ async fn account_reader_storage_access() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -821,7 +821,7 @@ async fn account_reader_addresses_access() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -851,7 +851,7 @@ fn build_wallet(seed: [u8; 32]) -> anyhow::Result<Account> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(AccountComponent::new(
             BasicWallet::code().as_package().clone(),
@@ -1145,7 +1145,7 @@ async fn prune_account_history_multiple_accounts() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(component_b)
         .build_existing()?;
@@ -1385,7 +1385,7 @@ async fn setup_account_with_map(
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(component)
         .build_existing()?;
@@ -1597,7 +1597,7 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(component)
         .with_assets(vec![
@@ -1795,7 +1795,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(component)
         .build_existing()?;
@@ -1977,6 +1977,44 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
     Ok(())
 }
 
+/// Verifies that the store rejects a patch that was derived from a state it no longer holds.
+#[tokio::test]
+async fn apply_account_patch_rejects_patch_derived_from_another_state() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name = StorageSlotName::new("test::stale_patch::map").expect("valid slot name");
+
+    // Insert nonce-1 account, then advance the persisted state to nonce 2.
+    let stale_account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let mut current_account = stale_account.clone();
+    apply_single_entry_update(&store, &mut current_account, &map_slot_name, 2).await?;
+
+    // Derive a patch from the nonce-1 state.
+    let err = apply_single_entry_update(&store, &mut stale_account.clone(), &map_slot_name, 3)
+        .await
+        .expect_err("the store holds the nonce-2 state");
+    assert!(
+        matches!(
+            err.downcast_ref::<StoreError>(),
+            Some(StoreError::StaleUpdate(StaleUpdate::AccountCommitmentMismatch {
+                initial_commitment,
+                stored_commitment,
+                ..
+            })) if *initial_commitment == stale_account.to_commitment()
+                && *stored_commitment == current_account.to_commitment()
+        ),
+        "unexpected error: {err:?}"
+    );
+
+    let persisted: Account = store
+        .get_account(stale_account.id())
+        .await?
+        .context("account should exist after the rejected patch")?
+        .try_into()?;
+    assert_eq!(persisted, current_account);
+
+    Ok(())
+}
+
 /// Verifies that stale full-account snapshots don't roll a locally newer state back.
 #[tokio::test]
 async fn update_account_state_rejects_stale_full_snapshot_without_mutating() -> anyhow::Result<()> {
@@ -2005,7 +2043,14 @@ async fn update_account_state_rejects_stale_full_snapshot_without_mutating() -> 
         })
         .await;
     assert!(
-        matches!(&result, Err(StoreError::DatabaseError(err)) if err.contains("new nonce 1 is less than old nonce 2")),
+        matches!(
+            &result,
+            Err(StoreError::StaleUpdate(StaleUpdate::AccountNonceTooLow {
+                new_nonce: 1,
+                stored_nonce: 2,
+                ..
+            }))
+        ),
         "expected stale update to be rejected before mutating state, got {result:?}"
     );
 
@@ -2265,7 +2310,7 @@ async fn undo_after_update_removes_genuinely_new_entries() -> anyhow::Result<()>
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(component)
         .build_existing()?;
@@ -2444,7 +2489,7 @@ async fn insert_account_with_storage_for_forest_test()
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -2743,7 +2788,7 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(dummy_component)
         .build_existing()?;
@@ -2877,7 +2922,7 @@ async fn watched_status_survives_state_replacement() -> anyhow::Result<()> {
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(AccountComponent::new(
             BasicWallet::code().as_package().clone(),
@@ -3216,7 +3261,7 @@ async fn update_account_keeps_the_seed_of_a_new_account() -> anyhow::Result<()> 
         .account_type(AccountType::Private)
         .with_component(AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(AccountComponent::new(
             BasicWallet::code().as_package().clone(),
@@ -3262,7 +3307,7 @@ fn account_with_upgraded_code() -> anyhow::Result<(Account, AccountCode)> {
     let auth = || {
         AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))
     };
 

@@ -14,7 +14,7 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::PackageDebugInfo;
 use miden_protocol::{MastForest, Word};
 use miden_tx::LoadedMastForest;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::forest::{ScopedCodeForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
@@ -30,49 +30,8 @@ impl SqliteStore {
         &self,
         procedures: Vec<Arc<MastForest>>,
     ) -> Result<(), StoreError> {
-        let procedure_roots: Vec<ProcedureRoot> = procedures
-            .iter()
-            .flat_map(|procedure| procedure.local_procedure_digests())
-            .map(ProcedureRoot::from_raw)
-            .collect();
-        if procedure_roots.is_empty() {
-            return Ok(());
-        }
-
         self.interact_with_connection(move |conn| {
-            with_write_tx(conn, |tx| {
-                let mut code_smt_forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
-                code_smt_forest.insert_procedure_roots(&procedure_roots)?;
-
-                let mut insert_forest = tx
-                    .prepare_cached(
-                        "INSERT OR IGNORE INTO code_mast_forests (commitment, mast) VALUES (?1, ?2)",
-                    )
-                    .into_store_error()?;
-                let mut insert_procedure = tx
-                    .prepare_cached(
-                        "INSERT OR IGNORE INTO code_procedures (procedure_root, commitment) \
-                         VALUES (?1, ?2)",
-                    )
-                    .into_store_error()?;
-                for mast in &procedures {
-                    let mut procedure_roots = mast.local_procedure_digests().peekable();
-                    if procedure_roots.peek().is_none() {
-                        continue;
-                    }
-
-                    let commitment = mast.commitment();
-                    insert_forest
-                        .execute(params![commitment.as_bytes(), mast.to_bytes()])
-                        .into_store_error()?;
-                    for procedure_root in procedure_roots {
-                        insert_procedure
-                            .execute(params![procedure_root.as_bytes(), commitment.as_bytes()])
-                            .into_store_error()?;
-                    }
-                }
-                Ok(())
-            })
+            with_write_tx(conn, |tx| SqliteStore::write_procedures(tx, &procedures))
         })
         .await
     }
@@ -89,14 +48,8 @@ impl SqliteStore {
         mast_forest_commitment: Word,
         debug_info: PackageDebugInfo,
     ) -> Result<(), StoreError> {
-        // The foreign key of `code_debug_info` rejects a commitment without a stored forest.
         self.interact_with_connection(move |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO code_debug_info (commitment, debug_info) VALUES (?1, ?2)",
-                params![mast_forest_commitment.as_bytes(), debug_info.to_bytes()],
-            )
-            .into_store_error()?;
-            Ok(())
+            SqliteStore::write_debug_info(conn, mast_forest_commitment, &debug_info)
         })
         .await
     }
@@ -126,6 +79,98 @@ impl SqliteStore {
 
     // HELPERS
     // --------------------------------------------------------------------------------------------
+
+    /// Adds the MAST forests, their procedure roots and their debug info to the code registry, and
+    /// their procedure roots to the code tree, in one database transaction.
+    ///
+    /// A forest that already has debug info in the registry is skipped.
+    pub(crate) fn write_procedures_with_debug_info(
+        conn: &mut Connection,
+        procedures: &[(Arc<MastForest>, PackageDebugInfo)],
+    ) -> Result<(), StoreError> {
+        with_write_tx(conn, |tx| {
+            let mut has_debug_info = tx
+                .prepare_cached("SELECT 1 FROM code_debug_info WHERE commitment = ?1")
+                .into_store_error()?;
+            let mut missing = Vec::new();
+            for (mast, debug_info) in procedures {
+                if !has_debug_info.exists([mast.commitment().as_bytes()]).into_store_error()? {
+                    missing.push((mast, debug_info));
+                }
+            }
+
+            let forests: Vec<Arc<MastForest>> =
+                missing.iter().map(|(mast, _)| Arc::clone(mast)).collect();
+            SqliteStore::write_procedures(tx, &forests)?;
+            for (mast, debug_info) in missing {
+                SqliteStore::write_debug_info(tx, mast.commitment(), debug_info)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Adds the procedures of the MAST forests to the code registry and to the code tree, in the
+    /// transaction `tx`.
+    fn write_procedures(
+        tx: &Transaction<'_>,
+        procedures: &[Arc<MastForest>],
+    ) -> Result<(), StoreError> {
+        let procedure_roots: Vec<ProcedureRoot> = procedures
+            .iter()
+            .flat_map(|procedure| procedure.local_procedure_digests())
+            .map(ProcedureRoot::from_raw)
+            .collect();
+        if procedure_roots.is_empty() {
+            return Ok(());
+        }
+
+        let mut code_smt_forest = ScopedCodeForest::new(SqliteForestBackend::new(tx))?;
+        code_smt_forest.insert_procedure_roots(&procedure_roots)?;
+
+        let mut insert_forest = tx
+            .prepare_cached(
+                "INSERT OR IGNORE INTO code_mast_forests (commitment, mast) VALUES (?1, ?2)",
+            )
+            .into_store_error()?;
+        let mut insert_procedure = tx
+            .prepare_cached(
+                "INSERT OR IGNORE INTO code_procedures (procedure_root, commitment) \
+                 VALUES (?1, ?2)",
+            )
+            .into_store_error()?;
+        for mast in procedures {
+            let mut procedure_roots = mast.local_procedure_digests().peekable();
+            if procedure_roots.peek().is_none() {
+                continue;
+            }
+
+            let commitment = mast.commitment();
+            insert_forest
+                .execute(params![commitment.as_bytes(), mast.to_bytes()])
+                .into_store_error()?;
+            for procedure_root in procedure_roots {
+                insert_procedure
+                    .execute(params![procedure_root.as_bytes(), commitment.as_bytes()])
+                    .into_store_error()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds or replaces the debug info of the MAST forest with the given commitment.
+    fn write_debug_info(
+        conn: &Connection,
+        mast_forest_commitment: Word,
+        debug_info: &PackageDebugInfo,
+    ) -> Result<(), StoreError> {
+        // The foreign key of `code_debug_info` rejects a commitment without a stored forest.
+        conn.execute(
+            "INSERT OR REPLACE INTO code_debug_info (commitment, debug_info) VALUES (?1, ?2)",
+            params![mast_forest_commitment.as_bytes(), debug_info.to_bytes()],
+        )
+        .into_store_error()?;
+        Ok(())
+    }
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// registry has it.

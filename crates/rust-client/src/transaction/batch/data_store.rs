@@ -37,7 +37,6 @@ use miden_tx::{
 };
 
 use super::staged_smt::StagedSmt;
-use crate::ClientError;
 use crate::store::data_store::ClientDataStore;
 
 // IN-MEMORY BATCH DATA STORE
@@ -46,6 +45,9 @@ use crate::store::data_store::ClientDataStore;
 /// A [`DataStore`] that lets a [`crate::transaction::BatchBuilder`] stack in-memory account state
 /// for any number of local accounts. For each account pushed into the batch, the executor sees the
 /// in-batch [`PartialAccount`] state instead of the stale store state.
+///
+/// The [`crate::note::NoteScreener`] also uses it to screen the output notes of transactions that
+/// the store has not applied yet.
 ///
 /// Witnesses for the in-batch state are served entirely client-side: each account SMT (the vault
 /// and every map slot) is viewed through a [`StagedSmt`] that replays the batch's accumulated
@@ -92,7 +94,7 @@ impl CachedAccountState {
         inner: &ClientDataStore,
         account_id: AccountId,
         patch: &AccountVaultPatch,
-    ) -> Result<Word, ClientError> {
+    ) -> Result<Word, DataStoreError> {
         let written: BTreeSet<AssetId> = patch
             .updated_assets()
             .map(|asset| asset.id())
@@ -107,9 +109,9 @@ impl CachedAccountState {
             .map(|asset| (Word::from(asset.id().hash()), asset.to_value_word()))
             .chain(patch.removed_asset_ids().map(|id| (Word::from(id.hash()), EMPTY_WORD)));
 
-        self.vault.apply_entries(proofs, entries).map_err(|err| {
-            DataStoreError::other_with_source("failed to stage vault writes", err).into()
-        })
+        self.vault
+            .apply_entries(proofs, entries)
+            .map_err(|err| DataStoreError::other_with_source("failed to stage vault writes", err))
     }
 
     /// Folds a transaction's storage writes into the staged map trees and returns the resulting
@@ -119,7 +121,7 @@ impl CachedAccountState {
         inner: &ClientDataStore,
         account_id: AccountId,
         patch: &AccountStoragePatch,
-    ) -> Result<AccountStorageHeader, ClientError> {
+    ) -> Result<AccountStorageHeader, DataStoreError> {
         let current: Vec<StorageSlotHeader> =
             self.account.storage().header().slots().cloned().collect();
 
@@ -138,8 +140,7 @@ impl CachedAccountState {
                     return Err(DataStoreError::other(format!(
                         "storage slot {} of account {account_id} was patched as a different kind than its type {slot_type:?}",
                         slot.name()
-                    ))
-                    .into());
+                    )));
                 },
             };
             slots.push(StorageSlotHeader::new(slot.name().clone(), slot.slot_type(), new_value));
@@ -147,7 +148,6 @@ impl CachedAccountState {
 
         AccountStorageHeader::new(slots).map_err(|err| {
             DataStoreError::other_with_source("failed to rebuild in-batch storage header", err)
-                .into()
         })
     }
 
@@ -159,7 +159,7 @@ impl CachedAccountState {
         account_id: AccountId,
         slot_name: &StorageSlotName,
         map_patch: &StorageMapPatch,
-    ) -> Result<Word, ClientError> {
+    ) -> Result<Word, DataStoreError> {
         let map = self.maps.get_mut(slot_name).ok_or_else(|| {
             DataStoreError::other(format!(
                 "no staged tree for map slot {slot_name} of account {account_id}"
@@ -185,9 +185,7 @@ impl CachedAccountState {
             committed_proofs,
             entries.iter().map(|(map_key, value)| (Word::from(map_key.hash()), *value)),
         )
-        .map_err(|err| {
-            DataStoreError::other_with_source("failed to stage storage map writes", err).into()
-        })
+        .map_err(|err| DataStoreError::other_with_source("failed to stage storage map writes", err))
     }
 }
 
@@ -208,7 +206,7 @@ impl InMemoryBatchDataStore {
     pub(crate) async fn apply_executed_transaction(
         &mut self,
         executed_tx: &ExecutedTransaction,
-    ) -> Result<(), ClientError> {
+    ) -> Result<(), DataStoreError> {
         let account_id = executed_tx.account_id();
         let final_account = executed_tx.final_account();
         let patch = executed_tx.account_patch();
@@ -255,7 +253,9 @@ impl InMemoryBatchDataStore {
             PartialVault::new(vault_root),
             seed,
         )
-        .map_err(ClientError::AccountError)?;
+        .map_err(|err| {
+            DataStoreError::other_with_source("failed to rebuild in-batch partial account", err)
+        })?;
 
         self.current_accounts.insert(account_id, state);
 
@@ -308,14 +308,13 @@ fn ensure_matches(
     staged: Word,
     executed: Word,
     account_id: AccountId,
-) -> Result<(), ClientError> {
+) -> Result<(), DataStoreError> {
     if staged == executed {
         return Ok(());
     }
     Err(DataStoreError::other(format!(
         "staged {what} does not match executed state for account {account_id}: staged = {staged:?}, executed = {executed:?}"
-    ))
-    .into())
+    )))
 }
 
 /// Batch-private helpers for fetching the committed-root proofs that anchor staged SMT views. The

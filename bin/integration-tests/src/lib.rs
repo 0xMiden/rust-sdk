@@ -7,9 +7,11 @@
 
 pub mod config;
 pub mod funding;
+pub mod refund;
 pub mod tests;
 
 pub use config::{ClientConfig, NoteTransportEndpoint, create_test_auth_path};
+pub use refund::run_test;
 use tracing_subscriber::EnvFilter;
 
 // TRACING

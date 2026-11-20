@@ -25,13 +25,7 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
 use miden_protocol::{MastForest, Word, ZERO};
-use miden_tx::{
-    DataStore,
-    DataStoreError,
-    LoadedMastForest,
-    MastForestStore,
-    TransactionMastStore,
-};
+use miden_tx::{DataStore, DataStoreError, LoadedMastForest};
 
 use super::Store;
 use crate::rpc::domain::account::{
@@ -46,8 +40,12 @@ use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
 use crate::transaction::fetch_public_account_inputs;
 
+mod account_code_store;
 mod cache;
+mod mast_forest_cache;
+pub use account_code_store::AccountCodeStore;
 use cache::DataStoreCache;
+pub use mast_forest_cache::MastForestCache;
 
 // DATA STORE
 // ================================================================================================
@@ -60,23 +58,24 @@ pub struct ClientDataStore {
     cache: DataStoreCache,
     /// RPC client used to lazy-load foreign account data on cache miss.
     rpc_api: Arc<dyn NodeRpcClient>,
+    /// The client's MAST forests, shared by all its data stores. A forest read from the store is
+    /// added to it.
+    mast_forest_cache: Arc<MastForestCache>,
 }
 
 impl ClientDataStore {
-    pub fn new(store: alloc::sync::Arc<dyn Store>, rpc_api: Arc<dyn NodeRpcClient>) -> Self {
-        Self::new_with_mast_store(store, rpc_api, Arc::new(TransactionMastStore::new()))
-    }
-
-    /// Uses shared code with fresh execution state.
-    pub(crate) fn new_with_mast_store(
+    /// Creates a data store over `store` that reads the MAST forests it does not have in
+    /// `mast_forest_cache` from the code registry of `store`, and adds them to the cache.
+    pub fn new(
         store: Arc<dyn Store>,
         rpc_api: Arc<dyn NodeRpcClient>,
-        mast_store: Arc<TransactionMastStore>,
+        mast_forest_cache: Arc<MastForestCache>,
     ) -> Self {
         Self {
             store,
-            cache: DataStoreCache::new(mast_store),
+            cache: DataStoreCache::new(),
             rpc_api,
+            mast_forest_cache,
         }
     }
 
@@ -93,8 +92,9 @@ impl ClientDataStore {
         self
     }
 
-    pub fn mast_store(&self) -> Arc<TransactionMastStore> {
-        self.cache.mast_store.clone()
+    /// Returns the account code that this data store serves to the executor.
+    pub fn account_code(&self) -> &AccountCodeStore {
+        &self.cache.account_code
     }
 
     /// Stores the provided foreign account inputs so they can be served to the executor upon
@@ -179,7 +179,7 @@ impl ClientDataStore {
             DataStoreError::other_with_source("failed to fetch foreign account inputs", err)
         })?;
 
-        self.cache.mast_store.load_account_code(account_inputs.code());
+        self.cache.account_code.load_account_code(account_inputs.code());
         self.cache.insert_foreign_account_inputs(account_inputs.clone());
 
         Ok(account_inputs)
@@ -620,14 +620,37 @@ impl DataStore for ClientDataStore {
             Ok(Some(note_script))
         }
     }
-}
 
-// MAST FOREST STORE
-// ================================================================================================
+    /// Returns the MAST forest from the account code of this data store or from the client's MAST
+    /// forest cache, or else from the code registry of the store. A forest read from the store is
+    /// added to the cache.
+    fn get_mast_forest(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> impl FutureMaybeSend<Result<Option<LoadedMastForest>, DataStoreError>> {
+        let in_memory = self
+            .cache
+            .account_code
+            .get(&procedure_root.as_word())
+            .or_else(|| self.mast_forest_cache.get(&procedure_root.as_word()));
+        let mast_forest_cache = self.mast_forest_cache.clone();
+        let store = self.store.clone();
 
-impl MastForestStore for ClientDataStore {
-    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
-        self.cache.mast_store.get(procedure_hash)
+        async move {
+            if in_memory.is_some() {
+                return Ok(in_memory);
+            }
+            let stored = store.get_procedure(procedure_root).await.map_err(|err| {
+                DataStoreError::other_with_source(
+                    format!("failed to get procedure {procedure_root} from the store"),
+                    err,
+                )
+            })?;
+            if let Some(forest) = &stored {
+                mast_forest_cache.insert(forest);
+            }
+            Ok(stored)
+        }
     }
 }
 

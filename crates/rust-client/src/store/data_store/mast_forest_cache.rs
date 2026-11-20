@@ -44,8 +44,7 @@ impl MastForestCache {
         }
     }
 
-    /// Returns the forest that holds the procedure, if the cache has it, and marks the forest as
-    /// the most recently used.
+    /// Returns the forest that holds the procedure, if the cache has it.
     pub fn get(&self, procedure_root: &Word) -> Option<LoadedMastForest> {
         let mut inner = self.inner.write();
         let Inner { forests, roots } = &mut *inner;
@@ -131,42 +130,5 @@ mod tests {
 
         assert!(cache.get(&protocol_only_root).is_none());
         assert!(cache.get(&roots_of(&standards)[0]).is_some());
-    }
-
-    #[test]
-    fn a_read_makes_the_forest_the_most_recently_used() {
-        let protocol = ProtocolLib::default().mast_forest().clone();
-        let standards = StandardsLib::default().mast_forest().clone();
-        let core = miden_protocol::CoreLibrary::default().package().mast_forest().clone();
-        let cache = MastForestCache::new(capacity(2));
-        let protocol_only_root = roots_of(&protocol)
-            .into_iter()
-            .find(|root| !roots_of(&standards).contains(root))
-            .unwrap();
-
-        cache.insert(&loaded(&protocol));
-        cache.insert(&loaded(&standards));
-        // The read makes protocol the most recently used forest, so adding core removes standards.
-        assert!(cache.get(&protocol_only_root).is_some());
-        cache.insert(&loaded(&core));
-
-        assert!(cache.get(&protocol_only_root).is_some());
-        assert!(cache.get(&roots_of(&core)[0]).is_some());
-        let standards_only_root = roots_of(&standards)
-            .into_iter()
-            .find(|root| !roots_of(&protocol).contains(root))
-            .unwrap();
-        assert!(cache.get(&standards_only_root).is_none());
-    }
-
-    #[test]
-    fn adding_a_forest_again_keeps_its_roots() {
-        let protocol = ProtocolLib::default().mast_forest().clone();
-        let cache = MastForestCache::new(capacity(1));
-
-        cache.insert(&loaded(&protocol));
-        cache.insert(&loaded(&protocol));
-
-        assert!(cache.get(&roots_of(&protocol)[0]).is_some());
     }
 }

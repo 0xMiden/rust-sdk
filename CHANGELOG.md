@@ -4,7 +4,7 @@
 
 ### Features
 
-* [FEATURE][rust] Added support for storing the code registry and the code tree in `SqliteStore` ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
+* [FEATURE][rust] Added support for storing the code registry and the code tree in `SqliteStore`. `ClientBuilder::build` now stores known packages (transaction kernel, core libraries, etc) in the code registry of the store ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [FEATURE][cli] `network-note-status` shows the fee sponsorship notes that the node binds to the network note, with their fee asset, reclaim height, commit block and last execution error ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `NodeRpcClient::get_transaction_logs` and the `miden_client_grpc::v1::GetTransactionLogs` method, which fetch the logs of a committed transaction from the node's `GetTransactionLogs` endpoint. The result is a `TransactionLogsInfo`, with the logs of a public account or the logs commitment of a private account ([#2808](https://github.com/0xMiden/rust-sdk/pull/2808)).
@@ -40,6 +40,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Added `Store::get_procedure` and `Store::insert_procedures_with_debug_info`, which implementations of `Store` must implement ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [BREAKING][removal][rust] Removed `ChainAnchor`, `ChainAnchorError`, `Client::execute_transaction_at`, `Client::chain_anchor_for_request`, `ClientDataStore::with_chain_anchor` and `ClientError::ChainAnchorError`. A transaction always executes against the sync height of the client.
 * [BREAKING][arch][all] Moved hashing and Falcon signatures to Eidos, which changes commitments, account IDs, note IDs and nullifiers. The client requires a new store and a new keystore, and there is no migration from the old format ([#2813](https://github.com/0xMiden/rust-sdk/pull/2813)).
 * [BREAKING][rename][rust,cli] Renamed the Falcon scheme from Poseidon2 to Eidos: the `Falcon512Poseidon2` variants are `Falcon512Eidos`, `AuthSecretKey::new_falcon512_poseidon2` is `new_falcon512_eidos`, `RPO_FALCON_SCHEME_ID` is `FALCON512_EIDOS_SCHEME_ID`, `miden_client::crypto::rpo_falcon512` is `falcon512_eidos`, and the `--falcon512-poseidon2` CLI option is `--falcon512-eidos`. `miden_client::crypto` exports `Hasher` instead of `Rpo256` and `Poseidon2` ([#2813](https://github.com/0xMiden/rust-sdk/pull/2813)).

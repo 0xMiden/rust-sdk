@@ -5,11 +5,12 @@ sidebar_position: 1
 
 # Miden client
 
-The Miden client currently has three main components:
+The Miden client has two main components:
 
 1. [Miden client library](#miden-client-library).
 2. [Miden client CLI](#miden-client-cli).
-3. [Miden web client](#miden-web-client).
+
+A browser SDK is also available. It is maintained in a separate repository. See [Web SDK](#web-sdk).
 
 ### Miden client library
 
@@ -25,6 +26,6 @@ The CLI provides commands for interacting with the Miden rollup, such as submitt
 
 More information about the CLI can be found in the [CLI section](./rust-client/cli).
 
-### Miden web client
+### Web SDK
 
-The Miden web client is a web-based interface that allows users to interact with the Miden rollup through a browser. It wraps most of the functionality of the Rust library and provides a user-friendly interface for managing accounts, submitting transactions, and monitoring activity on the network.
+The browser SDK (`@miden-sdk/miden-sdk`, the React hooks library `@miden-sdk/react`, and `@miden-sdk/vite-plugin`) wraps the Rust library for use in web applications. It is maintained in the [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk) repository.

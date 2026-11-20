@@ -20,6 +20,7 @@ path = "src/main.rs"
 dap     = ["dep:miden-debug", "miden-client/dap"]
 default = []
 testing = ["miden-client/testing"]
+trace   = ["dep:rustc-demangle", "miden-client/trace"]
 
 [dependencies]
 # Workspace dependencies
@@ -35,6 +36,7 @@ dirs               = { version = "6.0" }
 figment            = { features = ["env", "toml"], version = "0.10" }
 miette             = { workspace = true }
 rand               = { workspace = true }
+rustc-demangle     = { optional = true, version = "0.1" }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 thiserror          = { workspace = true }
@@ -49,10 +51,11 @@ miden-client = { features = ["std"], workspace = true }
 [dev-dependencies]
 anyhow                         = { workspace = true }
 assert_cmd                     = { workspace = true }
+async-trait                    = { workspace = true }
 miden-client                   = { features = ["testing"], workspace = true }
 miden-client-integration-tests = { workspace = true }
 miden-mast-package             = { features = ["std"], workspace = true }
-midenc-hir-type                = { version = "0.18" }
+midenc-hir-type                = { version = "=1.0.0-rc.0" }
 predicates                     = { workspace = true }
 regex                          = { workspace = true }
 serial_test                    = { features = ["file_locks"], version = "3.0" }

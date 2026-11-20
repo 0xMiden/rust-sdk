@@ -19,7 +19,7 @@ We configure the client using a [TOML](https://en.wikipedia.org/wiki/TOML) file 
 
 Paths in the configuration file are relative to the `.miden` directory containing it.
 
-```sh
+```toml
 store_filepath = "store.sqlite3"
 secret_keys_directory = "keystore"
 token_symbol_map_filepath = "token_symbol_map.toml"
@@ -65,7 +65,7 @@ The global configuration approach reduces per-project setup overhead while still
 
 #### Clear Command
 
-The `clear-config` command helps manage configuration by removing existing setups:
+The `clear-config` command removes the selected `.miden` directory and all files in it. This includes the database, secret keys, token symbol map, and packages stored in that directory. Back up the files you need before you run this command. Files stored outside that directory are not removed.
 
 ```bash
 # Remove local config if present, otherwise remove global config
@@ -172,6 +172,14 @@ If not set, the default behavior is to ignore the block difference between the c
 
 ```sh
 miden-client init --block-delta 256
+```
+
+### Fee token faucet
+
+The `track_fee_faucet` field is optional and is `false` by default. Set it to `true` to keep the fee token faucet in the store. When the faucet has asset callbacks, each sync then adds the faucet as a watched account and keeps its account witness up to date. A transaction that pays a fee then reads the faucet from the store and does not fetch it from the node. If the protocol configuration changes the faucet, the next sync follows the new one. If you set the field back to `false`, the next sync stops keeping the witness of the faucet.
+
+```sh
+track_fee_faucet = true
 ```
 
 ### Environment variables

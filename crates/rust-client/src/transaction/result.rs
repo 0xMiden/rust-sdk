@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, read_upstream};
+use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
 use miden_protocol::account::AccountPatch;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
@@ -13,7 +13,6 @@ use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
 };
-use miden_protocol::utils::serde::Serializable;
 
 // TRANSACTION RESULT
 // ================================================================================================
@@ -111,14 +110,18 @@ impl ProtobufValue for TransactionResult {
 
     fn to_proto(&self) -> Self::Message {
         Self::Message {
-            executed_transaction: self.transaction.to_bytes(),
+            executed_transaction: Some(self.transaction.to_proto()),
             future_notes: self.future_notes.iter().map(ProtobufValue::to_proto).collect(),
         }
     }
 
     fn from_proto(result: Self::Message) -> Result<Self, ProtoDecodeError> {
         Ok(TransactionResult::new(
-            read_upstream(&result.executed_transaction)?,
+            ExecutedTransaction::from_proto(required(
+                result.executed_transaction,
+                "transaction result",
+                "executed transaction",
+            )?)?,
             result
                 .future_notes
                 .into_iter()

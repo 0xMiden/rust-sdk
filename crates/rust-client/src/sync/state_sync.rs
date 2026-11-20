@@ -1707,6 +1707,7 @@ mod tests {
     };
     use miden_protocol::assembly::DefaultSourceManager;
     use miden_protocol::asset::{Asset, FungibleAsset};
+    use miden_protocol::block::code_tree::CodePatch;
     use miden_protocol::block::{BlockNumber, BlockSignatures};
     use miden_protocol::crypto::merkle::MerklePath;
     use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
@@ -1715,7 +1716,6 @@ mod tests {
         NoteAssets,
         NoteAttachment,
         NoteAttachments,
-        NoteDetails,
         NoteHeader,
         NoteMetadata,
         NoteRecipient,
@@ -1731,8 +1731,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{InputNotes, TransactionArgs, TransactionHeader};
-    use miden_protocol::vm::AdviceMap;
+    use miden_protocol::transaction::{InputNotes, RawOutputNote, TransactionHeader};
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
     use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
@@ -1816,8 +1815,9 @@ mod tests {
             header.chain_commitment(),
             account_root,
             header.nullifier_root(),
+            header.code_tree_root(),
             header.note_root(),
-            header.tx_commitment(),
+            header.transactions_commitment(),
             header.validator_config().clone(),
             header.fee_parameters().clone(),
             header.protocol_config_commitment(),
@@ -2012,8 +2012,9 @@ mod tests {
             real_header.chain_commitment(),
             word(0xbad0_bad0),
             real_header.nullifier_root(),
+            real_header.code_tree_root(),
             real_header.note_root(),
-            real_header.tx_commitment(),
+            real_header.transactions_commitment(),
             real_header.validator_config().clone(),
             real_header.fee_parameters().clone(),
             real_header.protocol_config_commitment(),
@@ -2297,7 +2298,9 @@ mod tests {
     mod compute_nullifiers_tests {
         use alloc::vec;
 
+        use miden_protocol::Word;
         use miden_protocol::block::BlockNumber;
+        use miden_protocol::block::code_tree::CodePatch;
         use miden_protocol::note::Nullifier;
         use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
 
@@ -2330,6 +2333,8 @@ mod tests {
                     word(final_state),
                     input_notes,
                     vec![],
+                    Word::empty(),
+                    CodePatch::default().commitment(),
                 )
                 .unwrap(),
                 vec![],
@@ -2379,6 +2384,8 @@ mod tests {
                         Nullifier::from_raw(word(40)),
                     )]),
                     vec![],
+                    Word::empty(),
+                    CodePatch::default().commitment(),
                 )
                 .unwrap(),
                 vec![],
@@ -2442,6 +2449,8 @@ mod tests {
                     word(final_state),
                     InputNotes::new_unchecked(vec![]),
                     vec![],
+                    Word::empty(),
+                    CodePatch::default().commitment(),
                 )
                 .unwrap(),
                 vec![],
@@ -2661,7 +2670,7 @@ mod tests {
         let faucet = builder
             .add_existing_basic_faucet(
                 miden_testing::Auth::BasicAuth {
-                    auth_scheme: miden_protocol::account::auth::AuthScheme::Falcon512Poseidon2,
+                    auth_scheme: miden_protocol::account::auth::AuthScheme::Falcon512Eidos,
                 },
                 "TST",
                 10_000,
@@ -2684,12 +2693,13 @@ mod tests {
             NoteStorage::new(vec![]).unwrap(),
         );
         let recipient = note_recipient.digest();
-        // `add_output_note_recipient` populates the advice map with the recipient's preimage chain
-        // (RECIPIENT → [SERIAL_SCRIPT_HASH, STORAGE_COMMITMENT], etc.).
-        let note_details = NoteDetails::new(NoteAssets::new(vec![]).unwrap(), note_recipient);
-        let mut recipient_args = TransactionArgs::new(AdviceMap::default());
-        recipient_args.add_output_note_recipient(&note_details);
-        let recipient_advice = recipient_args.advice_inputs().clone();
+        // The transaction builder takes the recipient from an expected output note. It does not use
+        // the other parts of the note.
+        let recipient_note = Note::new(
+            NoteAssets::new(vec![]).unwrap(),
+            PartialNoteMetadata::new(faucet.id(), NoteType::Private),
+            note_recipient,
+        );
 
         let tag = NoteTag::default();
         let mut faucet_account = faucet.clone();
@@ -2731,7 +2741,7 @@ mod tests {
                     .build_transaction(miden_testing::MockTransactionInput::Account(
                         faucet_account.clone(),
                     ))
-                    .extend_advice_inputs(recipient_advice.clone())
+                    .expected_output_note(RawOutputNote::Full(recipient_note.clone()))
                     .tx_script(tx_script)
                     .with_source_manager(source_manager)
                     .build()
@@ -3241,6 +3251,8 @@ mod tests {
                 word(2),
                 InputNotes::new_unchecked(vec![]),
                 vec![],
+                Word::empty(),
+                CodePatch::default().commitment(),
             )
             .unwrap(),
             vec![],

@@ -22,7 +22,7 @@
 //! ```rust
 //! use miden_client::Client;
 //! use miden_client::auth::TransactionAuthenticator;
-//! use miden_client::crypto::FeltRng;
+//! use miden_client::crypto::Rng;
 //! use miden_client::transaction::{PaymentNoteDescription, TransactionRequestBuilder};
 //! use miden_protocol::account::AccountId;
 //! use miden_protocol::asset::FungibleAsset;
@@ -87,6 +87,8 @@ use miden_protocol::note::{
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::PartialBlockchain;
 use miden_protocol::vm::MIN_STACK_DEPTH;
+#[cfg(feature = "trace")]
+use miden_protocol::vm::Package;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{
     FeeConversionInfo,
@@ -122,12 +124,13 @@ use crate::sync::NoteTagRecord;
 pub mod batch;
 pub use batch::{BatchBuilder, BatchBuilderError, ProvenBatchSubmission};
 
-mod chain_anchor;
-pub use chain_anchor::{ChainAnchor, ChainAnchorError};
-
 #[cfg(feature = "dap")]
 mod dap_executor;
+#[cfg(any(feature = "dap", feature = "trace"))]
+mod package;
 mod prover;
+#[cfg(feature = "trace")]
+pub mod trace;
 pub use miden_client_core::transaction::{
     BatchStoreUpdate,
     DiscardCause,
@@ -142,9 +145,11 @@ pub use prover::TransactionProver;
 mod request;
 pub use request::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
     PaymentNoteDescription,
     PswapTransactionData,
+    RequestInputNote,
     SwapTransactionData,
     TransactionRequest,
     TransactionRequestBuilder,
@@ -164,10 +169,12 @@ pub use miden_protocol::transaction::{
     ExecutedTransaction,
     InputNote,
     InputNotes,
+    LogTopic,
     OutputNote,
     OutputNotes,
     ProvenTransaction,
     PublicOutputNote,
+    PublicTransactionLogs,
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
@@ -176,9 +183,14 @@ pub use miden_protocol::transaction::{
     TransactionId,
     TransactionInputs,
     TransactionKernel,
+    TransactionLog,
+    TransactionLogDetails,
+    TransactionLogError,
+    TransactionLogs,
     TransactionScript,
     TransactionScriptRoot,
     TransactionSummary,
+    TransactionWitness,
 };
 pub use miden_protocol::vm::{AdviceInputs, AdviceMap};
 pub use miden_standards::account::interface::{AccountComponentInterface, AccountInterface};
@@ -196,6 +208,8 @@ pub use miden_tx::{
     TransactionProverError,
 };
 pub use result::TransactionResult;
+
+pub use crate::rpc::domain::transaction::TransactionLogsInfo;
 
 // CONSTANTS
 // ================================================================================================
@@ -220,6 +234,20 @@ where
         filter: TransactionFilter,
     ) -> Result<Vec<TransactionRecord>, ClientError> {
         self.store.get_transactions(filter).await.map_err(Into::into)
+    }
+
+    /// Returns the logs that a tracked transaction emitted, in emission order.
+    ///
+    /// The store records the logs when the transaction is applied, so this method does not contact
+    /// the node. It returns `None` if the client does not track the transaction.
+    ///
+    /// The store keeps the logs of a discarded transaction, so this method also returns them. The
+    /// network did not apply these logs.
+    pub async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, ClientError> {
+        self.store.get_transaction_logs(transaction_id).await.map_err(Into::into)
     }
 
     // TRANSACTION
@@ -321,82 +349,17 @@ where
             account_id,
             transaction_request,
             TransactionExecutionMode::Standard,
-            None,
         ))
         .await
     }
 
-    /// Creates and executes a transaction specified by the request against the specified account,
-    /// using the provided [`ChainAnchor`] as the reference block instead of the current sync
-    /// height. Like [`Self::execute_transaction`], it doesn't change the local database.
-    ///
-    /// Since protocol 0.16 the signed transaction summary binds the reference block commitment, so
-    /// signatures collected over a summary only authorize an execution whose reference block is the
-    /// one the summary was built at. This method makes such an execution reproducible on any
-    /// client, regardless of its sync height: the anchor supplies the reference block header and a
-    /// consistent [`PartialBlockchain`], typically captured by the transaction's original proposer
-    /// via [`Self::chain_anchor_for_request`] and shipped alongside the signed data.
-    ///
-    /// The anchor pins the reference block only. The mode each input note is consumed in also
-    /// enters the summary, so a request shared across clients should pin it through
-    /// [`TransactionRequestBuilder::explicit_input_notes`]. Otherwise each client classifies the
-    /// notes from its own store, and two clients can commit to different input notes.
-    ///
-    /// Callers holding an anchor from an untrusted source should first compare
-    /// [`ChainAnchor::block_commitment`] against an independently trusted value (e.g. the block
-    /// commitment bound into the signed transaction summary).
-    ///
-    /// Foreign accounts are fetched at the anchor's block unless declared as
-    /// [`ForeignAccount::Prefetched`], so a node that no longer serves account state at that block
-    /// only affects accounts that are not prefetched.
-    ///
-    /// # Errors
-    ///
-    /// In addition to the [`Self::execute_transaction`] errors:
-    /// - Returns [`ClientError::ChainAnchorError`] if an authenticated input note's creation block
-    ///   is not tracked by the anchor.
-    /// - Returns a [`ClientError::TransactionExecutorError`] if an input note was created after the
-    ///   anchored reference block.
-    /// - Returns [`ChainAnchorError::AnchoredTransactionExpired`] if the executed transaction's
-    ///   expiration block has already been reached, which the network would reject.
-    pub async fn execute_transaction_at(
-        &self,
-        account_id: AccountId,
-        transaction_request: TransactionRequest,
-        anchor: ChainAnchor,
-    ) -> Result<TransactionResult, ClientError> {
-        let result = self
-            .execute_transaction_with_mode(
-                account_id,
-                transaction_request,
-                TransactionExecutionMode::Standard,
-                Some(Box::new(anchor)),
-            )
-            .await?;
-
-        // The expiration delta counts from the anchored reference block, so a stale anchor can
-        // yield an already-expired transaction, which the network would only reject after the
-        // caller has paid for proving. The sync height never runs ahead of the real tip, so this
-        // fires only on transactions that are certainly too late.
-        let expiration = result.executed_transaction().expiration_block_num();
-        let sync_height = self.store.get_sync_height().await?;
-        if expiration <= sync_height {
-            return Err(
-                ChainAnchorError::AnchoredTransactionExpired { expiration, sync_height }.into()
-            );
-        }
-
-        Ok(result)
-    }
-
-    /// Captures a [`ChainAnchor`] at the client's current sync height, tracking the blocks in
-    /// `tracked_blocks` (in addition to the reference block itself, which needs no tracking) so
-    /// that transactions consuming authenticated notes created in those blocks can later execute
-    /// against the anchor.
-    async fn chain_anchor_at_tip(
+    /// Returns the block header at the client's current sync height and a partial blockchain
+    /// consistent with it, tracking the blocks in `tracked_blocks` (in addition to the reference
+    /// block itself, which needs no tracking).
+    async fn partial_blockchain_at_tip(
         &self,
         tracked_blocks: BTreeSet<BlockNumber>,
-    ) -> Result<ChainAnchor, ClientError> {
+    ) -> Result<(BlockHeader, PartialBlockchain), ClientError> {
         let sync_height = self.store.get_sync_height().await?;
 
         let (header, _had_notes) = self
@@ -425,58 +388,7 @@ where
 
         let chain = PartialBlockchain::new(partial_mmr, block_headers)?;
 
-        Ok(ChainAnchor::new(header, chain)?)
-    }
-
-    /// Captures a [`ChainAnchor`] at the client's current sync height. The anchor tracks the blocks
-    /// declared through [`TransactionRequestBuilder::block_numbers`] and the creation blocks of the
-    /// request's authenticated input notes. This covers notes the store holds as authenticated and
-    /// notes pinned as authenticated through [`TransactionRequestBuilder::explicit_input_notes`].
-    ///
-    /// This is the capture entry point for flows that never see a successful execution result at
-    /// capture time — e.g. multisig proposal flows, where execution intentionally fails with
-    /// [`TransactionExecutorError::Unauthorized`] to surface the transaction summary for signing.
-    /// Capture the anchor first, execute the request with [`Self::execute_transaction_at`], and
-    /// ship the anchor alongside the summary; the same anchor then reproduces the summary during
-    /// later verification and execution.
-    ///
-    /// # Errors
-    ///
-    /// - Returns [`ClientError::StoreError`] if a header for the sync height or a tracked block is
-    ///   not present in the store.
-    /// - Returns [`ChainAnchorError::TooManyTrackedBlocks`] if the request needs more tracked blocks
-    ///   than an anchor permits.
-    pub async fn chain_anchor_for_request(
-        &self,
-        transaction_request: &TransactionRequest,
-    ) -> Result<ChainAnchor, ClientError> {
-        let inferred_input_note_ids: Vec<NoteId> = transaction_request
-            .input_note_ids()
-            .filter(|note_id| !transaction_request.explicit_input_notes().contains_key(note_id))
-            .collect();
-
-        let mut tracked_blocks: BTreeSet<BlockNumber> = if inferred_input_note_ids.is_empty() {
-            BTreeSet::new()
-        } else {
-            self.store
-                .get_input_notes(NoteFilter::List(inferred_input_note_ids))
-                .await?
-                .iter()
-                .filter(|record| record.is_authenticated())
-                .filter_map(|record| record.inclusion_proof())
-                .map(|proof| proof.location().block_num())
-                .collect()
-        };
-        tracked_blocks.extend(
-            transaction_request
-                .explicit_input_notes()
-                .values()
-                .filter_map(InputNote::proof)
-                .map(|proof| proof.location().block_num()),
-        );
-        tracked_blocks.extend(transaction_request.block_numbers().iter().copied());
-
-        self.chain_anchor_at_tip(tracked_blocks).await
+        Ok((header, chain))
     }
 
     /// Executes `transaction_request` (e.g. consuming a note) through the DAP program executor, so
@@ -502,7 +414,6 @@ where
             account_id,
             transaction_request,
             TransactionExecutionMode::Dap,
-            None,
         )
         .await
     }
@@ -515,19 +426,13 @@ where
         account_id: AccountId,
         transaction_request: TransactionRequest,
         execution_mode: TransactionExecutionMode,
-        anchor: Option<Box<ChainAnchor>>,
     ) -> Result<TransactionResult, ClientError> {
         let account: PartialAccount =
             self.get_native_account_record(account_id).await?.try_into()?;
 
-        let prep = self
-            .prepare_transaction(&account, transaction_request, anchor.as_deref())
-            .await?;
+        let prep = self.prepare_transaction(&account, transaction_request).await?;
 
-        let mut data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
-        if let Some(anchor) = anchor {
-            data_store = data_store.with_chain_anchor(*anchor);
-        }
+        let data_store = ClientDataStore::new(self.store.clone(), self.rpc_api.clone());
         data_store.register_note_scripts(prep.output_note_scripts());
         data_store.register_block_numbers(prep.block_numbers.iter().copied());
         for fpi_account in &prep.foreign_account_inputs {
@@ -579,15 +484,10 @@ where
     /// In batch execution, request validation is skipped: the committed store state does not
     /// reflect balances stacked by prior in-batch pushes, so validating against it would wrongly
     /// reject transactions the executor accepts.
-    ///
-    /// When `anchor` is provided, the reference block is the anchor's block instead of the current
-    /// sync height, and the recency check is skipped — anchored execution deliberately references a
-    /// block older than the tip.
     pub(crate) async fn prepare_transaction(
         &self,
         account: &PartialAccount,
         transaction_request: TransactionRequest,
-        anchor: Option<&ChainAnchor>,
     ) -> Result<PreparedTransaction, ClientError> {
         self.validate_account_request(
             &transaction_request,
@@ -596,7 +496,7 @@ where
         )
         .await?;
 
-        self.prepare_transaction_inner(account.code_interface(), transaction_request, anchor)
+        self.prepare_transaction_inner(account.code_interface(), transaction_request)
             .await
     }
 
@@ -605,7 +505,7 @@ where
         account: &PartialAccount,
         transaction_request: TransactionRequest,
     ) -> Result<PreparedTransaction, ClientError> {
-        self.prepare_transaction_inner(account.code_interface(), transaction_request, None)
+        self.prepare_transaction_inner(account.code_interface(), transaction_request)
             .await
     }
 
@@ -613,11 +513,8 @@ where
         &self,
         account_code_interface: AccountCodeInterface,
         mut transaction_request: TransactionRequest,
-        anchor: Option<&ChainAnchor>,
     ) -> Result<PreparedTransaction, ClientError> {
-        if anchor.is_none() {
-            self.validate_recency().await?;
-        }
+        self.validate_recency().await?;
 
         // Retrieve all input notes from the store.
         let mut stored_note_records = self
@@ -652,22 +549,6 @@ where
 
         let notes = transaction_request.build_input_notes(stored_note_records)?;
 
-        // Each authenticated note's creation block must be tracked by the anchor; fail with a typed
-        // error so callers can recapture a wider anchor. Notes newer than the anchor are left for
-        // the executor to reject.
-        if let Some(anchor) = anchor {
-            for note in notes.iter() {
-                if let Some(location) = note.location() {
-                    let block_num = location.block_num();
-                    if block_num < anchor.block_num()
-                        && !anchor.partial_blockchain().contains_block(block_num)
-                    {
-                        return Err(ChainAnchorError::BlockNotTracked { block_num }.into());
-                    }
-                }
-            }
-        }
-
         let output_recipients =
             transaction_request.expected_output_recipients().cloned().collect::<Vec<_>>();
 
@@ -678,12 +559,9 @@ where
 
         let foreign_accounts = transaction_request.foreign_accounts().clone();
 
-        // The reference block: the anchor's block when pinned, the sync height otherwise. Foreign
-        // account proofs are fetched at this block to stay consistent with it.
-        let block_num = match anchor {
-            Some(anchor) => anchor.block_num(),
-            None => self.store.get_sync_height().await?,
-        };
+        // The reference block is the sync height. Foreign account proofs are fetched at this block
+        // to stay consistent with it.
+        let block_num = self.store.get_sync_height().await?;
 
         let foreign_account_inputs = self
             .get_foreign_account_inputs(foreign_accounts.into_values(), block_num)
@@ -697,16 +575,12 @@ where
                 .filter(|bound_block| *bound_block < block_num),
         );
 
-        let reference_header = match anchor {
-            Some(anchor) => anchor.header().clone(),
-            None => {
-                self.store
-                    .get_block_header_by_num(block_num)
-                    .await?
-                    .ok_or(StoreError::BlockHeaderNotFound(block_num))?
-                    .0
-            },
-        };
+        let reference_header = self
+            .store
+            .get_block_header_by_num(block_num)
+            .await?
+            .ok_or(StoreError::BlockHeaderNotFound(block_num))?
+            .0;
 
         // A witness opens against the account tree of exactly one block. Rejecting a mismatch here
         // names the account and the block; inside the executor it would only be a kernel failure.
@@ -1023,6 +897,58 @@ where
             .await?)
     }
 
+    /// Runs the transaction script and records it. [`trace::replay_call_trace`] replays the
+    /// recording in the debug engine for the call tree. The replay blocks the thread until it ends.
+    ///
+    /// Returns a tuple containing:
+    /// - The result of the run: the output stack, or the error that stopped the run.
+    /// - The recording of the run. A failed run keeps the recording up to the failure. The
+    ///   recording is `None` if the program never ran.
+    ///
+    /// `package` gives the replay the debug info that names the frames. The run does not load the
+    /// package, so it executes the same account code as [`execute_program`](Self::execute_program).
+    ///
+    /// The recording is kept in one slot per process, so only one traced execution can run at a
+    /// time. A second one fails with [`trace::TraceError::Busy`] and leaves no recording.
+    #[cfg(feature = "trace")]
+    pub async fn execute_program_with_trace(
+        &self,
+        account_id: AccountId,
+        tx_script: TransactionScript,
+        advice_inputs: AdviceInputs,
+        foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
+        package: Option<&Package>,
+    ) -> (Result<[Felt; MIN_STACK_DEPTH], ClientError>, Option<trace::ReplaySnapshot>) {
+        let Some(slot) = trace::TraceSlot::acquire() else {
+            return (Err(trace::TraceError::Busy.into()), None);
+        };
+
+        let outcome = async {
+            let (data_store, block_ref) =
+                self.prepare_program_execution(account_id, foreign_accounts).await?;
+
+            Ok(self
+                .build_executor(&data_store)?
+                .with_program_executor::<trace::TraceProgramExecutor>()
+                .execute_tx_view_script(account_id, block_ref, tx_script, advice_inputs)
+                .await?)
+        }
+        .await;
+
+        let recording = slot.take_recording().map(|mut recording| {
+            // The recording can hold the account code from the store, which has no debug info. The
+            // replay keeps the last forest for each procedure, so the package goes last.
+            if let Some(package) = package {
+                recording
+                    .mast_forests
+                    .push(miden_protocol::package::loaded_mast_forest_from_package(package));
+            }
+            recording
+        });
+
+        (outcome, recording)
+    }
+
     // HELPERS
     // --------------------------------------------------------------------------------------------
 
@@ -1209,10 +1135,9 @@ where
     /// Each witness opens against the account tree of `block_num`, so the results are valid only
     /// for a transaction whose reference block is exactly `block_num`. Declared as
     /// [`ForeignAccount::Prefetched`], they are served from the request instead of being fetched.
-    /// Under [`Self::execute_transaction_at`] the reference block is the anchor's block; otherwise
-    /// it is the sync height at execution time, so do not sync between fetching and executing. Only
-    /// the given accounts are fetched; this method does not discover the accounts a transaction
-    /// loads, such as faucets whose asset callbacks it triggers.
+    /// The reference block is the sync height at execution time, so do not sync between fetching
+    /// and executing. Only the given accounts are fetched; this method does not discover the
+    /// accounts a transaction loads, such as faucets whose asset callbacks it triggers.
     ///
     /// # Errors
     ///
@@ -1321,7 +1246,7 @@ where
         data_store: &'store STORE,
     ) -> Result<TransactionExecutor<'store, 'auth, STORE, AUTH>, TransactionExecutorError> {
         let mut executor = TransactionExecutor::new(data_store)
-            .with_options(self.exec_options)?
+            .with_options(self.exec_options.clone())?
             .with_source_manager(self.source_manager.clone());
         if let Some(authenticator) = self.authenticator.as_deref() {
             executor = executor.with_authenticator(authenticator);
@@ -1602,8 +1527,9 @@ pub(crate) enum AuthArgsLayout {
     /// `[SALT, CONVERSION_INFO]`. The salt does not constrain anything, so the client's fixed
     /// default salt works where the caller declares none.
     SingleSig,
-    /// `[BLOCK_WORD, SALT, CONVERSION_INFO]`. The salt is the replay guard of the account, so the
-    /// caller must declare it. Carries the component's name for the error.
+    /// `[[bound_block_num, approval_expiration_block_num, max_fee, 0], SALT, CONVERSION_INFO]`. The
+    /// salt is the replay guard of the account, so the caller must declare it. Carries the
+    /// component's name for the error.
     Multisig(String),
     /// The component does not read the auth args, and settles the fee some other way. Carries the
     /// auth component's name, or `"unrecognized"` when the client recognizes no auth component.
@@ -1656,7 +1582,8 @@ impl AuthArgsLayout {
     /// not need auth args.
     ///
     /// The auth args pay the fee in the native fee asset of `protocol_config` at rate 1/1. Multisig
-    /// auth args bind the block of `reference_header`.
+    /// auth args bind the block of `reference_header` and set no max fee, so the auth procedure
+    /// estimates the fee on each execution and binds the estimate in the transaction summary.
     ///
     /// # Errors
     /// - If the component is a multisig and `declared_salt` is `None`. Multisig components always
@@ -1976,6 +1903,7 @@ mod tests {
         AccountType,
     };
     use miden_protocol::asset::{AssetId, FungibleAsset};
+    use miden_protocol::block::code_tree::CodeTreeRoot;
     use miden_protocol::block::{BlockHeader, BlockNumber, FeeParameters};
     use miden_protocol::crypto::SequentialCommit;
     use miden_protocol::note::{Note, NoteType};
@@ -1987,6 +1915,7 @@ mod tests {
         ACCOUNT_ID_SENDER,
     };
     use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+    use miden_standards::account::auth::multisig_smart::DelayedExecutionPolicy;
     use miden_standards::account::auth::{
         Approver,
         ApproverSet,
@@ -2109,10 +2038,10 @@ mod tests {
 
     #[test]
     fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let auth = AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         try_injected_auth_arg(fee_conversion_request(), &account_with_auth(auth), 500).unwrap();
@@ -2166,6 +2095,7 @@ mod tests {
             Word::empty(),
             Word::empty(),
             Word::empty(),
+            CodeTreeRoot::from_raw(Word::empty()),
             Word::empty(),
             Word::empty(),
             validator_keys,
@@ -2208,26 +2138,26 @@ mod tests {
     }
 
     fn singlesig_account() -> Account {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         account_with_auth(AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
     }
 
     fn guarded_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
         .unwrap();
 
         let guardian = GuardianConfig::new(Approver::new(
-            AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+            AuthSchemeId::Falcon512Eidos,
         ));
 
         account_with_auth(
@@ -2297,8 +2227,8 @@ mod tests {
     fn multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
@@ -2371,14 +2301,16 @@ mod tests {
     fn smart_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_poseidon2().public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
+                AuthSchemeId::Falcon512Eidos,
             )],
             1,
         )
         .unwrap();
 
-        account_with_auth(AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap())
+        let delayed_execution = DelayedExecutionPolicy::new(1, 1, 1).unwrap();
+        let config = AuthMultisigSmartConfig::new(approvers, delayed_execution);
+        account_with_auth(AuthMultisigSmart::new(config).unwrap())
     }
 
     /// Multisig components load a preimage also when the chain charges no fee.

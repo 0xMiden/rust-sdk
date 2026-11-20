@@ -212,14 +212,16 @@ pub mod auth {
         AuthScheme,
         AuthScheme as AuthSchemeId,
         AuthSecretKey,
+        BoundSignature,
         PublicKey,
         PublicKeyCommitment,
         Signature,
+        SignatureKey,
     };
     pub use miden_protocol::errors::AuthSchemeError;
     pub use miden_tx::auth::{BasicAuthenticator, SigningInputs, TransactionAuthenticator};
 
-    pub const RPO_FALCON_SCHEME_ID: AuthSchemeId = AuthSchemeId::Falcon512Poseidon2;
+    pub const FALCON512_EIDOS_SCHEME_ID: AuthSchemeId = AuthSchemeId::Falcon512Eidos;
     pub const ECDSA_K256_KECCAK_SCHEME_ID: AuthSchemeId = AuthSchemeId::EcdsaK256Keccak;
 }
 
@@ -230,8 +232,7 @@ pub mod block {
 }
 
 /// Provides cryptographic types and utilities used within the Miden rollup network. It re-exports
-/// commonly used types and random number generators like `FeltRng` from the `miden_standards`
-/// crate.
+/// commonly used types from the `miden_protocol` crate and the [`Rng`] trait.
 pub mod crypto {
     pub mod ecdsa_k256_keccak {
         pub use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
@@ -243,16 +244,11 @@ pub mod crypto {
     pub mod eddsa_25519_sha512 {
         pub use miden_protocol::crypto::dsa::eddsa_25519_sha512::{KeyExchangeKey, PublicKey};
     }
-    pub mod rpo_falcon512 {
-        pub use miden_protocol::crypto::dsa::falcon512_poseidon2::{
-            PublicKey,
-            SecretKey,
-            Signature,
-        };
+    pub mod falcon512_eidos {
+        pub use miden_protocol::crypto::dsa::falcon512_eidos::{PublicKey, SecretKey, Signature};
     }
+    pub use miden_protocol::Hasher;
     pub use miden_protocol::crypto::hash::blake::Blake3Digest;
-    pub use miden_protocol::crypto::hash::poseidon2::Poseidon2;
-    pub use miden_protocol::crypto::hash::rpo::Rpo256;
     pub use miden_protocol::crypto::merkle::mmr::{
         Forest,
         InOrderIndex,
@@ -282,7 +278,7 @@ pub mod crypto {
         NodeIndex,
         SparseMerklePath,
     };
-    pub use miden_protocol::crypto::rand::FeltRng;
+    pub use rand::{Rng, RngExt};
 }
 
 /// Provides types for working with addresses within the Miden network.
@@ -326,6 +322,7 @@ use miden_protocol::assembly::SourceManagerSync;
 pub use miden_protocol::{
     EMPTY_WORD,
     Felt,
+    MAX_INPUT_NOTES_PER_TX,
     MAX_TX_EXECUTION_CYCLES,
     MIN_TX_EXECUTION_CYCLES,
     ONE,
@@ -362,9 +359,8 @@ use core::convert::Infallible;
 
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::merkle::mmr::PartialMmr;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_tx::auth::TransactionAuthenticator;
-use rand::{CryptoRng, RngExt, TryCryptoRng, TryRng};
+use rand::{CryptoRng, Rng, TryCryptoRng, TryRng};
 use rpc::NodeRpcClient;
 use store::Store;
 
@@ -384,7 +380,7 @@ use crate::transaction::TransactionProver;
 pub struct Client<AUTH> {
     /// The client's store, which provides a way to write and read entities to provide persistence.
     store: Arc<dyn Store>,
-    /// An instance of [`FeltRng`] which provides randomness tools for generating new keys, serial
+    /// A random number generator which provides randomness tools for generating new keys, serial
     /// numbers, etc.
     rng: ClientRng,
     /// An instance of [`NodeRpcClient`] which provides a way for the client to connect to the Miden
@@ -539,7 +535,7 @@ impl<AUTH> Client<AUTH> {
 // CLIENT RNG
 // ================================================================================================
 
-// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over `FeltRng`. This allows
+// NOTE: The idea of having `ClientRng` is to enforce `Send` and `Sync` over the RNG. This allows
 // `Client`` to be `Send` and `Sync`. There may be users that would want to use clients with
 // !Send/!Sync RNGs. For this we have two options:
 //
@@ -554,8 +550,8 @@ impl<T> ClientCryptoRng for T where T: CryptoRng + Send + Sync {}
 /// Boxed RNG trait object used by the client.
 pub type ClientRngBox = Box<dyn ClientCryptoRng>;
 
-/// A wrapper around a [`CryptoRng`] that implements the [`TryRng`] and [`FeltRng`] traits. This
-/// allows the user to pass their own generic RNG so that it's used by the client.
+/// A wrapper around a [`CryptoRng`] that implements the [`TryRng`] trait. This allows the user to
+/// pass their own generic RNG so that it's used by the client.
 pub struct ClientRng(ClientRngBox);
 
 impl ClientRng {
@@ -588,16 +584,6 @@ impl TryRng for ClientRng {
 
 // Holds because the inner generator is a `CryptoRng` and the delegation above is infallible.
 impl TryCryptoRng for ClientRng {}
-
-impl FeltRng for ClientRng {
-    fn draw_element(&mut self) -> Felt {
-        self.0.random()
-    }
-
-    fn draw_word(&mut self) -> Word {
-        self.0.random()
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -7,10 +7,9 @@ use miden_client::account::standards::faucets::FungibleFaucet;
 use miden_client::account::{AccountId, FaucetMetadata};
 use miden_client::address::{Address, AddressId, NetworkId};
 use miden_client::asset::{Asset, AssetAmount, AssetId, FungibleAsset};
-use miden_client::crypto::ecdsa_k256_keccak;
 use miden_client::keystore::Keystore;
 use miden_client::transaction::ExecutedTransaction;
-use miden_client::utils::{Deserializable, DeserializationError, Serializable, hex_to_bytes};
+use miden_client::utils::{Deserializable, DeserializationError, Serializable};
 use miden_client::vm::{ExecutionError, MIN_STACK_DEPTH, OperationError, error_code_from_msg};
 use miden_client::{
     AssetError,
@@ -24,7 +23,11 @@ use miden_client::{
 use serde::Deserialize;
 
 use super::{CLIENT_CONFIG_FILE_NAME, create_dynamic_table, get_account_with_id_prefix};
-use crate::commands::account::{get_default_account_id, get_non_fungible_faucet_symbol};
+use crate::commands::account::{
+    get_default_account_id,
+    get_faucet_token_info,
+    get_non_fungible_faucet_symbol,
+};
 use crate::config::{CliConfig, get_global_miden_dir, get_local_miden_dir};
 use crate::errors::CliError;
 use crate::notes::display::{print_consumed_notes, print_output_notes};
@@ -433,11 +436,12 @@ struct FaucetTomlEntry {
 
 /// Resolves faucet display metadata (symbol + decimals) for a given faucet `AccountId`.
 ///
-/// Lookup walks three sources in priority order:
+/// Lookup walks four sources in priority order:
 ///
 /// 1. The user's TOML symbol map (bech32 `address`).
 /// 2. The client's settings store, populated from previous RPC fetches.
-/// 3. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
+/// 3. The tracked faucet account's storage.
+/// 4. A fresh RPC fetch from the network. Successful fetches are persisted back to the settings
 ///    store.
 #[derive(Debug)]
 pub struct FaucetMetadataResolver {
@@ -598,8 +602,8 @@ impl FaucetMetadataResolver {
         &self.network_id
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet using only local sources: the TOML map and the
-    /// settings store. Returns `None` without performing any network request.
+    /// Looks up faucet metadata in the TOML map, settings store, and tracked account, in that
+    /// order. Does not make a network request.
     pub async fn resolve_local<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -611,17 +615,23 @@ impl FaucetMetadataResolver {
         }
         // 2) settings store
         let setting_key = faucet_metadata_setting_key(faucet_id);
-        let Some(bytes) = client.get_setting(setting_key).await? else {
-            return Ok(None);
-        };
-        let meta = faucet_metadata_from_bytes(&bytes).map_err(|err| {
-            CliError::Parse(err.into(), "Failed to parse the stored faucet metadata".to_string())
-        })?;
-        Ok(Some(meta))
+        if let Some(bytes) = client.get_setting(setting_key).await? {
+            let meta = faucet_metadata_from_bytes(&bytes).map_err(|err| {
+                CliError::Parse(
+                    err.into(),
+                    "Failed to parse the stored faucet metadata".to_string(),
+                )
+            })?;
+            return Ok(Some(meta));
+        }
+        // 3) tracked faucet account
+        Ok(get_faucet_token_info(client, faucet_id)
+            .await
+            .ok()
+            .map(|(symbol, decimals)| FaucetMetadata { symbol: symbol.to_string(), decimals }))
     }
 
-    /// Looks up `(symbol, decimals)` for a faucet, walking TOML → settings store → RPC fetch. On
-    /// RPC success, the result is persisted to the settings store.
+    /// Looks up faucet metadata locally, then through RPC. Persists successful RPC results.
     pub async fn resolve<AUTH>(
         &self,
         client: &Client<AUTH>,
@@ -653,19 +663,16 @@ impl FaucetMetadataResolver {
         Ok(resolved)
     }
 
-    /// Runs the full lookup without consulting the in-memory cache: TOML → settings store → RPC
-    /// fetch. On RPC success, the result is persisted to the settings store. A failed RPC fetch
-    /// returns an error, so the caller does not cache it as a miss.
+    /// Runs the lookup without the in-memory cache. Returns RPC errors so they are not cached as
+    /// misses.
     async fn resolve_uncached<AUTH>(
         &self,
         client: &Client<AUTH>,
         faucet_id: AccountId,
     ) -> Result<Option<FaucetMetadata>, CliError> {
-        // 1) & 2) local sources (TOML + settings store)
         if let Some(meta) = self.resolve_local(client, faucet_id).await? {
             return Ok(Some(meta));
         }
-        // 3) RPC fetch
         let setting_key = faucet_metadata_setting_key(faucet_id);
         let Some(meta) = client.fetch_remote_token_metadata(faucet_id).await? else {
             return Ok(None);
@@ -934,76 +941,32 @@ pub(crate) const ECDSA_COMPRESSED_KEY_BYTES: usize = 33;
 /// Byte length of a SEC1-uncompressed secp256k1 public key (`0x04` prefix plus both coordinates).
 pub(crate) const ECDSA_UNCOMPRESSED_KEY_BYTES: usize = 65;
 
-/// SPKI (RFC 5280) ASN.1 DER header declaring an uncompressed secp256k1 EC public key. The 65-byte
-/// SEC1 point follows these bytes directly. Layout:
-///
-/// ```text
-/// 30 56           SEQUENCE (86 bytes)
-///   30 10         SEQUENCE, AlgorithmIdentifier (16 bytes)
-///     06 07 2a 86 48 ce 3d 02 01   OID 1.2.840.10045.2.1 (ecPublicKey)
-///     06 05 2b 81 04 00 0a         OID 1.3.132.0.10 (secp256k1)
-///   03 42 00      BIT STRING (66 bytes, no unused bits): the SEC1 point
-/// ```
-const SECP256K1_SPKI_HEADER: [u8; 23] = [
-    0x30, 0x56, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
-    0x81, 0x04, 0x00, 0x0a, 0x03, 0x42, 0x00,
-];
-
-fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
+/// Returns the error for an ECDSA public key that does not parse.
+pub(crate) fn invalid_ecdsa_key(err: impl core::fmt::Display) -> CliError {
     CliError::InvalidArgument(format!("invalid ECDSA public key: {err}"))
-}
-
-/// Parses a hex-encoded secp256k1 public key in SEC1 format.
-///
-/// Accepts the 33-byte compressed and the 65-byte uncompressed encoding (the form Ledger and other
-/// Ethereum-style signers export), both with a mandatory `0x` prefix. The point is fully validated:
-/// an uncompressed key whose coordinates do not lie on the curve is rejected.
-pub(crate) fn parse_ecdsa_public_key(
-    encoded: &str,
-) -> Result<ecdsa_k256_keccak::PublicKey, CliError> {
-    let hex_digits = encoded.strip_prefix("0x").ok_or_else(|| {
-        CliError::InvalidArgument(
-            "ECDSA public key must use a 0x-prefixed hexadecimal encoding".to_string(),
-        )
-    })?;
-
-    match hex_digits.len() {
-        len if len == ECDSA_COMPRESSED_KEY_BYTES * 2 => {
-            let bytes =
-                hex_to_bytes::<ECDSA_COMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
-            ecdsa_k256_keccak::PublicKey::read_from_bytes(&bytes).map_err(invalid_ecdsa_key)
-        },
-        len if len == ECDSA_UNCOMPRESSED_KEY_BYTES * 2 => {
-            let bytes =
-                hex_to_bytes::<ECDSA_UNCOMPRESSED_KEY_BYTES>(encoded).map_err(invalid_ecdsa_key)?;
-            // Wrapping the point in an SPKI document lets the DER constructor validate both
-            // coordinates against the curve equation. Compressing the point locally instead would
-            // drop the y coordinate and silently accept a corrupted key whose y parity happens to
-            // match.
-            let mut der = Vec::with_capacity(SECP256K1_SPKI_HEADER.len() + bytes.len());
-            der.extend_from_slice(&SECP256K1_SPKI_HEADER);
-            der.extend_from_slice(&bytes);
-            ecdsa_k256_keccak::PublicKey::from_der(&der).map_err(invalid_ecdsa_key)
-        },
-        len => Err(CliError::InvalidArgument(format!(
-            "unsupported ECDSA public key length: expected {} (compressed) or {} (uncompressed) \
-            hexadecimal digits after the 0x prefix, got {len}",
-            ECDSA_COMPRESSED_KEY_BYTES * 2,
-            ECDSA_UNCOMPRESSED_KEY_BYTES * 2,
-        ))),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
-    use miden_client::account::AccountId;
+    use miden_client::account::standards::auth::NoAuth;
+    use miden_client::account::{
+        AccountBuilder,
+        AccountBuilderSchemaCommitmentExt,
+        AccountId,
+        AccountType,
+    };
     use miden_client::address::{Address, NetworkId};
     use miden_client::asset::AssetAmount;
+    use miden_client::builder::ClientBuilder;
+    use miden_client::keystore::FilesystemKeyStore;
+    use miden_client::rpc::Endpoint;
     use miden_client::testing::account_id::ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET;
-    use miden_client::utils::Serializable;
-    use miden_client::{ClientError, ErrorHint};
+    use miden_client::testing::common::{create_test_store_path, fungible_faucet_component};
+    use miden_client::{ClientError, ErrorHint, Serializable};
+    use miden_client_sqlite_store::SqliteStore;
 
     use super::{
         FaucetMetadata,
@@ -1013,8 +976,6 @@ mod tests {
         base_units_to_tokens,
         faucet_metadata_from_bytes,
         faucet_metadata_to_bytes,
-        hex_to_bytes,
-        parse_ecdsa_public_key,
         tokens_to_base_units,
     };
     use crate::errors::CliError;
@@ -1090,6 +1051,39 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tracked_private_faucet_metadata_resolves_without_rpc() -> anyhow::Result<()> {
+        let path = create_test_store_path();
+        let endpoint = Endpoint::new("http".into(), "127.0.0.1".into(), Some(0));
+        let resolver =
+            FaucetMetadataResolver::new(path.with_extension("toml"), &endpoint.to_network_id())?;
+        let mut client = ClientBuilder::<FilesystemKeyStore>::new()
+            .grpc_client(&endpoint, Some(10))
+            .store(Arc::new(SqliteStore::new(path).await?))
+            .build()
+            .await?;
+        let (faucet_component, policies) = fungible_faucet_component()?;
+        let faucet = AccountBuilder::new([42; 32])
+            .account_type(AccountType::Private)
+            .with_component(NoAuth)
+            .with_component(faucet_component)
+            .with_components(policies)
+            .build_with_schema_commitment()?;
+        client.add_account(&faucet, false).await?;
+
+        let local = resolver
+            .resolve_local(&client, faucet.id())
+            .await?
+            .expect("tracked faucet metadata");
+        assert_eq!(local.symbol, "TEST");
+        assert_eq!(local.decimals, 10);
+        let metadata =
+            resolver.resolve(&client, faucet.id()).await?.expect("offline faucet metadata");
+        assert_eq!(metadata.symbol, local.symbol);
+        assert_eq!(metadata.decimals, local.decimals);
+        Ok(())
+    }
+
     #[test]
     fn raw_faucet_entry_rejects_id_field() {
         let result = toml::from_str::<BTreeMap<String, RawFaucetEntry>>(
@@ -1097,83 +1091,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-    }
-
-    // ECDSA PUBLIC KEY PARSING
-    // --------------------------------------------------------------------------------------------
-
-    /// The secp256k1 generator point (even y coordinate) in both SEC1 encodings.
-    const GEN_COMPRESSED: &str =
-        "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-    const GEN_UNCOMPRESSED: &str = "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b1\
-        6f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
-
-    /// The point 6·G (odd y coordinate), so the odd-parity branch of the uncompressed encoding is
-    /// exercised as well.
-    const SIX_GEN_COMPRESSED: &str =
-        "0x03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
-    const SIX_GEN_UNCOMPRESSED: &str = "0x04fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057\
-        a1460297556ae12777aacfbb620f3be96017f45c560de80f0f6518fe4a03c870c36b075f297";
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_compressed_key() {
-        let key = parse_ecdsa_public_key(GEN_COMPRESSED).expect("compressed key should parse");
-
-        let expected = hex_to_bytes::<33>(GEN_COMPRESSED).unwrap();
-        assert_eq!(key.to_bytes(), expected);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_even_y() {
-        let from_uncompressed =
-            parse_ecdsa_public_key(GEN_UNCOMPRESSED).expect("uncompressed key should parse");
-        let from_compressed = parse_ecdsa_public_key(GEN_COMPRESSED).unwrap();
-
-        assert_eq!(from_uncompressed, from_compressed);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_accepts_uncompressed_key_with_odd_y() {
-        let from_uncompressed =
-            parse_ecdsa_public_key(SIX_GEN_UNCOMPRESSED).expect("uncompressed key should parse");
-        let from_compressed = parse_ecdsa_public_key(SIX_GEN_COMPRESSED).unwrap();
-
-        assert_eq!(from_uncompressed, from_compressed);
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_missing_hex_prefix() {
-        let err = parse_ecdsa_public_key(&GEN_COMPRESSED[2..])
-            .expect_err("a key without the 0x prefix should be rejected");
-
-        assert!(err.to_string().contains("0x"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_invalid_length() {
-        let err = parse_ecdsa_public_key("0x1234")
-            .expect_err("a key with an unsupported length should be rejected");
-
-        assert!(err.to_string().contains("length"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_compressed_x_not_on_curve() {
-        // x = 5 has no square root of x³ + 7 on secp256k1, so no point has this x coordinate.
-        let not_on_curve = "0x020000000000000000000000000000000000000000000000000000000000000005";
-
-        parse_ecdsa_public_key(not_on_curve)
-            .expect_err("a compressed key with no matching curve point should be rejected");
-    }
-
-    #[test]
-    fn parse_ecdsa_public_key_rejects_uncompressed_point_not_on_curve() {
-        // (1, 1) does not satisfy the curve equation.
-        let not_on_curve =
-            format!("0x04{}{}", format_args!("{:064x}", 1), format_args!("{:064x}", 1));
-
-        parse_ecdsa_public_key(&not_on_curve)
-            .expect_err("an uncompressed point off the curve should be rejected");
     }
 
     #[test]

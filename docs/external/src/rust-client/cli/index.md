@@ -129,7 +129,7 @@ On a network that does not enforce the allowlist the node already allows every a
 
 Creates a new wallet account.
 
-A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Poseidon2 authentication key by default.
+A basic wallet contains an authentication component and a basic wallet component for sending and receiving assets. The CLI generates and stores a Falcon512/Eidos authentication key by default.
 
 The command accepts these options:
 
@@ -138,7 +138,7 @@ The command accepts these options:
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
-- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+- `--falcon512-eidos`, alias `--falcon`: Generates and stores a Falcon512/Eidos authentication key. This is also the default when no scheme flag or authentication component package is given.
 
 The authentication scheme flags are mutually exclusive. They also cannot be combined with an extra package that contributes an authentication component. An account that uses an external public key requires an external signer to authorize transactions.
 
@@ -161,7 +161,7 @@ There is no `--faucet` flag: faucet-vs-regular is derived from the packages. If 
 - `--init-storage-data-path <INIT_STORAGE_DATA_PATH>`: Specifies an optional file path to a TOML file containing key/value pairs used for initializing storage. Each key should map to a placeholder within the packages' component metadata. The CLI will prompt for any keys that are not present in the file.
 - `--init-slot <SLOT=VALUE>`: Sets one init storage value in the form `<slot::name>=<value>`, where the name is a storage slot name or a slot name with a `.field` suffix. The value must be a quoted string (`'my::slot="0x1234"'`), a 4-element string array (`'my::slot=["0", "0", "0", "1"]'`), an inline table of fields, or a list of map entries (`'my::map=[{ key = "0x01", value = "0x10" }]'`). Map entries for the same slot from several flags are combined. The whole argument must be quoted so that the shell keeps the TOML quotes. Repeat the flag to set more values. When used with `--init-storage-data-path`, the flag values override the file: a value replaces the file value with the same name, and map entries for a slot replace all the file map entries of that slot.
 - `--ecdsa-k256-keccak [PUBLIC_KEY]`, alias `--ecdsa`: Selects ECDSA k256/Keccak authentication. Without a public key, the CLI generates and stores a new key. With a `0x`-prefixed compressed or uncompressed SEC1 public key, the account uses the external key and stores no secret key.
-- `--falcon512-poseidon2`, alias `--falcon`: Generates and stores a Falcon512/Poseidon2 authentication key. This is also the default when no scheme flag or authentication component package is given.
+- `--falcon512-eidos`, alias `--falcon`: Generates and stores a Falcon512/Eidos authentication key. This is also the default when no scheme flag or authentication component package is given.
 
 The authentication scheme flags are mutually exclusive. They also cannot be combined with a package that contributes an authentication component. Without a scheme flag, a package authentication component takes precedence. If no package supplies one, the CLI generates and stores a Falcon key. An account that uses an external public key requires an external signer to authorize transactions.
 
@@ -309,6 +309,8 @@ The command displays a table with the following information:
 - **Last Error**: The last error encountered during processing, if any.
 - **Last Attempt Block**: The block number of the most recent processing attempt.
 
+If the node binds fee sponsorship notes to the note, a second table lists each sponsorship note with its fee asset, reclaim height, commit block, last error and last attempt block. The fee asset shows the amount in base units and the faucet address.
+
 The note ID must be provided as a full hex string:
 
 ```sh
@@ -384,7 +386,7 @@ Usage: `miden-client mint --target <TARGET ACCOUNT ID> --asset <AMOUNT>::<FAUCET
 
 Account ID consumes a list of notes, specified by their Note ID.
 
-Usage: `miden-client consume-notes --account <ACCOUNT ID> [NOTES]`
+Usage: `miden-client consume-notes --account <ACCOUNT ID> [--notes-per-tx <COUNT>] [--filter <SCRIPT>] [NOTES]`
 
 For this command, you can also provide a partial ID instead of the full ID for each note. So instead of
 
@@ -401,6 +403,12 @@ miden-client consume-notes --account <some-account-id> 0x70b7ecb 0x80b7ecb
 Additionally, you can optionally not specify note IDs, in which case any note that is known to be consumable by the executor account ID will be consumed.
 
 Either `Expected` or `Committed` notes may be consumed by this command, changing their state to `Processing`. It's state will be updated to `Consumed` after the next sync.
+
+One transaction consumes at most `--notes-per-tx` notes. The default value is 40 and the largest value is 1024. If there are more notes, the command consumes them in more than one transaction. A larger value makes fewer transactions, but each transaction needs more time and memory to prove. The node rejects a transaction that is larger than its request size limit, so a large value can fail with large notes. If there is more than one transaction, the command asks for confirmation one time for all of them, unless you use `--force`. If a transaction fails, the command stops. The notes of that transaction and of the transactions after it are not consumed. To consume them, run `consume-notes` again without note IDs.
+
+Use `--filter` to consume only the notes that use specific note scripts. Each value is the name of a standard note, such as `P2ID` or `P2IDE`, or a hex note script root. `miden-client consume-notes --help` lists the names of the standard notes. Separate the values with commas or use the flag more than one time. You cannot use `--filter` with note IDs. For example, `miden-client consume-notes --account <ACCOUNT ID> --filter P2ID,P2IDE` consumes only the P2ID and P2IDE notes of the account.
+
+Before it consumes the notes, the command prints a table with the number of notes for each note script, so that you can see notes that you do not expect.
 
 #### `transfer`
 
@@ -497,7 +505,7 @@ If a remote prover is configured, the CLI can offload the proving process to it.
 
 Manage authentication keys in the configured filesystem keystore.
 
-Supported authentication schemes are `falcon512-poseidon2` and `ecdsa-k256-keccak`.
+Supported authentication schemes are `falcon512-eidos` and `ecdsa-k256-keccak`.
 
 #### `keys --list`
 
@@ -516,7 +524,7 @@ The command reads the keystore directory and skips every file that does not hold
 Generate a key for the selected authentication scheme and store it in the keystore:
 
 ```sh
-miden-client keys --generate falcon512-poseidon2
+miden-client keys --generate falcon512-eidos
 miden-client keys --generate ecdsa-k256-keccak
 ```
 
@@ -668,6 +676,8 @@ Usage: `miden-client call <ACCOUNT_ID>:<PROCEDURE> [ARGS]... [--package <PACKAGE
 | ----------------------------- | ------------------------------------------------------------- | ------- |
 | `--package <PACKAGE>`         | The `.masp` package that exports the procedure, given as a [package argument](#package-arguments). Optional. | `-p`    |
 | `--inputs-path <INPUTS_PATH>` | Path to a TOML file with advice map entries.                  | `-i`    |
+| `--trace`                     | Print the hierarchy of procedure calls the execution made. Needs `--package` and a build with the `trace` feature. |         |
+| `--verbose`                   | With `--trace`, widen what is shown: `-v` adds library functions, `-vv` shows every named frame. | `-v`    |
 
 The target is a single argument of the form `<ACCOUNT_ID>:<PROCEDURE>`. For an account tracked by the client, the ID may be given as a partial ID; an account that isn't tracked has to be named by its full hex ID or its bech32 address, since a prefix is resolved against the local store. The procedure name is matched against the package's exports with `_` and `-` treated as equivalent, so it can be written in either snake_case or kebab-case (`get_count` matches the export `get-count`).
 
@@ -737,6 +747,36 @@ A procedure that only reads leaves the transaction with no effects at all, which
 :::note
 The call is executed locally. No proof is generated, nothing is submitted to the network, and the account's stored state is left unchanged.
 :::
+
+##### Tracing the calls a procedure makes
+
+`--trace` prints, under the result, the procedures the call went through, nested the way they called each other. Each line shows the arguments the call received, the value it returned and the cycles it took, including the calls below it:
+
+```sh
+miden-client call 0x4614b8bf575eab71455e97bd394e90:apply_op 0 5 --package target/miden/dev/counter-contract.masp --trace
+```
+
+```sh
+Signature: apply_op(felt, felt) -> felt
+
+Result: 5
+
+Replay: 27116 cycles
+
+Call trace:
+  apply_op(0, 5) -> 5  16004 cycles
+    CounterContractStorage::apply_op(op=0, amount=5) -> 5  14600 cycles
+      add_amount(current=0, amount=5) -> 5  646 cycles
+        clamp_to_max(value=5) -> 5  585 cycles
+
+200 frame(s) hidden; show library functions with -v, everything with -vv.
+```
+
+The first line is the export as it was called, with the arguments as typed and the result decoded to its declared type. The lines below it come from the package's debug information: argument values are shown as field elements, and `?` stands for a value that could not be read. The replay cycle count covers the whole transaction script, so it is larger than the cycles of the call itself.
+
+By default only the Rust functions of the contract's own crate are shown; every other frame is counted and hidden, and the frames it called are printed in its place so the nesting between the shown ones is kept. `-v` also shows Rust functions from other crates (the Rust SDK, its dependencies and the bindings it generates), and `-vv` adds procedures that are not Rust code, such as hand-written MASM. A frame that the debug engine could not name is never shown: its calls are printed in its place, and it is not counted as hidden. A call that fails is traced up to the failure: the frames that were still running are marked `did not return`, and the innermost one, where execution stopped, is marked `stopped here`. If that frame is hidden or has no name, no line is marked `stopped here`, and the innermost shown frame reads `did not return`.
+
+Names and arguments come from the debug information in the package given with `--package`.
 
 ##### Calling an account that isn't tracked locally
 

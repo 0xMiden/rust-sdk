@@ -28,6 +28,12 @@ Check the [Miden client documentation](https://docs.miden.xyz/builder/tools/clie
 
    You can now use the `miden-client --version` command to verify the installed version.
 
+3. Create a local configuration for testnet. Run the remaining commands from this directory.
+
+   ```sh
+   miden-client init --local --network testnet
+   ```
+
 ## Create a new Miden account
 
 1. Create a new wallet account using the following command:
@@ -85,7 +91,7 @@ You can also click **Send Public Note**. If you do this, the note's details will
 2. You should see something like this:
 
    ```sh
-   Successfully imported note 0x0ff340133840d35e95e0dc2e62c88ed75ab2e383dc6673ce0341bd486fed8cb6
+   Successfully imported note with details commitment 0x0ff340133840d35e95e0dc2e62c88ed75ab2e383dc6673ce0341bd486fed8cb6
    ```
 
 3. Now that the note has been successfully imported, you can view the note's information using the following command:
@@ -207,6 +213,6 @@ For more information on the Miden client, refer to the [Miden client documentati
 
 ## Debugging tips (clear state and folder)
 
-- Need a fresh start? All state is maintained in `store.sqlite3`, located in the directory defined in the `miden-client.toml` file. If you want to clear all state, delete this file. It recreates on any command execution.
+- For a separate test environment, run `miden-client init --local --network testnet` in a new directory. Back up the original database and keystore before you reset them. Sync cannot recover private account and note data from a deleted database.
 
 - Getting an error? If you initialized the client with `--local`, run `miden-client` from the directory containing `.miden`.

@@ -15,7 +15,7 @@ use miden_client::account::{
     StorageSlot,
 };
 use miden_client::assembly::CodeBuilder;
-use miden_client::auth::RPO_FALCON_SCHEME_ID;
+use miden_client::auth::FALCON512_EIDOS_SCHEME_ID;
 use miden_client::note::{AccountCodeUpgradeAttachment, NoteScriptRoot, P2idNote, UpgradeNote};
 use miden_client::testing::common::{AccountSetup, TestClient, auth_component};
 use miden_client::testing::standards::account_component::MockProceduresComponent;
@@ -261,11 +261,12 @@ pub async fn test_public_account_code_upgrade_syncs_to_other_client(
     let mut client_1 = client_config.clone().into_client().await?;
     let mut client_2 = client_config.into_client().await?;
 
-    let (auth, key) = auth_component(RPO_FALCON_SCHEME_ID)?;
+    let (auth, key) = auth_component(FALCON512_EIDOS_SCHEME_ID)?;
     let public_key_commitment = key.public_key().to_commitment();
     let components = || -> Result<Vec<AccountComponent>> {
         Ok(vec![
-            AuthSingleSig::new(Approver::new(public_key_commitment, RPO_FALCON_SCHEME_ID)).into(),
+            AuthSingleSig::new(Approver::new(public_key_commitment, FALCON512_EIDOS_SCHEME_ID))
+                .into(),
             BasicWallet.into(),
             Authority::AuthControlled.into(),
             UpgradeManager.into(),

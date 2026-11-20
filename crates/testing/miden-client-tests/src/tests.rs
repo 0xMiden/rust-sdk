@@ -94,7 +94,6 @@ use miden_protocol::asset::{
 };
 use miden_protocol::crypto::dsa::eddsa_25519_sha512::KeyExchangeKey;
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{
     Note,
     NoteAssets,
@@ -156,6 +155,7 @@ mod foreign_vault;
 mod rpc;
 pub mod store;
 mod transaction;
+mod transaction_logs;
 mod transport;
 
 /// Constant that represents the number of blocks until the transaction is considered stale.
@@ -316,7 +316,7 @@ async fn insert_same_account_twice_fails() {
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -333,7 +333,7 @@ async fn account_code() {
         ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -358,7 +358,7 @@ async fn get_account_by_id() {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -1309,7 +1309,7 @@ async fn note_without_asset() {
     client.sync_state().await.unwrap();
 
     // Create note without assets
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let recipient = P2idNoteStorage::new(wallet.id()).into_recipient(serial_num);
     let tag = NoteTag::with_account_target(wallet.id());
     let metadata = PartialNoteMetadata::new(wallet.id(), NoteType::Private).with_tag(tag);
@@ -4127,7 +4127,7 @@ async fn empty_storage_map() {
     )
     .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -4137,7 +4137,7 @@ async fn empty_storage_map() {
         .account_type(AccountType::Public)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .with_component(component)
@@ -4244,7 +4244,7 @@ async fn storage_and_vault_proofs() {
         )
         .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let pub_key = key_pair.public_key();
 
     let mut init_seed = [0u8; 32];
@@ -4254,7 +4254,7 @@ async fn storage_and_vault_proofs() {
         .account_type(AccountType::Public)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .with_component(bump_item_component)
@@ -4349,7 +4349,7 @@ async fn account_addresses_basic_wallet() {
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -4392,7 +4392,7 @@ async fn account_add_address_after_creation() {
         ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
         [AuthSingleSig::new(Approver::new(
             PublicKeyCommitment::from(EMPTY_WORD),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         ))],
     );
 
@@ -4457,7 +4457,7 @@ async fn insert_random_account(client: &mut TestClient) -> Result<AccountId, Cli
             .account_type(AccountType::Private)
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             )))
             .with_component(BasicWallet)
             .build()
@@ -4691,7 +4691,7 @@ async fn consume_note_with_custom_script() {
     let note_script = client.code_builder().compile_note_script(custom_note_script).unwrap();
 
     let note_storage = NoteStorage::new(vec![]).unwrap();
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let note_metadata = PartialNoteMetadata::new(sender_id, NoteType::Private)
         .with_tag(NoteTag::with_account_target(receiver_id));
     let note_assets = NoteAssets::new(vec![]).unwrap();
@@ -5479,10 +5479,10 @@ async fn execute_transaction_fails_for_watched_account() {
 
     // Build a faucet locally and insert it directly as watched via the store. Bypasses the public
     // `add_account`/`import_watched_account_by_id` paths so we don't need a mock RPC round-trip.
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let auth_component = AuthSingleSig::new(Approver::new(
         key_pair.public_key().to_commitment(),
-        AuthSchemeId::Falcon512Poseidon2,
+        AuthSchemeId::Falcon512Eidos,
     ));
 
     let mut init_seed = [0u8; 32];

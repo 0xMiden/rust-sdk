@@ -5,7 +5,7 @@ sidebar_position: 1
 
 ## Software prerequisites
 
-- [Rust installation](https://www.rust-lang.org/tools/install) minimum version 1.98.1.
+- [Rust installation](https://www.rust-lang.org/tools/install) minimum version 1.99.1.
 
 ## Install the client
 
@@ -32,4 +32,4 @@ miden-client --help
 
 This will show you the available commands and options for the client.
 
-An more in depth tutorial can be fund in the [Getting started section](./get-started).
+Continue with the [Getting started tutorial](./get-started/index.md).

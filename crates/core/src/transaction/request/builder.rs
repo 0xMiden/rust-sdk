@@ -10,7 +10,6 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note,
@@ -18,7 +17,6 @@ use miden_protocol::note::{
     NoteAttachment,
     NoteDetails,
     NoteDetailsCommitment,
-    NoteId,
     NoteRecipient,
     NoteScript,
     NoteStorage,
@@ -31,11 +29,14 @@ use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use rand::{Rng, RngExt};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
     ForeignAccount,
+    InputNoteAuthentication,
     NoteArgs,
+    RequestInputNote,
     TransactionRequest,
     TransactionRequestError,
     TransactionScriptTemplate,
@@ -53,15 +54,7 @@ pub struct TransactionRequestBuilder {
     /// Blocks that the transaction must be able to authenticate against its reference block.
     block_numbers: BTreeSet<BlockNumber>,
     /// Notes to be consumed by the transaction, in consumption order.
-    ///
-    /// A note with an entry in `explicit_input_notes` is consumed in the mode that entry pins. The
-    /// executing client infers the mode of every other note from its store.
-    input_notes: Vec<Note>,
-    /// Optional arguments of the Notes to be consumed by the transaction. This includes both
-    /// authenticated and unauthenticated notes.
-    input_notes_args: Vec<(NoteId, Option<NoteArgs>)>,
-    /// Pinned consumption mode of selected input notes.
-    explicit_input_notes: BTreeMap<NoteId, InputNote>,
+    input_notes: Vec<RequestInputNote>,
     /// Notes to be created by the transaction. The full note data is needed internally to build the
     /// transaction script template.
     own_output_notes: Vec<Note>,
@@ -118,8 +111,6 @@ impl TransactionRequestBuilder {
         Self {
             block_numbers: BTreeSet::new(),
             input_notes: vec![],
-            input_notes_args: vec![],
-            explicit_input_notes: BTreeMap::new(),
             own_output_notes: Vec::new(),
             expected_output_recipients: BTreeMap::new(),
             expected_future_notes: BTreeMap::new(),
@@ -155,18 +146,21 @@ impl TransactionRequestBuilder {
 
     /// Adds the specified notes as input notes to the transaction request.
     ///
-    /// The executing client consumes a note as authenticated when its store holds the note's
-    /// inclusion proof and as unauthenticated otherwise. Use [`Self::explicit_input_notes`] when
-    /// the mode must not depend on the executing client.
+    /// The executing client selects the authentication of each note when it executes the request.
+    /// It consumes a note as authenticated when its store holds the note's inclusion proof, and as
+    /// unauthenticated otherwise. Two clients can select different authentications for the same
+    /// request, and the authentication is part of the transaction summary. Use
+    /// [`Self::explicit_input_notes`] when more than one client executes the same request, for
+    /// example to collect multisig signatures.
     #[must_use]
     pub fn input_notes(
         mut self,
         notes: impl IntoIterator<Item = (Note, Option<NoteArgs>)>,
     ) -> Self {
-        for (note, argument) in notes {
-            self.input_notes_args.push((note.id(), argument));
-            self.input_notes.push(note);
-        }
+        self.input_notes.extend(notes.into_iter().map(|(note, args)| RequestInputNote {
+            authentication: InputNoteAuthentication::Inferred(note),
+            args,
+        }));
         self
     }
 
@@ -178,20 +172,17 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
-    /// against.
+    /// the note's creation block.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
         notes: impl IntoIterator<Item = (InputNote, Option<NoteArgs>)>,
     ) -> Self {
-        for (input_note, argument) in notes {
-            let note_id = input_note.id();
-
-            self.input_notes_args.push((note_id, argument));
-            self.input_notes.push(input_note.note().clone());
-            self.explicit_input_notes.insert(note_id, input_note);
-        }
+        self.input_notes
+            .extend(notes.into_iter().map(|(input_note, args)| RequestInputNote {
+                authentication: InputNoteAuthentication::Explicit(input_note),
+                args,
+            }));
         self
     }
 
@@ -342,7 +333,8 @@ impl TransactionRequestBuilder {
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
-    /// of multisig auth args.
+    /// of multisig auth args. Multisig auth args with a max fee let the signed transaction execute
+    /// against a later reference block than the one of the unsigned execution.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
         let auth_arg = auth_args.to_commitment();
@@ -357,9 +349,18 @@ impl TransactionRequestBuilder {
     /// Fees are settled in the chain's native fee asset at rate 1/1. The client commits that info
     /// through the transaction's auth args when preparing the transaction.
     ///
-    /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
-    /// the transaction's reference block. Use the same reference block when collecting signatures
-    /// across repeated executions. See `Client::execute_transaction_at`.
+    /// Multisig accounts require a caller-declared salt. The client binds their auth args to the
+    /// transaction's reference block, which is the sync height at execution time, and sets no max
+    /// fee. The multisig auth procedure then estimates the fee on each execution, and the
+    /// transaction summary binds the bound block and the estimate. Signatures for one execution are
+    /// valid for a later execution only if the client does not sync between the two executions.
+    ///
+    /// To collect signatures across syncs, do not use this method. Build
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) with a fixed bound
+    /// block and a max fee, for example with `MultisigAuthArgs::with_estimated_max_fee`, and set
+    /// them with [`Self::auth_args`]. The summary then binds the max fee, and not the estimate of
+    /// one execution. On a chain that charges fees, these auth args must also include the fee
+    /// conversion info.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);
@@ -431,7 +432,7 @@ impl TransactionRequestBuilder {
         asset: FungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
         // path for the same reason: it costs a transaction and leaves the target a note with
@@ -469,7 +470,7 @@ impl TransactionRequestBuilder {
         asset: NonFungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
@@ -501,7 +502,7 @@ impl TransactionRequestBuilder {
         self,
         asset: NonFungibleAsset,
         sender: AccountId,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = BurnNote::builder()
             .sender(sender)
@@ -528,7 +529,7 @@ impl TransactionRequestBuilder {
         self,
         payment_data: PaymentNoteDescription,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         if payment_data
             .assets()
@@ -560,7 +561,7 @@ impl TransactionRequestBuilder {
         swap_data: &SwapTransactionData,
         note_type: NoteType,
         payback_note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
         // P2ID payback carrying the requested one. A zero amount on either side leaves one of those
@@ -609,12 +610,12 @@ impl TransactionRequestBuilder {
         self,
         sender_account_id: AccountId,
         scripts: Vec<NoteScript>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let registration_notes: Vec<Note> = scripts
             .into_iter()
             .map(|script| {
-                let serial_num = rng.draw_word();
+                let serial_num = rng.random::<Word>();
                 let note_storage = NoteStorage::new(vec![])?;
                 let recipient = NoteRecipient::new(serial_num, script, note_storage);
                 let note_assets = NoteAssets::new(vec![])?;
@@ -647,7 +648,7 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         payback_note_type: NoteType,
         note_attachment: Option<NoteAttachment>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
         if is_zero_fungible(&pswap_data.offered_asset().into()) {
@@ -666,7 +667,7 @@ impl TransactionRequestBuilder {
         let pswap_note = PswapNote::builder()
             .sender(pswap_data.creator_account_id())
             .storage(storage)
-            .serial_number(rng.draw_word())
+            .serial_number(rng.random::<Word>())
             .note_type(note_type)
             .offered_asset(pswap_data.offered_asset())
             .maybe_attachment(note_attachment)
@@ -793,43 +794,18 @@ impl TransactionRequestBuilder {
     /// Consumes the builder and returns a [`TransactionRequest`].
     ///
     /// # Errors
-    /// - If both a custom script and own output notes are set.
+    /// - If the expiration delta is zero.
     /// - If an expiration delta is set when a custom script is set.
-    /// - If an invalid note variant is encountered in the own output notes.
+    /// - If both a custom script and own output notes are set.
+    /// - If a note appears more than once among the input notes.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
-        if self.expiration_delta == Some(0) {
-            return Err(TransactionRequestError::ZeroExpirationDelta);
-        }
+        check_expiration_delta(self.expiration_delta, self.custom_script.as_ref())?;
+        let script_template = build_script_template(self.custom_script, self.own_output_notes)?;
+        check_no_duplicate_input_notes(&self.input_notes)?;
 
-        let script_template = match (self.custom_script, self.own_output_notes.is_empty()) {
-            (Some(_), false) => {
-                return Err(TransactionRequestError::ScriptTemplateError(
-                    "Cannot set both a custom script and own output notes".to_string(),
-                ));
-            },
-            (Some(script), true) => {
-                if self.expiration_delta.is_some() {
-                    return Err(TransactionRequestError::ScriptTemplateError(
-                        "Cannot set expiration delta when a custom script is set".to_string(),
-                    ));
-                }
-
-                Some(TransactionScriptTemplate::CustomScript(script))
-            },
-            (None, false) => {
-                let partial_notes: Vec<PartialNote> =
-                    self.own_output_notes.into_iter().map(Into::into).collect();
-
-                Some(TransactionScriptTemplate::SendNotes(partial_notes))
-            },
-            (None, true) => None,
-        };
-
-        let request = TransactionRequest {
+        Ok(TransactionRequest {
             block_numbers: self.block_numbers,
             input_notes: self.input_notes,
-            input_notes_args: self.input_notes_args,
-            explicit_input_notes: self.explicit_input_notes,
             script_template,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
@@ -843,10 +819,61 @@ impl TransactionRequestBuilder {
             fee_conversion_salt: self.fee_conversion_salt,
             expected_ntx_scripts: self.expected_ntx_scripts,
             account_code_upgrade: self.account_code_upgrade,
-        };
-        request.validate()?;
+        })
+    }
+}
 
-        Ok(request)
+// HELPERS
+// ================================================================================================
+
+/// Rejects an expiration delta of zero, and an expiration delta together with a custom script.
+///
+/// The client cannot add the expiration to a custom script, so the delta would have no effect.
+fn check_expiration_delta(
+    expiration_delta: Option<u16>,
+    custom_script: Option<&TransactionScript>,
+) -> Result<(), TransactionRequestError> {
+    match expiration_delta {
+        Some(0) => Err(TransactionRequestError::ZeroExpirationDelta),
+        Some(_) if custom_script.is_some() => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set expiration delta when a custom script is set".to_string(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Rejects input notes that contain the same note more than once.
+fn check_no_duplicate_input_notes(
+    input_notes: &[RequestInputNote],
+) -> Result<(), TransactionRequestError> {
+    let mut seen_note_ids = BTreeSet::new();
+    for note_id in input_notes.iter().map(RequestInputNote::id) {
+        if !seen_note_ids.insert(note_id) {
+            return Err(TransactionRequestError::DuplicateInputNote(note_id));
+        }
+    }
+
+    Ok(())
+}
+
+/// Builds the transaction script template from the custom script and the own output notes. At most
+/// one of the two can be set.
+fn build_script_template(
+    custom_script: Option<TransactionScript>,
+    own_output_notes: Vec<Note>,
+) -> Result<Option<TransactionScriptTemplate>, TransactionRequestError> {
+    match (custom_script, own_output_notes.is_empty()) {
+        (Some(_), false) => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set both a custom script and own output notes".to_string(),
+        )),
+        (Some(script), true) => Ok(Some(TransactionScriptTemplate::CustomScript(script))),
+        (None, false) => {
+            let partial_notes: Vec<PartialNote> =
+                own_output_notes.into_iter().map(Into::into).collect();
+
+            Ok(Some(TransactionScriptTemplate::SendNotes(partial_notes)))
+        },
+        (None, true) => Ok(None),
     }
 }
 
@@ -943,7 +970,7 @@ impl PaymentNoteDescription {
     pub(crate) fn into_note(
         self,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note

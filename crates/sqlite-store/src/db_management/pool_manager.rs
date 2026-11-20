@@ -55,7 +55,7 @@ impl SqlitePoolManager {
         Self { database_path, access }
     }
 
-    pub(crate) fn new_connection(&self) -> rusqlite::Result<Connection> {
+    fn new_connection(&self) -> rusqlite::Result<Connection> {
         let conn = Connection::open_with_flags(&self.database_path, self.access.open_flags())?;
 
         // Restrict database file permissions to owner-only on Unix. Also covers WAL and SHM journal

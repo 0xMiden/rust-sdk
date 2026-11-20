@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added support for storing the code registry and the code tree in `SqliteStore` ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [FEATURE][cli] `network-note-status` shows the fee sponsorship notes that the node binds to the network note, with their fee asset, reclaim height, commit block and last execution error ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `NodeRpcClient::get_transaction_logs` and the `miden_client_grpc::v1::GetTransactionLogs` method, which fetch the logs of a committed transaction from the node's `GetTransactionLogs` endpoint. The result is a `TransactionLogsInfo`, with the logs of a public account or the logs commitment of a private account ([#2808](https://github.com/0xMiden/rust-sdk/pull/2808)).
@@ -11,7 +12,6 @@
 * [FEATURE][rust] Added `RpcStreamMethod`, `RpcStream` and `GrpcClient::subscribe` to `miden-client-grpc`, to open a server-streaming node RPC endpoint and validate each item of the stream ([#2821](https://github.com/0xMiden/rust-sdk/pull/2821)).
 * [FEATURE][rust] Added `NodeRpcClient::subscribe_blocks` and `miden_client_grpc::v1::BlockSubscription`, which stream the committed blocks of the node from a given block as `SubscribedBlock` items. The stream validates each block against the block before it and ends after the first error ([#2823](https://github.com/0xMiden/rust-sdk/pull/2823)).
 * [FEATURE][rust] Added `NodeRpcClient::subscribe_proofs` and `miden_client_grpc::v1::ProofSubscription`, which stream the block proofs of the node from a given block as `SubscribedProof` items. The stream validates each proof against the expected block number and ends after the first error.
-* [FEATURE][rust] Added `CodeSmtForest`, which persists the code tree in an SMT forest. `SqliteStore` stores the code registry and the code tree, with `insert_procedures`, `upsert_debug_info`, `get_procedure`, `get_procedure_witness` and `get_code_tree_root` ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [FEATURE][rust] Added `ClientBuilder::seed_genesis`, which stores a genesis block header and its protocol configuration when the client is built ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] Added `Store::insert_genesis`, which stores the genesis block header and its protocol configuration. `SqliteStore` writes both in one transaction ([#2639](https://github.com/0xMiden/rust-sdk/pull/2639)).
 * [FEATURE][rust] `AccountVaultDetails::validate_against_request` is public and does not need the `tonic` feature. It checks the vault details of a `GetAccount` response against the `VaultFetch` request and the vault root in the account header ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).

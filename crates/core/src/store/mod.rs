@@ -670,7 +670,7 @@ pub trait Store: Send + Sync {
     /// debug info is added without debug info.
     ///
     /// The client calls this method when it is built, to store the transaction kernel and the
-    /// libraries it is built with. The store is then where the client reads them from.
+    /// libraries it is built with.
     async fn insert_procedures_with_debug_info(
         &self,
         packages: Vec<Arc<Package>>,
@@ -686,9 +686,6 @@ pub trait Store: Send + Sync {
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// code registry has it, or `None` if the procedure is not registered.
-    ///
-    /// The client calls this method for each MAST forest that a transaction needs and that is not
-    /// in its MAST forest cache, including the transaction kernel and the libraries.
     async fn get_procedure(
         &self,
         procedure_root: ProcedureRoot,

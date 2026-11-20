@@ -623,6 +623,9 @@ pub trait Store: Send + Sync {
     /// - Storing new MMR authentication nodes.
     /// - Updating the tracked public accounts.
     /// - Storing the protocol configuration the update carries, before the sync height advances.
+    ///
+    /// The caller must check that the sync height of the store is [`StateSyncUpdate::block_from`]
+    /// before the call. An implementation is not required to make this check.
     async fn apply_state_sync(&self, state_sync_update: StateSyncUpdate) -> Result<(), StoreError>;
 
     // TRANSPORT

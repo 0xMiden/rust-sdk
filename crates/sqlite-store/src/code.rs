@@ -13,10 +13,9 @@ use miden_protocol::code::ProcedureRoot;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::PackageDebugInfo;
 use miden_protocol::{MastForest, Word};
-use miden_tx::{LoadedMastForest, MastForestStore};
+use miden_tx::LoadedMastForest;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::db_management::pool_manager::{Access, SqlitePoolManager};
 use crate::forest::{ScopedCodeForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, with_write_tx};
@@ -168,28 +167,6 @@ impl SqliteStore {
     }
 }
 
-// MAST FOREST STORE
-// ================================================================================================
-
-/// The [`MastForestStore::get`] method is synchronous, so it cannot use the async connection pool.
-/// Each call reads through a new read-only connection.
-impl MastForestStore for SqliteStore {
-    fn get(&self, procedure_hash: &Word) -> Option<LoadedMastForest> {
-        let procedure_root = ProcedureRoot::from_raw(*procedure_hash);
-        let mast = SqlitePoolManager::new(self.database_filepath.clone(), Access::ReadOnly)
-            .new_connection()
-            .into_store_error()
-            .and_then(|conn| SqliteStore::query_procedure(&conn, procedure_root));
-        match mast {
-            Ok(mast) => mast,
-            Err(err) => {
-                tracing::warn!(%err, %procedure_root, "failed to read a procedure from the store");
-                None
-            },
-        }
-    }
-}
-
 // TESTS
 // ================================================================================================
 
@@ -334,11 +311,12 @@ mod tests {
 
     /// Debug info is served with its forest, and stays when the same forest is added again.
     #[tokio::test]
-    async fn mast_forest_store_serves_debug_info() {
+    async fn get_procedure_serves_debug_info() {
         let store = create_test_store().await;
         let package = protocol_package();
         let mast = package.mast_forest().clone();
-        let procedure_root: Word = mast.local_procedure_digests().next().unwrap();
+        let procedure_root =
+            ProcedureRoot::from_raw(mast.local_procedure_digests().next().unwrap());
 
         store.insert_procedures(vec![mast.clone()]).await.unwrap();
         store
@@ -346,13 +324,13 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
+        let loaded = store.get_procedure(procedure_root).await.unwrap().unwrap();
         assert_eq!(loaded.mast_forest().commitment(), mast.commitment());
         assert!(loaded.package_debug_info().unwrap().is_some());
 
         store.insert_procedures(vec![mast]).await.unwrap();
 
-        let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
+        let loaded = store.get_procedure(procedure_root).await.unwrap().unwrap();
         assert!(loaded.package_debug_info().unwrap().is_some());
     }
 
@@ -369,21 +347,5 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn mast_forest_store_serves_added_procedures() {
-        let store = create_test_store().await;
-        let protocol = ProtocolLib::default().mast_forest().clone();
-        let procedure_root: Word = protocol.local_procedure_digests().next().unwrap();
-
-        assert!(MastForestStore::get(&store, &procedure_root).is_none());
-
-        store.insert_procedures(vec![protocol.clone()]).await.unwrap();
-
-        let loaded = MastForestStore::get(&store, &procedure_root).unwrap();
-        assert_eq!(loaded.mast_forest().commitment(), protocol.commitment());
-        let roots: Vec<Word> = loaded.mast_forest().local_procedure_digests().collect();
-        assert!(roots.contains(&procedure_root));
     }
 }

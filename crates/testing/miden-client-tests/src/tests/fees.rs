@@ -19,6 +19,7 @@ use miden_client::store::NoteFilter;
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
+    InputNoteAuthentication,
     RequestAuthArgs,
     TransactionExecutorError,
     TransactionRequest,
@@ -666,6 +667,93 @@ async fn pinned_multisig_proposal_reproduces_its_summary_on_another_client() {
         Box::pin(executor.execute_for_summary(account.id(), request)).await.unwrap();
 
     assert_eq!(executor_summary, proposer_summary);
+}
+
+/// A prepared request reproduces its summary on the proposer, and on a client that does not hold
+/// the input note and that syncs past the bound block.
+#[tokio::test]
+async fn reproducible_request_reproduces_its_summary_on_another_client_after_a_sync() {
+    let (auth, key) = multisig_auth();
+    let account = fee_charging_account(auth);
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, 100).unwrap().into();
+
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    builder.add_account(account.clone()).unwrap();
+    let input_note = builder
+        .add_p2id_note(
+            ACCOUNT_ID_SENDER.try_into().unwrap(),
+            account.id(),
+            &[fee_asset],
+            NoteType::Private,
+        )
+        .unwrap();
+    let rpc_api = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+    rpc_api.prove_block();
+
+    // Neither client holds the note, so the proposer fetches its proof from the node.
+    let proposer = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    let mut executor = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    let bound_block_num = proposer.get_sync_height().await.unwrap();
+
+    let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([41u32, 42, 43, 44]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(input_note, None)])
+        .auth_args(&auth_args)
+        .build()
+        .unwrap();
+
+    let (request, summary) = Box::pin(proposer.prepare_reproducible_request(account.id(), request))
+        .await
+        .unwrap();
+    assert_eq!(summary.block_number(), bound_block_num);
+    assert!(request.block_numbers().contains(&bound_block_num));
+    assert!(
+        request
+            .input_notes()
+            .iter()
+            .all(|note| matches!(note.authentication(), InputNoteAuthentication::Explicit(_)))
+    );
+
+    let proposer_summary = Box::pin(proposer.execute_for_summary(account.id(), request.clone()))
+        .await
+        .unwrap();
+    assert_eq!(proposer_summary, summary);
+
+    rpc_api.prove_block();
+    executor.sync_state().await.unwrap();
+    assert!(executor.get_sync_height().await.unwrap() > bound_block_num);
+
+    let request: TransactionRequest =
+        miden_client_proto::decode(&miden_client_proto::encode(&request)).unwrap();
+    let executor_summary =
+        Box::pin(executor.execute_for_summary(account.id(), request)).await.unwrap();
+    assert_eq!(executor_summary, summary);
+}
+
+/// Default auth args bind the reference block of each executor, so a prepared request must set
+/// explicit auth args.
+#[tokio::test]
+async fn reproducible_request_requires_explicit_auth_args() {
+    let (client, _, account) = Box::pin(fee_charging_multisig_client()).await;
+    let request = TransactionRequestBuilder::new()
+        .fee_conversion_salt(Word::from([1u32, 2, 3, 4]))
+        .build()
+        .unwrap();
+
+    let result = Box::pin(client.prepare_reproducible_request(account.id(), request)).await;
+
+    let Err(err) = result else {
+        panic!("a request with default auth args should be rejected");
+    };
+    assert!(
+        matches!(
+            err,
+            ClientError::TransactionRequestError(TransactionRequestError::AuthArgsNotExplicit)
+        ),
+        "expected AuthArgsNotExplicit, got {err:?}"
+    );
 }
 
 /// Adds a signature over `summary` to the advice map of `request` for each key that the client

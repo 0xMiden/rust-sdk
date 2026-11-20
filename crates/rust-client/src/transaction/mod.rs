@@ -410,6 +410,35 @@ where
         Ok(transaction_request)
     }
 
+    /// Prepares `transaction_request` so that an executor that does not hold the store of this
+    /// client computes the same [`TransactionSummary`]. Returns the prepared request and the
+    /// summary that the signers sign.
+    ///
+    /// The client pins the input notes with [`Self::pin_input_notes`], executes the request with
+    /// [`Self::execute_for_summary`], and declares the block that the summary binds. The auth args
+    /// must be explicit, because default auth args bind the reference block of each executor.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`TransactionRequestError::AuthArgsNotExplicit`] if the request has no explicit
+    ///   auth args.
+    /// - Returns the errors of [`Self::pin_input_notes`] and [`Self::execute_for_summary`].
+    pub async fn prepare_reproducible_request(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<(TransactionRequest, TransactionSummary), ClientError> {
+        if !matches!(transaction_request.auth_args(), RequestAuthArgs::Explicit(_)) {
+            return Err(TransactionRequestError::AuthArgsNotExplicit.into());
+        }
+
+        let mut transaction_request = self.pin_input_notes(transaction_request).await?;
+        let summary = self.execute_for_summary(account_id, transaction_request.clone()).await?;
+        transaction_request.add_block_number(summary.block_number());
+
+        Ok((transaction_request, summary))
+    }
+
     /// Returns the block header at the client's current sync height and a partial blockchain
     /// consistent with it, tracking the blocks in `tracked_blocks` (in addition to the reference
     /// block itself, which needs no tracking).

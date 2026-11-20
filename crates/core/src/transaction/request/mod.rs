@@ -330,6 +330,12 @@ impl TransactionRequest {
         Ok(())
     }
 
+    /// Adds `block_num` to the blocks that the transaction must be able to authenticate against its
+    /// reference block. See [`TransactionRequestBuilder::block_numbers`].
+    pub fn add_block_number(&mut self, block_num: BlockNumber) {
+        self.block_numbers.insert(block_num);
+    }
+
     /// Returns this request with `auth_args` as its explicit auth args.
     ///
     /// The executing party can use this method to set auth args that only it can choose, for
@@ -543,6 +549,10 @@ pub enum TransactionRequestError {
     DuplicateInputNote(NoteId),
     #[error("the request does not consume note {0}")]
     InputNoteNotInRequest(NoteId),
+    #[error(
+        "the request has no explicit auth args, so executors at different blocks compute different summaries"
+    )]
+    AuthArgsNotExplicit,
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error("cannot set both explicit auth args and a fee conversion salt")]

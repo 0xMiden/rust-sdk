@@ -9,8 +9,7 @@ CREATE TABLE code_mast_forests (
     PRIMARY KEY (commitment)
 ) WITHOUT ROWID, STRICT;
 
--- The procedures of the code registry and the forest that holds each one. The code tree in the
--- forest tables has the same procedure roots.
+-- The procedures of the code registry and the forest that holds each one.
 CREATE TABLE code_procedures (
     procedure_root BLOB NOT NULL,  -- serialized procedure root
     commitment     BLOB NOT NULL,  -- commitment of the forest that holds the procedure
@@ -19,7 +18,7 @@ CREATE TABLE code_procedures (
     FOREIGN KEY (commitment) REFERENCES code_mast_forests(commitment)
 ) WITHOUT ROWID, STRICT;
 
--- The debug info of the MAST forests of the code registry.
+-- The debug info of the code registry MAST forests.
 CREATE TABLE code_debug_info (
     commitment BLOB NOT NULL,  -- commitment of the forest that the debug info describes
     debug_info BLOB NOT NULL,  -- serialized PackageDebugInfo

@@ -312,6 +312,30 @@ impl TransactionRequest {
         Ok(())
     }
 
+    /// Replaces the authentication of the input note that has the ID of `input_note`, so that every
+    /// executor consumes the note in the mode that `input_note` carries. The note keeps its
+    /// arguments.
+    ///
+    /// # Errors
+    /// - If the request does not consume the note.
+    pub fn pin_input_note(&mut self, input_note: InputNote) -> Result<(), TransactionRequestError> {
+        let note_id = input_note.note().id();
+        let request_note = self
+            .input_notes
+            .iter_mut()
+            .find(|request_note| request_note.id() == note_id)
+            .ok_or(TransactionRequestError::InputNoteNotInRequest(note_id))?;
+
+        request_note.authentication = InputNoteAuthentication::Explicit(input_note);
+        Ok(())
+    }
+
+    /// Adds `block_num` to the blocks that the transaction must be able to authenticate against its
+    /// reference block. See [`TransactionRequestBuilder::block_numbers`].
+    pub fn add_block_number(&mut self, block_num: BlockNumber) {
+        self.block_numbers.insert(block_num);
+    }
+
     /// Returns this request with `auth_args` as its explicit auth args.
     ///
     /// The executing party can use this method to set auth args that only it can choose, for
@@ -523,6 +547,12 @@ pub enum TransactionRequestError {
     AssetError(#[from] AssetError),
     #[error("duplicate input note: note {0} was added more than once to the transaction")]
     DuplicateInputNote(NoteId),
+    #[error("the request does not consume note {0}")]
+    InputNoteNotInRequest(NoteId),
+    #[error(
+        "the request has no explicit auth args, so executors at different blocks compute different summaries"
+    )]
+    AuthArgsNotExplicit,
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error("cannot set both explicit auth args and a fee conversion salt")]
@@ -624,11 +654,51 @@ mod tests {
     use super::{
         BlockNumber,
         ExpirationTransactionScript,
+        InputNote,
+        InputNoteAuthentication,
         NonZeroU16,
         RequestAuthArgs,
         TransactionRequestBuilder,
+        TransactionRequestError,
         TransactionScript,
     };
+
+    fn p2id_note(rng: &mut ChaCha20Rng) -> Note {
+        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+        P2idNote::builder()
+            .sender(AccountId::try_from(ACCOUNT_ID_SENDER).unwrap())
+            .target(AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap())
+            .assets(vec![FungibleAsset::new(faucet_id, 100).unwrap()])
+            .note_type(NoteType::Private)
+            .serial_number(rng.random())
+            .build()
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn pin_input_note_replaces_the_authentication_and_keeps_the_args() {
+        let mut rng = ChaCha20Rng::seed_from_u64(0);
+        let note = p2id_note(&mut rng);
+        let args = Word::from([1u32, 2, 3, 4]);
+        let mut request = TransactionRequestBuilder::new()
+            .input_notes([(note.clone(), Some(args))])
+            .build()
+            .unwrap();
+
+        let pinned = InputNote::unauthenticated(note);
+        request.pin_input_note(pinned.clone()).unwrap();
+
+        let request_note = &request.input_notes()[0];
+        assert_eq!(request_note.authentication(), &InputNoteAuthentication::Explicit(pinned));
+        assert_eq!(request_note.args(), Some(args));
+
+        let other = p2id_note(&mut rng);
+        let err = request.pin_input_note(InputNote::unauthenticated(other.clone())).unwrap_err();
+        assert!(
+            matches!(err, TransactionRequestError::InputNoteNotInRequest(id) if id == other.id())
+        );
+    }
 
     #[test]
     fn auth_args_set_the_commitment_and_its_preimage() {

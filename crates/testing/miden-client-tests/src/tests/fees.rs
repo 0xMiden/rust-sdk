@@ -13,10 +13,13 @@ use miden_client::account::{Account, AccountComponentInterface, AccountId};
 use miden_client::asset::{Asset, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey};
 use miden_client::keystore::Keystore;
+use miden_client::note::NoteFile;
+use miden_client::rpc::NodeRpcClient;
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
+    InputNoteAuthentication,
     RequestAuthArgs,
     TransactionExecutorError,
     TransactionRequest,
@@ -25,7 +28,7 @@ use miden_client::transaction::{
 };
 use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
 use miden_protocol::note::NoteType;
-use miden_protocol::testing::account_id::ACCOUNT_ID_FEE_FAUCET;
+use miden_protocol::testing::account_id::{ACCOUNT_ID_FEE_FAUCET, ACCOUNT_ID_SENDER};
 use miden_protocol::transaction::TransactionSummary;
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
@@ -229,6 +232,12 @@ async fn fee_charging_client() -> (TestClient, Account) {
 /// Builds a fee-charging chain and a client whose account authenticates through `AuthMultisig`,
 /// which reads the auth args as conversion info but will not accept a salt it did not choose.
 async fn fee_charging_multisig_client() -> (TestClient, Arc<MockRpcApi>, Account) {
+    let (auth, key) = multisig_auth();
+    Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await
+}
+
+/// Returns a one-of-one `AuthMultisig` component and its approver key.
+fn multisig_auth() -> (AuthMultisig, AuthSecretKey) {
     let key = AuthSecretKey::new_falcon512_poseidon2();
     let approvers = ApproverSet::new(
         vec![Approver::new(
@@ -238,9 +247,8 @@ async fn fee_charging_multisig_client() -> (TestClient, Arc<MockRpcApi>, Account
         1,
     )
     .unwrap();
-    let auth = AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap();
 
-    Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await
+    (AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap(), key)
 }
 
 async fn fee_charging_client_with_auth(
@@ -255,6 +263,18 @@ async fn fee_charging_client_with_auth_and_rpc(
     auth: impl Into<AccountComponent>,
     key: AuthSecretKey,
 ) -> (TestClient, Arc<MockRpcApi>, Account) {
+    let account = fee_charging_account(auth);
+
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    builder.add_account(account.clone()).unwrap();
+    let rpc_api = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+    let client = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+
+    (client, rpc_api, account)
+}
+
+/// Returns a deployed public wallet that holds enough of the fee asset to pay.
+fn fee_charging_account(auth: impl Into<AccountComponent>) -> Account {
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, FEE_ASSET_BALANCE).unwrap().into();
 
@@ -269,18 +289,21 @@ async fn fee_charging_client_with_auth_and_rpc(
     account.vault_mut().add_asset(fee_asset).unwrap();
     account.set_nonce(Felt::ONE).unwrap();
 
-    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
-    builder.add_account(account.clone()).unwrap();
-    let chain = builder.build().unwrap();
+    account
+}
 
-    let rpc_api = Arc::new(MockRpcApi::new(chain));
-    let mut client =
-        TestClient::from(mock_client_builder(rpc_api.clone()).await.build().await.unwrap());
-    client.keystore().add_key(&key, account.id()).await.unwrap();
-    client.add_account(&account, false).await.unwrap();
+/// Returns a synced client that tracks `account` and holds `key`.
+async fn client_with_account(
+    rpc_api: Arc<MockRpcApi>,
+    account: &Account,
+    key: &AuthSecretKey,
+) -> TestClient {
+    let mut client = TestClient::from(mock_client_builder(rpc_api).await.build().await.unwrap());
+    client.keystore().add_key(key, account.id()).await.unwrap();
+    client.add_account(account, false).await.unwrap();
     client.sync_state().await.unwrap();
 
-    (client, rpc_api, account)
+    client
 }
 
 /// The kernel's fee note must NOT be tracked as one of the user's own output notes.
@@ -513,11 +536,9 @@ async fn serialized_multisig_request_uses_native_auth_args(
         .unwrap();
     let sync_height = client.get_sync_height().await.unwrap();
 
-    let summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("an unsigned multisig request should return its summary"),
-    );
+    let summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("an unsigned multisig request should return its summary");
     assert_eq!(summary.block_number(), sync_height);
 
     sign_summary(&client, account.id(), &mut request, &summary).await;
@@ -554,11 +575,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // declare the bound block, so the client must track it.
     let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
-    let original_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the unsigned multisig proposal should return its summary"),
-    );
+    let original_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the unsigned multisig proposal should return its summary");
     assert_eq!(original_summary.block_number(), bound_block_num);
 
     rpc_api.prove_block();
@@ -569,11 +588,9 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // the summary. Foreign account inputs, including the fee faucet, must use the current tip.
     rpc_api.prune_account_state_at(bound_block_num);
 
-    let later_summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the proposal should still reach multisig authorization at the new tip"),
-    );
+    let later_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the proposal should still reach multisig authorization at the new tip");
 
     assert_eq!(later_summary, original_summary);
 
@@ -586,13 +603,157 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     assert_eq!(result.executed_transaction().block_header().block_num(), sync_height);
 }
 
-fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
-    match error {
-        ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(summary)) => {
-            summary
-        },
-        other => panic!("expected an unauthorized multisig summary, got {other:?}"),
-    }
+/// A client that does not hold the input note reproduces the summary of a multisig proposal from
+/// the serialized request, because the request pins the note.
+#[tokio::test]
+async fn pinned_multisig_proposal_reproduces_its_summary_on_another_client() {
+    let (auth, key) = multisig_auth();
+    let account = fee_charging_account(auth);
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, 100).unwrap().into();
+
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    builder.add_account(account.clone()).unwrap();
+    let input_note = builder
+        .add_p2id_note(
+            ACCOUNT_ID_SENDER.try_into().unwrap(),
+            account.id(),
+            &[fee_asset],
+            NoteType::Private,
+        )
+        .unwrap();
+    let rpc_api = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+    rpc_api.prove_block();
+
+    // The proposer holds the note as authenticated, the executor does not hold it.
+    let mut proposer = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    let proof = rpc_api.get_notes_by_id(&[input_note.id()]).await.unwrap()[0]
+        .inclusion_proof()
+        .clone();
+    proposer
+        .import_notes(&[NoteFile::Committed { note: input_note.clone(), proof }])
+        .await
+        .unwrap();
+    let executor = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    assert_eq!(
+        executor.get_sync_height().await.unwrap(),
+        proposer.get_sync_height().await.unwrap()
+    );
+    assert!(executor.get_input_note(input_note.id()).await.unwrap().is_none());
+
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(input_note, None)])
+        .fee_conversion_salt(Word::from([31u32, 32, 33, 34]))
+        .build()
+        .unwrap();
+
+    // Without the pin, each client consumes the note in a different mode.
+    let proposer_summary = Box::pin(proposer.execute_for_summary(account.id(), request.clone()))
+        .await
+        .unwrap();
+    let executor_summary = Box::pin(executor.execute_for_summary(account.id(), request.clone()))
+        .await
+        .unwrap();
+    assert_ne!(executor_summary, proposer_summary);
+
+    let request = proposer.pin_input_notes(request).await.unwrap();
+    let proposer_summary = Box::pin(proposer.execute_for_summary(account.id(), request.clone()))
+        .await
+        .unwrap();
+
+    let request: TransactionRequest =
+        miden_client_proto::decode(&miden_client_proto::encode(&request)).unwrap();
+    let executor_summary =
+        Box::pin(executor.execute_for_summary(account.id(), request)).await.unwrap();
+
+    assert_eq!(executor_summary, proposer_summary);
+}
+
+/// A prepared request reproduces its summary on the proposer, and on a client that does not hold
+/// the input note and that syncs past the bound block.
+#[tokio::test]
+async fn reproducible_request_reproduces_its_summary_on_another_client_after_a_sync() {
+    let (auth, key) = multisig_auth();
+    let account = fee_charging_account(auth);
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, 100).unwrap().into();
+
+    let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
+    builder.add_account(account.clone()).unwrap();
+    let input_note = builder
+        .add_p2id_note(
+            ACCOUNT_ID_SENDER.try_into().unwrap(),
+            account.id(),
+            &[fee_asset],
+            NoteType::Private,
+        )
+        .unwrap();
+    let rpc_api = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+    rpc_api.prove_block();
+
+    // Neither client holds the note, so the proposer fetches its proof from the node.
+    let proposer = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    let mut executor = Box::pin(client_with_account(rpc_api.clone(), &account, &key)).await;
+    let bound_block_num = proposer.get_sync_height().await.unwrap();
+
+    let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([41u32, 42, 43, 44]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(input_note, None)])
+        .auth_args(&auth_args)
+        .build()
+        .unwrap();
+
+    let (request, summary) = Box::pin(proposer.prepare_reproducible_request(account.id(), request))
+        .await
+        .unwrap();
+    assert_eq!(summary.block_number(), bound_block_num);
+    assert!(request.block_numbers().contains(&bound_block_num));
+    assert!(
+        request
+            .input_notes()
+            .iter()
+            .all(|note| matches!(note.authentication(), InputNoteAuthentication::Explicit(_)))
+    );
+
+    let proposer_summary = Box::pin(proposer.execute_for_summary(account.id(), request.clone()))
+        .await
+        .unwrap();
+    assert_eq!(proposer_summary, summary);
+
+    rpc_api.prove_block();
+    executor.sync_state().await.unwrap();
+    assert!(executor.get_sync_height().await.unwrap() > bound_block_num);
+
+    let request: TransactionRequest =
+        miden_client_proto::decode(&miden_client_proto::encode(&request)).unwrap();
+    let executor_summary =
+        Box::pin(executor.execute_for_summary(account.id(), request)).await.unwrap();
+    assert_eq!(executor_summary, summary);
+}
+
+/// Default auth args bind the reference block of each executor, so a prepared request must set
+/// explicit auth args.
+#[tokio::test]
+async fn reproducible_request_requires_explicit_auth_args() {
+    let (client, _, account) = Box::pin(fee_charging_multisig_client()).await;
+    let request = TransactionRequestBuilder::new()
+        .fee_conversion_salt(Word::from([1u32, 2, 3, 4]))
+        .build()
+        .unwrap();
+
+    let result = Box::pin(client.prepare_reproducible_request(account.id(), request)).await;
+
+    let Err(err) = result else {
+        panic!("a request with default auth args should be rejected");
+    };
+    assert!(
+        matches!(
+            err,
+            ClientError::TransactionRequestError(TransactionRequestError::AuthArgsNotExplicit)
+        ),
+        "expected AuthArgsNotExplicit, got {err:?}"
+    );
 }
 
 /// Adds a signature over `summary` to the advice map of `request` for each key that the client

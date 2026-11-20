@@ -677,34 +677,10 @@ impl Store for SqliteStore {
         &self,
         procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
     ) -> Result<(), StoreError> {
-        // Skip the forests that already have debug info.
-        let commitments: Vec<Word> = procedures.iter().map(|(mast, _)| mast.commitment()).collect();
-        let has_debug_info: Vec<bool> = self
-            .interact_with_connection(move |conn| {
-                let mut query = conn
-                    .prepare_cached("SELECT 1 FROM code_debug_info WHERE commitment = ?1")
-                    .into_store_error()?;
-                commitments
-                    .iter()
-                    .map(|commitment| query.exists([commitment.as_bytes()]).into_store_error())
-                    .collect()
-            })
-            .await?;
-        let procedures: Vec<(Arc<MastForest>, PackageDebugInfo)> = procedures
-            .into_iter()
-            .zip(has_debug_info)
-            .filter_map(|(procedure, has_debug_info)| (!has_debug_info).then_some(procedure))
-            .collect();
-        if procedures.is_empty() {
-            return Ok(());
-        }
-
-        self.insert_procedures(procedures.iter().map(|(mast, _)| mast.clone()).collect())
-            .await?;
-        for (mast, debug_info) in procedures {
-            self.upsert_debug_info(mast.commitment(), debug_info).await?;
-        }
-        Ok(())
+        self.interact_with_connection(move |conn| {
+            SqliteStore::write_procedures_with_debug_info(conn, &procedures)
+        })
+        .await
     }
 
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {

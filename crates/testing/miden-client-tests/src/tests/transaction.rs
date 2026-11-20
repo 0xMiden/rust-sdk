@@ -19,14 +19,11 @@ use miden_client::store::{NoteFilter, TransactionFilter};
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
-    ChainAnchorError,
     DiscardCause,
     ForeignAccount,
-    InputNote,
     LocalTransactionProver,
     ProvenTransaction,
     TransactionExecutorError,
-    TransactionInputs,
     TransactionProver,
     TransactionProverError,
     TransactionRequest,
@@ -34,6 +31,7 @@ use miden_client::transaction::{
     TransactionRequestError,
     TransactionScript,
     TransactionStatus,
+    TransactionWitness,
 };
 use miden_client::{ClientError, async_trait};
 use miden_debug::{DapClient, DapConfig, DapStopReason};
@@ -54,7 +52,6 @@ use miden_protocol::account::{
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
 use miden_protocol::asset::{Asset, FungibleAsset, PartialVault};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
@@ -65,6 +62,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
 use miden_standards::account::auth::Approver;
 use miden_standards::account::wallets::BasicWallet;
+use rand::RngExt;
 
 use super::PaymentNoteDescription;
 use crate::tests::{TX_DISCARD_DELTA, create_test_client, mock_client_builder, prebuilt_rpc_api};
@@ -135,14 +133,14 @@ async fn transaction_creates_two_notes() {
             .unwrap()
             .into();
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let pub_key = secret_key.public_key();
 
     let account = AccountBuilder::new(Default::default())
         .with_component(BasicWallet)
         .with_component(AuthSingleSig::new(Approver::new(
             pub_key.to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_assets([asset_1, asset_2])
         .build_existing()
@@ -247,7 +245,7 @@ async fn execute_transaction_failure_leaves_store_unchanged() {
         )
         .unwrap();
     let script_root = output_note_script.root();
-    let serial_num = client.rng().draw_word();
+    let serial_num = client.rng().random::<Word>();
     let output_recipient =
         NoteRecipient::new(serial_num, output_note_script, NoteStorage::new(vec![]).unwrap());
 
@@ -309,7 +307,7 @@ struct AlwaysFailingProver;
 impl TransactionProver for AlwaysFailingProver {
     async fn prove(
         &self,
-        _inputs: TransactionInputs,
+        _witness: TransactionWitness,
     ) -> Result<ProvenTransaction, TransactionProverError> {
         Err(TransactionProverError::other("simulated remote prover failure"))
     }
@@ -326,7 +324,7 @@ struct SwapProver {
 impl TransactionProver for SwapProver {
     async fn prove(
         &self,
-        _inputs: TransactionInputs,
+        _witness: TransactionWitness,
     ) -> Result<ProvenTransaction, TransactionProverError> {
         Ok(self.swapped.clone())
     }
@@ -519,13 +517,13 @@ async fn deploy_fpi_fixture(client: &mut TestClient, rpc_api: &MockRpcApi) -> Fp
     .unwrap();
     let proc_root = fpi_component.mast_forest().procedure_digests().next().unwrap();
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let foreign_account = AccountBuilder::new(Default::default())
         .account_type(AccountType::Public)
         .with_component(fpi_component)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_with_schema_commitment()
         .unwrap();
@@ -660,75 +658,6 @@ async fn lazy_foreign_account_loading() {
     ));
 }
 
-/// A proposer captures the anchor and the foreign account inputs at the same block. After the chain
-/// moves on, the anchored execution must succeed even when the node no longer serves account state
-/// at that block.
-#[tokio::test]
-async fn chain_anchor_execution_with_prefetched_foreign_account() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let fpi = deploy_fpi_fixture(&mut client, &rpc_api).await;
-    let local_wallet = client.insert_wallet(AccountType::Public).await.unwrap();
-
-    // Capture the anchor and the foreign account inputs at the same block.
-    let lazy_request = TransactionRequestBuilder::new()
-        .custom_script(fpi.tx_script.clone())
-        .build()
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&lazy_request).await.unwrap();
-    let anchor_block = anchor.block_num();
-    let inputs = client
-        .get_foreign_account_inputs(
-            [ForeignAccount::public(
-                fpi.account_id,
-                AccountFetch::new()
-                    .with_storage(StorageMapFetch::Slots(fpi.storage_requirements())),
-            )
-            .unwrap()],
-            anchor_block,
-        )
-        .await
-        .unwrap();
-    let prefetched_request = TransactionRequestBuilder::new()
-        .custom_script(fpi.tx_script.clone())
-        .foreign_accounts(inputs)
-        .build()
-        .unwrap();
-
-    // Advance the chain past the anchor, so the reference block is no longer the tip.
-    for _ in 0..3 {
-        rpc_api.prove_block();
-    }
-    client.sync_state().await.unwrap();
-    let tip = client.get_sync_height().await.unwrap();
-    assert!(tip > anchor_block, "the chain must have advanced past the anchor");
-
-    // A node that pruned the anchor block's account state fails every account fetch at that block.
-    // Without prefetched inputs the executor has to fetch the foreign account there.
-    let pruned = || RpcError::InvalidResponse("account state at the anchor block is pruned".into());
-    rpc_api.fail_next_call(RpcEndpoint::GetAccount, pruned());
-    let error =
-        Box::pin(client.execute_transaction_at(local_wallet.id(), lazy_request, anchor.clone()))
-            .await
-            .unwrap_err();
-    assert!(
-        matches!(error, ClientError::TransactionExecutorError(_)),
-        "lazy loading must fail when the node cannot serve the anchor block, got {error:?}"
-    );
-
-    // Prefetched inputs are served from the request, so the staged failure is never reached and the
-    // transaction executes against the anchor block.
-    rpc_api.fail_next_call(RpcEndpoint::GetAccount, pruned());
-    let result =
-        Box::pin(client.execute_transaction_at(local_wallet.id(), prefetched_request, anchor))
-            .await
-            .unwrap();
-    assert_eq!(
-        result.executed_transaction().block_header().block_num(),
-        anchor_block,
-        "anchored execution must reference the anchor block"
-    );
-}
-
 // ACCOUNT WITNESS PREFETCHING TESTS
 // ================================================================================================
 
@@ -788,13 +717,13 @@ async fn deploy_fpi_account(
     let proc_root = fpi_component.mast_forest().procedure_digests().next().unwrap();
 
     // The key is stored so the account can sign its own deploy transaction.
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let foreign_account = AccountBuilder::new(Default::default())
         .account_type(account_type)
         .with_component(fpi_component)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_with_schema_commitment()
         .unwrap();
@@ -1067,58 +996,8 @@ async fn public_account_without_a_cached_witness_fetches_only_the_witness() {
     );
 }
 
-// CHAIN ANCHOR TESTS
+// PARTIAL BLOCKCHAIN TESTS
 // ================================================================================================
-
-#[tokio::test]
-async fn chain_anchor_pins_execution_to_an_older_reference_block() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    let transaction_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-
-    // Capture the anchor at the current tip. The mint consumes no notes, so nothing beyond the
-    // reference block needs tracking.
-    let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
-    let anchor_block = anchor.block_num();
-
-    // Advance the chain past the anchor and sync, so the local tip no longer matches it.
-    for _ in 0..3 {
-        rpc_api.prove_block();
-    }
-    client.sync_state().await.unwrap();
-    let tip = client.get_sync_height().await.unwrap();
-    assert!(tip > anchor_block, "the chain must have advanced past the anchor");
-
-    // Anchored execution references the anchor block, not the tip.
-    let anchored_result =
-        Box::pin(client.execute_transaction_at(faucet.id(), transaction_request.clone(), anchor))
-            .await
-            .unwrap();
-    assert_eq!(
-        anchored_result.executed_transaction().block_header().block_num(),
-        anchor_block,
-        "anchored execution must reference the anchor block"
-    );
-
-    // The default path still references the tip.
-    let tip_result = Box::pin(client.execute_transaction(faucet.id(), transaction_request))
-        .await
-        .unwrap();
-    assert_eq!(
-        tip_result.executed_transaction().block_header().block_num(),
-        tip,
-        "default execution must reference the sync height"
-    );
-}
 
 #[tokio::test]
 async fn missing_selected_block_fetches_header_and_proof_together() {
@@ -1153,15 +1032,6 @@ async fn missing_selected_block_fetches_header_and_proof_together() {
         )
         .unwrap();
 
-    let calls_before_anchor = rpc_api.block_header_requests(selected_block).len();
-    client.chain_anchor_for_request(&request).await.unwrap();
-    let anchor_requests = rpc_api.block_header_requests(selected_block);
-    assert_eq!(
-        &anchor_requests[calls_before_anchor..],
-        [true],
-        "anchor capture must fetch a missing header and proof in one request"
-    );
-
     let calls_before_execution = rpc_api.block_header_requests(selected_block).len();
     Box::pin(client.execute_transaction(faucet.id(), request)).await.unwrap();
     let execution_requests = rpc_api.block_header_requests(selected_block);
@@ -1170,293 +1040,6 @@ async fn missing_selected_block_fetches_header_and_proof_together() {
         [true],
         "transaction execution must fetch a missing header and proof in one request"
     );
-}
-
-#[tokio::test]
-async fn chain_anchor_for_request_tracks_consumed_note_blocks() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    // Mint a note for the wallet and let it commit on chain.
-    let mint_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
-    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
-        .await
-        .unwrap();
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    let note = client.get_input_note(note_id).await.unwrap().unwrap();
-    let proof = note.inclusion_proof().unwrap().clone();
-    let note_block = note.inclusion_proof().unwrap().location().block_num();
-    let note_details: Note = note.clone().try_into().unwrap();
-
-    // Advance one block so the note's creation block is older than the anchor's reference block —
-    // otherwise the note block IS the reference block and needs no tracking.
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    for input_note in [
-        InputNote::authenticated(note_details.clone(), proof),
-        InputNote::unauthenticated(note_details),
-    ] {
-        let is_authenticated = input_note.proof().is_some();
-        let request = TransactionRequestBuilder::new()
-            .explicit_input_notes([(input_note, None)])
-            .build()
-            .unwrap();
-        let anchor = client.chain_anchor_for_request(&request).await.unwrap();
-        assert_eq!(anchor.partial_blockchain().contains_block(note_block), is_authenticated);
-
-        let result = Box::pin(client.execute_transaction_at(wallet.id(), request, anchor))
-            .await
-            .unwrap();
-        assert_eq!(result.consumed_notes().get_note(0).proof().is_some(), is_authenticated);
-    }
-
-    // Capture the anchor from the consume request itself: the note's creation block must be tracked
-    // without the caller having to know it.
-    let consume_request = TransactionRequestBuilder::new()
-        .build_consume_notes(vec![note.try_into().unwrap()])
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
-    let anchor_block = anchor.block_num();
-    assert!(
-        anchor.partial_blockchain().contains_block(note_block),
-        "the anchor must track the consumed note's creation block"
-    );
-
-    // Advance the chain past the anchor and sync.
-    for _ in 0..3 {
-        rpc_api.prove_block();
-    }
-    client.sync_state().await.unwrap();
-    assert!(client.get_sync_height().await.unwrap() > anchor_block);
-
-    // The consume executes against the anchor block, and the result reports the same anchor.
-    let result = Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
-        .await
-        .unwrap();
-    assert_eq!(result.executed_transaction().block_header().block_num(), anchor_block);
-}
-
-#[tokio::test]
-async fn chain_anchor_execution_ignoring_invalid_input_notes() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    // Mint a note for the wallet and let it commit on chain.
-    let mint_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
-    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
-        .await
-        .unwrap();
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    let note = client.get_input_note(note_id).await.unwrap().unwrap();
-
-    // The invalid-note trial must run at the anchor block, not the sync height.
-    let consume_request = TransactionRequestBuilder::new()
-        .ignore_invalid_input_notes()
-        .build_consume_notes(vec![note.try_into().unwrap()])
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
-    let anchor_block = anchor.block_num();
-
-    for _ in 0..3 {
-        rpc_api.prove_block();
-    }
-    client.sync_state().await.unwrap();
-    assert!(client.get_sync_height().await.unwrap() > anchor_block);
-
-    let result = Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
-        .await
-        .unwrap();
-    assert_eq!(result.executed_transaction().block_header().block_num(), anchor_block);
-}
-
-#[tokio::test]
-async fn chain_anchor_untracked_note_block_fails_with_typed_error() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    let mint_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
-    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
-        .await
-        .unwrap();
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    let note = client.get_input_note(note_id).await.unwrap().unwrap();
-    let note_block = note.inclusion_proof().unwrap().location().block_num();
-
-    // Advance so the note's creation block is older than the anchor block and needs tracking.
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    // Capture the anchor from a request without input notes, so it doesn't track the note block.
-    let unrelated_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&unrelated_request).await.unwrap();
-    assert!(!anchor.partial_blockchain().contains_block(note_block));
-
-    // Consuming the note against that anchor fails with the typed error, so callers can react by
-    // recapturing a wider anchor.
-    let consume_request = TransactionRequestBuilder::new()
-        .build_consume_notes(vec![note.try_into().unwrap()])
-        .unwrap();
-    let result =
-        Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor)).await;
-    assert!(matches!(
-        result,
-        Err(ClientError::ChainAnchorError(ChainAnchorError::BlockNotTracked { block_num }))
-            if block_num == note_block
-    ));
-}
-
-/// A transaction whose expiration block has been reached cannot be included by the network, so
-/// anchored execution must fail with a diagnosable error instead of handing back an unsubmittable
-/// transaction.
-#[tokio::test]
-async fn chain_anchor_execution_rejects_an_already_expired_transaction() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    // The shortest expiry the builder accepts, so a handful of blocks is enough to pass it.
-    let transaction_request = TransactionRequestBuilder::new()
-        .expiration_delta(1)
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-
-    let anchor = client.chain_anchor_for_request(&transaction_request).await.unwrap();
-    let anchor_block = anchor.block_num();
-
-    // Advance to exactly the expiration block: a transaction expiring at the tip can no longer be
-    // included, so the guard must already fire at this boundary.
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-    let tip = client.get_sync_height().await.unwrap();
-    assert_eq!(
-        tip,
-        anchor_block + 1,
-        "the chain must have reached exactly the expiration block"
-    );
-
-    let err = Box::pin(client.execute_transaction_at(
-        faucet.id(),
-        transaction_request.clone(),
-        anchor.clone(),
-    ))
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
-        ),
-        "expected an expiration error at exactly the expiration block, got {err:?}"
-    );
-
-    // And well past it — the ordinary case of a signing round that ran long.
-    for _ in 0..4 {
-        rpc_api.prove_block();
-    }
-    client.sync_state().await.unwrap();
-    let err =
-        Box::pin(client.execute_transaction_at(faucet.id(), transaction_request.clone(), anchor))
-            .await
-            .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            ClientError::ChainAnchorError(ChainAnchorError::AnchoredTransactionExpired { .. })
-        ),
-        "expected an expiration error well past the expiration block, got {err:?}"
-    );
-
-    // The same request still executes against the tip, so the failure is the anchor's staleness.
-    Box::pin(client.execute_transaction(faucet.id(), transaction_request))
-        .await
-        .unwrap();
-}
-
-/// The reference block is not a leaf of its own MMR, so the capture path must not try to
-/// authenticate it. Consuming a note created in that very block exercises this.
-#[tokio::test]
-async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block() {
-    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
-    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
-    client.sync_state().await.unwrap();
-
-    let mint_request = TransactionRequestBuilder::new()
-        .build_mint_fungible_asset(
-            FungibleAsset::new(faucet.id(), 5u64).unwrap(),
-            wallet.id(),
-            NoteType::Private,
-            client.rng(),
-        )
-        .unwrap();
-    let note_id = mint_request.expected_output_own_notes().pop().unwrap().id();
-    Box::pin(client.submit_new_transaction(faucet.id(), mint_request))
-        .await
-        .unwrap();
-    rpc_api.prove_block();
-    client.sync_state().await.unwrap();
-
-    // Do not advance the chain: the note's inclusion block stays the tip the anchor will pin.
-    let note = client.get_input_note(note_id).await.unwrap().unwrap();
-    let note_block = note.inclusion_proof().unwrap().location().block_num();
-    let tip = client.get_sync_height().await.unwrap();
-    assert_eq!(note_block, tip, "the note must have been created in the block the anchor pins");
-
-    let consume_request = TransactionRequestBuilder::new()
-        .build_consume_notes(vec![note.try_into().unwrap()])
-        .unwrap();
-    let anchor = client.chain_anchor_for_request(&consume_request).await.unwrap();
-
-    assert_eq!(anchor.block_num(), tip);
-
-    Box::pin(client.execute_transaction_at(wallet.id(), consume_request, anchor))
-        .await
-        .unwrap();
 }
 
 // INDETERMINATE SUBMISSIONS
@@ -1472,12 +1055,12 @@ async fn chain_anchor_for_request_handles_a_note_created_in_the_reference_block(
 async fn indeterminate_submission_is_retryable_with_the_attached_payload() {
     let (mut client, rpc_api) = Box::pin(create_test_client()).await;
 
-    let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+    let secret_key = AuthSecretKey::new_falcon512_eidos();
     let account = AccountBuilder::new(Default::default())
         .with_component(BasicWallet)
         .with_component(AuthSingleSig::new(Approver::new(
             secret_key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .build_existing()
         .unwrap();

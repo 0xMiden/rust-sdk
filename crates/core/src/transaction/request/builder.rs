@@ -10,7 +10,6 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note,
@@ -30,6 +29,7 @@ use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use rand::{Rng, RngExt};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
@@ -172,8 +172,7 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
-    /// against.
+    /// the note's creation block.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
@@ -334,7 +333,8 @@ impl TransactionRequestBuilder {
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
-    /// of multisig auth args.
+    /// of multisig auth args. Multisig auth args with a max fee let the signed transaction execute
+    /// against a later reference block than the one of the unsigned execution.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
         let auth_arg = auth_args.to_commitment();
@@ -349,9 +349,18 @@ impl TransactionRequestBuilder {
     /// Fees are settled in the chain's native fee asset at rate 1/1. The client commits that info
     /// through the transaction's auth args when preparing the transaction.
     ///
-    /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
-    /// the transaction's reference block. Use the same reference block when collecting signatures
-    /// across repeated executions. See `Client::execute_transaction_at`.
+    /// Multisig accounts require a caller-declared salt. The client binds their auth args to the
+    /// transaction's reference block, which is the sync height at execution time, and sets no max
+    /// fee. The multisig auth procedure then estimates the fee on each execution, and the
+    /// transaction summary binds the bound block and the estimate. Signatures for one execution are
+    /// valid for a later execution only if the client does not sync between the two executions.
+    ///
+    /// To collect signatures across syncs, do not use this method. Build
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) with a fixed bound
+    /// block and a max fee, for example with `MultisigAuthArgs::with_estimated_max_fee`, and set
+    /// them with [`Self::auth_args`]. The summary then binds the max fee, and not the estimate of
+    /// one execution. On a chain that charges fees, these auth args must also include the fee
+    /// conversion info.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);
@@ -423,7 +432,7 @@ impl TransactionRequestBuilder {
         asset: FungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
         // path for the same reason: it costs a transaction and leaves the target a note with
@@ -461,7 +470,7 @@ impl TransactionRequestBuilder {
         asset: NonFungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
@@ -493,7 +502,7 @@ impl TransactionRequestBuilder {
         self,
         asset: NonFungibleAsset,
         sender: AccountId,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = BurnNote::builder()
             .sender(sender)
@@ -520,7 +529,7 @@ impl TransactionRequestBuilder {
         self,
         payment_data: PaymentNoteDescription,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         if payment_data
             .assets()
@@ -552,7 +561,7 @@ impl TransactionRequestBuilder {
         swap_data: &SwapTransactionData,
         note_type: NoteType,
         payback_note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
         // P2ID payback carrying the requested one. A zero amount on either side leaves one of those
@@ -601,12 +610,12 @@ impl TransactionRequestBuilder {
         self,
         sender_account_id: AccountId,
         scripts: Vec<NoteScript>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let registration_notes: Vec<Note> = scripts
             .into_iter()
             .map(|script| {
-                let serial_num = rng.draw_word();
+                let serial_num = rng.random::<Word>();
                 let note_storage = NoteStorage::new(vec![])?;
                 let recipient = NoteRecipient::new(serial_num, script, note_storage);
                 let note_assets = NoteAssets::new(vec![])?;
@@ -639,7 +648,7 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         payback_note_type: NoteType,
         note_attachment: Option<NoteAttachment>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
         if is_zero_fungible(&pswap_data.offered_asset().into()) {
@@ -658,7 +667,7 @@ impl TransactionRequestBuilder {
         let pswap_note = PswapNote::builder()
             .sender(pswap_data.creator_account_id())
             .storage(storage)
-            .serial_number(rng.draw_word())
+            .serial_number(rng.random::<Word>())
             .note_type(note_type)
             .offered_asset(pswap_data.offered_asset())
             .maybe_attachment(note_attachment)
@@ -961,7 +970,7 @@ impl PaymentNoteDescription {
     pub(crate) fn into_note(
         self,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note

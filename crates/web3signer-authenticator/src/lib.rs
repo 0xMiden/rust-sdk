@@ -226,6 +226,7 @@ impl<T: SignerTransport> TransactionAuthenticator for Web3SignerAuthenticator<T>
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::account::auth::{BoundSignature, SignatureKey};
     use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
     use miden_protocol::utils::serde::{Deserializable, Serializable};
 
@@ -326,8 +327,11 @@ mod tests {
 
         let message = inputs.to_commitment();
         assert!(public_key.verify(message, signature.clone()));
-        // Panics if the signature does not encode for the VM.
-        signature.to_encoded_signature(message);
+        // Fails if the signature does not encode for the VM.
+        let key = SignatureKey::new(commitment, message);
+        BoundSignature::new(key, signature)
+            .expect("signature binds to the key")
+            .to_encoded_signature();
     }
 
     #[tokio::test]

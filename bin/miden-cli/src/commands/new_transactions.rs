@@ -830,7 +830,7 @@ pub(crate) async fn execute_transaction<AUTH: Keystore + Sync + 'static>(
         .submit_proven_transaction(proven_transaction, &transaction_result)
         .await?;
     println!("Applying transaction to store...");
-    client.apply_transaction(&transaction_result, submission_height).await?;
+    Box::pin(client.apply_transaction(&transaction_result, submission_height)).await?;
 
     println!("Successfully created transaction.");
     println!("Transaction ID: {transaction_id}");
@@ -963,9 +963,9 @@ mod tests {
     use miden_client::transaction::{
         LocalTransactionProver,
         ProvenTransaction,
-        TransactionInputs,
         TransactionProver,
         TransactionProverError,
+        TransactionWitness,
     };
     use miden_client::{Client, ClientError, Word};
     use miden_client_sqlite_store::SqliteStore;
@@ -987,12 +987,12 @@ mod tests {
     impl TransactionProver for FailingProver {
         async fn prove(
             &self,
-            tx_inputs: TransactionInputs,
+            witness: TransactionWitness,
         ) -> Result<ProvenTransaction, TransactionProverError> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == self.failing_call {
                 return Err(TransactionProverError::other("the test prover fails this call"));
             }
-            LocalTransactionProver::default().prove(tx_inputs)
+            LocalTransactionProver::default().prove(witness)
         }
     }
 

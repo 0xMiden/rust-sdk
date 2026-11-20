@@ -36,7 +36,12 @@
 
 pub mod encryption;
 
-pub use domain::status::{NetworkNoteStatus, NetworkNoteStatusInfo, RpcStatusInfo};
+pub use domain::status::{
+    NetworkNoteSponsorship,
+    NetworkNoteStatus,
+    NetworkNoteStatusInfo,
+    RpcStatusInfo,
+};
 pub use miden_client_core::errors::{
     AcceptHeaderContext,
     AcceptHeaderError,

@@ -33,7 +33,7 @@ authors      = ["miden contributors"]
 edition      = "2024"
 license      = "MIT"
 repository   = "https://github.com/0xMiden/rust-sdk"
-rust-version = "1.98.1"
+rust-version = "1.99.1"
 version      = "0.18.2"
 
 [profile.dev]
@@ -53,23 +53,29 @@ miden-client-proto             = { default-features = false, path = "crates/prot
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.18" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, version = "0.18" }
-miden-objects   = { default-features = false, version = "0.18" }
-miden-protocol  = { default-features = false, version = "0.18" }
-miden-standards = { default-features = false, version = "0.18" }
-miden-testing   = { default-features = false, version = "0.18" }
-miden-tx        = { default-features = false, version = "0.18" }
-miden-tx-batch  = { default-features = false, version = "0.18" }
-miden-usdcx     = { default-features = false, version = "0.18" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
+miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "44079e2ed39305e9ce10db7270663d568065b28a" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, version = "0.18.1" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "7d257feaece6fb56567de33f5b6c5f1cdfc4e094" }
 
 # Miden VM dependencies
-miden-assembly-syntax = { default-features = false, version = "0.36" }
-miden-debug           = { default-features = false, features = ["dap", "std"], version = "0.19.0" }
-miden-mast-package    = { default-features = false, version = "0.36" }
-miden-processor       = { default-features = false, version = "0.36" }
+miden-assembly-syntax = { default-features = false, version = "=1.0.0-rc.0" }
+miden-debug = { default-features = false, features = [
+  "dap",
+  "std",
+], git = "https://github.com/0xMiden/miden-debug", rev = "d85794bd1bf482289006610b34210c0513a4f665" }
+miden-debug-engine = { default-features = false, features = [
+  "std",
+], git = "https://github.com/0xMiden/miden-debug", rev = "d85794bd1bf482289006610b34210c0513a4f665" }
+miden-mast-package = { default-features = false, version = "=1.0.0-rc.0" }
+miden-processor = { default-features = false, version = "=1.0.0-rc.0" }
 
 # External dependencies
 anyhow                = { default-features = false, version = "1.0" }
@@ -112,6 +118,7 @@ uuid                  = { version = "1.10" }
 # Pedantic lints are set to a lower priority which allows lints in the group to be selectively enabled.
 pedantic = { level = "warn", priority = -1 }
 # cast_possible_truncation =   "allow"  # Overly many instances especially regarding indices.
+assert_is_empty             = "allow" # Many triggers in tests, and the suggested form is harder to read.
 ignored_unit_patterns       = "allow" # Stylistic choice.
 missing_errors_doc          = "allow" # TODO: fixup and enable this.
 missing_panics_doc          = "allow" # TODO: fixup and enable this.

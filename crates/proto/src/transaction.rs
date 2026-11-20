@@ -31,16 +31,29 @@ use miden_client_core::transaction::{
 };
 use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
-use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{
+    AccountCodeUpgrade,
+    AccountHeader,
+    AccountPatch,
+    PartialAccount,
+    StorageMapKey,
+    StorageSlotName,
+};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::note::{Note, NoteDetails, NoteRecipient, NoteTag, PartialNote};
-use miden_protocol::transaction::{AccountInputs, TransactionScript};
-use miden_protocol::utils::serde::Serializable;
+use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag, PartialNote};
+use miden_protocol::transaction::{
+    AccountInputs,
+    ExecutedTransaction,
+    TransactionInputs,
+    TransactionMeasurements,
+    TransactionOutputs,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;
@@ -633,6 +646,124 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
     }
 }
 
+// EXECUTED TRANSACTION
+// ================================================================================================
+
+/// The transaction inputs are not authenticated against a trusted chain. Decode an executed
+/// transaction only from a trusted source.
+impl ProtobufValue for ExecutedTransaction {
+    type Message = proto::ExecutedTransaction;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            inputs: Some(self.tx_inputs().into()),
+            final_account: Some(self.final_account().into()),
+            output_notes: Some(self.output_notes().into()),
+            expiration_block_num: Some(self.expiration_block_num().into()),
+            logs: Some(self.logs().into()),
+            code_patch: Some(self.code_patch().into()),
+            account_patch: Some(self.account_patch().into()),
+            measurements: Some(self.measurements().into()),
+        }
+    }
+
+    fn from_proto(transaction: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "executed transaction";
+
+        let tx_inputs: TransactionInputs =
+            required(transaction.inputs, MESSAGE, "inputs")?.decode_and_build_unchecked()?;
+        let final_account: AccountHeader =
+            required(transaction.final_account, MESSAGE, "final account")?.decode_and_verify()?;
+        let output_notes =
+            required(transaction.output_notes, MESSAGE, "output notes")?.decode_and_verify()?;
+        let expiration_block_num =
+            required(transaction.expiration_block_num, MESSAGE, "expiration block number")?
+                .decode_and_verify()?;
+        let logs = required(transaction.logs, MESSAGE, "logs")?.decode_and_verify()?;
+        let code_patch =
+            required(transaction.code_patch, MESSAGE, "code patch")?.decode_and_verify()?;
+        let account_patch: AccountPatch =
+            required(transaction.account_patch, MESSAGE, "account patch")?.decode_and_verify()?;
+        let measurements =
+            required(transaction.measurements, MESSAGE, "measurements")?.try_into()?;
+
+        // `ExecutedTransaction::new` panics on this mismatch.
+        if tx_inputs.account().id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "transaction inputs and transaction outputs name different accounts".to_string(),
+            ));
+        }
+        if account_patch.id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "account patch and transaction outputs name different accounts".to_string(),
+            ));
+        }
+
+        // The transaction executor accepts a transaction only if the kernel commits to the patch
+        // that the host built. The commitment of the patch is thus the commitment of the outputs.
+        let tx_outputs = TransactionOutputs::new(
+            final_account,
+            account_patch.to_commitment(),
+            output_notes,
+            expiration_block_num,
+            logs,
+            code_patch,
+        );
+
+        Ok(ExecutedTransaction::new(tx_inputs, tx_outputs, account_patch, measurements))
+    }
+}
+
+impl From<&TransactionMeasurements> for proto::TransactionMeasurements {
+    fn from(measurements: &TransactionMeasurements) -> Self {
+        Self {
+            prologue: measurements.prologue as u64,
+            notes_processing: measurements.notes_processing as u64,
+            note_execution: measurements
+                .note_execution
+                .iter()
+                .map(|(note_id, cycles)| proto::transaction_measurements::NoteExecution {
+                    note_id: Some(note_id.into()),
+                    cycles: *cycles as u64,
+                })
+                .collect(),
+            tx_script_processing: measurements.tx_script_processing as u64,
+            epilogue: measurements.epilogue as u64,
+            auth_procedure: measurements.auth_procedure as u64,
+        }
+    }
+}
+
+impl TryFrom<proto::TransactionMeasurements> for TransactionMeasurements {
+    type Error = ProtoDecodeError;
+
+    fn try_from(measurements: proto::TransactionMeasurements) -> Result<Self, Self::Error> {
+        let note_execution = measurements
+            .note_execution
+            .into_iter()
+            .map(|entry| {
+                let note_id: NoteId =
+                    required(entry.note_id, "note execution", "note id")?.decode_and_verify()?;
+                Ok((note_id, cycle_count(entry.cycles)?))
+            })
+            .collect::<Result<_, ProtoDecodeError>>()?;
+
+        Ok(Self {
+            prologue: cycle_count(measurements.prologue)?,
+            notes_processing: cycle_count(measurements.notes_processing)?,
+            note_execution,
+            tx_script_processing: cycle_count(measurements.tx_script_processing)?,
+            epilogue: cycle_count(measurements.epilogue)?,
+            auth_procedure: cycle_count(measurements.auth_procedure)?,
+        })
+    }
+}
+
+fn cycle_count(cycles: u64) -> Result<usize, ProtoDecodeError> {
+    usize::try_from(cycles)
+        .map_err(|_| ProtoDecodeError::InvalidValue(format!("cycle count {cycles} is too large")))
+}
+
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
@@ -642,7 +773,7 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn to_proto(&self) -> Self::Message {
         let note_updates = self.note_updates();
         Self::Message {
-            executed_transaction: self.executed_transaction().to_bytes(),
+            executed_transaction: Some(self.executed_transaction().to_proto()),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
@@ -668,7 +799,11 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction = read_upstream(&update.executed_transaction)?;
+        let executed_transaction = ExecutedTransaction::from_proto(required(
+            update.executed_transaction,
+            MESSAGE,
+            "executed transaction",
+        )?)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
@@ -772,19 +907,25 @@ mod tests {
     use miden_protocol::block::BlockNumber;
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::MerkleTree;
-    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+    use miden_protocol::transaction::{
+        AccountInputs,
+        ExecutedTransaction,
+        InputNote,
+        TransactionScript,
+    };
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
+    use rand::RngExt;
 
     use super::{
         AccountFetch,
@@ -799,7 +940,7 @@ mod tests {
         VaultFetch,
         proto,
     };
-    use crate::{decode, encode};
+    use crate::{ProtoDecodeError, decode, encode};
 
     /// A store update with an executed transaction, every note update type, an output note and
     /// every tag source.
@@ -860,6 +1001,19 @@ mod tests {
     }
 
     #[test]
+    fn executed_transaction_without_inputs_is_rejected() {
+        let bytes = prost::Message::encode_to_vec(&proto::ExecutedTransaction::default());
+
+        assert!(matches!(
+            decode::<ExecutedTransaction>(&bytes),
+            Err(ProtoDecodeError::MissingField {
+                message: "executed transaction",
+                field: "inputs"
+            })
+        ));
+    }
+
+    #[test]
     fn note_update_type_unspecified_is_rejected() {
         assert!(NoteUpdateType::try_from(proto::NoteUpdateType::Unspecified).is_err());
     }
@@ -896,7 +1050,7 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let mut notes = notes(8, &mut rng);
 
         let private_account = mock_private_account([0; 32]);
@@ -910,24 +1064,28 @@ mod tests {
             (&prefetched_account).into(),
             account_tree.open(prefetched_account.id()),
         );
-        let merkle_tree =
-            MerkleTree::new([rng.draw_word(), rng.draw_word(), rng.draw_word(), rng.draw_word()])
-                .unwrap();
+        let merkle_tree = MerkleTree::new([
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+        ])
+        .unwrap();
 
         let request = TransactionRequestBuilder::new()
             .block_numbers([BlockNumber::from(1u32), BlockNumber::from(3u32)])
             .input_notes([(notes.pop().unwrap(), None)])
             .explicit_input_notes([(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.draw_word()),
+                Some(rng.random::<Word>()),
             )])
-            .input_notes([(notes.pop().unwrap(), Some(rng.draw_word()))])
+            .input_notes([(notes.pop().unwrap(), Some(rng.random::<Word>()))])
             .expected_output_recipients([notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
                 notes.pop().unwrap().into(),
                 NoteTag::with_account_target(sender_id),
             )])
-            .extend_advice_map([(rng.draw_word(), vec![Felt::from(1u32), Felt::from(2u32)])])
+            .extend_advice_map([(rng.random::<Word>(), vec![Felt::from(1u32), Felt::from(2u32)])])
             .extend_merkle_store(merkle_tree.inner_nodes())
             .foreign_accounts([
                 ForeignAccount::public(
@@ -947,8 +1105,8 @@ mod tests {
             ])
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
-            .script_arg(rng.draw_word())
-            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
+            .script_arg(rng.random::<Word>())
+            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.random::<Word>()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
             .build()
@@ -960,7 +1118,7 @@ mod tests {
     /// A request with a custom script and the fields that a send notes request cannot have.
     #[test]
     fn transaction_request_with_custom_script_round_trips() {
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let note_script = NoteScript::mock();
         let script =
             TransactionScript::from_parts(note_script.mast(), note_script.entrypoint()).unwrap();
@@ -969,7 +1127,7 @@ mod tests {
             .input_notes(notes(2, &mut rng).into_iter().map(|note| (note, None)))
             .custom_script(script)
             .ignore_invalid_input_notes()
-            .fee_conversion_salt(rng.draw_word())
+            .fee_conversion_salt(rng.random::<Word>())
             .build()
             .unwrap();
 
@@ -990,7 +1148,7 @@ mod tests {
             .with_component(MockAccountComponent::with_empty_slots())
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .account_type(AccountType::Private)
             .build_existing()
@@ -998,7 +1156,7 @@ mod tests {
     }
 
     /// Returns `count` P2ID notes with different serial numbers and amounts.
-    fn notes(count: u64, rng: &mut RandomCoin) -> Vec<Note> {
+    fn notes(count: u64, rng: &mut EidosRandomCoin) -> Vec<Note> {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();

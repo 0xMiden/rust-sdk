@@ -3,7 +3,7 @@
 [![LICENSE](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/0xMiden/rust-sdk/blob/HEAD/LICENSE)
 [![test](https://github.com/0xMiden/rust-sdk/actions/workflows/test.yml/badge.svg)](https://github.com/0xMiden/rust-sdk/actions/workflows/test.yml)
 [![build](https://github.com/0xMiden/rust-sdk/actions/workflows/build.yml/badge.svg)](https://github.com/0xMiden/rust-sdk/actions/workflows/build.yml)
-[![RUST_VERSION](https://img.shields.io/badge/rustc-1.98.1+-lightgray.svg)](https://www.rust-lang.org/tools/install)
+[![RUST_VERSION](https://img.shields.io/badge/rustc-1.99.1+-lightgray.svg)](https://www.rust-lang.org/tools/install)
 [![crates.io](https://img.shields.io/crates/v/miden-client)](https://crates.io/crates/miden-client)
 
 This repository contains the Miden client, which provides a way to execute and prove transactions, facilitating the interaction with the Miden rollup.
@@ -33,8 +33,8 @@ For more info check:
 ## Workspace structure
 
 The workspace is organized as follows:
-- The `bin` folder contains crates that are meant to be compiled into binaries (like the CLI).
-- The `crates` folder contains the library crates that are meant to be used as dependencies (like the Rust client library).
+- The `bin` folder contains crates that are meant to be compiled into binaries (like the CLI, the benchmarks and the integration tests).
+- The `crates` folder contains the library crates that are meant to be used as dependencies (like the Rust client library, its core traits, the gRPC client and the SQLite store).
 
 ### Makefile
 

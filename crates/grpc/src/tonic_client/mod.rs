@@ -9,7 +9,7 @@ use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
 use miden_client_core::rpc::domain::storage_map::StorageMapInfo;
 use miden_client_core::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use miden_client_core::rpc::domain::transaction::TransactionRecord;
+use miden_client_core::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_client_core::rpc::encryption::{
     AttestedTransactionEncryptionKey,
     SealedTransactionInputs,
@@ -23,7 +23,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use tonic::Status;
@@ -454,6 +454,14 @@ impl NodeRpcClient for GrpcClient {
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {
         self.call(v1::GetNoteScriptByRoot { root }).await
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+        self.call(v1::GetTransactionLogs { account_id, transaction_id }).await
     }
 
     async fn sync_storage_maps(

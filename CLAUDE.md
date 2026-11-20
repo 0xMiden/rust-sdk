@@ -4,16 +4,31 @@
 
 ## Important: Always Format Code
 
-**After making any code changes, always run `make format` before committing.** This ensures consistent formatting across Rust, TypeScript, and other files.
+**After making any code changes, always run `make format`.** This ensures consistent formatting and reflows comments to the configured width.
+
+Do not run `git commit` or `git push` unless the current task asks for it (see `AGENTS.md`).
 
 ## Repository Overview
 
 Miden Client is the official client library for interacting with the Miden rollup. It provides APIs for managing accounts, notes, and transactions on the Miden network.
 
-**Key crates:**
-- `rust-client` - Core client library (no_std compatible)
-- `sqlite-store` - SQLite persistence backend
-- `miden-cli` - Command-line interface
+**Library crates (`crates/`):**
+- `rust-client` (`miden-client`) - Main client library (no_std compatible)
+- `core` (`miden-client-core`) - Shared traits and types, including the `Store` and `NodeRpcClient` traits (no_std)
+- `grpc` (`miden-client-grpc`) - Default gRPC implementation of `NodeRpcClient`
+- `proto` (`miden-client-proto`) - Protobuf serialization of client types
+- `sqlite-store` (`miden-client-sqlite-store`) - SQLite persistence backend
+- `web3signer-authenticator` (`miden-web3signer-authenticator`) - Transaction authenticator backed by a Web3Signer instance
+
+**Binaries (`bin/`):**
+- `miden-cli` (`miden-client-cli`) - Command-line interface
+- `miden-bench` (`miden-client-bench`) - Benchmarking tool
+- `integration-tests` - Integration tests that run against a test node
+
+**Testing and tooling:**
+- `crates/testing/miden-client-tests` - Unit tests for the client
+- `crates/testing/test-node-genesis` - Genesis fixtures for the test node (not for production)
+- `xtask` - Repository tooling (for example, comment reflow used by `make format`)
 
 The browser-focused SDK (WASM/JavaScript wrapper, React hooks library, vite plugin, IndexedDB store) lives in a dedicated repository at [0xMiden/web-sdk](https://github.com/0xMiden/web-sdk).
 
@@ -78,14 +93,23 @@ pub struct Client<AUTH> {
 ### Key Directories
 ```
 crates/
+├── core/src/
+│   ├── store/        # Store trait and record types
+│   └── rpc/          # NodeRpcClient trait
 ├── rust-client/src/
 │   ├── account/      # Account management
 │   ├── note/         # Note handling
 │   ├── transaction/  # TX building/execution
-│   ├── rpc/          # Node communication
-│   ├── store/        # Persistence trait
+│   ├── rpc/          # Re-exports of the RPC trait and gRPC client
+│   ├── store/        # Re-exports of store types, executor data store adapter
 │   └── sync/         # State synchronization
+├── grpc/src/         # gRPC (tonic) RPC client
+├── proto/src/        # Protobuf conversions
 └── sqlite-store/src/ # SQLite implementation
+bin/
+├── miden-cli/        # CLI
+├── miden-bench/      # Benchmarks
+└── integration-tests/
 ```
 
 ## Git Workflow

@@ -38,11 +38,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Test the changelog scripts
+        run: python3 scripts/test_changelog.py
+        shell: bash
       - name: Validate changelog entries and check for changes
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           NO_CHANGELOG_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no changelog') }}
-        run: |
-          python3 scripts/test_changelog.py
-          ./scripts/check-changelog.sh
+        run: ./scripts/check-changelog.sh
         shell: bash

@@ -8,8 +8,8 @@ Every PR that changes something a downstream user notices adds a file to `unrele
 ```
 
 [`Changelog.Format.md`](../Changelog.Format.md) describes the tags. The PR link is added at release, so the file
-can be written before the PR exists. A follow-up PR can update an existing entry or add its own entry file.
-Each file must contain complete entries.
+can be written before the PR exists. A follow-up PR adds its own entry file, because the release links every
+line of a file to the PR that added the file. Each file must contain complete entries.
 
 PRs that do not need an entry get the `no changelog` label. CI validates entry files even with this label.
 Run `python3 scripts/changelog.py` to validate the entries locally.

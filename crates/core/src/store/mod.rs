@@ -13,8 +13,10 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_processor::LoadedMastForest;
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -31,13 +33,15 @@ use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::{Felt, Word};
+use miden_protocol::vm::PackageDebugInfo;
+use miden_protocol::{Felt, MastForest, Word};
 
 use crate::errors::StoreError;
 use crate::note_transport::NoteTransportSyncState;
@@ -654,6 +658,29 @@ pub trait Store: Send + Sync {
     /// methods must use the same encoding, so that [`Store::get_protocol_config`] can read the
     /// configurations from both sources.
     async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError>;
+
+    // CODE REGISTRY
+    // --------------------------------------------------------------------------------------------
+
+    /// Adds the MAST forests and their debug info to the code registry, and their procedure roots
+    /// to the code tree.
+    ///
+    /// Each debug info must belong to the forest that it is paired with, because it refers to the
+    /// nodes of that forest. A forest that already has debug info in the registry is skipped.
+    ///
+    /// The client calls this method when it is built, to store the transaction kernel and the
+    /// libraries it is built with.
+    async fn insert_procedures_with_debug_info(
+        &self,
+        procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
+    ) -> Result<(), StoreError>;
+
+    /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
+    /// code registry has it, or `None` if the procedure is not registered.
+    async fn get_procedure(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError>;
 
     // RPC LIMITS
     // --------------------------------------------------------------------------------------------

@@ -2913,6 +2913,7 @@ dependencies = [
  "chrono",
  "futures",
  "miden-objects",
+ "miden-processor",
  "miden-protocol",
  "miden-standards",
  "rand 0.10.3",

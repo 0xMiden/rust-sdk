@@ -209,3 +209,25 @@ jobs:
         run: |
           set -e
           gh release upload "$RELEASE_TAG" "miden-client-${{ matrix.target }}"
+
+  # Fill the GitHub release page with the `.changelog/<tag>/` entries.
+  release-notes:
+    name: set release notes from the changelog entries
+    if: ${{ github.event_name == 'release' && github.repository_owner == '0xMiden' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - *update-ca-certificates
+      - name: Check out code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      # Built in a step without `GH_TOKEN`, so no entry content can read the token.
+      - name: Build release notes
+        run: ./scripts/release-notes.sh "${RELEASE_TAG}" > notes.md
+      - name: Set release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md

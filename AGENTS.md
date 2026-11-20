@@ -15,7 +15,7 @@ commit messages, code style, the changelog, and the pre-PR checklist. In particu
 
 - Branch from `next` and rebase onto it instead of merging.
 - Write commit messages in the `type(scope): description` form.
-- Add a `CHANGELOG.md` entry for anything a downstream user notices.
+- Add a `.changelog/unreleased/` entry for anything a downstream user notices.
 - Run `make lint` before opening a pull request.
 
 ## Code Comment Style

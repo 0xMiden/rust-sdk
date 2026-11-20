@@ -3,18 +3,13 @@ Generate a migration guide for the Miden Client SDK from the structured changelo
 ## Steps
 
 1. Determine the target version from `$ARGUMENTS` (e.g., "0.14.0", "0.13.0", or "latest"). If empty, default to "latest".
-2. Read `CHANGELOG.md` and extract the changelog section for the target version.
-   - If version is "latest", find the first version section that has a date (not "TBD").
-   - Identify the previous version from the preceding section header.
+2. Read the changelog entries of the target version from `.changelog/v<version>/*.md`. A final release also includes the entries of its pre-releases (`.changelog/v<version>-*/`).
+   - If version is "latest", use the release directory with the highest version.
+   - Releases up to 0.18.0 are sections of `CHANGELOG.md` instead.
+   - Identify the previous version from the release directories and the `CHANGELOG.md` section headers.
 3. Parse all `[BREAKING]` entries from the target version section.
 4. Read `Changelog.Format.md` for the category and scope definitions.
-5. For each breaking change, apply the migration strategy based on the category tag:
-   - `rename`: Show find-replace instructions, update imports
-   - `removal`: Show replacement API with equivalent functionality
-   - `param`: Show old vs new function signatures, explain new parameters
-   - `type`: Show type conversions and import changes
-   - `behavior`: Explain the behavioral difference and when code needs adaptation
-   - `arch`: Show Cargo.toml/package.json changes, new import paths
+5. Apply the migration strategies in the [category reference](../../Changelog.Format.md#category-reference).
 6. For each breaking change, use the PR number to fetch the diff via `gh pr view #NUMBER` for additional context.
 7. Explore the codebase to find real usage patterns for before/after code examples.
 8. Group related breaking changes that affect the same workflow into a single section.
@@ -41,15 +36,6 @@ old_code_example();
 new_code_example();
 ```
 
-**TypeScript:** (only if scope includes `web`)
-```typescript
-// Before (previous version)
-oldCodeExample();
-
-// After (target version)
-newCodeExample();
-```
-
 #### Migration Steps
 1. Step-by-step instructions
 2. ...
@@ -65,9 +51,9 @@ newCodeExample();
 - Use a table of contents for guides with 5+ breaking changes.
 - Order sections by impact: most disruptive changes first.
 - End with a "Need Help?" section linking to Discord/GitHub issues.
-- Include both Rust and TypeScript examples when scope includes both `rust` and `web`.
+- Cover every scope of an entry: show the RPC client change for `rpc`, the CLI change for `cli`, and the `Store` implementation change for `store`.
 - Use real, runnable code examples (not pseudocode). Keep examples minimal but complete.
-- Always specify language for syntax highlighting (```rust, ```typescript).
+- Always specify language for syntax highlighting (```rust, ```bash).
 - Use diff syntax (```diff) when showing inline changes.
 - Do NOT include non-breaking features or fixes.
 - Tone: direct and actionable ("Update your imports" not "You may want to consider updating").

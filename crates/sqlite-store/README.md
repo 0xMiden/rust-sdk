@@ -48,7 +48,7 @@ Upgrades are forward-only. There are no down migrations.
    `cargo test -p miden-client-sqlite-store --lib migration_schema_hashes_are_stable`, and replace
    it with the hash the failure reports as `found`. Leave the entries before it alone. If one of
    them is what fails, the migration edited the schema an older version built.
-4. Add a `CHANGELOG.md` entry under `[store]`.
+4. Add a `.changelog/unreleased/` entry with the `[store]` scope.
 
 `scripts/check-migrations.sh` runs in CI and fails a pull request that modifies, renames or deletes
 a file that already exists on the base branch. The `no migration check` label skips it, for schema

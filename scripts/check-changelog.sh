@@ -1,21 +1,20 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
-CHANGELOG_FILE="${1:-CHANGELOG.md}"
+CHANGELOG_DIR=".changelog/unreleased"
 
-if [ "${NO_CHANGELOG_LABEL}" = "true" ]; then
-    # 'no changelog' set, so finish successfully
-    echo "\"no changelog\" label has been set"
+python3 scripts/changelog.py
+
+if [ "${NO_CHANGELOG_LABEL:-false}" = "true" ]; then
+    echo '"no changelog" label has been set'
     exit 0
-else
-    # a changelog check is required
-    if ! git diff --exit-code "origin/${BASE_REF}" -- "${CHANGELOG_FILE}" > /dev/null 2>&1; then
-        echo "The \"${CHANGELOG_FILE}\" file has been updated."
-        exit 0
-    fi
+fi
 
-    >&2 echo "Changes should come with an entry in the \"CHANGELOG.md\" file. This behavior
-can be overridden by using the \"no changelog\" label, which is used for changes
-that are trivial / explicitly stated not to require a changelog entry."
+changed=$(git diff --name-only --no-renames --diff-filter=AM "origin/${BASE_REF}...HEAD" -- ":(glob)${CHANGELOG_DIR}/*.md")
+if [ -z "$changed" ]; then
+    >&2 echo "Add or update an entry in ${CHANGELOG_DIR}/. See .changelog/README.md.
+Use the \"no changelog\" label for changes that do not need an entry."
     exit 1
 fi
+
+echo "The ${CHANGELOG_DIR} directory has been updated."

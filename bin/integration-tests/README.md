@@ -158,10 +158,38 @@ transaction before it joins a batch. A test that needs the funding to land in a 
 transaction, one asserting on what a sync reports for instance, should call
 `TestClient::take_funding` and consume the note itself.
 
+### Refunds
+
+A funded account receives more of the native asset than its transactions cost. On a chain that
+outlives the run, such as testnet, set `MIDEN_TEST_REFUND_FUNDS=1` to send the remainder back to
+the funding service after each test:
+
+```bash
+TEST_MIDEN_NETWORK=testnet MIDEN_FUNDING_SERVICE_URL=https://funding.example \
+  MIDEN_TEST_REFUND_FUNDS=1 cargo nextest run --workspace --release --test=integration
+```
+
+Every client that a `ClientConfig` builds is recorded. After the test returns or panics, each
+recorded client is opened again, and each account it can sign for sends its native asset balance
+to the funding service account in a public pay-to-ID note. The service consumes the note as a
+deposit. The refund keeps the largest fee of one transaction in the account to pay for itself, and
+it skips a balance smaller than two such fees. It does not wait for the refund to commit.
+
+A refund never fails a test. These accounts keep their balance:
+
+- An account that never transacted. Its funding note stays unspent.
+- A locked account, a watched account and a network account.
+- An account of a client that the test built without a `ClientConfig`.
+
+Refunds are off by default. On the testing node they only add a proof for each account, because
+the run throws the chain away.
+
 ### Environment variables
 
 - `MIDEN_FUNDING_SERVICE_URL` - funding service base URL. Unset or
   empty leaves the run without a funder
+- `MIDEN_TEST_REFUND_FUNDS` - set to `1` to refund the unspent native asset of the test accounts to
+  the funding service after each test. Off by default
 - `MIDEN_VERIFICATION_BASE_FEE` - genesis `verification_base_fee` for the testing node (default
   `500`, `0` runs the node fee-free and declares no funding wallet)
 

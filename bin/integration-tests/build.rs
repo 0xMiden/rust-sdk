@@ -35,11 +35,13 @@ async fn {TEST_FUNCTION_NAME}() -> Result<()> {{
     // Note transport is cleared here to avoid eager gRPC connections for every test;
     // transport tests configure their own transport via TEST_MIDEN_NOTE_TRANSPORT_URL.
     // The funding service comes from MIDEN_FUNDING_SERVICE_URL, since a `#[tokio::test]` wrapper
-    // has no arguments of its own to read.
+    // has no arguments of its own to read. MIDEN_TEST_REFUND_FUNDS turns on the refund of the
+    // unspent native asset after the test.
     let client_config = ClientConfig::default()
         .with_note_transport_endpoint(None)
-        .with_funding_service(funding::funding_service_from_env().as_deref())?;
-    {ORIGINAL_FUNCTION_NAME}(client_config).await
+        .with_funding_service(funding::funding_service_from_env().as_deref())?
+        .with_refunds_from_env()?;
+    miden_client_integration_tests::run_test(client_config, {ORIGINAL_FUNCTION_NAME}).await
 }}"#;
 
 // MAIN FUNCTION

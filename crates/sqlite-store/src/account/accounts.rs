@@ -587,7 +587,7 @@ impl SqliteStore {
 
     /// Returns the stored latest header of an account, or [`StoreError::AccountDataNotFound`] if
     /// the store does not track it.
-    pub(crate) fn require_latest_account_header(
+    fn require_latest_account_header(
         tx: &Transaction<'_>,
         account_id: AccountId,
     ) -> Result<StoredAccountHeader, StoreError> {
@@ -946,7 +946,6 @@ impl SqliteStore {
     pub(crate) fn apply_sync_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
-        previous_header: &AccountHeader,
         new_header: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
@@ -964,7 +963,10 @@ impl SqliteStore {
             }
             .into());
         }
-        Self::apply_account_patch(tx, smt_forest, previous_header, new_header, patch)
+
+        // Transaction derefs to Connection, so we can pass it where Connection is expected.
+
+        Self::apply_account_patch(tx, smt_forest, init_header, new_header, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale

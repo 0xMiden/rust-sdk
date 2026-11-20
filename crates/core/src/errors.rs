@@ -117,24 +117,6 @@ pub enum StaleUpdate {
         stored_nonce: u64,
     },
     #[error(
-        "input note {details_commitment} is stored in state {stored_discriminant}, which state {new_discriminant} would move backwards"
-    )]
-    InvalidInputNoteTransition {
-        details_commitment: Word,
-        stored_discriminant: u8,
-        new_discriminant: u8,
-    },
-    #[error(
-        "output note {details_commitment} is stored in state {stored_discriminant}, which state {new_discriminant} would move backwards"
-    )]
-    InvalidOutputNoteTransition {
-        details_commitment: Word,
-        stored_discriminant: u8,
-        new_discriminant: u8,
-    },
-    #[error("block {0} still holds an unspent note")]
-    BlockWithUnspentNote(BlockNumber),
-    #[error(
         "state sync update was built from block {block_from}, but the sync height of the store is block {sync_height}"
     )]
     SyncHeightMismatch {

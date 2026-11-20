@@ -39,9 +39,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][behavior][store] Store writes now verify the state they were derived from inside the write transaction, so a stale account, note, or block update fails instead of overwriting newer state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
-* [BREAKING][type][rust] `PublicAccountUpdate::Patch` carries a new `previous_header` field holding the account header the patch was derived from ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
-* [BREAKING][type][rust] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it  ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
+* [BREAKING][type][rust,store] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it. `SqliteStore` returns it instead of `StoreError::DatabaseError` when an account update is not based on the stored account state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][param][rust] `StateSyncUpdate::from_parts` takes `block_from`, the sync height that the update was built from, as its first argument. `Client::apply_state_sync` and `Client::apply_chain_updates` return `StaleUpdate::SyncHeightMismatch` if the store is at a different sync height ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][removal][rust] Removed `ChainAnchor`, `ChainAnchorError`, `Client::execute_transaction_at`, `Client::chain_anchor_for_request`, `ClientDataStore::with_chain_anchor` and `ClientError::ChainAnchorError`. A transaction always executes against the sync height of the client.
 * [BREAKING][arch][all] Moved hashing and Falcon signatures to Eidos, which changes commitments, account IDs, note IDs and nullifiers. The client requires a new store and a new keystore, and there is no migration from the old format ([#2813](https://github.com/0xMiden/rust-sdk/pull/2813)).

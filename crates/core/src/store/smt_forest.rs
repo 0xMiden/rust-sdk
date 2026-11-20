@@ -403,7 +403,7 @@ impl<B: BackendReader> AccountSmtForest<B> {
 ///
 /// Takes the error by value so it can be used directly with `map_err`.
 #[allow(clippy::needless_pass_by_value)]
-fn forest_error(err: LargeSmtForestError) -> StoreError {
+pub(super) fn forest_error(err: LargeSmtForestError) -> StoreError {
     StoreError::DatabaseError(format!("smt forest error: {err}"))
 }
 

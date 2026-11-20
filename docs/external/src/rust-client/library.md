@@ -104,10 +104,10 @@ use miden_client::keystore::Keystore;
 
 // Use a different random seed for each account.
 let init_seed = rand::random::<[u8; 32]>();
-let secret_key = AuthSecretKey::new_falcon512_poseidon2();
+let secret_key = AuthSecretKey::new_falcon512_eidos();
 let auth_component = AuthSingleSig::new(Approver::new(
     secret_key.public_key().to_commitment(),
-    AuthScheme::Falcon512Poseidon2,
+    AuthScheme::Falcon512Eidos,
 ));
 
 let new_account = AccountBuilder::new(init_seed)

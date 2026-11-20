@@ -77,7 +77,7 @@ async fn insert_log_account(client: &mut TestClient, account_type: AccountType) 
         AccountComponent::new(component_code, vec![], AccountComponentMetadata::new(LOG_MODULE))
             .unwrap();
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let mut init_seed = [0u8; 32];
     client.rng().fill_bytes(&mut init_seed);
 
@@ -85,7 +85,7 @@ async fn insert_log_account(client: &mut TestClient, account_type: AccountType) 
         .account_type(account_type)
         .with_component(AuthSingleSig::new(Approver::new(
             key_pair.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
+            AuthSchemeId::Falcon512Eidos,
         )))
         .with_component(BasicWallet)
         .with_component(component)

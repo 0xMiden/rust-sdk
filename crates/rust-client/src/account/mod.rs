@@ -869,12 +869,12 @@ mod schema_commitment_tests {
 
     #[test]
     fn wallet_build_includes_schema_commitment_metadata_slot() {
-        let key = AuthSecretKey::new_falcon512_poseidon2();
+        let key = AuthSecretKey::new_falcon512_eidos();
         let account = AccountBuilder::new([2u8; 32])
             .account_type(AccountType::Private)
             .with_component(AuthSingleSig::new(Approver::new(
                 key.public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             )))
             .with_component(BasicWallet)
             .build_with_schema_commitment()

@@ -1,4 +1,4 @@
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use miden_protocol::Word;
@@ -22,40 +22,43 @@ impl PendingAccountTransactions<'_> {
         self.account_id
     }
 
-    /// Discards transactions with a known cause and propagates each discard to dependent
-    /// transactions. A state on the proven chain remains valid.
+    /// Discards each transaction that has a direct cause and preserves that cause. A dependent
+    /// transaction is discarded if it needs an account state that a discard invalidates.
     ///
-    /// Returns the account states that lost their pending producer. The account tracker selects the
-    /// states on its local branch that need a rollback.
-    pub fn resolve(
-        mut self,
-        established: &BTreeSet<Word>,
-        cause: impl Fn(&TransactionRecord) -> Option<DiscardCause>,
+    /// Returns the account states invalidated by these discards.
+    pub fn discard_where(
+        self,
+        confirmed_states: &BTreeSet<Word>,
+        discard_cause: impl Fn(&TransactionRecord) -> Option<DiscardCause>,
     ) -> BTreeSet<Word> {
-        let mut dependents: BTreeMap<Word, Vec<usize>> = BTreeMap::new();
-        let mut discards = VecDeque::new();
-        for (index, tx) in self.records.iter().enumerate() {
-            dependents.entry(tx.details.init_account_state).or_default().push(index);
-            if let Some(cause) = cause(tx) {
-                discards.push_back((index, cause));
+        let mut to_discard = Vec::new();
+        let mut pending_by_initial_state: BTreeMap<Word, Vec<_>> = BTreeMap::new();
+        for tx in self.records {
+            if let Some(cause) = discard_cause(tx) {
+                to_discard.push((tx, cause));
+            } else {
+                pending_by_initial_state
+                    .entry(tx.details.init_account_state)
+                    .or_default()
+                    .push(tx);
             }
         }
 
         let mut invalid_states = BTreeSet::new();
-        while let Some((index, cause)) = discards.pop_front() {
-            let tx = &mut *self.records[index];
-            let state = tx.details.final_account_state;
-            if !tx.discard_transaction(cause)
-                || state == tx.details.init_account_state
-                || established.contains(&state)
-                || !invalid_states.insert(state)
+        while let Some((tx, cause)) = to_discard.pop() {
+            tx.discard_transaction(cause);
+
+            let final_state = tx.details.final_account_state;
+            if final_state == tx.details.init_account_state
+                || confirmed_states.contains(&final_state)
             {
                 continue;
             }
-
-            if let Some(indices) = dependents.remove(&state) {
-                discards
-                    .extend(indices.into_iter().map(|i| (i, DiscardCause::DiscardedInitialState)));
+            invalid_states.insert(final_state);
+            if let Some(dependents) = pending_by_initial_state.remove(&final_state) {
+                for dependent in dependents {
+                    to_discard.push((dependent, DiscardCause::DiscardedInitialState));
+                }
             }
         }
         invalid_states
@@ -164,61 +167,6 @@ impl TransactionUpdateTracker {
         for commitment in header.input_notes().iter() {
             self.external_nullifier_accounts.insert(commitment.nullifier(), account_id);
         }
-    }
-
-    /// Discards transactions that are stale or expired and returns the invalidated account states.
-    pub fn apply_sync_height_update(
-        &mut self,
-        height: BlockNumber,
-        tx_discard_delta: Option<u32>,
-    ) -> Vec<(AccountId, Word)> {
-        let stale_before =
-            tx_discard_delta.and_then(|delta| height.checked_sub(delta)).unwrap_or_default();
-        self.discard_where(|tx| tx.details.discard_cause_at(height, stale_before))
-    }
-
-    /// Discards transactions that need the spent input and returns the invalidated account states.
-    pub fn apply_input_note_nullified(&mut self, nullifier: Nullifier) -> Vec<(AccountId, Word)> {
-        self.discard_where(|tx| {
-            tx.details
-                .input_note_nullifiers
-                .contains(&nullifier.as_word())
-                .then_some(DiscardCause::InputConsumed)
-        })
-    }
-
-    /// Discards pending transactions that produced or require the superseded state.
-    pub fn apply_superseded_account_state(&mut self, state: Word) -> Vec<(AccountId, Word)> {
-        self.discard_where(|tx| {
-            if tx.details.final_account_state == state {
-                Some(DiscardCause::Superseded)
-            } else {
-                (tx.details.init_account_state == state)
-                    .then_some(DiscardCause::DiscardedInitialState)
-            }
-        })
-    }
-
-    /// Discards pending transactions that require the invalid state.
-    pub fn apply_invalid_initial_account_state(&mut self, state: Word) -> Vec<(AccountId, Word)> {
-        self.discard_where(|tx| {
-            (tx.details.init_account_state == state).then_some(DiscardCause::DiscardedInitialState)
-        })
-    }
-
-    fn discard_where(
-        &mut self,
-        cause: impl Fn(&TransactionRecord) -> Option<DiscardCause>,
-    ) -> Vec<(AccountId, Word)> {
-        self.pending_by_account()
-            .flat_map(|pending| {
-                let account_id = pending.account_id();
-                pending
-                    .resolve(&BTreeSet::new(), &cause)
-                    .into_iter()
-                    .map(move |state| (account_id, state))
-            })
-            .collect()
     }
 }
 
@@ -334,6 +282,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dependent_transactions_keep_their_own_discard_cause() {
+        let parent = pending_transaction(1, 2, 1);
+        let child = pending_transaction(2, 3, 2);
+        let grandchild = pending_transaction(3, 4, 3);
+        let (parent_id, child_id, grandchild_id) = (parent.id, child.id, grandchild.id);
+        let mut tracker = TransactionUpdateTracker::new(vec![grandchild, child, parent]);
+        let pending = tracker.pending_by_account().next().unwrap();
+
+        let invalid_states = pending.discard_where(&BTreeSet::new(), |tx| {
+            if tx.id == parent_id {
+                Some(DiscardCause::Expired)
+            } else if tx.id == child_id {
+                Some(DiscardCause::InputConsumed)
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(
+            status(&tracker, child_id),
+            TransactionStatus::Discarded(DiscardCause::InputConsumed)
+        );
+        assert_eq!(
+            status(&tracker, grandchild_id),
+            TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)
+        );
+        assert_eq!(invalid_states, BTreeSet::from([word(2), word(3), word(4)]));
+    }
+
     /// A discarded transaction that left the account state unchanged does not invalidate that
     /// state. The other pending transactions from the state stay valid.
     #[test]
@@ -344,35 +322,16 @@ mod tests {
         let from_same_state_id = from_same_state.id;
         let mut tracker = TransactionUpdateTracker::new(vec![state_preserving, from_same_state]);
 
-        // The input note of the state-preserving transaction is consumed elsewhere.
-        tracker.apply_input_note_nullified(Nullifier::from_raw(word(1)));
+        let pending = tracker.pending_by_account().next().unwrap();
+        let invalid_states = pending.discard_where(&BTreeSet::new(), |tx| {
+            (tx.id == state_preserving_id).then_some(DiscardCause::InputConsumed)
+        });
+        assert!(invalid_states.is_empty());
 
         assert_eq!(
             status(&tracker, state_preserving_id),
             TransactionStatus::Discarded(DiscardCause::InputConsumed)
         );
         assert_eq!(status(&tracker, from_same_state_id), TransactionStatus::Pending);
-    }
-
-    /// A superseded state invalidates the transactions that start from it, also when only a
-    /// state-preserving transaction ends in it.
-    #[test]
-    fn superseded_state_discards_the_transactions_that_start_from_it() {
-        let state_preserving = pending_transaction(1, 1, 1);
-        let state_preserving_id = state_preserving.id;
-        let from_superseded = pending_transaction(1, 2, 2);
-        let from_superseded_id = from_superseded.id;
-        let mut tracker = TransactionUpdateTracker::new(vec![state_preserving, from_superseded]);
-
-        tracker.apply_superseded_account_state(word(1));
-
-        assert_eq!(
-            status(&tracker, state_preserving_id),
-            TransactionStatus::Discarded(DiscardCause::Superseded)
-        );
-        assert_eq!(
-            status(&tracker, from_superseded_id),
-            TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)
-        );
     }
 }

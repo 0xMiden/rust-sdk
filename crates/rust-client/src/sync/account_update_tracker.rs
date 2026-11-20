@@ -9,12 +9,7 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::transaction::TransactionHeader;
 
-use super::{
-    AccountUpdates,
-    PendingAccountTransactions,
-    PublicAccountUpdate,
-    TransactionUpdateTracker,
-};
+use super::{AccountUpdates, PendingAccountTransactions, PublicAccountUpdate};
 use crate::store::{AccountStatus, StoreError};
 use crate::transaction::{DiscardCause, TransactionRecord, TransactionStatus};
 
@@ -188,7 +183,7 @@ impl TrackedAccount {
         let superseded =
             matches!(self.state, AccountSyncState::Superseded(_)) && !established.contains(&tip);
         let first_losing_state = speculative.last().copied().unwrap_or(tip);
-        let invalid = pending.resolve(&established, |tx| {
+        let invalid = pending.discard_where(&established, |tx| {
             let initial = tx.details.init_account_state;
             let network_advanced =
                 established.contains(&initial) && self.proven_state != Some(initial);
@@ -310,24 +305,21 @@ impl AccountUpdateTracker {
             .filter(|header| header.id().is_private())
     }
 
-    /// Applies transaction and rollback decisions after sync has collected all inclusions and
-    /// nullifiers.
-    pub(super) fn reconcile_transactions(
+    /// Reconciles one account's pending transactions and records the local states to undo.
+    pub(super) fn reconcile_pending(
         &mut self,
-        transactions: &mut TransactionUpdateTracker,
+        pending: PendingAccountTransactions,
         conditions: &DiscardConditions,
     ) {
-        for pending in transactions.pending_by_account() {
-            let id = pending.account_id();
-            let states = match self.accounts.get(&id) {
-                Some(account) => account.reconcile(pending, conditions),
-                None => pending
-                    .resolve(&BTreeSet::new(), |tx| conditions.cause(tx))
-                    .into_iter()
-                    .collect(),
-            };
-            self.states_to_undo.extend(states.into_iter().map(|state| (id, state)));
-        }
+        let id = pending.account_id();
+        let states = match self.accounts.get(&id) {
+            Some(account) => account.reconcile(pending, conditions),
+            None => pending
+                .discard_where(&BTreeSet::new(), |tx| conditions.cause(tx))
+                .into_iter()
+                .collect(),
+        };
+        self.states_to_undo.extend(states.into_iter().map(|state| (id, state)));
     }
 
     /// Requests a proof before a reported transition can discard a pending transaction.
@@ -445,6 +437,7 @@ mod tests {
     use miden_protocol::{EMPTY_WORD, Felt};
 
     use super::*;
+    use crate::sync::TransactionUpdateTracker;
     use crate::sync::state_sync_update::build_account_patch;
     use crate::transaction::TransactionDetails;
 
@@ -618,7 +611,9 @@ mod tests {
             })
             .await
             .unwrap();
-        accounts.reconcile_transactions(&mut transactions, &DiscardConditions::default());
+        for pending in transactions.pending_by_account() {
+            accounts.reconcile_pending(pending, &DiscardConditions::default());
+        }
         crate::sync::StateSyncUpdate::from_parts(
             BlockNumber::from(1u32),
             crate::sync::PartialBlockchainUpdates::default(),
@@ -743,6 +738,36 @@ mod tests {
         let updates = tracker.into_account_updates();
         assert!(updates.updated_public_accounts().is_empty());
         assert!(updates.accounts_to_lock().is_empty());
+    }
+
+    #[test]
+    fn superseded_account_discards_pending_transactions_from_its_losing_state() {
+        let local = header(public_account_id(), 2, 2);
+        let winner = header(local.id(), 2, 9);
+        let child = header(local.id(), 3, 3);
+        let passthrough = pending(&local, &local);
+        let dependent = pending(&local, &child);
+        let expected = BTreeMap::from([
+            (passthrough.id, TransactionStatus::Discarded(DiscardCause::Superseded)),
+            (dependent.id, TransactionStatus::Discarded(DiscardCause::DiscardedInitialState)),
+        ]);
+        let records = vec![passthrough, dependent];
+        let mut accounts =
+            AccountUpdateTracker::new([(local.clone(), AccountStatus::Tracked)], &records);
+        let mut transactions = TransactionUpdateTracker::new(records);
+
+        let account = accounts.accounts.get_mut(&local.id()).unwrap();
+        account.proven_state = Some(winner.to_commitment());
+        account.state =
+            account.reconcile_public_account(&winner).with_update(patch_update(&winner));
+        let pending = transactions.pending_by_account().next().unwrap();
+        accounts.reconcile_pending(pending, &DiscardConditions::default());
+
+        let discarded: BTreeMap<_, _> = transactions
+            .discarded_transactions()
+            .map(|tx| (tx.id, tx.status.clone()))
+            .collect();
+        assert_eq!(discarded, expected);
     }
 
     /// The reconciliation decides whether an authenticated public state replaces the local state

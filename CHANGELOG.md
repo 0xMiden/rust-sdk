@@ -37,6 +37,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Replaced the individual discard methods on `TransactionUpdateTracker` with `pending_by_account` and `PendingAccountTransactions::discard_where`. Custom callers supply a discard cause for each affected transaction and the account states confirmed on chain ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 * [BREAKING][type][rust,store] `AccountUpdates::accounts_to_lock` supplies the exact private accounts a store must lock. Stores apply `AccountUpdates::states_to_undo` before public account updates. Custom sync callers supply account statuses and a lookup for unfamiliar private account commitments ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 
 * [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed.

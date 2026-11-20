@@ -13,7 +13,7 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::InputNoteCommitment;
+use miden_protocol::transaction::TransactionHeader;
 use tracing::info;
 
 use super::account_update_tracker::{
@@ -367,16 +367,17 @@ impl StateSync {
             .pending_transactions()
             .map(|tx| tx.details.account_id)
             .collect();
-        for record in &transactions {
-            if pending_accounts.contains(&record.transaction_header.account_id()) {
-                account_updates.observe_transition(&record.transaction_header);
+        for (account_id, headers) in ordered_account_transactions(&transactions)? {
+            if let Some(last) = headers.last() {
+                account_updates.apply_commitment_update(account_id, last.final_state_commitment());
             }
-        }
-        // The transaction records give the latest commitment of each account that changed. The
-        // tracker marks the accounts whose local state differs, and the sync fetches those.
-        let effects = TransactionEffects::from_records(&transactions)?;
-        for (account_id, commitment) in effects.commitments {
-            account_updates.apply_commitment_update(account_id, commitment);
+            let has_pending = pending_accounts.contains(&account_id);
+            for header in headers {
+                if has_pending {
+                    account_updates.observe_transition(header);
+                }
+                note_updates.record_input_note_order(header.input_notes());
+            }
         }
         self.sync_public_accounts(&mut account_updates, block_from, &chain_tip_header)
             .await?;
@@ -392,7 +393,6 @@ impl StateSync {
                 .unwrap_or_default(),
             spent_inputs: BTreeSet::new(),
         };
-        note_updates.extend_nullifiers(effects.nullifiers);
         Ok(ChainSyncData {
             block_from,
             advance: Some(ChainAdvance {
@@ -455,8 +455,9 @@ impl StateSync {
         } = chain_sync_data;
 
         if let Some(advance) = &advance {
-            account_updates
-                .reconcile_transactions(&mut transaction_updates, &advance.discard_conditions);
+            for pending in transaction_updates.pending_by_account() {
+                account_updates.reconcile_pending(pending, &advance.discard_conditions);
+            }
         }
 
         // Release notes after the nullifier check. Keep notes consumed on chain in their consumed
@@ -1493,35 +1494,42 @@ pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNum
         .into())
 }
 
-/// Groups transaction records by `(account_id, block_num)`.
-fn group_txs_by_account_block(
-    transaction_records: &[RpcTransactionRecord],
-) -> BTreeMap<(AccountId, BlockNumber), Vec<&RpcTransactionRecord>> {
-    let mut groups: BTreeMap<(AccountId, BlockNumber), Vec<&RpcTransactionRecord>> =
-        BTreeMap::new();
-    for record in transaction_records {
-        let account_id = record.transaction_header.account_id();
-        groups.entry((account_id, record.block_num)).or_default().push(record);
+/// Returns the transaction headers for each account in execution order.
+fn ordered_account_transactions(
+    records: &[RpcTransactionRecord],
+) -> Result<BTreeMap<AccountId, Vec<&TransactionHeader>>, ClientError> {
+    let mut by_block = BTreeMap::<_, Vec<_>>::new();
+    for record in records {
+        let header = &record.transaction_header;
+        by_block
+            .entry((header.account_id(), record.block_num))
+            .or_default()
+            .push(header);
     }
-    groups
+
+    let mut by_account = BTreeMap::<_, Vec<_>>::new();
+    for ((account_id, _), block) in by_block {
+        by_account.entry(account_id).or_default().extend(walk_execution_chain(&block)?);
+    }
+    Ok(by_account)
 }
 
 /// Orders the records for one account in one block. Transactions that preserve a state run before
 /// the transaction that leaves it. Their relative order uses the order of the RPC records.
 fn walk_execution_chain<'a>(
-    txs: &[&'a RpcTransactionRecord],
-) -> Result<Vec<&'a RpcTransactionRecord>, ClientError> {
+    txs: &[&'a TransactionHeader],
+) -> Result<Vec<&'a TransactionHeader>, ClientError> {
     let mut outgoing = BTreeMap::new();
     let mut reached = BTreeSet::new();
-    let mut passthroughs: BTreeMap<Word, Vec<&RpcTransactionRecord>> = BTreeMap::new();
+    let mut passthroughs: BTreeMap<Word, Vec<&TransactionHeader>> = BTreeMap::new();
     let invalid_chain = || {
         ClientError::ChainValidationError(
             "transactions for one account and block do not form a single chain".into(),
         )
     };
     for &tx in txs {
-        let initial = tx.transaction_header.initial_state_commitment();
-        let result = tx.transaction_header.final_state_commitment();
+        let initial = tx.initial_state_commitment();
+        let result = tx.final_state_commitment();
         if initial == result {
             passthroughs.entry(initial).or_default().push(tx);
         } else if outgoing.insert(initial, tx).is_some() || !reached.insert(result) {
@@ -1543,41 +1551,13 @@ fn walk_execution_chain<'a>(
         }
         current = outgoing.remove(&state).map(|tx| {
             ordered.push(tx);
-            tx.transaction_header.final_state_commitment()
+            tx.final_state_commitment()
         });
     }
     if ordered.len() != txs.len() {
         return Err(invalid_chain());
     }
     Ok(ordered)
-}
-
-/// The last reported state and the ordered input nullifiers of each account in a sync range.
-#[derive(Default)]
-struct TransactionEffects {
-    commitments: BTreeMap<AccountId, Word>,
-    nullifiers: Vec<Nullifier>,
-}
-
-impl TransactionEffects {
-    fn from_records(records: &[RpcTransactionRecord]) -> Result<Self, ClientError> {
-        let mut effects = Self::default();
-        // The groups are in ascending block order for each account.
-        for ((account_id, _), group) in group_txs_by_account_block(records) {
-            let ordered = walk_execution_chain(&group)?;
-            if let Some(last) = ordered.last() {
-                effects
-                    .commitments
-                    .insert(account_id, last.transaction_header.final_state_commitment());
-            }
-            for tx in ordered {
-                effects.nullifiers.extend(
-                    tx.transaction_header.input_notes().iter().map(InputNoteCommitment::nullifier),
-                );
-            }
-        }
-        Ok(effects)
-    }
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -1622,7 +1602,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{InputNotes, TransactionArgs, TransactionHeader};
+    use miden_protocol::transaction::{InputNotes, TransactionArgs};
     use miden_protocol::vm::AdviceMap;
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
@@ -2176,256 +2156,82 @@ mod tests {
         );
     }
 
-    // COMPUTE NULLIFIER TX ORDER TESTS
+    // TRANSACTION EXECUTION ORDER TESTS
     // --------------------------------------------------------------------------------------------
 
-    mod compute_nullifiers_tests {
-        use alloc::vec;
+    mod transaction_order_tests {
+        use miden_protocol::transaction::InputNoteCommitment;
 
-        use miden_protocol::block::BlockNumber;
-        use miden_protocol::note::Nullifier;
-        use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
+        use super::*;
 
-        use super::word;
-        use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
-
-        fn make_rpc_tx(
-            init_state: u64,
-            final_state: u64,
-            nullifier_vals: &[u64],
-            block_number: u32,
+        fn record(
+            account: AccountId,
+            block: u32,
+            initial: u64,
+            result: u64,
+            input: u64,
         ) -> RpcTransactionRecord {
-            let account_id = miden_protocol::account::AccountId::try_from(
-                miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-            )
-            .unwrap();
-
-            let input_notes = InputNotes::new_unchecked(
-                nullifier_vals
-                    .iter()
-                    .map(|v| InputNoteCommitment::from(Nullifier::from_raw(word(*v))))
-                    .collect(),
-            );
-
-            RpcTransactionRecord::new(
-                BlockNumber::from(block_number),
-                TransactionHeader::new(
-                    account_id,
-                    word(init_state),
-                    word(final_state),
-                    input_notes,
-                    vec![],
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            )
+            let inputs = InputNotes::new_unchecked(vec![InputNoteCommitment::from(
+                Nullifier::from_raw(word(input)),
+            )]);
+            let header =
+                TransactionHeader::new(account, word(initial), word(result), inputs, vec![])
+                    .unwrap();
+            RpcTransactionRecord::new(block.into(), header, vec![], vec![], vec![])
         }
 
         #[test]
-        fn chains_rpc_transactions_by_state_commitment() {
-            // Chain: tx_a (state 1->2) -> tx_b (state 2->3) -> tx_c (state 3->4)
-            //
-            // Passed in reverse order to verify chaining uses state, not insertion order.
-            let tx_a = make_rpc_tx(1, 2, &[10], 5);
-            let tx_b = make_rpc_tx(2, 3, &[20], 5);
-            let tx_c = make_rpc_tx(3, 4, &[30], 5);
-
-            let result = super::super::TransactionEffects::from_records(&[tx_c, tx_a, tx_b])
-                .unwrap()
-                .nullifiers;
-
-            assert_eq!(result[0], Nullifier::from_raw(word(10)));
-            assert_eq!(result[1], Nullifier::from_raw(word(20)));
-            assert_eq!(result[2], Nullifier::from_raw(word(30)));
-        }
-
-        #[test]
-        fn interleaves_passthroughs_at_their_execution_state() {
+        fn orders_each_account_by_block_and_execution_state() {
+            let a = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let b = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
             let records = [
-                make_rpc_tx(3, 3, &[50], 5),
-                make_rpc_tx(2, 2, &[30], 5),
-                make_rpc_tx(2, 3, &[40], 5),
-                make_rpc_tx(1, 2, &[20], 5),
-                make_rpc_tx(1, 1, &[10], 5),
+                record(a, 6, 3, 4, 40),
+                record(b, 5, 10, 10, 50),
+                record(a, 5, 2, 3, 30),
+                record(a, 5, 1, 2, 20),
             ];
-            let result =
-                super::super::TransactionEffects::from_records(&records).unwrap().nullifiers;
-            assert_eq!(result, [10, 20, 30, 40, 50].map(|n| Nullifier::from_raw(word(n))));
-        }
 
-        #[test]
-        fn rejects_disconnected_transaction_records() {
-            let records = [make_rpc_tx(1, 2, &[10], 5), make_rpc_tx(3, 3, &[20], 5)];
-            assert!(super::super::TransactionEffects::from_records(&records).is_err());
-        }
-
-        #[test]
-        fn groups_independently_by_account_and_block() {
-            // Account A, block 5: two chained txs.
-            let tx_a1 = make_rpc_tx(1, 2, &[10], 5);
-            let tx_a2 = make_rpc_tx(2, 3, &[20], 5);
-
-            // Account A, block 6: independent chain.
-            let tx_a3 = make_rpc_tx(3, 4, &[30], 6);
-
-            // Account B, block 5: independent chain.
-            let account_b = miden_protocol::account::AccountId::try_from(
-                miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
-            )
-            .unwrap();
-
-            let tx_b1 = RpcTransactionRecord::new(
-                BlockNumber::from(5u32),
-                TransactionHeader::new(
-                    account_b,
-                    word(100),
-                    word(200),
-                    InputNotes::new_unchecked(vec![InputNoteCommitment::from(
-                        Nullifier::from_raw(word(40)),
-                    )]),
-                    vec![],
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
+            let by_account = ordered_account_transactions(&records).unwrap();
+            assert_eq!(by_account.len(), 2);
+            let [last, passthrough, second, first] = &records;
+            assert_eq!(
+                by_account[&a],
+                [&first.transaction_header, &second.transaction_header, &last.transaction_header]
             );
-
-            let result =
-                super::super::TransactionEffects::from_records(&[tx_a2, tx_b1, tx_a3, tx_a1])
-                    .unwrap()
-                    .nullifiers;
-
-            // Nullifiers are ordered by chain position within each (account, block) group. The
-            // exact global indices depend on BTreeMap iteration order of the groups.
-            let pos = |val: u64| -> usize {
-                result.iter().position(|n| *n == Nullifier::from_raw(word(val))).unwrap()
-            };
-
-            // Within the same group, chain order is preserved.
-            assert!(pos(10) < pos(20)); // A, block 5: pos 0 < pos 1
-            // Nullifiers from different groups are all present.
-            assert!(result.contains(&Nullifier::from_raw(word(30)))); // A, block 6
-            assert!(result.contains(&Nullifier::from_raw(word(40)))); // B, block 5
+            assert_eq!(by_account[&b], [&passthrough.transaction_header]);
         }
 
         #[test]
-        fn multiple_nullifiers_per_transaction_are_consecutive() {
-            // Single tx consuming 3 notes — all should appear consecutively.
-            let tx = make_rpc_tx(1, 2, &[10, 20, 30], 5);
+        fn orders_passthroughs_before_the_transaction_that_leaves_their_state() {
+            let id = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let records = [
+                record(id, 5, 3, 3, 60),
+                record(id, 5, 2, 2, 30),
+                record(id, 5, 2, 3, 50),
+                record(id, 5, 1, 2, 20),
+                record(id, 5, 2, 2, 40),
+                record(id, 5, 1, 1, 10),
+            ];
 
-            let result = super::super::TransactionEffects::from_records(&[tx]).unwrap().nullifiers;
-
-            assert_eq!(result.len(), 3);
-            assert!(result.contains(&Nullifier::from_raw(word(10))));
-            assert!(result.contains(&Nullifier::from_raw(word(20))));
-            assert!(result.contains(&Nullifier::from_raw(word(30))));
+            let by_account = ordered_account_transactions(&records).unwrap();
+            let nullifiers: Vec<_> = by_account[&id]
+                .iter()
+                .flat_map(|header| header.input_notes().iter().map(InputNoteCommitment::nullifier))
+                .collect();
+            assert_eq!(nullifiers, [10, 20, 30, 40, 50, 60].map(|n| Nullifier::from_raw(word(n))));
         }
 
         #[test]
-        fn empty_input_returns_empty_vec() {
-            let result = super::super::TransactionEffects::from_records(&[]).unwrap().nullifiers;
-            assert!(result.is_empty());
+        fn rejects_disconnected_transactions_in_one_block() {
+            let id = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let records = [record(id, 5, 1, 2, 10), record(id, 5, 3, 3, 20)];
+            assert!(ordered_account_transactions(&records).is_err());
         }
-    }
 
-    // DERIVE ACCOUNT COMMITMENTS TESTS
-    // --------------------------------------------------------------------------------------------
-
-    /// The last execution state determines the account commitment when several transactions for the
-    /// same account land in the same block.
-    ///
-    /// Test scenario:
-    /// - Account A, block 5: chain 1 - 2 - 3 (older group; must be dominated by block 6).
-    /// - Account A, block 6: chain 3 - 4 - 5 (final state = 5).
-    /// - Account B, block 6: single tx 10 - 20 (final state = 20).
-    #[test]
-    fn derive_account_commitments_walks_chains_per_account() {
-        let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
-            RpcTransactionRecord::new(
-                BlockNumber::from(block_num),
-                TransactionHeader::new(
-                    account,
-                    word(init_state),
-                    word(final_state),
-                    InputNotes::new_unchecked(vec![]),
-                    vec![],
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            )
-        };
-
-        let account_a: AccountId =
-            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
-        let account_b: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
-
-        let tx_a_b5_1 = make_tx(account_a, 1, 2, 5);
-        let tx_a_b5_2 = make_tx(account_a, 2, 3, 5);
-        let tx_a_b6_1 = make_tx(account_a, 3, 4, 6);
-        let tx_a_b6_2 = make_tx(account_a, 4, 5, 6);
-        let tx_b_b6 = make_tx(account_b, 10, 20, 6);
-
-        // Insert transactions not ordered by execution order.
-        let result = super::TransactionEffects::from_records(&[
-            tx_a_b6_1, tx_b_b6, tx_a_b5_2, tx_a_b6_2, tx_a_b5_1,
-        ])
-        .unwrap()
-        .commitments;
-
-        assert_eq!(result.len(), 2, "one entry per account");
-        assert!(
-            result.get(&account_a) == Some(&word(5)),
-            "account A: must walk block 6's chain, not return block 5 or an intermediate",
-        );
-        assert!(
-            result.get(&account_b) == Some(&word(20)),
-            "account B: must be resolved independently of account A",
-        );
-    }
-
-    /// A transaction that leaves the account state unchanged does not hide a state change in the
-    /// same block. A block with only such transactions reports the state that they ran on.
-    #[test]
-    fn derive_account_commitments_ignores_state_preserving_transactions() {
-        let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
-            RpcTransactionRecord::new(
-                BlockNumber::from(block_num),
-                TransactionHeader::new(
-                    account,
-                    word(init_state),
-                    word(final_state),
-                    InputNotes::new_unchecked(vec![]),
-                    vec![],
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            )
-        };
-
-        let account_a: AccountId =
-            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
-        let account_b: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
-
-        let result = super::TransactionEffects::from_records(&[
-            // Account A, block 6: a state-preserving transaction on state 1, then 1 -> 2.
-            make_tx(account_a, 1, 1, 6),
-            make_tx(account_a, 1, 2, 6),
-            // Account B, block 6: only a state-preserving transaction on state 10.
-            make_tx(account_b, 10, 10, 6),
-        ])
-        .unwrap()
-        .commitments;
-
-        assert_eq!(result.len(), 2, "one entry per account");
-        assert_eq!(result.get(&account_a), Some(&word(2)));
-        assert_eq!(result.get(&account_b), Some(&word(10)));
+        #[test]
+        fn empty_range_has_no_account_transactions() {
+            assert!(ordered_account_transactions(&[]).unwrap().is_empty());
+        }
     }
 
     // CONSUMED NOTE ORDERING INTEGRATION TESTS

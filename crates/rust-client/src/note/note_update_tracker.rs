@@ -12,7 +12,7 @@ use miden_protocol::note::{
     NoteMetadata,
     Nullifier,
 };
-use miden_protocol::transaction::TransactionId;
+use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionId};
 use miden_standards::note::NetworkAccountTarget;
 
 use crate::ClientError;
@@ -236,15 +236,13 @@ impl NoteUpdateTracker {
         }
     }
 
-    /// Appends nullifiers to the per-account ordered nullifier list.
-    ///
-    /// Nullifiers from the same account must be in execution order; ordering across different
-    /// accounts is not guaranteed.
-    pub(crate) fn extend_nullifiers(&mut self, nullifiers: impl IntoIterator<Item = Nullifier>) {
-        for nullifier in nullifiers {
+    /// Records the consumption order of the input notes. Call once per transaction in account
+    /// execution order.
+    pub(crate) fn record_input_note_order(&mut self, inputs: &InputNotes<InputNoteCommitment>) {
+        for input in inputs.iter() {
             let next_pos =
                 u32::try_from(self.nullifier_order.len()).expect("nullifier count exceeds u32");
-            self.nullifier_order.entry(nullifier).or_insert(next_pos);
+            self.nullifier_order.entry(input.nullifier()).or_insert(next_pos);
         }
     }
 
@@ -680,6 +678,19 @@ mod tests {
 
     // TESTS
     // --------------------------------------------------------------------------------------------
+
+    #[test]
+    fn records_each_input_note_in_transaction_order() {
+        use miden_protocol::note::Nullifier;
+        use miden_protocol::transaction::{InputNoteCommitment, InputNotes};
+
+        let nullifiers = [3, 1, 2]
+            .map(|seed| Nullifier::from_raw([Felt::new_unchecked(seed), ZERO, ZERO, ZERO].into()));
+        let inputs = InputNotes::new_unchecked(nullifiers.map(InputNoteCommitment::from).into());
+        let mut tracker = NoteUpdateTracker::default();
+        tracker.record_input_note_order(&inputs);
+        assert_eq!(nullifiers.map(|n| tracker.get_nullifier_order(n)), [Some(0), Some(1), Some(2)]);
+    }
 
     #[test]
     fn external_consumption_retains_note_id() {

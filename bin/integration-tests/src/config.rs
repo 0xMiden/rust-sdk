@@ -20,6 +20,7 @@ use miden_client_sqlite_store::SqliteStore;
 use uuid::Uuid;
 
 use crate::funding;
+use crate::refund::{ClientFiles, Refunds};
 
 const NETWORK_DEVNET: &str = "devnet";
 const NETWORK_TESTNET: &str = "testnet";
@@ -79,6 +80,9 @@ pub struct ClientConfig {
     /// Funder the account-creating test helpers draw the native fee asset from. Shared by every
     /// client built from this config and its clones.
     pub fee_funder: Option<Arc<dyn FeeFunder>>,
+    /// Records the accounts that the clients built from this config and its clones fund, so that
+    /// these accounts return their unspent native asset after the test. `None` turns refunds off.
+    pub refunds: Option<Arc<Refunds>>,
 }
 
 impl ClientConfig {
@@ -89,6 +93,7 @@ impl ClientConfig {
             prover_endpoint: None,
             note_transport_endpoint: None,
             fee_funder: None,
+            refunds: None,
         }
     }
 
@@ -122,6 +127,12 @@ impl ClientConfig {
         Ok(self.with_fee_funder(fee_funder))
     }
 
+    /// Sets the refunds that the environment asks for, as [`Refunds::from_env`] reads them.
+    pub fn with_refunds_from_env(mut self) -> Result<Self> {
+        self.refunds = Refunds::from_env()?.map(Arc::new);
+        Ok(self)
+    }
+
     /// Creates a `TestClient` without a state sync.
     ///
     /// The client gets its own store and keystore, the latter reachable through
@@ -129,10 +140,28 @@ impl ClientConfig {
     /// keystore a temporary directory, both created here rather than held on the config, so every
     /// client this is called on gets its own.
     pub async fn into_unsynced_client(self) -> Result<TestClient> {
-        let fee_funder = self.fee_funder.clone();
+        let files = ClientFiles {
+            store_path: create_test_store_path(),
+            keystore_path: create_test_auth_path(),
+        };
+        self.open_client(&files).await
+    }
 
-        let store_config = create_test_store_path();
-        let auth_path = create_test_auth_path();
+    /// Builds a `TestClient` over the store and the keystore in `files`, without a state sync. The
+    /// files are created when they do not exist.
+    ///
+    /// When refunds are on, the fee funder of the client records each account that it funds
+    /// together with `files`.
+    pub(crate) async fn open_client(&self, files: &ClientFiles) -> Result<TestClient> {
+        let store_path = &files.store_path;
+        let auth_path = &files.keystore_path;
+
+        let fee_funder = match (&self.refunds, &self.fee_funder) {
+            (Some(refunds), Some(funder)) => {
+                Some(refunds.recording_funder(Arc::clone(funder), files.clone()))
+            },
+            _ => self.fee_funder.clone(),
+        };
 
         let keystore = FilesystemKeyStore::new(auth_path.clone()).with_context(|| {
             format!("failed to create keystore at path: {}", auth_path.to_string_lossy())
@@ -140,7 +169,7 @@ impl ClientConfig {
 
         let rpc_client = Arc::new(GrpcClient::new(&self.rpc_endpoint, self.rpc_timeout_ms));
 
-        let store = SqliteStore::new(store_config).await?;
+        let store = SqliteStore::new(store_path.clone()).await?;
 
         let mut builder = ClientBuilder::new()
             .rpc(rpc_client)

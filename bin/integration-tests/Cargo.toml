@@ -20,6 +20,7 @@ miden-agglayer            = { features = ["std", "testing"], workspace = true }
 miden-client              = { features = ["std", "testing", "tonic"], workspace = true }
 miden-client-sqlite-store = { workspace = true }
 miden-protocol            = { default-features = false, features = ["testing"], workspace = true }
+miden-standards           = { workspace = true }
 
 # External dependencies
 anyhow             = { features = ["std"], workspace = true }
@@ -40,3 +41,4 @@ uuid               = { features = ["v4"], workspace = true }
 
 [lib]
 doctest = false
+test    = false

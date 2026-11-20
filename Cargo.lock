@@ -2639,6 +2639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4e2a1b977b42ee8b53a2a4adbd1183431c493f1d1960b7ccd893e2f0b9407ba"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2687,7 +2696,7 @@ dependencies = [
 [[package]]
 name = "miden-agglayer"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2697,8 +2706,8 @@ dependencies = [
  "miden-crypto",
  "miden-mast-package",
  "miden-package-registry",
- "miden-protocol",
- "miden-protocol-build-utils",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-utils-sync",
  "rand 0.10.3",
@@ -2800,10 +2809,10 @@ dependencies = [
 [[package]]
 name = "miden-block-prover"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-prover",
  "thiserror",
 ]
@@ -2817,6 +2826,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "gloo-timers",
+ "lru",
  "miden-agglayer",
  "miden-assembly-syntax",
  "miden-client-core",
@@ -2825,9 +2835,9 @@ dependencies = [
  "miden-debug",
  "miden-debug-engine",
  "miden-node-proto-build",
- "miden-objects",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-testing",
  "miden-tx",
@@ -2864,7 +2874,7 @@ dependencies = [
  "miden-client-core",
  "miden-client-integration-tests",
  "miden-client-sqlite-store",
- "miden-objects",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "predicates",
  "prost",
  "rand 0.10.3",
@@ -2912,9 +2922,9 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
- "miden-objects",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
@@ -2930,8 +2940,8 @@ dependencies = [
  "gloo-timers",
  "miden-client-core",
  "miden-node-proto-build",
- "miden-objects",
- "miden-protocol",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-testing",
  "miette",
@@ -2957,7 +2967,7 @@ dependencies = [
  "miden-agglayer",
  "miden-client",
  "miden-client-sqlite-store",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
  "reqwest",
@@ -2975,8 +2985,8 @@ name = "miden-client-proto"
 version = "0.18.2"
 dependencies = [
  "miden-client-core",
- "miden-objects",
- "miden-protocol",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-testing",
  "prost",
@@ -3000,7 +3010,7 @@ dependencies = [
  "miden-client-core",
  "miden-client-proto",
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "rusqlite",
  "rusqlite_migration",
@@ -3018,7 +3028,7 @@ dependencies = [
  "miden-client-proto",
  "miden-client-sqlite-store",
  "miden-debug",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-testing",
  "rand 0.10.3",
@@ -3318,7 +3328,7 @@ dependencies = [
  "build-rs",
  "codegen",
  "fs-err",
- "miden-objects",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108)",
  "miette",
  "protox",
  "tonic-prost-build",
@@ -3329,8 +3339,22 @@ name = "miden-objects"
 version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
- "miden-protobuf",
- "miden-protocol",
+ "miden-protobuf 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108)",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108)",
+ "prost",
+ "prost-build",
+ "protox",
+ "quote",
+ "thiserror",
+]
+
+[[package]]
+name = "miden-objects"
+version = "1.0.0-rc.1"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
+dependencies = [
+ "miden-protobuf 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "prost",
  "prost-build",
  "protox",
@@ -3431,7 +3455,19 @@ name = "miden-protobuf"
 version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
- "miden-protobuf-derive",
+ "miden-protobuf-derive 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108)",
+ "proc-macro-crate",
+ "prost",
+ "prost-build",
+ "prost-types",
+]
+
+[[package]]
+name = "miden-protobuf"
+version = "1.0.0-rc.1"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
+dependencies = [
+ "miden-protobuf-derive 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "proc-macro-crate",
  "prost",
  "prost-build",
@@ -3451,9 +3487,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-protobuf-derive"
+version = "1.0.0-rc.1"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
+dependencies = [
+ "heck",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "miden-protocol"
 version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+dependencies = [
+ "bech32",
+ "bon",
+ "fs-err",
+ "getrandom 0.4.3",
+ "miden-assembly",
+ "miden-assembly-syntax",
+ "miden-core",
+ "miden-core-lib",
+ "miden-crypto",
+ "miden-crypto-derive",
+ "miden-mast-package",
+ "miden-package-registry",
+ "miden-processor",
+ "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108)",
+ "miden-utils-sync",
+ "miden-verifier",
+ "rand 0.10.3",
+ "rand_chacha 0.10.0",
+ "regex",
+ "semver 1.0.28",
+ "serde",
+ "thiserror",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "miden-protocol"
+version = "1.0.0-rc.1"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "bech32",
  "bon",
@@ -3469,7 +3547,7 @@ dependencies = [
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
- "miden-protocol-build-utils",
+ "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-utils-sync",
  "miden-verifier",
  "rand 0.10.3",
@@ -3486,6 +3564,22 @@ dependencies = [
 name = "miden-protocol-build-utils"
 version = "1.0.0-rc.1"
 source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+dependencies = [
+ "fs-err",
+ "miden-assembly",
+ "miden-core",
+ "miden-mast-package",
+ "miden-package-registry",
+ "miden-project",
+ "regex",
+ "toml 1.1.6+spec-1.1.0",
+ "walkdir",
+]
+
+[[package]]
+name = "miden-protocol-build-utils"
+version = "1.0.0-rc.1"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -3538,15 +3632,15 @@ dependencies = [
 [[package]]
 name = "miden-standards"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "bon",
  "miden-assembly",
  "miden-core-lib",
  "miden-crypto",
  "miden-package-registry",
- "miden-protocol",
- "miden-protocol-build-utils",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "primitive-types 0.14.0",
  "rand 0.10.3",
  "thiserror",
@@ -3580,16 +3674,16 @@ dependencies = [
 [[package]]
 name = "miden-testing"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
  "miden-block-prover",
  "miden-core-lib",
  "miden-crypto",
- "miden-objects",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-tx",
  "miden-tx-batch",
@@ -3601,13 +3695,13 @@ dependencies = [
 [[package]]
 name = "miden-tx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "bon",
  "miden-agglayer",
  "miden-core-lib",
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-prover",
  "miden-standards",
  "thiserror",
@@ -3616,10 +3710,10 @@ dependencies = [
 [[package]]
 name = "miden-tx-batch"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "miden-processor",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-prover",
  "miden-verifier",
  "thiserror",
@@ -3628,14 +3722,14 @@ dependencies = [
 [[package]]
 name = "miden-usdcx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
+source = "git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1#f852ae6e195218a3e6ff49133feee81b93b34aa1"
 dependencies = [
  "bon",
  "miden-assembly",
  "miden-core-lib",
  "miden-package-registry",
- "miden-protocol",
- "miden-protocol-build-utils",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol-build-utils 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "miden-tx",
  "rand 0.10.3",
@@ -3725,7 +3819,7 @@ version = "0.18.2"
 dependencies = [
  "hex",
  "k256",
- "miden-protocol",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-tx",
  "reqwest",
  "thiserror",
@@ -5864,8 +5958,8 @@ version = "0.18.2"
 dependencies = [
  "anyhow",
  "miden-agglayer",
- "miden-objects",
- "miden-protocol",
+ "miden-objects 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
+ "miden-protocol 1.0.0-rc.1 (git+https://github.com/0xMiden/protocol?rev=f852ae6e195218a3e6ff49133feee81b93b34aa1)",
  "miden-standards",
  "rand 0.10.3",
  "rand_chacha 0.10.0",

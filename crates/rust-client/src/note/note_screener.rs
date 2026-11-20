@@ -18,14 +18,13 @@ use miden_tx::{
     NoteConsumptionInfo,
     TransactionExecutor,
     TransactionExecutorError,
-    TransactionMastStore,
 };
 use thiserror::Error;
 
 use crate::ClientError;
 use crate::rpc::NodeRpcClient;
 use crate::rpc::domain::note::CommittedNote;
-use crate::store::data_store::ClientDataStore;
+use crate::store::data_store::{ClientDataStore, MastForestCache};
 use crate::store::{InputNoteRecord, NoteFilter, Store, StoreError};
 use crate::sync::{NoteTagSource, NoteUpdateAction, OnNoteReceived};
 use crate::transaction::{
@@ -35,7 +34,6 @@ use crate::transaction::{
     NATIVE_FEE_CONVERSION_SALT,
     TransactionArgs,
 };
-use crate::utils::LazyLock;
 
 /// Represents the consumability of a note by a specific account.
 ///
@@ -69,8 +67,8 @@ pub struct NoteScreener {
     tx_args: Option<TransactionArgs>,
     /// RPC client used for lazy-loading foreign account data during note screening.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// Shared code loaded when the first screening pass needs it.
-    mast_store: Arc<LazyLock<Arc<TransactionMastStore>>>,
+    /// Account code shared by the data stores of this screener.
+    mast_forest_cache: Arc<MastForestCache>,
 }
 
 impl NoteScreener {
@@ -79,8 +77,18 @@ impl NoteScreener {
             store,
             tx_args: None,
             rpc_api,
-            mast_store: Arc::new(LazyLock::new(|| Arc::new(TransactionMastStore::new()))),
+            mast_forest_cache: Arc::new(MastForestCache::default()),
         }
+    }
+
+    /// Uses `mast_forest_cache` for the MAST forests of the screening executions, so that they
+    /// share it with the other data stores of the client.
+    pub(crate) fn with_mast_forest_cache(
+        mut self,
+        mast_forest_cache: Arc<MastForestCache>,
+    ) -> Self {
+        self.mast_forest_cache = mast_forest_cache;
+        self
     }
 
     /// Sets the transaction arguments to use when checking note consumability. If not set, a
@@ -98,10 +106,10 @@ impl NoteScreener {
     }
 
     fn data_store(&self) -> ClientDataStore {
-        ClientDataStore::new_with_mast_store(
+        ClientDataStore::new(
             self.store.clone(),
             self.rpc_api.clone(),
-            LazyLock::force(&self.mast_store).clone(),
+            self.mast_forest_cache.clone(),
         )
         .with_execution_input_cache()
     }
@@ -176,7 +184,7 @@ impl NoteScreener {
 
         for account_id in account_ids {
             let account_code = self.get_account_code(account_id).await?;
-            data_store.mast_store().load_account_code(&account_code);
+            data_store.account_code().load_account_code(&account_code);
 
             let layout = AuthArgsLayout::of(&account_code.interface(account_id));
             let account_tx_args =
@@ -231,7 +239,7 @@ impl NoteScreener {
 
         let consumption_checker = NoteConsumptionChecker::new(&transaction_executor);
 
-        data_store.mast_store().load_account_code(&account_code);
+        data_store.account_code().load_account_code(&account_code);
         // The future of the trial execution is large, so it lives on the heap.
         let note_consumption_info = Box::pin(
             consumption_checker.check_notes_consumability(account_id, block_ref, notes, tx_args),

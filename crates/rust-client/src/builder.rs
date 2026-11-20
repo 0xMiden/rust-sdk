@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
+use core::num::NonZeroUsize;
 
 use miden_agglayer::agglayer_package;
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
@@ -26,6 +27,7 @@ use crate::pswap::PswapTransactionObserver;
 use crate::rpc::NodeRpcClient;
 #[cfg(feature = "tonic")]
 use crate::rpc::{Endpoint, GrpcClient};
+use crate::store::data_store::MastForestCache;
 use crate::store::{Store, StoreError};
 use crate::transaction::{TransactionObserver, TransactionProver};
 use crate::{Client, ClientError, ClientRng, ClientRngBox, grpc_support};
@@ -151,6 +153,8 @@ pub struct ClientBuilder<AUTH> {
     source_manager: Option<Arc<dyn SourceManagerSync>>,
     /// An optional genesis block header and protocol configuration to store on build.
     genesis: Option<(BlockHeader, ProtocolConfig)>,
+    /// The number of MAST forests that the client keeps in memory.
+    mast_forest_cache_capacity: NonZeroUsize,
 }
 
 impl<AUTH> Default for ClientBuilder<AUTH> {
@@ -171,6 +175,7 @@ impl<AUTH> Default for ClientBuilder<AUTH> {
             endpoint: None,
             source_manager: None,
             genesis: None,
+            mast_forest_cache_capacity: MastForestCache::DEFAULT_CAPACITY,
         }
     }
 }
@@ -410,6 +415,17 @@ where
         self
     }
 
+    /// Sets the number of MAST forests that the client keeps in memory between executions.
+    ///
+    /// The client reads the forests that a transaction needs from the code registry of its store,
+    /// and keeps the most recently used ones. By default, it keeps
+    /// [`MastForestCache::DEFAULT_CAPACITY`] forests.
+    #[must_use]
+    pub fn mast_forest_cache_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.mast_forest_cache_capacity = capacity;
+        self
+    }
+
     /// Optionally set a maximum number of blocks that the client can be behind the network. By
     /// default, there's no maximum.
     #[must_use]
@@ -587,6 +603,7 @@ where
             cache_partial_mmr_in_memory: self.cache_partial_mmr_in_memory,
             partial_mmr: None,
             transaction_observers,
+            mast_forest_cache: Arc::new(MastForestCache::new(self.mast_forest_cache_capacity)),
         };
         Ok(client)
     }

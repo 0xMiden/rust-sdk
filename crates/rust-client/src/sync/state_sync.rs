@@ -678,6 +678,7 @@ impl StateSync {
             current_block_num,
             chain_tip,
         )?;
+        Self::validate_transaction_records_order(&transaction_records)?;
 
         Ok(Some(FetchedSyncData {
             mmr_delta: chain_mmr_info.mmr_delta,
@@ -805,6 +806,47 @@ impl StateSync {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Validates the positions the node reports for `sync_transactions` records against the account
+    /// state commitments.
+    ///
+    /// Taken in block and position order, each transaction must start from the state in which the
+    /// previous transaction of the same account ended, and no two transactions may share a
+    /// position. Sync relies on this order to pick each account's latest state and to order the
+    /// notes an account consumed, so a misreported position would corrupt both. The response covers
+    /// every transaction of the requested accounts in the synced range, so the chain must hold
+    /// across blocks as well as within one. The commitments only constrain the order among
+    /// transactions of the same account.
+    fn validate_transaction_records_order(
+        records: &[RpcTransactionRecord],
+    ) -> Result<(), ClientError> {
+        let mut latest_states: BTreeMap<AccountId, Word> = BTreeMap::new();
+        let mut previous_position = None;
+
+        for record in in_commit_order(records) {
+            let block_num = record.block_num;
+            let transaction_index = record.transaction_index;
+            if previous_position == Some((block_num, transaction_index)) {
+                return Err(ClientError::ChainValidationError(format!(
+                    "sync_transactions returned more than one transaction at position {transaction_index} of block {block_num}"
+                )));
+            }
+            previous_position = Some((block_num, transaction_index));
+
+            let header = &record.transaction_header;
+            let previous_state =
+                latest_states.insert(header.account_id(), header.final_state_commitment());
+            if previous_state.is_some_and(|state| state != header.initial_state_commitment()) {
+                return Err(ClientError::ChainValidationError(format!(
+                    "transaction {} at position {transaction_index} of block {block_num} does not start from the state of the previous transaction of account {}",
+                    header.id(),
+                    header.account_id()
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -1869,6 +1911,83 @@ mod tests {
             chain_tip,
         );
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+    }
+
+    /// Builds an RPC transaction record moving `account_id` from `init_state` to `final_state` at
+    /// the given position.
+    fn make_positioned_tx_record(
+        account_id: AccountId,
+        init_state: u64,
+        final_state: u64,
+        block_num: u32,
+        transaction_index: u32,
+    ) -> RpcTransactionRecord {
+        RpcTransactionRecord::new(
+            BlockNumber::from(block_num),
+            transaction_index,
+            TransactionHeader::new(
+                account_id,
+                word(init_state),
+                word(final_state),
+                InputNotes::new_unchecked(vec![]),
+                vec![],
+                Word::empty(),
+                CodePatch::default().commitment(),
+            )
+            .unwrap(),
+            vec![],
+            vec![],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn validate_transaction_records_order_accepts_chained_positions() {
+        let account_a: AccountId =
+            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+        let account_b: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
+
+        // Account A chains 1 -> 2 -> 3 within block 5 and 3 -> 4 in block 6, interleaved with
+        // account B. A transaction that leaves the state unchanged also chains. Records arrive out
+        // of order.
+        let records = [
+            make_positioned_tx_record(account_a, 3, 4, 6, 0),
+            make_positioned_tx_record(account_b, 10, 20, 5, 1),
+            make_positioned_tx_record(account_a, 2, 3, 5, 2),
+            make_positioned_tx_record(account_a, 1, 2, 5, 0),
+            make_positioned_tx_record(account_b, 20, 20, 6, 1),
+        ];
+
+        StateSync::validate_transaction_records_order(&records).unwrap();
+        StateSync::validate_transaction_records_order(&[]).unwrap();
+    }
+
+    #[test]
+    fn validate_transaction_records_order_rejects_misreported_positions() {
+        let account_a: AccountId =
+            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+        let account_b: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
+
+        // Swapped positions within a block.
+        let swapped = [
+            make_positioned_tx_record(account_a, 1, 2, 5, 1),
+            make_positioned_tx_record(account_a, 2, 3, 5, 0),
+        ];
+        // The earlier transaction reported in a later block.
+        let swapped_blocks = [
+            make_positioned_tx_record(account_a, 1, 2, 6, 0),
+            make_positioned_tx_record(account_a, 2, 3, 5, 0),
+        ];
+        // Two transactions of different accounts at the same position.
+        let duplicated = [
+            make_positioned_tx_record(account_a, 1, 2, 5, 0),
+            make_positioned_tx_record(account_b, 10, 20, 5, 0),
+        ];
+
+        for records in [swapped, swapped_blocks, duplicated] {
+            let result = StateSync::validate_transaction_records_order(&records);
+            assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
+        }
     }
 
     /// A forged `sync_transactions` commitment must not lock the account when the witness proves

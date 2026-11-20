@@ -52,7 +52,7 @@ use crate::rpc::domain::account::{
     VaultFetch,
 };
 use crate::rpc::domain::account_vault::AccountVaultInfo;
-use crate::rpc::domain::block::SubscribedBlock;
+use crate::rpc::domain::block::{SubscribedBlock, SubscribedProof};
 use crate::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use crate::rpc::domain::nullifier::NullifierUpdate;
 use crate::rpc::domain::status::NetworkNoteStatusInfo;
@@ -1051,6 +1051,33 @@ impl NodeRpcClient for MockRpcApi {
             .collect();
 
         Ok(Box::pin(futures::stream::iter(blocks)))
+    }
+
+    /// Returns the block proofs of the mock chain from `block_from` to the chain tip. The stream
+    /// ends after the chain tip, and does not yield the proofs that the chain produces later.
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError> {
+        let proven_chain_tip = self.get_chain_tip_block_num();
+        let proofs: Vec<_> = self
+            .mock_chain
+            .read()
+            .proven_blocks()
+            .iter()
+            .filter(|block| block.header().block_num() >= block_from)
+            .map(|block| {
+                let (header, _body, _signatures, proof) = block.clone().into_parts();
+
+                Ok(SubscribedProof {
+                    block_num: header.block_num(),
+                    proof,
+                    proven_chain_tip,
+                })
+            })
+            .collect();
+
+        Ok(Box::pin(futures::stream::iter(proofs)))
     }
 
     async fn get_note_script_by_root(&self, root: Word) -> Result<Option<NoteScript>, RpcError> {

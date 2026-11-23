@@ -2723,6 +2723,7 @@ mod tests {
                     push.{asset_value}
                     push.{asset_id}
                     call.::miden::standards::faucets::fungible::mint_and_send
+                    exec.::miden::protocol::output_note::seal
                     dropw dropw dropw dropw
                 end
                 ",

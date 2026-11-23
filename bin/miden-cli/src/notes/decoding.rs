@@ -58,8 +58,15 @@ async fn decode_standard_note_storage<AUTH>(
                 let formatted_asset =
                     FormattedAsset::new(&requested_asset, &resolved_faucet, resolver.network_id());
                 let payback = match storage.payback() {
-                    SwapPayback::Public { payback_target_id } => {
-                        ("payback target", payback_target_id.to_string())
+                    SwapPayback::Public { recipient } => {
+                        let target = (StandardNote::from_script(recipient.script())
+                            == Some(StandardNote::P2ID))
+                        .then(|| P2idNoteStorage::try_from(recipient.storage().items()).ok())
+                        .flatten();
+                        target.map_or_else(
+                            || ("payback recipient", recipient.digest().to_hex()),
+                            |storage| ("payback target", storage.target().to_string()),
+                        )
                     },
                     SwapPayback::Private { recipient } => ("payback recipient", recipient.to_hex()),
                 };

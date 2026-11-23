@@ -1,4 +1,5 @@
 use miden::protocol::active_note
+use miden::protocol::output_note
 use miden::standards::wallets::basic as basic_wallet
 use miden::standards::note::note_creator
 
@@ -9,7 +10,7 @@ use miden::standards::note::note_creator
 const ERR_PASS_THROUGH_WRONG_NUMBER_OF_STORAGE_ITEMS="wrong number of storage items"
 
 #! PASS_THROUGH script:
-#! Creates a note consumable by pass-through, containing the same asset.
+#! Creates a sealed note consumable by pass-through, containing the same asset.
 #!
 #! Requires that the account exposes:
 #! - miden::standards::note::note_creator::create_note procedure.
@@ -24,6 +25,7 @@ const ERR_PASS_THROUGH_WRONG_NUMBER_OF_STORAGE_ITEMS="wrong number of storage it
 #! - RECIPIENT
 #! - [note_type, tag]
 @note_script
+@locals(1)
 pub proc main
     # drop note arguments
     dropw
@@ -59,6 +61,8 @@ pub proc main
     call.note_creator::create_note
     # => [note_idx, pad(15)]
 
+    dup loc_store.0
+
     # keep note_idx, drop 8 pad elements above it
     movdn.8 dropw dropw
     # => [note_idx, pad(7)]
@@ -75,5 +79,8 @@ pub proc main
 
     # clean stack
     dropw dropw dropw dropw
+    # => []
+
+    loc_load.0 exec.output_note::seal
     # => []
 end

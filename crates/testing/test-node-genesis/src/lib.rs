@@ -35,8 +35,9 @@ use miden_standards::account::fees::{BasicConstantFeePolicy, FeePolicyManager};
 use miden_standards::account::policies::{
     BurnPolicy,
     MintPolicy,
+    ReceivePolicy,
+    SendPolicy,
     TokenPolicyManager,
-    TransferPolicy,
 };
 use miden_standards::account::wallets::{BasicWallet, create_basic_wallet};
 use miden_standards::note::{BurnNote, MintNote};
@@ -278,8 +279,8 @@ fn generate_native_faucet(operator_id: AccountId) -> anyhow::Result<Account> {
     let token_policies = TokenPolicyManager::builder()
         .active_mint_policy(MintPolicy::owner_only())
         .active_burn_policy(BurnPolicy::allow_all())
-        .active_send_policy(TransferPolicy::allow_all())
-        .active_receive_policy(TransferPolicy::allow_all())
+        .active_send_policy(SendPolicy::allow_all())
+        .active_receive_policy(ReceivePolicy::allow_all())
         .build();
 
     let fee_policy = BasicConstantFeePolicy::new()

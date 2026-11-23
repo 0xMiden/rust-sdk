@@ -396,16 +396,8 @@ async fn note_screening_finds_a_custom_script_note_consumable_by_a_multisig_acco
     );
 }
 
-/// `check_notes_consumability` trial-executes the notes it is given the same way screening does, so
-/// it needs conversion info of its own on a fee-charging chain. This covers the second injection
-/// call site, which the screening test above does not reach.
-///
-/// It asserts on the failure REASON rather than on `successful`. The screener attaches no
-/// authenticator on purpose, and this API has no "consumable once authorized" verdict of the kind
-/// `can_consume` produces through `handle_epilogue_error`, so a signature-authenticated account
-/// never lands a note in `successful` whatever the fee does. What the injected conversion info
-/// decides is how far the trial gets: with it, execution reaches the signature request; without it,
-/// it aborts earlier in `fee::pay_fee`.
+/// Trial execution must pay the fee before it requests authorization. The checker reports notes as
+/// successful when only authorization remains.
 #[tokio::test]
 async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
     let (client, account) = Box::pin(fee_charging_client()).await;
@@ -427,17 +419,14 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .await
         .expect("checking consumability should not error");
 
-    let failed = consumption_info
-        .failed()
-        .iter()
-        .find(|failed| failed.note().id() == note.id())
-        .expect("the note should be accounted for");
-
-    let error = failed.execution_error();
-    assert!(
-        matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
-        "the trial should get as far as requesting a signature rather than aborting on the unpaid \
-         fee, got: {error:?}"
+    assert!(consumption_info.failed().is_empty());
+    assert_eq!(
+        consumption_info
+            .successful()
+            .iter()
+            .map(|entry| entry.note().id())
+            .collect::<Vec<_>>(),
+        vec![note.id()],
     );
 }
 
@@ -539,14 +528,7 @@ async fn serialized_multisig_request_uses_native_auth_args(
     let result = Box::pin(client.execute_transaction(account.id(), request))
         .await
         .expect("the signed request should execute");
-    // The smart multisig auth component does not create a fee note.
-    let expected_note_count =
-        if matches!(auth_component, AccountComponentInterface::AuthMultisigSmart) {
-            1
-        } else {
-            2
-        };
-    assert_eq!(result.executed_transaction().output_notes().num_notes(), expected_note_count);
+    assert_eq!(result.executed_transaction().output_notes().num_notes(), 2);
 }
 
 /// A multisig proposal can bind its summary to an old block and execute against the current chain
@@ -729,7 +711,9 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
 
     // The delayed path requires an approval expiration.
     let bound_block = client.get_sync_height().await.unwrap();
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let auth_args = MultisigAuthArgs::new(bound_block, Word::from([1u32, 0, 0, 0]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id))
         .with_approval_expiration_delta(NonZeroU32::new(100).unwrap())
         .unwrap();
     let mut execute = TransactionRequestBuilder::new()
@@ -750,7 +734,10 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
         .custom_script(compile(format!(
             "push.{commitment} call.{procedures}::propose_transaction dropw dropw dropw dropw dropw"
         )))
-        .auth_args(&MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0])))
+        .auth_args(
+            &MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0]))
+                .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id)),
+        )
         .build()
         .unwrap();
 

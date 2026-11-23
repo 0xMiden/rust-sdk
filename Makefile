@@ -208,6 +208,15 @@ build-wasm: ## Build the client library for wasm32 with no_std (no default featu
 check: ## Build the CLI binary and client library in release mode
 	cargo check --workspace --release
 
+.PHONY: check-features
+check-features: export RUSTFLAGS := $(RUSTFLAGS) -D warnings
+check-features: ## Check native and Wasm features with warnings denied
+	cargo hack check --workspace --each-feature --exclude miden-client-grpc --exclude-features default,tonic --all-targets
+	cargo check --package miden-client --features std,tonic --all-targets
+	cargo check --package miden-client-grpc --features std --all-targets
+	cargo check --package miden-client --target wasm32-unknown-unknown --no-default-features --features tonic
+	cargo check --package miden-client-grpc --target wasm32-unknown-unknown --no-default-features
+
 ## --- Setup --------------------------------------------------------------------------------------
 
 .PHONY: check-tools
@@ -216,6 +225,7 @@ check-tools: ## Checks if development tools are installed
 	@command -v mdbook        >/dev/null 2>&1 && echo "[OK] mdbook is installed"        || echo "[MISSING] mdbook       (make install-tools)"
 	@command -v typos         >/dev/null 2>&1 && echo "[OK] typos is installed"         || echo "[MISSING] typos        (make install-tools)"
 	@command -v cargo nextest >/dev/null 2>&1 && echo "[OK] cargo-nextest is installed" || echo "[MISSING] cargo-nextest(make install-tools)"
+	@command -v cargo-hack   >/dev/null 2>&1 && echo "[OK] cargo-hack is installed"   || echo "[MISSING] cargo-hack   (make install-tools)"
 	@command -v cargo-shear   >/dev/null 2>&1 && echo "[OK] cargo-shear is installed"   || echo "[MISSING] cargo-shear  (make install-tools)"
 	@command -v taplo         >/dev/null 2>&1 && echo "[OK] taplo is installed"         || echo "[MISSING] taplo        (make install-tools)"
 
@@ -225,11 +235,13 @@ install-tools: ## Installs Rust tools required by the Makefile
 	@rustup show active-toolchain >/dev/null 2>&1 || (echo "Rust toolchain not detected. Install rustup + toolchain first." && exit 1)
 	@RUST_TC=$$(rustup show active-toolchain | awk '{print $$1}'); \
 		echo "Ensuring required Rust components are installed for $$RUST_TC..."; \
-		rustup component add --toolchain $$RUST_TC clippy rust-src rustfmt >/dev/null
+		rustup component add --toolchain $$RUST_TC clippy rust-src rustfmt >/dev/null; \
+		rustup target add --toolchain $$RUST_TC wasm32-unknown-unknown
 	# Rust-related
 	cargo install mdbook --locked
 	cargo install typos-cli@1.42.3 --locked
 	cargo install cargo-nextest@0.9.128 --locked
+	cargo install cargo-hack --locked
 	cargo install cargo-shear@1.11.2 --locked
 	cargo install taplo-cli --locked
 	@echo "Development tools installation complete!"

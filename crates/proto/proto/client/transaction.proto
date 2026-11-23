@@ -10,6 +10,7 @@ import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
+import "transaction_effects.proto";
 import "transaction_inputs.proto";
 import "client/input_note.proto";
 import "client/output_note.proto";
@@ -259,9 +260,25 @@ message TransactionResult {
   repeated ExpectedFutureNote future_notes = 2;
 }
 
+// The parts of an executed transaction that the store records. It does not carry the transaction
+// inputs.
+message TransactionOutcome {
+  .transaction.TransactionEffects effects = 1;
+  // Header of the account after the transaction. It must commit to the final state commitment of
+  // the effects.
+  account.AccountHeader final_account = 2;
+  // Script that the transaction executed. It is absent when the transaction has no script.
+  .transaction.TransactionScript tx_script = 3;
+}
+
 // Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
-  ExecutedTransaction executed_transaction = 1;
+  // Field 1 must not get a new meaning. An encoding that uses it has no `transaction` field, so it
+  // does not decode.
+  reserved 1;
+  reserved "executed_transaction";
+
+  TransactionOutcome transaction = 7;
   // Block at which the transaction was submitted.
   blockchain.BlockNumber submission_height = 2;
   repeated ExpectedFutureNote future_notes = 3;

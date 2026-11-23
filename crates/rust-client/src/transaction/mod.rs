@@ -135,6 +135,7 @@ pub use miden_client_core::transaction::{
     BatchStoreUpdate,
     DiscardCause,
     TransactionDetails,
+    TransactionOutcome,
     TransactionRecord,
     TransactionStatus,
     TransactionStatusVariant,
@@ -179,6 +180,7 @@ pub use miden_protocol::transaction::{
     RawOutputNote,
     RawOutputNotes,
     TransactionArgs,
+    TransactionEffects,
     TransactionFee,
     TransactionFeeError,
     TransactionId,
@@ -316,17 +318,6 @@ where
                 pending_update: tx_update,
                 source: Box::new(apply_err),
             });
-        }
-
-        // Fire transaction observers (mirrors `apply_transaction`). Per-observer failures are
-        // logged and never propagate — they're feature-specific side-channels, not part of the
-        // submit contract.
-        for observer in &self.transaction_observers {
-            crate::errors::log_observer_failure(
-                observer.name(),
-                "TransactionObserver::apply",
-                observer.apply(&tx_result).await,
-            );
         }
 
         Ok(tx_id)
@@ -640,22 +631,49 @@ where
         tx_result: &TransactionResult,
         tx_prover: Arc<dyn TransactionProver>,
     ) -> Result<ProvenTransaction, ClientError> {
+        let executed_transaction = tx_result.executed_transaction();
+        self.prove_transaction_witness(
+            executed_transaction.clone().into(),
+            executed_transaction.id(),
+            tx_prover,
+        )
+        .await
+    }
+
+    /// Proves a transaction from its witness, using the provided prover.
+    ///
+    /// The prover executes the transaction again, so the witness is sufficient. Use this method
+    /// when the [`ExecutedTransaction`] is not available, for example in a process other than the
+    /// one that executed the transaction.
+    ///
+    /// `expected_id` is the ID of the executed transaction. The proof must be for this transaction.
+    ///
+    /// # Errors
+    ///
+    /// - Returns a [`ClientError::TransactionProvingError`] if the prover fails to produce a proof.
+    /// - Returns a [`ClientError::MismatchedProvenTransaction`] if the prover returns a proof of a
+    ///   transaction other than `expected_id`.
+    pub async fn prove_transaction_witness(
+        &self,
+        witness: TransactionWitness,
+        expected_id: TransactionId,
+        tx_prover: Arc<dyn TransactionProver>,
+    ) -> Result<ProvenTransaction, ClientError> {
         info!("Proving transaction...");
 
-        let executed_transaction = tx_result.executed_transaction();
-        let proven_transaction = tx_prover.prove(executed_transaction.clone().into()).await?;
+        let proven_transaction = tx_prover.prove(witness).await?;
 
         // A prover is trusted with the witness, but not with choosing which transaction gets
         // submitted. Everything downstream (submission, the local store update, the returned id) is
-        // derived from `tx_result`, so a proof of anything else would be submitted while the local
-        // state recorded the transaction that never reached the network.
+        // derived from the executed transaction, so a proof of anything else would be submitted
+        // while the local state recorded the transaction that never reached the network.
         //
         // The id commits to the initial and final account commitments and to the input and output
         // note commitments; the account commitments in turn commit to the account id, so a matching
         // id covers the account as well.
-        if proven_transaction.id() != executed_transaction.id() {
+        if proven_transaction.id() != expected_id {
             return Err(ClientError::MismatchedProvenTransaction {
-                requested: executed_transaction.id(),
+                requested: expected_id,
                 returned: proven_transaction.id(),
             });
         }
@@ -789,7 +807,30 @@ where
         tx_result: &TransactionResult,
         submission_height: BlockNumber,
     ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
-        let note_updates = self.get_note_updates(submission_height, tx_result).await?;
+        // The future holds the outcome across awaits. Boxing it keeps the futures of the callers
+        // small (clippy::large_futures).
+        Box::pin(self.get_outcome_store_update(
+            TransactionOutcome::from(tx_result.executed_transaction()),
+            tx_result.future_notes().to_vec(),
+            submission_height,
+        ))
+        .await
+    }
+
+    /// Builds a [`TransactionStoreUpdate`] for an executed transaction at the specified submission
+    /// height.
+    ///
+    /// Use this method when the [`TransactionResult`] is not available, for example in a process
+    /// other than the one that executed the transaction. `future_notes` are the notes that the
+    /// transaction result expects later transactions to create.
+    pub async fn get_outcome_store_update(
+        &self,
+        transaction: TransactionOutcome,
+        future_notes: Vec<(NoteDetails, NoteTag)>,
+        submission_height: BlockNumber,
+    ) -> Result<TransactionStoreUpdate, TransactionStoreUpdateError> {
+        let note_updates =
+            self.get_note_updates(submission_height, &transaction, &future_notes).await?;
 
         // Only expected input notes need tags; output notes are committed (with proofs) via
         // account-matched transaction sync.
@@ -810,10 +851,10 @@ where
             .collect();
 
         Ok(TransactionStoreUpdate::new(
-            tx_result.executed_transaction().clone(),
+            transaction,
             submission_height,
             note_updates,
-            tx_result.future_notes().to_vec(),
+            future_notes,
             new_tags,
         ))
     }
@@ -827,22 +868,13 @@ where
     ) -> Result<(), ClientError> {
         let tx_update = self.get_transaction_store_update(tx_result, submission_height).await?;
 
-        self.apply_transaction_update(tx_update).await?;
-
-        // Fire transaction observers. Per-observer failures are logged.
-        for observer in &self.transaction_observers {
-            if let Err(err) = observer.apply(tx_result).await {
-                tracing::warn!(
-                    observer = observer.name(),
-                    error = ?err,
-                    "TransactionObserver::apply failed; continuing with remaining observers",
-                );
-            }
-        }
-
-        Ok(())
+        self.apply_transaction_update(tx_update).await
     }
 
+    /// Persists a [`TransactionStoreUpdate`] into the local store, and then runs the transaction
+    /// observers on its transaction.
+    ///
+    /// An observer failure is logged. It does not make this method fail.
     pub async fn apply_transaction_update(
         &self,
         tx_update: TransactionStoreUpdate,
@@ -851,16 +883,36 @@ where
         // update can be persisted.
         info!("Applying transaction to the local store...");
 
-        let executed_transaction = tx_update.executed_transaction();
-        let account_id = executed_transaction.account_id();
+        let account_id = tx_update.transaction().account_id();
 
         if self.account_reader(account_id).status().await?.is_locked() {
             return Err(ClientError::AccountLocked(account_id));
         }
 
+        // The observers run after the store takes the update, so they need their own copy. It is
+        // boxed because it is held across awaits (clippy::large_futures).
+        let transaction = Box::new(tx_update.transaction().clone());
         self.store.apply_transaction(tx_update).await?;
         info!("Transaction stored.");
+
+        self.notify_transaction_observers(core::slice::from_ref(&*transaction)).await;
         Ok(())
+    }
+
+    /// Runs each transaction observer on each of `transactions`, in order.
+    ///
+    /// Observer failures are logged and never propagate. Observers are side channels of a feature,
+    /// and they are not part of the contract of the store update.
+    pub(crate) async fn notify_transaction_observers(&self, transactions: &[TransactionOutcome]) {
+        for transaction in transactions {
+            for observer in &self.transaction_observers {
+                crate::errors::log_observer_failure(
+                    observer.name(),
+                    "TransactionObserver::apply",
+                    observer.apply(transaction).await,
+                );
+            }
+        }
     }
 
     /// Executes the provided transaction script against the specified account, and returns the
@@ -1296,9 +1348,10 @@ where
     async fn get_note_updates(
         &self,
         submission_height: BlockNumber,
-        tx_result: &TransactionResult,
+        transaction: &TransactionOutcome,
+        future_notes: &[(NoteDetails, NoteTag)],
     ) -> Result<NoteUpdates, TransactionStoreUpdateError> {
-        let executed_tx = tx_result.executed_transaction();
+        let effects = transaction.effects();
         let current_timestamp = self.store.get_current_timestamp();
         let current_block_num = self.store.get_sync_height().await?;
 
@@ -1313,7 +1366,7 @@ where
         // kept verbatim on the transaction record (`TransactionDetails.output_notes`).
         //
         // Same discriminator, same reason as the input-note loop below.
-        let new_output_notes = executed_tx
+        let new_output_notes = effects
             .output_notes()
             .iter()
             .filter(|output_note| {
@@ -1329,8 +1382,7 @@ where
 
         // New relevant input notes
         let mut new_input_notes = vec![];
-        let output_notes: Vec<Note> =
-            notes_from_output(executed_tx.output_notes()).cloned().collect();
+        let output_notes: Vec<Note> = notes_from_output(effects.output_notes()).cloned().collect();
         let note_screener = self.note_screener().clone();
         let output_note_relevances = note_screener.get_batch_consumability(&output_notes).await?;
 
@@ -1363,7 +1415,7 @@ where
         }
 
         // Track future input notes described in the transaction result.
-        new_input_notes.extend(tx_result.future_notes().iter().map(|(note_details, tag)| {
+        new_input_notes.extend(future_notes.iter().map(|(note_details, tag)| {
             InputNoteRecord::new(
                 note_details.clone(),
                 NoteAttachments::empty(),
@@ -1381,8 +1433,7 @@ where
         // advanced; the rest (the request's unauthenticated notes, which are not persisted before
         // the transaction succeeds) are tracked from this point on, so records for them are built
         // from the executed transaction's inputs.
-        let consumed_note_ids =
-            executed_tx.tx_inputs().input_notes().iter().map(InputNote::id).collect();
+        let consumed_note_ids = effects.input_notes().iter().map(InputNote::id).collect();
 
         let consumed_notes =
             self.store.get_input_notes(NoteFilter::List(consumed_note_ids)).await?;
@@ -1390,12 +1441,12 @@ where
         let tracked_note_ids =
             consumed_notes.iter().filter_map(InputNoteRecord::id).collect::<BTreeSet<_>>();
 
-        for input_note in executed_tx.tx_inputs().input_notes() {
+        for input_note in effects.input_notes() {
             if !tracked_note_ids.contains(&input_note.id()) {
                 let mut input_note_record = InputNoteRecord::from(input_note.clone());
                 input_note_record.consumed_locally(
-                    executed_tx.account_id(),
-                    executed_tx.id(),
+                    transaction.account_id(),
+                    transaction.id(),
                     current_timestamp,
                 )?;
                 new_input_notes.push(input_note_record);
@@ -1406,8 +1457,8 @@ where
 
         for mut input_note_record in consumed_notes {
             if input_note_record.consumed_locally(
-                executed_tx.account_id(),
-                executed_tx.id(),
+                transaction.account_id(),
+                transaction.id(),
                 current_timestamp,
             )? {
                 updated_input_notes.push(input_note_record);

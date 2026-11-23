@@ -25,6 +25,7 @@ use miden_client_core::transaction::{
     RequestInputNote,
     RequestTransactionScript,
     TransactionDetails,
+    TransactionOutcome,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
@@ -46,6 +47,7 @@ use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag};
 use miden_protocol::transaction::{
     AccountInputs,
     ExecutedTransaction,
+    TransactionEffects,
     TransactionInputs,
     TransactionMeasurements,
     TransactionOutputs,
@@ -771,6 +773,48 @@ fn cycle_count(cycles: u64) -> Result<usize, ProtoDecodeError> {
         .map_err(|_| ProtoDecodeError::InvalidValue(format!("cycle count {cycles} is too large")))
 }
 
+// TRANSACTION OUTCOME
+// ================================================================================================
+
+/// Decoding checks that the final account header agrees with the effects. The store writes the
+/// header as the new state of the account, so a header for another state would corrupt the account.
+impl ProtobufValue for TransactionOutcome {
+    type Message = proto::TransactionOutcome;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            effects: Some(self.effects().into()),
+            final_account: Some(self.final_account().into()),
+            tx_script: self.tx_script().map(Into::into),
+        }
+    }
+
+    fn from_proto(outcome: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "transaction outcome";
+
+        let effects: TransactionEffects =
+            required(outcome.effects, MESSAGE, "effects")?.decode_and_verify()?;
+        let final_account: AccountHeader =
+            required(outcome.final_account, MESSAGE, "final account")?.decode_and_verify()?;
+        let tx_script: Option<TransactionScript> =
+            outcome.tx_script.map(DecodeMessageExt::decode_and_verify).transpose()?;
+
+        if final_account.to_commitment() != effects.final_state_commitment() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "final account header does not commit to the final state of the effects"
+                    .to_string(),
+            ));
+        }
+        if final_account.id() != effects.account_patch().id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "final account header and account patch name different accounts".to_string(),
+            ));
+        }
+
+        Ok(TransactionOutcome::new(effects, final_account, tx_script))
+    }
+}
+
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
@@ -780,7 +824,7 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn to_proto(&self) -> Self::Message {
         let note_updates = self.note_updates();
         Self::Message {
-            executed_transaction: Some(self.executed_transaction().to_proto()),
+            transaction: Some(self.transaction().to_proto()),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
@@ -806,11 +850,8 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction = ExecutedTransaction::from_proto(required(
-            update.executed_transaction,
-            MESSAGE,
-            "executed transaction",
-        )?)?;
+        let transaction =
+            TransactionOutcome::from_proto(required(update.transaction, MESSAGE, "transaction")?)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
@@ -853,7 +894,7 @@ impl ProtobufValue for TransactionStoreUpdate {
             .collect::<Result<_, _>>()?;
 
         Ok(TransactionStoreUpdate::new(
-            executed_transaction,
+            transaction,
             submission_height,
             NoteUpdates::new(input_notes, output_notes),
             future_notes,
@@ -905,6 +946,7 @@ mod tests {
         Account,
         AccountBuilder,
         AccountCode,
+        AccountHeader,
         AccountId,
         AccountType,
         StorageMapKey,
@@ -943,6 +985,7 @@ mod tests {
         NoteUpdates,
         OutputNoteUpdate,
         StorageMapFetch,
+        TransactionOutcome,
         TransactionStoreUpdate,
         VaultFetch,
         proto,
@@ -996,8 +1039,20 @@ mod tests {
             },
         ];
 
+        let outcome = TransactionOutcome::from(&executed_transaction);
+
+        // The header of another account state does not commit to the final state.
+        let other_final_account = AccountHeader::from(&account);
+        assert_ne!(&other_final_account, outcome.final_account());
+        let mismatched =
+            TransactionOutcome::new(outcome.effects().clone(), other_final_account, None);
+        assert!(matches!(
+            decode::<TransactionOutcome>(&encode(&mismatched)),
+            Err(ProtoDecodeError::InvalidValue(_))
+        ));
+
         let update = TransactionStoreUpdate::new(
-            executed_transaction,
+            outcome,
             BlockNumber::from(42u32),
             note_updates,
             vec![(note.into(), tag)],

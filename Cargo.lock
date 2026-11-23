@@ -3191,6 +3191,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-guarded-client"
+version = "0.18.2"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "miden-client",
+ "miden-protocol",
+ "miden-standards",
+ "miden-tx",
+ "miette",
+ "prost",
+ "protox",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "miden-lifted-air"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

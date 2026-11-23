@@ -1,0 +1,43 @@
+[package]
+authors.workspace      = true
+description            = "Wrapper client for guarded multisig accounts that orchestrates the interaction between miden-client and Guardian"
+edition.workspace      = true
+license.workspace      = true
+name                   = "miden-guarded-client"
+publish                = false
+repository.workspace   = true
+rust-version.workspace = true
+version.workspace      = true
+
+[package.metadata.cargo-shear]
+# "tonic-prost" is used by the generated proto bindings, which shear does not resolve.
+ignored = ["tonic-prost"]
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+# Miden dependencies
+miden-client    = { features = ["std"], workspace = true }
+miden-protocol  = { features = ["std"], workspace = true }
+miden-standards = { features = ["std"], workspace = true }
+miden-tx        = { features = ["std"], workspace = true }
+
+# External dependencies
+base64      = { version = "0.22" }
+hex         = { version = "0.4" }
+prost       = { features = ["derive"], workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { features = ["time"], workspace = true }
+tonic       = { features = ["codegen", "tls-native-roots", "tls-ring", "transport"], workspace = true }
+tonic-prost = { version = "0.14" }
+
+[build-dependencies]
+miette            = { workspace = true }
+protox            = { workspace = true }
+tonic-prost-build = { version = "0.14" }
+
+[lints]
+workspace = true

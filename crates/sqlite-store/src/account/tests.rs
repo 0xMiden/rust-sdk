@@ -257,7 +257,7 @@ async fn apply_account_patch_additions() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                account.to_commitment(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -357,7 +357,7 @@ async fn apply_account_patch_preserves_fungible_callback_flag() -> anyhow::Resul
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                account.to_commitment(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -459,7 +459,7 @@ async fn apply_account_patch_removes_slots_and_assets() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                account.to_commitment(),
+                &(&account).into(),
                 &final_state,
                 &patch,
             )?;
@@ -1434,7 +1434,7 @@ async fn apply_single_entry_update(
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header.to_commitment(),
+                &prev_header,
                 &final_header,
                 &patch,
             )?;
@@ -1497,7 +1497,7 @@ async fn undo_account_state_restores_previous_latest() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header.to_commitment(),
+                &prev_header,
                 &final_header,
                 &patch,
             )?;
@@ -1696,7 +1696,7 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header.to_commitment(),
+                &prev_header,
                 &final_header,
                 &patch,
             )?;
@@ -1835,7 +1835,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header_1.to_commitment(),
+                &prev_header_1,
                 &final_header_2,
                 &patch_1,
             )?;
@@ -1925,7 +1925,7 @@ async fn undo_after_update_account_state_does_not_resurrect_removed_entries() ->
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header.to_commitment(),
+                &prev_header,
                 &final_header,
                 &patch_next,
             )?;
@@ -2133,7 +2133,7 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header_1.to_commitment(),
+                &prev_header_1,
                 &final_header_2,
                 &patch_1,
             )?;
@@ -2181,7 +2181,7 @@ async fn undo_multiple_nonces_at_once() -> anyhow::Result<()> {
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                prev_header_2.to_commitment(),
+                &prev_header_2,
                 &final_header_3,
                 &patch_2,
             )?;
@@ -2485,13 +2485,7 @@ async fn vault_root_mismatch_rolls_back_account_and_forest() -> anyhow::Result<(
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-            SqliteStore::apply_account_patch(
-                &tx,
-                &mut forest,
-                init_header.to_commitment(),
-                &final_state,
-                &patch,
-            )
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
         })
         .await;
 
@@ -2559,13 +2553,7 @@ async fn diverged_map_lineage_is_rejected() -> anyhow::Result<()> {
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-            SqliteStore::apply_account_patch(
-                &tx,
-                &mut forest,
-                init_header.to_commitment(),
-                &final_state,
-                &patch,
-            )
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
         })
         .await;
 
@@ -2611,13 +2599,7 @@ async fn storage_commitment_mismatch_rolls_back_account_and_forest() -> anyhow::
         .interact_with_connection(move |conn| {
             let tx = conn.transaction().into_store_error()?;
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(&tx))?;
-            SqliteStore::apply_account_patch(
-                &tx,
-                &mut forest,
-                init_header.to_commitment(),
-                &final_state,
-                &patch,
-            )
+            SqliteStore::apply_account_patch(&tx, &mut forest, &init_header, &final_state, &patch)
         })
         .await;
 
@@ -2671,7 +2653,7 @@ async fn committed_transaction_persists_forest_tables() -> anyhow::Result<()> {
                 SqliteStore::apply_account_patch(
                     &tx,
                     &mut forest,
-                    init_header.to_commitment(),
+                    &init_header,
                     &final_state,
                     &patch,
                 )?;
@@ -2782,7 +2764,7 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
                 SqliteStore::apply_account_patch(
                     &tx,
                     &mut forest,
-                    init_header.to_commitment(),
+                    &init_header,
                     &final_state,
                     &patch,
                 )?;
@@ -2806,7 +2788,7 @@ async fn forest_persists_across_store_reopen() -> anyhow::Result<()> {
                 SqliteStore::apply_account_patch(
                     &tx,
                     &mut forest,
-                    bulk_init.to_commitment(),
+                    &bulk_init,
                     &bulk_final,
                     &bulk_patch,
                 )?;
@@ -3330,7 +3312,7 @@ async fn apply_patch_in_store(
             SqliteStore::apply_account_patch(
                 &tx,
                 &mut smt_forest,
-                init_header.to_commitment(),
+                &init_header,
                 &final_header,
                 &patch,
             )?;

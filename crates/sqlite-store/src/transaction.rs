@@ -8,22 +8,14 @@ use miden_client_core::errors::StoreError;
 use miden_client_core::store::{TransactionFilter, TransactionFilterQuery};
 use miden_client_core::transaction::{
     BatchStoreUpdate,
-    TransactionDetails,
     TransactionOutcome,
     TransactionRecord,
-    TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::transaction::{
-    LogTopic,
-    ToInputNoteCommitments,
-    TransactionId,
-    TransactionLog,
-    TransactionLogs,
-};
+use miden_protocol::transaction::{LogTopic, TransactionId, TransactionLog, TransactionLogs};
 use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use miden_protocol::{Felt, Word};
 use rusqlite::{Connection, ToSql, Transaction, params};
@@ -300,28 +292,10 @@ impl SqliteStore {
         submission_height: BlockNumber,
     ) -> Result<(), StoreError> {
         let effects = transaction.effects();
-
-        // Build transaction record
-        let nullifiers: Vec<Word> =
-            effects.input_notes().iter().map(|x| x.nullifier().as_word()).collect();
-
-        let details = TransactionDetails {
-            account_id: transaction.account_id(),
-            init_account_state: effects.initial_state_commitment(),
-            final_account_state: effects.final_state_commitment(),
-            input_note_nullifiers: nullifiers,
-            output_notes: effects.output_notes().clone(),
-            block_num: effects.ref_block_number(),
+        let transaction_record = TransactionRecord::from_outcome(
+            transaction,
             submission_height,
-            expiration_block_num: effects.expiration_block_num(),
-            creation_timestamp: super::current_timestamp_u64(),
-        };
-
-        let transaction_record = TransactionRecord::new(
-            transaction.id(),
-            details,
-            transaction.tx_script().cloned(),
-            TransactionStatus::Pending,
+            super::current_timestamp_u64(),
         );
 
         // Insert transaction data

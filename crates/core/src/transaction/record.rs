@@ -4,8 +4,15 @@ use core::fmt;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::transaction::{RawOutputNotes, TransactionId, TransactionScript};
+use miden_protocol::transaction::{
+    RawOutputNotes,
+    ToInputNoteCommitments,
+    TransactionId,
+    TransactionScript,
+};
 use miden_protocol::utils::serde::DeserializationError;
+
+use super::TransactionOutcome;
 
 // TRANSACTION RECORD
 // ================================================================================================
@@ -33,6 +40,42 @@ impl TransactionRecord {
         status: TransactionStatus,
     ) -> TransactionRecord {
         TransactionRecord { id, details, script, status }
+    }
+
+    /// Creates the record of a submitted transaction from its outcome, with the
+    /// [`TransactionStatus::Pending`] status.
+    ///
+    /// `submission_height` is the block at which the transaction was submitted.
+    /// `creation_timestamp` is the time at which the store records the transaction, in seconds
+    /// since the Unix epoch.
+    pub fn from_outcome(
+        transaction: &TransactionOutcome,
+        submission_height: BlockNumber,
+        creation_timestamp: u64,
+    ) -> TransactionRecord {
+        let effects = transaction.effects();
+        let details = TransactionDetails {
+            account_id: transaction.account_id(),
+            init_account_state: effects.initial_state_commitment(),
+            final_account_state: effects.final_state_commitment(),
+            input_note_nullifiers: effects
+                .input_notes()
+                .iter()
+                .map(|note| note.nullifier().as_word())
+                .collect(),
+            output_notes: effects.output_notes().clone(),
+            block_num: effects.ref_block_number(),
+            submission_height,
+            expiration_block_num: effects.expiration_block_num(),
+            creation_timestamp,
+        };
+
+        TransactionRecord::new(
+            transaction.id(),
+            details,
+            transaction.tx_script().cloned(),
+            TransactionStatus::Pending,
+        )
     }
 
     /// Updates (if necessary) the transaction status to signify that the transaction was committed.

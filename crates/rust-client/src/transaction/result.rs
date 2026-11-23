@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
+use miden_client_core::transaction::TransactionOutcome;
 use miden_protocol::account::AccountPatch;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteDetails, NoteTag};
@@ -12,6 +12,7 @@ use miden_protocol::transaction::{
     TransactionArgs,
     TransactionId,
     TransactionInputs,
+    TransactionWitness,
 };
 
 // TRANSACTION RESULT
@@ -81,6 +82,26 @@ impl TransactionResult {
     pub fn consumed_notes(&self) -> &InputNotes<InputNote> {
         self.transaction.tx_inputs().input_notes()
     }
+
+    /// Returns the [`TransactionWitness`] that a prover needs to prove the transaction.
+    ///
+    /// Pass it to [`Client::prove_transaction_witness`](crate::Client::prove_transaction_witness)
+    /// with [`Self::id`].
+    pub fn witness(&self) -> TransactionWitness {
+        TransactionWitness::new_unchecked(
+            self.transaction.tx_inputs().clone(),
+            self.transaction.final_account().clone(),
+            self.transaction.expiration_block_num(),
+        )
+    }
+
+    /// Returns the [`TransactionOutcome`], the parts of the transaction that the store records.
+    ///
+    /// Pass it to [`Client::get_outcome_store_update`](crate::Client::get_outcome_store_update)
+    /// with [`Self::future_notes`].
+    pub fn outcome(&self) -> TransactionOutcome {
+        TransactionOutcome::from(&self.transaction)
+    }
 }
 
 impl From<&TransactionResult> for TransactionInputs {
@@ -99,88 +120,5 @@ impl From<TransactionResult> for TransactionInputs {
 impl From<TransactionResult> for ExecutedTransaction {
     fn from(tx_result: TransactionResult) -> ExecutedTransaction {
         tx_result.transaction
-    }
-}
-
-// SERIALIZATION
-// ================================================================================================
-
-impl ProtobufValue for TransactionResult {
-    type Message = proto::TransactionResult;
-
-    fn to_proto(&self) -> Self::Message {
-        Self::Message {
-            executed_transaction: Some(self.transaction.to_proto()),
-            future_notes: self.future_notes.iter().map(ProtobufValue::to_proto).collect(),
-        }
-    }
-
-    fn from_proto(result: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(TransactionResult::new(
-            ExecutedTransaction::from_proto(required(
-                result.executed_transaction,
-                "transaction result",
-                "executed transaction",
-            )?)?,
-            result
-                .future_notes
-                .into_iter()
-                .map(<(NoteDetails, NoteTag)>::from_proto)
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
-    }
-}
-
-// TESTS
-// ================================================================================================
-
-#[cfg(test)]
-mod tests {
-    use alloc::boxed::Box;
-
-    use miden_client_proto::{decode, encode};
-    use miden_protocol::account::AccountId;
-    use miden_protocol::asset::{Asset, FungibleAsset};
-    use miden_protocol::note::{NoteDetails, NoteTag, NoteType};
-    use miden_protocol::testing::account_id::{
-        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
-        ACCOUNT_ID_SENDER,
-    };
-    use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
-
-    use super::TransactionResult;
-
-    /// The executed transaction consumes a P2ID note, and the result expects the same note as a
-    /// future note, so both fields carry data.
-    #[tokio::test]
-    async fn transaction_result_round_trips() {
-        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let asset = Asset::from(FungibleAsset::new(faucet_id, 100).unwrap());
-
-        let mut builder = MockChainBuilder::new();
-        let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
-        let note = builder
-            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
-            .unwrap();
-        let mut chain = builder.build().unwrap();
-        chain.prove_next_block().unwrap();
-
-        let executed_transaction = Box::pin(
-            chain
-                .build_transaction(MockTransactionInput::Account(account.clone()))
-                .unauthenticated_input_note(note.clone())
-                .build()
-                .unwrap()
-                .execute(),
-        )
-        .await
-        .unwrap();
-
-        let future_notes =
-            vec![(NoteDetails::from(note), NoteTag::with_account_target(account.id()))];
-        let result = TransactionResult::new(executed_transaction, future_notes);
-
-        assert_eq!(decode::<TransactionResult>(&encode(&result)).unwrap(), result);
     }
 }

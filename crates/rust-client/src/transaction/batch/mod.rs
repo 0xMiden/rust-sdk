@@ -105,7 +105,6 @@ use crate::store::data_store::ClientDataStore;
 use crate::transaction::{
     BatchStoreUpdate,
     RequestInputNote,
-    TransactionOutcome,
     TransactionRequest,
     TransactionResult,
     TransactionStoreUpdateError,
@@ -295,10 +294,7 @@ where
         }
 
         Ok(BatchStoreUpdate::new(
-            tx_results
-                .iter()
-                .map(|tx_result| TransactionOutcome::from(tx_result.executed_transaction()))
-                .collect(),
+            tx_results.iter().map(TransactionResult::outcome).collect(),
             submission_height,
             note_updates,
             new_tags,

@@ -176,6 +176,8 @@ pub enum ClientError {
     StoreError(#[from] StoreError),
     #[error("transaction execution failed")]
     TransactionExecutorError(#[from] TransactionExecutorError),
+    #[error("the transaction executed without asking for signatures, so it has no summary to sign")]
+    NoSignaturesRequired,
     #[error("transaction proving failed")]
     TransactionProvingError(#[from] TransactionProverError),
     #[error("prover returned a proof of transaction {returned}, but {requested} was requested")]

@@ -60,9 +60,11 @@
 //! For more details on the API and error handling, see the documentation for the specific functions
 //! and types in this module.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use miden_protocol::account::AccountId;
+use miden_protocol::transaction::RawOutputNote;
 use miden_tx::auth::TransactionAuthenticator;
 
 use crate::store::{InputNoteRecord, NoteFilter, OutputNoteRecord};
@@ -282,6 +284,51 @@ where
     pub fn input_note_reader(&self, consumer: AccountId) -> InputNoteReader {
         InputNoteReader::new(self.store.clone(), consumer)
     }
+
+    // OUTPUT NOTE TRACKING
+    // --------------------------------------------------------------------------------------------
+
+    /// Stores `notes` as expected output notes of a transaction that another party executes.
+    ///
+    /// Sync commits an expected note when it finds the note in a transaction of a tracked account.
+    /// The record must exist before that sync. The client does not store the kernel fee note, and
+    /// it does not change the notes that the store already tracks.
+    pub async fn track_expected_output_notes(
+        &mut self,
+        notes: impl IntoIterator<Item = RawOutputNote>,
+    ) -> Result<(), ClientError> {
+        let notes: Vec<RawOutputNote> =
+            notes.into_iter().filter(|note| !is_fee_note(note)).collect();
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let note_ids = notes.iter().map(RawOutputNote::id).collect();
+        let tracked: BTreeSet<NoteId> = self
+            .store
+            .get_output_notes(NoteFilter::List(note_ids))
+            .await?
+            .iter()
+            .map(OutputNoteRecord::id)
+            .collect();
+
+        let expected_height = self.store.get_sync_height().await?;
+        let records = notes
+            .into_iter()
+            .filter(|note| !tracked.contains(&note.id()))
+            .map(|note| OutputNoteRecord::try_from_output_note(note, expected_height))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.store.upsert_output_notes(&records).await?;
+        Ok(())
+    }
+}
+
+/// Returns `true` if `note` is the kernel fee note. The fee note is a bearer note for the batch
+/// builder, so the client does not track it.
+pub(crate) fn is_fee_note(note: &RawOutputNote) -> bool {
+    note.recipient()
+        .is_some_and(|recipient| recipient.script().root() == TxFeeNote::script_root())
 }
 
 /// Returns the client input note whose ID starts with `note_id_prefix`.

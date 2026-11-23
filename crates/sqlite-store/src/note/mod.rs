@@ -206,6 +206,28 @@ impl SqliteStore {
         })
     }
 
+    pub(crate) fn upsert_output_notes(
+        conn: &mut Connection,
+        notes: &[OutputNoteRecord],
+    ) -> Result<(), StoreError> {
+        with_write_tx(conn, |tx| {
+            let mut scripts: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+            let mut serialized = Vec::with_capacity(notes.len());
+
+            for note in notes {
+                let note_data = serialize_output_note(note);
+                if let (Some(root), Some(script)) = (&note_data.script_root, &note_data.script) {
+                    scripts.insert(root.clone(), script.clone());
+                }
+                serialized.push(note_data);
+            }
+
+            // Scripts must be written before the notes that reference them by foreign key.
+            batch_upsert_scripts(tx, &scripts)?;
+            batch_insert_output_notes(tx, &serialized)
+        })
+    }
+
     pub(crate) fn get_unspent_input_note_nullifiers(
         conn: &mut Connection,
     ) -> Result<Vec<Nullifier>, StoreError> {

@@ -100,7 +100,7 @@ use tracing::info;
 
 use super::Client;
 use crate::ClientError;
-use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote};
+use crate::note::{NoteScreenerError, NoteUpdateTracker, StandardNote, is_fee_note};
 use crate::rpc::domain::account::{AccountFetch, GetAccountRequest};
 use crate::rpc::encryption::{TransactionEncryptionKey, seal_transaction_inputs};
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
@@ -326,6 +326,69 @@ where
             None,
         ))
         .await
+    }
+
+    /// Executes a transaction that needs signatures and returns the [`TransactionSummary`] that the
+    /// signers sign. It does not change the local database.
+    ///
+    /// The auth procedure of the account stops the execution when the signatures are missing, and
+    /// reports the summary of the transaction.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::NoSignaturesRequired`] if the execution succeeds, because the auth
+    ///   procedure of the account needs no more signatures.
+    /// - Returns the errors of [`Self::execute_transaction`].
+    pub async fn execute_for_summary(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionSummary, ClientError> {
+        match self.execute_transaction(account_id, transaction_request).await {
+            Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
+                summary,
+            ))) => Ok(*summary),
+            Ok(_) => Err(ClientError::NoSignaturesRequired),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Prepares `transaction_request` so that an executor that does not hold the store of this
+    /// client computes the same [`TransactionSummary`]. Returns the prepared request and the
+    /// summary that the signers sign.
+    ///
+    /// The request must set explicit auth args, because default auth args bind the reference block
+    /// of each executor. Every input note must have a pinned consumption mode, set through
+    /// [`TransactionRequestBuilder::explicit_input_notes`]. The client executes the request with
+    /// [`Self::execute_for_summary`] and declares the block that the summary binds.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`TransactionRequestError::AuthArgsNotExplicit`] if the request has no explicit
+    ///   auth args.
+    /// - Returns [`TransactionRequestError::InputNoteNotPinned`] if an input note has no pinned
+    ///   consumption mode.
+    /// - Returns the errors of [`Self::execute_for_summary`].
+    pub async fn prepare_reproducible_request(
+        &self,
+        account_id: AccountId,
+        mut transaction_request: TransactionRequest,
+    ) -> Result<(TransactionRequest, TransactionSummary), ClientError> {
+        if !transaction_request.has_auth_arg() {
+            return Err(TransactionRequestError::AuthArgsNotExplicit.into());
+        }
+
+        if let Some(note_id) = transaction_request
+            .input_note_ids()
+            .find(|note_id| !transaction_request.explicit_input_notes.contains_key(note_id))
+        {
+            return Err(TransactionRequestError::InputNoteNotPinned(note_id).into());
+        }
+
+        let summary = self.execute_for_summary(account_id, transaction_request.clone()).await?;
+        transaction_request.add_block_number(summary.block_number());
+
+        Ok((transaction_request, summary))
     }
 
     /// Creates and executes a transaction specified by the request against the specified account,
@@ -1385,11 +1448,7 @@ where
         let new_output_notes = executed_tx
             .output_notes()
             .iter()
-            .filter(|output_note| {
-                output_note
-                    .recipient()
-                    .is_none_or(|recipient| recipient.script().root() != TxFeeNote::script_root())
-            })
+            .filter(|output_note| !is_fee_note(output_note))
             .cloned()
             .filter_map(|output_note| {
                 OutputNoteRecord::try_from_output_note(output_note, submission_height).ok()

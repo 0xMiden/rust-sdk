@@ -286,6 +286,12 @@ impl TransactionRequest {
         self.input_notes.push(note);
     }
 
+    /// Adds `block_num` to the blocks that the transaction must be able to authenticate against its
+    /// reference block. See [`TransactionRequestBuilder::block_numbers`].
+    pub fn add_block_number(&mut self, block_num: BlockNumber) {
+        self.block_numbers.insert(block_num);
+    }
+
     /// Returns this request with the auth arg set to the commitment of `auth_args`, and with their
     /// preimage added to the advice map.
     ///
@@ -631,6 +637,14 @@ pub enum TransactionRequestError {
         "note {0} cannot be used as an authenticated input: it does not have a valid inclusion proof"
     )]
     InputNoteNotAuthenticated(NoteId),
+    #[error(
+        "the request does not pin the consumption mode of note {0}, so executors with different stores compute different summaries"
+    )]
+    InputNoteNotPinned(NoteId),
+    #[error(
+        "the request has no explicit auth args, so executors at different blocks compute different summaries"
+    )]
+    AuthArgsNotExplicit,
     #[error("note with details commitment {} has already been consumed", .0.to_hex())]
     InputNoteAlreadyConsumed(NoteDetailsCommitment),
     #[error(

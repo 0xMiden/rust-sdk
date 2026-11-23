@@ -631,13 +631,8 @@ where
         tx_result: &TransactionResult,
         tx_prover: Arc<dyn TransactionProver>,
     ) -> Result<ProvenTransaction, ClientError> {
-        let executed_transaction = tx_result.executed_transaction();
-        self.prove_transaction_witness(
-            executed_transaction.clone().into(),
-            executed_transaction.id(),
-            tx_prover,
-        )
-        .await
+        self.prove_transaction_witness(tx_result.witness(), tx_result.id(), tx_prover)
+            .await
     }
 
     /// Proves a transaction from its witness, using the provided prover.
@@ -810,7 +805,7 @@ where
         // The future holds the outcome across awaits. Boxing it keeps the futures of the callers
         // small (clippy::large_futures).
         Box::pin(self.get_outcome_store_update(
-            TransactionOutcome::from(tx_result.executed_transaction()),
+            tx_result.outcome(),
             tx_result.future_notes().to_vec(),
             submission_height,
         ))

@@ -50,9 +50,9 @@ use crate::store::{NoteFilter, Store};
 use crate::sync::{NoteTagRecord, NoteTagSource};
 use crate::transaction::{
     TransactionObserver,
+    TransactionOutcome,
     TransactionRequest,
     TransactionRequestBuilder,
-    TransactionResult,
     notes_from_output,
 };
 use crate::{Client, ClientError};
@@ -79,8 +79,8 @@ impl TransactionObserver for PswapTransactionObserver {
         "PswapTransactionObserver"
     }
 
-    async fn apply(&self, tx_result: &TransactionResult) -> Result<(), ClientError> {
-        let output_notes = tx_result.executed_transaction().output_notes();
+    async fn apply(&self, transaction: &TransactionOutcome) -> Result<(), ClientError> {
+        let output_notes = transaction.effects().output_notes();
 
         for note in notes_from_output(output_notes) {
             let Ok(pswap) = PswapNote::try_from(note) else {

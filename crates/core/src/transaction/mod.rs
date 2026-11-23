@@ -10,7 +10,7 @@ pub use record::{
 };
 
 mod store_update;
-pub use store_update::{BatchStoreUpdate, TransactionStoreUpdate};
+pub use store_update::{BatchStoreUpdate, TransactionOutcome, TransactionStoreUpdate};
 
 mod request;
 pub use request::{

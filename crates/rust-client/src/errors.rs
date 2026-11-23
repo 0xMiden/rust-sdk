@@ -208,7 +208,7 @@ pub enum ClientError {
          `apply_transaction_update`. Resubmitting the same transaction will be rejected if the \
          original is still in the mempool or has been finalized in a block, because the \
          account (and network) state has already been mutated by the accepted copy.",
-        pending_update.executed_transaction().id(),
+        pending_update.transaction().id(),
         pending_update.submission_height()
     )]
     ApplyTransactionAfterSubmitFailed {
@@ -354,7 +354,7 @@ impl From<&ClientError> for Option<ErrorHint> {
                 docs_url: Some(TROUBLESHOOTING_DOC),
             }),
             ClientError::ApplyTransactionAfterSubmitFailed { pending_update, .. } => {
-                let tx_id = pending_update.executed_transaction().id();
+                let tx_id = pending_update.transaction().id();
                 let submission_height = pending_update.submission_height();
                 Some(ErrorHint {
                     message: format!(

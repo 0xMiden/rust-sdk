@@ -429,13 +429,11 @@ impl SqliteStore {
 
     /// Applies the account patch to the account state, updating the vault and storage maps.
     ///
-    /// `initial_commitment` is the commitment of the account state that the patch applies to.
-    ///
     /// Archives old values from latest to historical and updates latest via INSERT OR REPLACE.
     pub(crate) fn apply_account_patch(
         tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
-        initial_commitment: Word,
+        init_account_state: &AccountHeader,
         final_account_state: &AccountHeader,
         patch: &AccountPatch,
     ) -> Result<(), StoreError> {
@@ -446,16 +444,14 @@ impl SqliteStore {
         // whose initial state does not match the stored latest state (they would overwrite newer
         // state and archive incorrect history).
         let stored = Self::require_latest_account_header(tx, account_id)?;
-        if stored.header.to_commitment() != initial_commitment {
+        if stored.header.to_commitment() != init_account_state.to_commitment() {
             return Err(StaleUpdate::AccountCommitmentMismatch {
                 account_id,
-                initial_commitment,
+                initial_commitment: init_account_state.to_commitment(),
                 stored_commitment: stored.header.to_commitment(),
             }
             .into());
         }
-        // The stored header commits to the initial state, so it is the initial header.
-        let init_account_state = &stored.header;
 
         // The header refers to the account code by its commitment, so a code upgrade must store the
         // new code before the header.
@@ -970,7 +966,7 @@ impl SqliteStore {
 
         // Transaction derefs to Connection, so we can pass it where Connection is expected.
 
-        Self::apply_account_patch(tx, smt_forest, init_header.to_commitment(), new_header, patch)
+        Self::apply_account_patch(tx, smt_forest, init_header, new_header, patch)
     }
 
     /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale

@@ -649,14 +649,16 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
 // TRANSACTION OUTCOME
 // ================================================================================================
 
-/// Decoding checks that the final account header agrees with the effects. The store writes the
-/// header as the new state of the account, so a header for another state would corrupt the account.
+/// Decoding checks that the account headers agree with the effects. The store compares the initial
+/// header with the stored state and writes the final header as the new state, so a header for
+/// another state would corrupt the account.
 impl ProtobufValue for TransactionOutcome {
     type Message = proto::TransactionOutcome;
 
     fn to_proto(&self) -> Self::Message {
         Self::Message {
             effects: Some(self.effects().into()),
+            initial_account: Some(self.initial_account().into()),
             final_account: Some(self.final_account().into()),
             tx_script: self.tx_script().map(Into::into),
         }
@@ -667,24 +669,40 @@ impl ProtobufValue for TransactionOutcome {
 
         let effects: TransactionEffects =
             required(outcome.effects, MESSAGE, "effects")?.decode_and_verify()?;
+        let initial_account: AccountHeader =
+            required(outcome.initial_account, MESSAGE, "initial account")?.decode_and_verify()?;
         let final_account: AccountHeader =
             required(outcome.final_account, MESSAGE, "final account")?.decode_and_verify()?;
         let tx_script: Option<TransactionScript> =
             outcome.tx_script.map(DecodeMessageExt::decode_and_verify).transpose()?;
 
+        let account_id = effects.account_patch().id();
+        if initial_account.id() != account_id || final_account.id() != account_id {
+            return Err(ProtoDecodeError::InvalidValue(
+                "account headers and account patch name different accounts".to_string(),
+            ));
+        }
         if final_account.to_commitment() != effects.final_state_commitment() {
             return Err(ProtoDecodeError::InvalidValue(
                 "final account header does not commit to the final state of the effects"
                     .to_string(),
             ));
         }
-        if final_account.id() != effects.account_patch().id() {
+        // The effects of a transaction against a new account hold the empty word as the initial
+        // state commitment.
+        let initial_matches = if effects.initial_state_commitment() == Word::empty() {
+            initial_account.nonce().as_canonical_u64() == 0
+        } else {
+            initial_account.to_commitment() == effects.initial_state_commitment()
+        };
+        if !initial_matches {
             return Err(ProtoDecodeError::InvalidValue(
-                "final account header and account patch name different accounts".to_string(),
+                "initial account header does not match the initial state of the effects"
+                    .to_string(),
             ));
         }
 
-        Ok(TransactionOutcome::new(effects, final_account, tx_script))
+        Ok(TransactionOutcome::new(effects, initial_account, final_account, tx_script))
     }
 }
 
@@ -908,16 +926,28 @@ mod tests {
         ];
 
         let outcome = TransactionOutcome::from(&executed_transaction);
+        assert_eq!(outcome.initial_account(), &AccountHeader::from(&account));
+        assert_ne!(outcome.initial_account(), outcome.final_account());
 
-        // The header of another account state does not commit to the final state.
-        let other_final_account = AccountHeader::from(&account);
-        assert_ne!(&other_final_account, outcome.final_account());
-        let mismatched =
-            TransactionOutcome::new(outcome.effects().clone(), other_final_account, None);
-        assert!(matches!(
-            decode::<TransactionOutcome>(&encode(&mismatched)),
-            Err(ProtoDecodeError::InvalidValue(_))
-        ));
+        // A header of the other account state does not match the effects.
+        let swapped_final = TransactionOutcome::new(
+            outcome.effects().clone(),
+            outcome.initial_account().clone(),
+            outcome.initial_account().clone(),
+            None,
+        );
+        let swapped_initial = TransactionOutcome::new(
+            outcome.effects().clone(),
+            outcome.final_account().clone(),
+            outcome.final_account().clone(),
+            None,
+        );
+        for mismatched in [swapped_final, swapped_initial] {
+            assert!(matches!(
+                decode::<TransactionOutcome>(&encode(&mismatched)),
+                Err(ProtoDecodeError::InvalidValue(_))
+            ));
+        }
 
         let update = TransactionStoreUpdate::new(
             outcome,

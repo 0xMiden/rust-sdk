@@ -22,13 +22,17 @@ use crate::sync::NoteTagRecord;
 /// A transaction cannot be proven from it. To prove a transaction, use its
 /// [`TransactionWitness`](miden_protocol::transaction::TransactionWitness).
 ///
-/// The final account header must commit to the final state commitment of the effects, and must
-/// belong to the account of the account patch. A value built from an [`ExecutedTransaction`] always
-/// does.
+/// The two account headers must belong to the account of the account patch. The final header must
+/// commit to the final state commitment of the effects. The initial header must commit to the
+/// initial state commitment of the effects, except for a new account: for a new account, the
+/// effects hold [`Word::empty`](miden_protocol::Word::empty) as the initial state commitment, and
+/// the initial header has nonce zero. A value built from an [`ExecutedTransaction`] always agrees.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransactionOutcome {
     /// The effects of the transaction.
     effects: TransactionEffects,
+    /// The header of the account before the transaction.
+    initial_account: AccountHeader,
     /// The header of the account after the transaction.
     final_account: AccountHeader,
     /// The script that the transaction executed, if any.
@@ -39,10 +43,16 @@ impl TransactionOutcome {
     /// Creates a new [`TransactionOutcome`].
     pub fn new(
         effects: TransactionEffects,
+        initial_account: AccountHeader,
         final_account: AccountHeader,
         tx_script: Option<TransactionScript>,
     ) -> Self {
-        Self { effects, final_account, tx_script }
+        Self {
+            effects,
+            initial_account,
+            final_account,
+            tx_script,
+        }
     }
 
     /// Returns the ID of the transaction.
@@ -60,6 +70,14 @@ impl TransactionOutcome {
         &self.effects
     }
 
+    /// Returns the header of the account before the transaction.
+    ///
+    /// For a new account, its commitment is the commitment of the new account, and not the initial
+    /// state commitment of the effects.
+    pub fn initial_account(&self) -> &AccountHeader {
+        &self.initial_account
+    }
+
     /// Returns the header of the account after the transaction.
     pub fn final_account(&self) -> &AccountHeader {
         &self.final_account
@@ -75,6 +93,7 @@ impl From<&ExecutedTransaction> for TransactionOutcome {
     fn from(transaction: &ExecutedTransaction) -> Self {
         Self::new(
             TransactionEffects::from(transaction),
+            AccountHeader::from(transaction.initial_account()),
             transaction.final_account().clone(),
             transaction.tx_args().tx_script().cloned(),
         )

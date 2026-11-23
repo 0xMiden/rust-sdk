@@ -231,6 +231,10 @@ message TransactionOutcome {
   account.AccountHeader final_account = 2;
   // Script that the transaction executed. It is absent when the transaction has no script.
   .transaction.TransactionScript tx_script = 3;
+  // Header of the account before the transaction. For an existing account, it must commit to the
+  // initial state commitment of the effects. For a new account, the effects hold the empty word
+  // and the header has nonce zero.
+  account.AccountHeader initial_account = 4;
 }
 
 // Store changes that an executed transaction makes.

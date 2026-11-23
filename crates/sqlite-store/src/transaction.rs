@@ -332,7 +332,7 @@ impl SqliteStore {
         Self::apply_account_patch(
             db_tx,
             smt_forest,
-            effects.initial_state_commitment(),
+            transaction.initial_account(),
             transaction.final_account(),
             effects.account_patch(),
         )

@@ -30,7 +30,7 @@ pub trait RpcStreamMethod {
     /// A decoded stream item.
     type Item;
 
-    /// The validation state that one item passes to the next item.
+    /// The data of a validated item that [`validate`](Self::validate) checks the next item against.
     type State;
 
     /// Sends the request to the node and returns the stream of decoded items.
@@ -39,11 +39,15 @@ pub trait RpcStreamMethod {
         client: &GrpcClient,
     ) -> impl FutureMaybeSend<Result<RpcStream<Self::Item>, RpcError>>;
 
-    /// Returns the validation state for a new stream.
-    fn initial_state(&self) -> Self::State;
-
-    /// Checks one decoded item against the request and the items before it.
-    fn validate(&self, state: &mut Self::State, item: &Self::Item) -> Result<(), RpcError>;
+    /// Checks one decoded item against the request and the state of the previous item.
+    ///
+    /// The value of `previous` is `None` for the first item of the stream. The returned state is
+    /// the `previous` value for the next item.
+    fn validate(
+        &self,
+        previous: Option<&Self::State>,
+        item: &Self::Item,
+    ) -> Result<Self::State, RpcError>;
 }
 
 /// Returns `items` with [`RpcStreamMethod::validate`] applied to each item.
@@ -55,15 +59,14 @@ where
     M::Item: Send,
     M::State: Send,
 {
-    let state = method.initial_state();
     let stream = futures::stream::try_unfold(
-        (method, state, items),
-        |(method, mut state, mut items)| async move {
+        (method, None::<M::State>, items),
+        |(method, previous, mut items)| async move {
             let Some(item) = items.next().await.transpose()? else {
                 return Ok(None);
             };
-            method.validate(&mut state, &item)?;
-            Ok(Some((item, (method, state, items))))
+            let state = method.validate(previous.as_ref(), &item)?;
+            Ok(Some((item, (method, Some(state), items))))
         },
     );
 

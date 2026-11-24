@@ -35,6 +35,13 @@ tokio       = { features = ["time"], workspace = true }
 tonic       = { features = ["codegen", "tls-native-roots", "tls-ring", "transport"], workspace = true }
 tonic-prost = { version = "0.14" }
 
+[dev-dependencies]
+miden-client              = { features = ["tonic"], workspace = true }
+miden-client-sqlite-store = { workspace = true }
+rand                      = { workspace = true }
+tempfile                  = { workspace = true }
+tokio                     = { features = ["macros", "rt-multi-thread"], workspace = true }
+
 [build-dependencies]
 miette            = { workspace = true }
 protox            = { workspace = true }

@@ -80,7 +80,7 @@ jobs:
         with:
           shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
       # Keep this on a released install-action commit with an explicit tool; shortcut tags can
       # trip zizmor's impostor-commit audit when they are later retagged.
       - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
@@ -106,7 +106,7 @@ jobs:
         with:
           shared-key: rust-doc-tests-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
       - name: Run doc-tests
         run: make test-docs
 
@@ -206,7 +206,7 @@ jobs:
         with:
           shared-key: rust-bench-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
       - name: Run miden-bench CLI tests
         run: make test-miden-bench
       - name: Run the SQL store scaling benchmark
@@ -350,7 +350,7 @@ jobs:
         with:
           shared-key: rust-integration-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
       - name: Fetch test node binaries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

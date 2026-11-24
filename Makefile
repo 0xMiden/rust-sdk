@@ -6,8 +6,6 @@ help: ## Show description of all commands
 
 # --- Variables -----------------------------------------------------------------------------------
 
-NIGHTLY_TOOLCHAIN := nightly-2026-11-20
-
 # The build target can be set via BUILD_TARGET to cross-compile.
 # Used when targeting a specific environment (used to produce artifact binaries)
 # in the CI.
@@ -58,12 +56,12 @@ fix: ## Run Fix with configs
 
 .PHONY: format
 format: ## Run format using nightly toolchain, then reflow comments
-	cargo +$(NIGHTLY_TOOLCHAIN) fmt --all
+	cargo +nightly fmt --all
 	cargo xtask fmt-comments --write
 
 .PHONY: format-check
 format-check: ## Run format and comment reflow checks without writing changes
-	cargo +$(NIGHTLY_TOOLCHAIN) fmt --all --check
+	cargo +nightly fmt --all --check
 	cargo xtask fmt-comments --check
 
 .PHONY: shear
@@ -88,13 +86,13 @@ typos-check: ## Run typos to check for spelling mistakes
 # --- Documentation -------------------------------------------------------------------------------
 
 .PHONY: doc
-doc: ## Generate and check Rust documentation. Run make install-nightly first.
+doc: ## Generate & check rust documentation. Ensure you have the nightly toolchain installed.
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +$(NIGHTLY_TOOLCHAIN) doc --lib --no-deps --all-features --keep-going --release
+	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release
 
-doc-open: ## Generate and open Rust documentation. Run make install-nightly first.
+doc-open: ## Generate & open rust documentation in browser. Ensure you have the nightly toolchain installed.
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +$(NIGHTLY_TOOLCHAIN) doc --lib --no-deps --all-features --keep-going --release --open
+	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release --open
 
 .PHONY: serve-docs
 serve-docs: ## Serves the docs
@@ -211,10 +209,6 @@ check: ## Build the CLI binary and client library in release mode
 	cargo check --workspace --release
 
 ## --- Setup --------------------------------------------------------------------------------------
-
-.PHONY: install-nightly
-install-nightly: ## Install the pinned nightly toolchain and rustfmt
-	rustup toolchain install --profile minimal --component rustfmt --no-self-update $(NIGHTLY_TOOLCHAIN)
 
 .PHONY: check-tools
 check-tools: ## Checks if development tools are installed

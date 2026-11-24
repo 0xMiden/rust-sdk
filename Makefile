@@ -235,7 +235,7 @@ install-tools: ## Installs Rust tools required by the Makefile
 	@rustup show active-toolchain >/dev/null 2>&1 || (echo "Rust toolchain not detected. Install rustup + toolchain first." && exit 1)
 	@RUST_TC=$$(rustup show active-toolchain | awk '{print $$1}'); \
 		echo "Ensuring required Rust components are installed for $$RUST_TC..."; \
-		rustup component add --toolchain $$RUST_TC clippy rust-src rustfmt >/dev/null; \
+		rustup component add --toolchain $$RUST_TC clippy rust-src rustfmt >/dev/null && \
 		rustup target add --toolchain $$RUST_TC wasm32-unknown-unknown
 	# Rust-related
 	cargo install mdbook --locked

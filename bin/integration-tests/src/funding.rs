@@ -10,7 +10,7 @@
 //! transaction to commit. A test can submit its own transaction before the funding transaction
 //! reaches the node. `TestClient::submit_new_transaction` resubmits such a rejected transaction.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,6 +18,9 @@ use miden_client::Deserializable;
 use miden_client::account::AccountId;
 use miden_client::note::Note;
 use miden_client::testing::fee::FeeFunder;
+use miden_protocol::MAX_TX_EXECUTION_CYCLES;
+use miden_protocol::block::FeeParameters;
+use miden_protocol::transaction::TransactionFee;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -27,9 +30,11 @@ use tracing::warn;
 /// Env var naming the funding service's base URL.
 pub const FUNDING_SERVICE_ENV: &str = "MIDEN_FUNDING_SERVICE_URL";
 
-/// Amount of the native fee asset, in base units, each funded account receives. A fee runs a few
-/// tens of thousands of base units, so this covers far more than any one test spends.
-pub const FUNDING_AMOUNT: u64 = 10_000_000;
+/// The minimum number of transactions that the funding of one account pays for.
+///
+/// The amount pays for this number of transactions at the largest fee, so it pays for more
+/// transactions in practice. It covers the transactions of every test against one account.
+pub const MIN_FUNDED_TRANSACTIONS: u64 = 10;
 
 /// How long one `fund` call may take, with every retry included. It is below the nextest kill time
 /// (360s), so a stuck funding service fails the test with a funding error and not a timeout.
@@ -68,6 +73,13 @@ struct RequestFundsRequest {
 struct RequestFundsResponse {
     /// The serialized note, in hexadecimal.
     note: String,
+}
+
+/// The part of the service's status that sets the funding amount.
+#[derive(Debug, Deserialize)]
+struct StatusResponse {
+    /// The base fee of the chain that the service funds.
+    verification_base_fee: u32,
 }
 
 /// The body of a failed funding request.
@@ -128,13 +140,14 @@ pub struct FundingServiceFunder {
     /// The base URL the service listens on, without a trailing separator.
     base_url: String,
     http: reqwest::Client,
-    /// Amount of the native fee asset, in base units, each funded account receives.
-    amount: u64,
+    /// Amount of the native fee asset, in base units, each funded account receives. It is read from
+    /// the service on the first funding request.
+    amount: OnceLock<u64>,
 }
 
 impl FundingServiceFunder {
     /// Builds a funder talking to the service at `base_url`.
-    pub fn new(base_url: &str, amount: u64) -> Result<Self> {
+    pub fn new(base_url: &str) -> Result<Self> {
         let http = reqwest::Client::builder()
             .build()
             .context("failed to build the funding service HTTP client")?;
@@ -142,16 +155,43 @@ impl FundingServiceFunder {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
-            amount,
+            amount: OnceLock::new(),
         })
     }
 
+    /// Returns the amount each funded account receives. It pays for [`MIN_FUNDED_TRANSACTIONS`]
+    /// transactions, each at the largest fee for the base fee that the service reports.
+    async fn amount(&self) -> Result<u64> {
+        if let Some(amount) = self.amount.get() {
+            return Ok(*amount);
+        }
+
+        let url = format!("{}/status", self.base_url);
+        let status: StatusResponse = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .with_context(|| format!("failed to read the funding service status at {url}"))?
+            .json()
+            .await
+            .with_context(|| format!("failed to parse the funding service status at {url}"))?;
+
+        let max_tx_fee = TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?
+            .compute_fee(&FeeParameters::new(status.verification_base_fee))?
+            .as_u64();
+        let amount = max_tx_fee * MIN_FUNDED_TRANSACTIONS;
+        if amount == 0 {
+            bail!("the funding service reports a chain without fees, so there is nothing to fund");
+        }
+
+        Ok(*self.amount.get_or_init(|| amount))
+    }
+
     /// Asks for one note, retrying an attempt that left the service's state untouched.
-    async fn request_note(&self, target: AccountId) -> Result<(AccountId, Note)> {
-        let body = RequestFundsRequest {
-            account_id: target.to_hex(),
-            amount: self.amount,
-        };
+    async fn request_note(&self, target: AccountId, amount: u64) -> Result<(AccountId, Note)> {
+        let body = RequestFundsRequest { account_id: target.to_hex(), amount };
 
         let mut attempt = 1;
         loop {
@@ -234,9 +274,11 @@ impl FeeFunder for FundingServiceFunder {
             return Ok(Vec::new());
         }
 
+        let amount = self.amount().await?;
+
         // Sent together rather than one after another, so the notes are queued together and the
         // service can put them into one transaction.
-        let requests = account_ids.iter().map(|target| self.request_note(*target));
+        let requests = account_ids.iter().map(|target| self.request_note(*target, amount));
 
         tokio::time::timeout(FUNDING_DEADLINE, futures::future::try_join_all(requests))
             .await
@@ -261,7 +303,7 @@ pub fn load(funding_service: Option<&str>) -> Result<Option<Arc<dyn FeeFunder>>>
 
     validate_url(url)?;
 
-    Ok(Some(Arc::new(FundingServiceFunder::new(url, FUNDING_AMOUNT)?)))
+    Ok(Some(Arc::new(FundingServiceFunder::new(url)?)))
 }
 
 /// Returns the funding service URL named by [`FUNDING_SERVICE_ENV`], for runners that read it

@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
+use miden_processor::LoadedMastForest;
 use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::code::ProcedureRoot;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::vm::PackageDebugInfo;
 use miden_protocol::{MastForest, Word};
-use miden_tx::LoadedMastForest;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::forest::{ScopedCodeForest, SqliteForestBackend};

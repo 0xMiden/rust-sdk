@@ -39,6 +39,7 @@ use miden_client_core::store::{
 use miden_client_core::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client_core::transaction::{BatchStoreUpdate, TransactionRecord, TransactionStoreUpdate};
 use miden_client_proto as proto;
+use miden_processor::LoadedMastForest;
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -60,7 +61,6 @@ use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::vm::PackageDebugInfo;
 use miden_protocol::{Felt, MastForest, Word};
-use miden_tx::LoadedMastForest;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;

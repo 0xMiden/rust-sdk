@@ -16,8 +16,8 @@ doctest    = false
 # Miden dependencies
 miden-client-core  = { features = ["std"], workspace = true }
 miden-client-proto = { workspace = true }
+miden-processor    = { workspace = true }
 miden-protocol     = { workspace = true }
-miden-tx           = { workspace = true }
 
 # Workspace dependencies
 anyhow      = { workspace = true }

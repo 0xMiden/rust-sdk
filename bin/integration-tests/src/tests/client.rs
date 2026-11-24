@@ -46,12 +46,12 @@ use miden_client::transaction::{
     DiscardCause,
     PaymentNoteDescription,
     ProvenTransaction,
-    TransactionInputs,
     TransactionProver,
     TransactionProverError,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
+    TransactionWitness,
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::SqliteStore;
@@ -1097,7 +1097,7 @@ impl AlwaysFailingProver {
 impl TransactionProver for AlwaysFailingProver {
     async fn prove(
         &self,
-        _inputs: TransactionInputs,
+        _witness: TransactionWitness,
     ) -> Result<ProvenTransaction, TransactionProverError> {
         return Err(TransactionProverError::other("This prover always fails"));
     }
@@ -1523,10 +1523,10 @@ pub async fn test_get_account_storage_map_key_filtering(client_config: ClientCon
     )
     .map_err(|err| anyhow::anyhow!(err))?;
 
-    let key_pair = AuthSecretKey::new_falcon512_poseidon2();
+    let key_pair = AuthSecretKey::new_falcon512_eidos();
     let auth_component: AccountComponent = AuthSingleSig::new(Approver::new(
         key_pair.public_key().to_commitment(),
-        AuthSchemeId::Falcon512Poseidon2,
+        AuthSchemeId::Falcon512Eidos,
     ))
     .into();
 

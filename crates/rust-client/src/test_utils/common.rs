@@ -324,7 +324,7 @@ impl AccountSetup {
 /// Creates a key pair for `auth_scheme`, and the authentication component that commits to it.
 pub fn auth_component(auth_scheme: AuthSchemeId) -> Result<(AuthSingleSig, AuthSecretKey)> {
     let key_pair = match auth_scheme {
-        AuthSchemeId::Falcon512Poseidon2 => AuthSecretKey::new_falcon512_poseidon2(),
+        AuthSchemeId::Falcon512Eidos => AuthSecretKey::new_falcon512_eidos(),
         AuthSchemeId::EcdsaK256Keccak => AuthSecretKey::new_ecdsa_k256_keccak(),
         other => anyhow::bail!("unsupported auth scheme: {}", other.as_u8()),
     };
@@ -461,7 +461,7 @@ impl TestClient {
         let faucet = NonFungibleFaucet::builder()
             .name(TokenName::new(&symbol.to_string())?)
             .symbol(symbol)
-            .build();
+            .build()?;
         let policy_manager = TokenPolicyManager::builder()
             .active_mint_policy(MintPolicy::allow_all())
             .active_burn_policy(BurnPolicy::allow_all())
@@ -584,7 +584,7 @@ impl TestClient {
         info!(account_id = %account_id, "Executing transaction (expecting failure)");
         // We compare string since we can't compare the error directly
         assert_eq!(
-            self.submit_new_transaction(account_id, tx_request)
+            Box::pin(self.submit_new_transaction(account_id, tx_request))
                 .await
                 .unwrap_err()
                 .to_string(),
@@ -769,9 +769,9 @@ impl TestClient {
             note_type,
             self.rng(),
         )?;
-        let tx_id = self
-            .submit_new_transaction(fungible_asset.faucet_id(), tx_request.clone())
-            .await?;
+        let tx_id =
+            Box::pin(self.submit_new_transaction(fungible_asset.faucet_id(), tx_request.clone()))
+                .await?;
 
         let note = tx_request
             .expected_output_own_notes()
@@ -826,10 +826,10 @@ impl TestClient {
             .map(|note| (note, None::<NoteArgs>))
             .collect::<Vec<(Note, Option<NoteArgs>)>>();
 
-        self.submit_new_transaction(executor, tx_request).await?;
+        Box::pin(self.submit_new_transaction(executor, tx_request)).await?;
 
         let tx_request = TransactionRequestBuilder::new().input_notes(output_notes).build()?;
-        Ok(self.submit_new_transaction(consumer, tx_request).await?)
+        Ok(Box::pin(self.submit_new_transaction(consumer, tx_request)).await?)
     }
 
     /// Mints assets for the target account and consumes them immediately without waiting for the
@@ -917,7 +917,7 @@ impl TestClient {
             .build_consume_notes(vec![note_to_consume.clone()])
             .unwrap();
 
-        match self.submit_new_transaction(consuming_account_id, tx_request).await {
+        match Box::pin(self.submit_new_transaction(consuming_account_id, tx_request)).await {
             Err(ClientError::TransactionRequestError(
                 TransactionRequestError::InputNoteAlreadyConsumed(_),
             )) => {},

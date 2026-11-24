@@ -233,9 +233,11 @@ impl NoteScreener {
         let consumption_checker = NoteConsumptionChecker::new(&transaction_executor);
 
         data_store.mast_store().load_account_code(&account_code);
-        let note_consumption_info = consumption_checker
-            .check_notes_consumability(account_id, block_ref, notes, tx_args)
-            .await?;
+        // The future of the trial execution is large, so it lives on the heap.
+        let note_consumption_info = Box::pin(
+            consumption_checker.check_notes_consumability(account_id, block_ref, notes, tx_args),
+        )
+        .await?;
 
         Ok(note_consumption_info)
     }
@@ -247,6 +249,10 @@ impl NoteScreener {
     /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
     /// standard ones are answered without it. The auth args come from
     /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
+    ///
+    /// A multisig account is an exception. Its auth procedure pays the fee after the signature
+    /// check, and the trial has no signatures. The trial thus stops before the fee payment, and
+    /// screening does not detect a fee that the account cannot pay.
     ///
     /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
     /// make the fee irrelevant to screening rather than something to satisfy:
@@ -286,7 +292,8 @@ impl NoteScreener {
 
         // A multisig component requires a declared salt. The trial is never submitted, so any salt
         // works. With auth args, the trial reaches the signature check, and the checker reports the
-        // note as consumable with authorization.
+        // note as consumable with authorization. The signature check comes before the fee payment,
+        // so this trial does not pay a fee.
         //
         // TODO: find a way to screen notes for multisig accounts without placeholder auth args.
         let salt = multisig.then_some(NATIVE_FEE_CONVERSION_SALT);

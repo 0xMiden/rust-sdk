@@ -5,13 +5,15 @@
 //! against a `MockChain` with a non-zero `verification_base_fee`, which is the only switch that
 //! turns fee collection on.
 
+use core::num::NonZeroU32;
 use std::sync::Arc;
 
 use miden_client::ClientError;
 use miden_client::account::standards::auth::{FeeConversionInfo, commit_fee_conversion_info};
 use miden_client::account::{Account, AccountComponentInterface, AccountId};
-use miden_client::asset::{Asset, FungibleAsset};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey};
+use miden_client::assembly::CodeBuilder;
+use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, BoundSignature, SignatureKey};
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteFile;
 use miden_client::rpc::NodeRpcClient;
@@ -30,8 +32,9 @@ use miden_protocol::account::{AccountBuilder, AccountComponent, AccountType};
 use miden_protocol::note::NoteType;
 use miden_protocol::testing::account_id::{ACCOUNT_ID_FEE_FAUCET, ACCOUNT_ID_SENDER};
 use miden_protocol::transaction::TransactionSummary;
-use miden_protocol::{Felt, Hasher, Word};
+use miden_protocol::{Felt, Word};
 use miden_standards::account::AccountBuilderSchemaCommitmentExt;
+use miden_standards::account::auth::multisig_smart::{DelayedExecutionPolicy, ProcedurePolicy};
 use miden_standards::account::auth::{
     Approver,
     ApproverSet,
@@ -71,7 +74,7 @@ fn fee_charging_chain(balance: u64) -> (MockChain, Account, AccountId) {
     let account = builder
         .add_existing_wallet_with_assets(
             Auth::BasicAuth {
-                auth_scheme: AuthSchemeId::Falcon512Poseidon2,
+                auth_scheme: AuthSchemeId::Falcon512Eidos,
             },
             [fee_asset],
         )
@@ -152,7 +155,7 @@ async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
     // Deliberately no assets: the account starts unable to pay anything.
     let account = builder
         .add_existing_wallet(Auth::BasicAuth {
-            auth_scheme: AuthSchemeId::Falcon512Poseidon2,
+            auth_scheme: AuthSchemeId::Falcon512Eidos,
         })
         .unwrap();
     let funding_note = builder.add_p2id_note_with_fee(account.id(), FEE_ASSET_BALANCE).unwrap();
@@ -222,9 +225,8 @@ async fn fee_payment_fails_without_fee_asset_balance() {
 /// client's keystore: the client signs with its own authenticator, and a chain-generated key is not
 /// reachable from outside the chain.
 async fn fee_charging_client() -> (TestClient, Account) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
-    let approver =
-        Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Poseidon2);
+    let key = AuthSecretKey::new_falcon512_eidos();
+    let approver = Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos);
 
     Box::pin(fee_charging_client_with_auth(AuthSingleSig::new(approver), key)).await
 }
@@ -232,23 +234,7 @@ async fn fee_charging_client() -> (TestClient, Account) {
 /// Builds a fee-charging chain and a client whose account authenticates through `AuthMultisig`,
 /// which reads the auth args as conversion info but will not accept a salt it did not choose.
 async fn fee_charging_multisig_client() -> (TestClient, Arc<MockRpcApi>, Account) {
-    let (auth, key) = multisig_auth();
-    Box::pin(fee_charging_client_with_auth_and_rpc(auth, key)).await
-}
-
-/// Returns a one-of-one `AuthMultisig` component and its approver key.
-fn multisig_auth() -> (AuthMultisig, AuthSecretKey) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
-    let approvers = ApproverSet::new(
-        vec![Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )],
-        1,
-    )
-    .unwrap();
-
-    (AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap(), key)
+    Box::pin(multisig_client_with_fee_balance(FEE_ASSET_BALANCE)).await
 }
 
 async fn fee_charging_client_with_auth(
@@ -263,7 +249,34 @@ async fn fee_charging_client_with_auth_and_rpc(
     auth: impl Into<AccountComponent>,
     key: AuthSecretKey,
 ) -> (TestClient, Arc<MockRpcApi>, Account) {
-    let account = fee_charging_account(auth);
+    fee_charging_client_with_balance(auth, key, FEE_ASSET_BALANCE).await
+}
+
+/// Builds a fee-charging chain and a client whose `AuthMultisig` account holds `balance` of the fee
+/// asset.
+async fn multisig_client_with_fee_balance(balance: u64) -> (TestClient, Arc<MockRpcApi>, Account) {
+    let (auth, key) = multisig_auth();
+    Box::pin(fee_charging_client_with_balance(auth, key, balance)).await
+}
+
+/// Returns a one-of-one `AuthMultisig` component and its approver key.
+fn multisig_auth() -> (AuthMultisig, AuthSecretKey) {
+    let key = AuthSecretKey::new_falcon512_eidos();
+    let approvers = ApproverSet::new(
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
+        1,
+    )
+    .unwrap();
+
+    (AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap(), key)
+}
+
+async fn fee_charging_client_with_balance(
+    auth: impl Into<AccountComponent>,
+    key: AuthSecretKey,
+    balance: u64,
+) -> (TestClient, Arc<MockRpcApi>, Account) {
+    let account = fee_charging_account(auth, balance);
 
     let mut builder = MockChainBuilder::new().verification_base_fee(VERIFICATION_BASE_FEE);
     builder.add_account(account.clone()).unwrap();
@@ -273,10 +286,9 @@ async fn fee_charging_client_with_auth_and_rpc(
     (client, rpc_api, account)
 }
 
-/// Returns a deployed public wallet that holds enough of the fee asset to pay.
-fn fee_charging_account(auth: impl Into<AccountComponent>) -> Account {
+/// Returns a deployed public wallet that holds `balance` of the fee asset.
+fn fee_charging_account(auth: impl Into<AccountComponent>, balance: u64) -> Account {
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
-    let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, FEE_ASSET_BALANCE).unwrap().into();
 
     let mut account = AccountBuilder::new([11u8; 32])
         .account_type(AccountType::Public)
@@ -286,7 +298,10 @@ fn fee_charging_account(auth: impl Into<AccountComponent>) -> Account {
         .unwrap();
     // A new account's vault has to be built empty, and a nonce of zero marks it undeployed, while
     // the chain takes this one as already on it holding enough of the fee asset to pay.
-    account.vault_mut().add_asset(fee_asset).unwrap();
+    if balance > 0 {
+        let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, balance).unwrap().into();
+        account.vault_mut().add_asset(fee_asset).unwrap();
+    }
     account.set_nonce(Felt::ONE).unwrap();
 
     account
@@ -441,7 +456,7 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .find(|failed| failed.note().id() == note.id())
         .expect("the note should be accounted for");
 
-    let error = failed.error();
+    let error = failed.execution_error();
     assert!(
         matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
         "the trial should get as far as requesting a signature rather than aborting on the unpaid \
@@ -487,16 +502,13 @@ async fn a_multisig_account_is_told_to_declare_its_own_conversion_info() {
 async fn serialized_multisig_request_uses_native_auth_args(
     #[case] auth_component: AccountComponentInterface,
 ) {
-    let key = AuthSecretKey::new_falcon512_poseidon2();
+    let key = AuthSecretKey::new_falcon512_eidos();
     let approvers = ApproverSet::new(
-        vec![Approver::new(
-            key.public_key().to_commitment(),
-            AuthSchemeId::Falcon512Poseidon2,
-        )],
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
         1,
     )
     .unwrap();
-    let guardian_key = AuthSecretKey::new_falcon512_poseidon2();
+    let guardian_key = AuthSecretKey::new_falcon512_eidos();
     let auth: AccountComponent = match &auth_component {
         AccountComponentInterface::AuthMultisig => {
             AuthMultisig::new(AuthMultisigConfig::new(approvers)).unwrap().into()
@@ -504,14 +516,17 @@ async fn serialized_multisig_request_uses_native_auth_args(
         AccountComponentInterface::AuthGuardedMultisig => {
             let guardian = GuardianConfig::new(Approver::new(
                 guardian_key.public_key().to_commitment(),
-                AuthSchemeId::Falcon512Poseidon2,
+                AuthSchemeId::Falcon512Eidos,
             ));
             AuthGuardedMultisig::new(AuthGuardedMultisigConfig::new(approvers, guardian).unwrap())
                 .unwrap()
                 .into()
         },
         AccountComponentInterface::AuthMultisigSmart => {
-            AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers)).unwrap().into()
+            let delayed_execution = DelayedExecutionPolicy::new(1, 1, 1).unwrap();
+            AuthMultisigSmart::new(AuthMultisigSmartConfig::new(approvers, delayed_execution))
+                .unwrap()
+                .into()
         },
         _ => unreachable!(),
     };
@@ -559,6 +574,9 @@ async fn serialized_multisig_request_uses_native_auth_args(
 /// tip. The summary does not change when the client syncs, so signatures collected before a sync
 /// authorize the execution after it. The node does not need to retain account state for the bound
 /// block.
+///
+/// The signed execution binds a max fee, so its summary does not depend on the fee estimate of one
+/// execution. It pays the fee at the current tip, within the max fee.
 #[tokio::test]
 async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     let (mut client, rpc_api, account) = Box::pin(fee_charging_multisig_client()).await;
@@ -573,7 +591,7 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
     // The executing party sets the auth args on a request that it received. The request does not
     // declare the bound block, so the client must track it.
-    let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
+    let request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
     let original_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
         .await
@@ -588,19 +606,201 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
     // the summary. Foreign account inputs, including the fee faucet, must use the current tip.
     rpc_api.prune_account_state_at(bound_block_num);
 
-    let later_summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+    let later_summary = Box::pin(client.execute_for_summary(account.id(), request))
         .await
         .expect("the proposal should still reach multisig authorization at the new tip");
 
     assert_eq!(later_summary, original_summary);
 
-    // The signatures over the summary from before the sync authorize the execution at the new tip.
-    sign_summary(&client, account.id(), &mut request, &original_summary).await;
-    let sync_height = client.get_sync_height().await.unwrap();
-    let result = Box::pin(client.execute_transaction(account.id(), request))
+    // The approvers sign a max fee with a margin over the estimate.
+    let (capped_auth_args, capped_summary) =
+        auth_args.with_estimated_max_fee(&later_summary, 150).unwrap();
+    assert!(capped_auth_args.max_fee() > AssetAmount::ZERO);
+    let mut signed_request = TransactionRequestBuilder::new()
+        .build()
+        .unwrap()
+        .with_auth_args(&capped_auth_args);
+    sign_summary(&client, account.id(), &mut signed_request, &capped_summary).await;
+
+    // The signatures are over the summary that the signed execution builds, also after one more
+    // block.
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let result = Box::pin(client.execute_transaction(account.id(), signed_request))
         .await
-        .expect("the signed proposal should execute at the new tip");
-    assert_eq!(result.executed_transaction().block_header().block_num(), sync_height);
+        .expect("the signed proposal should execute at the new tip and pay its fee");
+
+    // The transaction creates no note of its own, so its only output note is the fee note.
+    let executed = result.executed_transaction();
+    assert_eq!(executed.output_notes().num_notes(), 1);
+    let paid_fee: u64 = executed
+        .output_notes()
+        .get_note(0)
+        .assets()
+        .iter()
+        .map(|asset| u64::from(asset.unwrap_fungible().amount()))
+        .sum();
+    assert!(paid_fee > 0);
+    assert!(paid_fee <= capped_auth_args.max_fee().as_u64());
+}
+
+/// The multisig auth procedure pays the fee after the signature check. A max fee below the fee thus
+/// does not fail the unsigned execution. It fails the signed execution.
+#[tokio::test]
+async fn signed_multisig_transaction_fails_when_the_fee_exceeds_the_max_fee() {
+    let (mut client, _, account) = Box::pin(fee_charging_multisig_client()).await;
+    let bound_block_num = client.get_sync_height().await.unwrap();
+
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([31u32, 32, 33, 34]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id))
+        .with_max_fee(AssetAmount::new(1).unwrap());
+    let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
+
+    let summary = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), request.clone()))
+            .await
+            .expect_err("the unsigned execution should return its summary"),
+    );
+    sign_summary(&client, account.id(), &mut request, &summary).await;
+
+    let err = Box::pin(client.execute_transaction(account.id(), request))
+        .await
+        .expect_err("a fee above the max fee should fail the signed execution");
+    let ClientError::TransactionExecutorError(
+        TransactionExecutorError::TransactionProgramExecutionFailed(err),
+    ) = err
+    else {
+        panic!("expected the fee payment to fail in the transaction program, got {err:?}");
+    };
+    assert!(
+        format!("{err}").contains("the transaction fee and the sponsored fees exceed the max fee"),
+        "expected the max fee check to abort, got: {err:?}"
+    );
+}
+
+/// The multisig auth procedure pays the fee after the signature check. A multisig account without
+/// the fee asset thus gets its summary from the unsigned execution. The signed execution fails in
+/// the fee payment.
+#[tokio::test]
+async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
+    let (mut client, _, account) = Box::pin(multisig_client_with_fee_balance(0)).await;
+    let bound_block_num = client.get_sync_height().await.unwrap();
+
+    let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
+    let auth_args = MultisigAuthArgs::new(bound_block_num, Word::from([41u32, 42, 43, 44]))
+        .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
+    let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
+
+    let summary = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), request.clone()))
+            .await
+            .expect_err("the unsigned execution should return its summary"),
+    );
+    sign_summary(&client, account.id(), &mut request, &summary).await;
+
+    let err = Box::pin(client.execute_transaction(account.id(), request))
+        .await
+        .expect_err("an account without the fee asset should fail the signed execution");
+    let ClientError::TransactionExecutorError(
+        TransactionExecutorError::TransactionProgramExecutionFailed(err),
+    ) = err
+    else {
+        panic!("expected the fee withdrawal to fail in the transaction program, got {err:?}");
+    };
+    assert!(
+        format!("{err}")
+            .contains("amount of the asset in the vault is less than the amount to remove"),
+        "expected the vault withdrawal to abort, got: {err:?}"
+    );
+}
+
+/// A smart multisig transaction runs on the delayed path. One approver proposes its summary
+/// commitment, and the transaction executes after the timelock at a newer reference block.
+#[tokio::test]
+async fn smart_multisig_proposal_executes_after_the_timelock() {
+    let key = AuthSecretKey::new_falcon512_eidos();
+    let approvers = ApproverSet::new(
+        vec![Approver::new(key.public_key().to_commitment(), AuthSchemeId::Falcon512Eidos)],
+        1,
+    )
+    .unwrap();
+    let config =
+        AuthMultisigSmartConfig::new(approvers, DelayedExecutionPolicy::new(1, 1, 1).unwrap())
+            .with_proc_policies(vec![(
+                AuthMultisigSmart::update_delayed_execution_policy_root(),
+                ProcedurePolicy::with_delay_threshold(1).unwrap(),
+            )])
+            .unwrap();
+    let auth = AuthMultisigSmart::new(config).unwrap();
+    let (mut client, rpc_api, account) =
+        Box::pin(fee_charging_client_with_auth_and_rpc(auth, key.clone())).await;
+    let compile = |body: String| {
+        CodeBuilder::default()
+            .with_dynamically_linked_package(AuthMultisigSmart::code())
+            .unwrap()
+            .compile_tx_script(format!("@transaction_script\npub proc main\n{body}\nend"))
+            .unwrap()
+    };
+    let procedures = "::miden::standards::components::auth::multisig_smart";
+
+    // The delayed path requires an approval expiration.
+    let bound_block = client.get_sync_height().await.unwrap();
+    let auth_args = MultisigAuthArgs::new(bound_block, Word::from([1u32, 0, 0, 0]))
+        .with_approval_expiration_delta(NonZeroU32::new(100).unwrap())
+        .unwrap();
+    let mut execute = TransactionRequestBuilder::new()
+        .custom_script(compile(format!(
+            "push.1 push.2 push.40 call.{procedures}::update_delayed_execution_policy drop drop drop"
+        )))
+        .auth_args(&auth_args)
+        .build()
+        .unwrap();
+    let commitment = unauthorized_summary(
+        Box::pin(client.execute_transaction(account.id(), execute.clone()))
+            .await
+            .unwrap_err(),
+    )
+    .to_commitment();
+
+    let mut propose = TransactionRequestBuilder::new()
+        .custom_script(compile(format!(
+            "push.{commitment} call.{procedures}::propose_transaction dropw dropw dropw dropw dropw"
+        )))
+        .auth_args(&MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0])))
+        .build()
+        .unwrap();
+
+    // The proposal and the execution are signed over the same commitment. The executor signs only
+    // the summary of the current transaction, so the propose request must carry the signature.
+    let signature_key = SignatureKey::new(key.public_key().to_commitment(), commitment);
+    let signature = BoundSignature::new(signature_key, key.sign(commitment)).unwrap();
+    for request in [&mut propose, &mut execute] {
+        request
+            .advice_map_mut()
+            .insert(signature_key.to_advice_map_key(), signature.to_encoded_signature());
+    }
+
+    Box::pin(client.submit_new_transaction(account.id(), propose)).await.unwrap();
+    // The proposal unlocks at its reference block + propose_expiration_delta + min_delay.
+    rpc_api.advance_blocks(3);
+    client.sync_state().await.unwrap();
+    Box::pin(client.submit_new_transaction(account.id(), execute)).await.unwrap();
+
+    let account = client.get_account(account.id()).await.unwrap().unwrap();
+    assert_eq!(
+        account.storage().get_item(AuthMultisigSmart::delay_config_slot()).unwrap(),
+        Word::from([40u32, 2, 1, 0]),
+    );
+}
+
+fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
+    match error {
+        ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(summary)) => {
+            summary
+        },
+        other => panic!("expected an unauthorized multisig summary, got {other:?}"),
+    }
 }
 
 /// A client that does not hold the input note reproduces the summary of a multisig proposal from
@@ -608,7 +808,7 @@ async fn multisig_proposal_reexecutes_after_bound_account_state_is_pruned() {
 #[tokio::test]
 async fn pinned_multisig_proposal_reproduces_its_summary_on_another_client() {
     let (auth, key) = multisig_auth();
-    let account = fee_charging_account(auth);
+    let account = fee_charging_account(auth, FEE_ASSET_BALANCE);
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, 100).unwrap().into();
 
@@ -674,7 +874,7 @@ async fn pinned_multisig_proposal_reproduces_its_summary_on_another_client() {
 #[tokio::test]
 async fn reproducible_request_reproduces_its_summary_on_another_client_after_a_sync() {
     let (auth, key) = multisig_auth();
-    let account = fee_charging_account(auth);
+    let account = fee_charging_account(auth, FEE_ASSET_BALANCE);
     let fee_faucet_id: AccountId = ACCOUNT_ID_FEE_FAUCET.try_into().unwrap();
     let fee_asset: Asset = FungibleAsset::new(fee_faucet_id, 100).unwrap().into();
 
@@ -766,11 +966,11 @@ async fn sign_summary(
 ) {
     let message = summary.to_commitment();
     for key in client.keystore().get_keys_for_account(&account_id).await.unwrap() {
-        let public_key: Word = key.public_key().to_commitment().into();
-        request.advice_map_mut().insert(
-            Hasher::merge(&[public_key, message]),
-            key.sign(message).to_encoded_signature(message),
-        );
+        let signature_key = SignatureKey::new(key.public_key().to_commitment(), message);
+        let signature = BoundSignature::new(signature_key, key.sign(message)).unwrap();
+        request
+            .advice_map_mut()
+            .insert(signature_key.to_advice_map_key(), signature.to_encoded_signature());
     }
 }
 

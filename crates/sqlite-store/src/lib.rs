@@ -55,6 +55,7 @@ use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::{Felt, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -244,6 +245,16 @@ impl Store for SqliteStore {
     ) -> Result<Vec<TransactionRecord>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::get_transactions(conn, &transaction_filter)
+        })
+        .await
+    }
+
+    async fn get_transaction_logs(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogs>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::get_transaction_logs(conn, transaction_id)
         })
         .await
     }

@@ -4,6 +4,8 @@
 //! of each forest in the `code_procedures` table, and the debug info of a forest, if it is known,
 //! in the `code_debug_info` table.
 
+use std::collections::BTreeSet;
+use std::string::ToString;
 use std::sync::Arc;
 use std::vec::Vec;
 
@@ -12,13 +14,13 @@ use miden_processor::LoadedMastForest;
 use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::code::ProcedureRoot;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::vm::PackageDebugInfo;
+use miden_protocol::vm::{Package, PackageDebugInfo};
 use miden_protocol::{MastForest, Word};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::forest::{ScopedCodeForest, SqliteForestBackend};
 use crate::sql_error::SqlResultExt;
-use crate::{SqliteStore, with_write_tx};
+use crate::{SqliteStore, blob_array, with_write_tx};
 
 impl SqliteStore {
     /// Adds the procedures of all MAST forests to the code registry and to the code tree.
@@ -80,29 +82,48 @@ impl SqliteStore {
     // HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the MAST forests, their procedure roots and their debug info to the code registry, and
-    /// their procedure roots to the code tree, in one database transaction.
+    /// Adds the MAST forests of the packages, their procedure roots and their debug info to the
+    /// code registry, and their procedure roots to the code tree, in one database transaction.
     ///
-    /// A forest that already has debug info in the registry is skipped.
+    /// A package whose forest already has debug info in the registry is skipped. A package without
+    /// debug info is skipped. The packages to skip are found with a read, so the debug info is
+    /// decoded and a write transaction is opened only when a package is missing.
     pub(crate) fn write_procedures_with_debug_info(
         conn: &mut Connection,
-        procedures: &[(Arc<MastForest>, PackageDebugInfo)],
+        packages: &[Arc<Package>],
     ) -> Result<(), StoreError> {
-        with_write_tx(conn, |tx| {
-            let mut has_debug_info = tx
-                .prepare_cached("SELECT 1 FROM code_debug_info WHERE commitment = ?1")
-                .into_store_error()?;
-            let mut missing = Vec::new();
-            for (mast, debug_info) in procedures {
-                if !has_debug_info.exists([mast.commitment().as_bytes()]).into_store_error()? {
-                    missing.push((mast, debug_info));
-                }
-            }
+        let commitments = blob_array(
+            packages.iter().map(|package| package.mast_forest().commitment().as_bytes()),
+        );
+        let stored: BTreeSet<Vec<u8>> = conn
+            .prepare_cached("SELECT commitment FROM code_debug_info WHERE commitment IN rarray(?1)")
+            .into_store_error()?
+            .query_map(params![commitments], |row| row.get(0))
+            .into_store_error()?
+            .collect::<Result<_, _>>()
+            .into_store_error()?;
 
+        let mut missing = Vec::new();
+        for package in packages {
+            let mast = package.mast_forest();
+            if stored.contains(mast.commitment().as_bytes().as_slice()) {
+                continue;
+            }
+            let debug_info =
+                package.debug_info().map_err(|err| StoreError::ParsingError(err.to_string()))?;
+            if let Some(debug_info) = debug_info {
+                missing.push((Arc::clone(mast), debug_info));
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        with_write_tx(conn, |tx| {
             let forests: Vec<Arc<MastForest>> =
                 missing.iter().map(|(mast, _)| Arc::clone(mast)).collect();
             SqliteStore::write_procedures(tx, &forests)?;
-            for (mast, debug_info) in missing {
+            for (mast, debug_info) in &missing {
                 SqliteStore::write_debug_info(tx, mast.commitment(), debug_info)?;
             }
             Ok(())
@@ -211,7 +232,6 @@ mod tests {
     use miden_client_core::store::Store;
     use miden_protocol::ProtocolLib;
     use miden_protocol::block::code_tree::CodeTree;
-    use miden_protocol::vm::Package;
     use miden_standards::StandardsLib;
 
     use super::*;
@@ -378,9 +398,7 @@ mod tests {
             package.mast_forest().local_procedure_digests().next().unwrap(),
         );
 
-        let procedures =
-            vec![(package.mast_forest().clone(), package.debug_info().unwrap().unwrap())];
-        store.insert_procedures_with_debug_info(procedures.clone()).await.unwrap();
+        store.insert_procedures_with_debug_info(vec![package.clone()]).await.unwrap();
 
         let loaded = store.get_procedure(procedure_root).await.unwrap().unwrap();
         assert!(loaded.package_debug_info().unwrap().is_some());
@@ -388,7 +406,7 @@ mod tests {
         assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
 
         let counts = row_counts(&store).await;
-        store.insert_procedures_with_debug_info(procedures).await.unwrap();
+        store.insert_procedures_with_debug_info(vec![package]).await.unwrap();
         assert_eq!(row_counts(&store).await, counts);
         assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
     }

@@ -40,8 +40,8 @@ use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::vm::PackageDebugInfo;
-use miden_protocol::{Felt, MastForest, Word};
+use miden_protocol::vm::Package;
+use miden_protocol::{Felt, Word};
 
 use crate::errors::StoreError;
 use crate::note_transport::NoteTransportSyncState;
@@ -662,17 +662,17 @@ pub trait Store: Send + Sync {
     // CODE REGISTRY
     // --------------------------------------------------------------------------------------------
 
-    /// Adds the MAST forests and their debug info to the code registry, and their procedure roots
-    /// to the code tree.
+    /// Adds the MAST forests of the packages and their debug info to the code registry, and their
+    /// procedure roots to the code tree.
     ///
-    /// Each debug info must belong to the forest that it is paired with, because it refers to the
-    /// nodes of that forest. A forest that already has debug info in the registry is skipped.
+    /// A package whose forest already has debug info in the registry is skipped. A package without
+    /// debug info is skipped.
     ///
     /// The client calls this method when it is built, to store the transaction kernel and the
     /// libraries it is built with.
     async fn insert_procedures_with_debug_info(
         &self,
-        procedures: Vec<(Arc<MastForest>, PackageDebugInfo)>,
+        packages: Vec<Arc<Package>>,
     ) -> Result<(), StoreError>;
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the

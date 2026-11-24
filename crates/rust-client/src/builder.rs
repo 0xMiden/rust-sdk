@@ -17,6 +17,7 @@ use miden_tx::{ExecutionOptions, LocalTransactionProver};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
+#[cfg(any(feature = "tonic", feature = "std"))]
 use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use crate::keystore::FilesystemKeyStore;
@@ -533,7 +534,7 @@ where
             store_genesis(store.as_ref(), block_header, protocol_config).await?;
         }
 
-        ensure_known_packages_in_store(store.as_ref()).await?;
+        store.insert_procedures_with_debug_info(known_packages()).await?;
 
         // Initialize genesis commitment in RPC client
         if let Some((genesis, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
@@ -608,21 +609,6 @@ pub(crate) fn known_packages() -> Vec<Arc<Package>> {
         StandardsLib::default().package(),
         AGGLAYER_PACKAGE.clone(),
     ]
-}
-
-/// Adds the code that the client is built with to the code registry and the code tree of `store`,
-/// with its debug info.
-async fn ensure_known_packages_in_store(store: &dyn Store) -> Result<(), ClientError> {
-    let mut procedures = Vec::new();
-    for package in known_packages() {
-        let debug_info =
-            package.debug_info().map_err(|err| StoreError::ParsingError(err.to_string()))?;
-        if let Some(debug_info) = debug_info {
-            procedures.push((package.mast_forest().clone(), debug_info));
-        }
-    }
-    store.insert_procedures_with_debug_info(procedures).await?;
-    Ok(())
 }
 
 // GENESIS SEEDING

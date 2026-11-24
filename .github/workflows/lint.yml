@@ -111,7 +111,7 @@ jobs:
         with:
           shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: Install Rust with clippy
         run: |
           rustup update --no-self-update
@@ -139,7 +139,7 @@ jobs:
         with:
           shared-key: rust-format-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - format-check
         run: make format-check
 
@@ -159,6 +159,6 @@ jobs:
         with:
           shared-key: rust-docs-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - doc
         run: make doc

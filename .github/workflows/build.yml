@@ -54,7 +54,7 @@ jobs:
         with:
           shared-key: rust-release-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - build
         run: make build
 
@@ -77,7 +77,7 @@ jobs:
         with:
           shared-key: rust-wasm32-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - build-wasm
         run: make build-wasm
 
@@ -103,6 +103,6 @@ jobs:
           shared-key: rust-${{ matrix.target }}-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           cache-bin: false
-          save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/next') || github.head_ref == 'igamigo-cache-keys' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - ${{ matrix.target }}
         run: make ${{ matrix.target }}

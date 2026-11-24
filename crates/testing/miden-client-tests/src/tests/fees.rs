@@ -657,11 +657,9 @@ async fn signed_multisig_transaction_fails_when_the_fee_exceeds_the_max_fee() {
         .with_max_fee(AssetAmount::new(1).unwrap());
     let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
-    let summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the unsigned execution should return its summary"),
-    );
+    let summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the unsigned execution should return its summary");
     sign_summary(&client, account.id(), &mut request, &summary).await;
 
     let err = Box::pin(client.execute_transaction(account.id(), request))
@@ -692,11 +690,9 @@ async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
         .with_conversion_info(FeeConversionInfo::one_to_one(fee_faucet_id));
     let mut request = TransactionRequestBuilder::new().build().unwrap().with_auth_args(&auth_args);
 
-    let summary = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), request.clone()))
-            .await
-            .expect_err("the unsigned execution should return its summary"),
-    );
+    let summary = Box::pin(client.execute_for_summary(account.id(), request.clone()))
+        .await
+        .expect("the unsigned execution should return its summary");
     sign_summary(&client, account.id(), &mut request, &summary).await;
 
     let err = Box::pin(client.execute_transaction(account.id(), request))
@@ -756,12 +752,10 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
         .auth_args(&auth_args)
         .build()
         .unwrap();
-    let commitment = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), execute.clone()))
-            .await
-            .unwrap_err(),
-    )
-    .to_commitment();
+    let commitment = Box::pin(client.execute_for_summary(account.id(), execute.clone()))
+        .await
+        .unwrap()
+        .to_commitment();
 
     let mut propose = TransactionRequestBuilder::new()
         .custom_script(compile(format!(
@@ -792,15 +786,6 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
         account.storage().get_item(AuthMultisigSmart::delay_config_slot()).unwrap(),
         Word::from([40u32, 2, 1, 0]),
     );
-}
-
-fn unauthorized_summary(error: ClientError) -> Box<TransactionSummary> {
-    match error {
-        ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(summary)) => {
-            summary
-        },
-        other => panic!("expected an unauthorized multisig summary, got {other:?}"),
-    }
 }
 
 /// A client that does not hold the input note reproduces the summary of a multisig proposal from

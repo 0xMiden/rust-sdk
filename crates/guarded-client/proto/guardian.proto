@@ -5,14 +5,60 @@ syntax = "proto3";
 package guardian;
 
 service Guardian {
+  // Registers an account with its initial state.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+
+  // Returns the commitment of the key that Guardian signs with.
+  rpc GetPubkey(GetPubkeyRequest) returns (GetPubkeyResponse);
+
   // Returns the account state that Guardian holds.
   rpc GetState(GetStateRequest) returns (GetStateResponse);
+
+  // Submits a proposal with the signature of its proposer.
+  rpc PushDeltaProposal(PushDeltaProposalRequest) returns (PushDeltaProposalResponse);
+
+  // Returns a proposal by its commitment.
+  rpc GetDeltaProposal(GetDeltaProposalRequest) returns (GetDeltaProposalResponse);
 
   // Asks Guardian to prove and submit a signed proposal.
   rpc ExecuteDeltaProposal(ExecuteDeltaProposalRequest) returns (ExecuteDeltaProposalResponse);
 
   // Returns the latest execution of a proposal.
   rpc GetDeltaProposalExecution(GetDeltaProposalExecutionRequest) returns (GetDeltaProposalExecutionResponse);
+}
+
+// REGISTRATION
+// ================================================================================================
+
+message AuthConfig {
+  oneof auth_type {
+    MidenFalconRpoAuth miden_falcon_rpo = 1;
+  }
+}
+
+message MidenFalconRpoAuth {
+  repeated string cosigner_commitments = 1;
+}
+
+message ConfigureRequest {
+  string account_id = 1;
+  AuthConfig auth = 2;
+  // JSON string.
+  string initial_state = 3;
+}
+
+message ConfigureResponse {
+  bool success = 1;
+  string message = 2;
+  string error_code = 5;
+}
+
+message GetPubkeyRequest {
+  optional string scheme = 1;
+}
+
+message GetPubkeyResponse {
+  string pubkey = 1;
 }
 
 // ACCOUNT STATE
@@ -34,6 +80,40 @@ message AccountState {
   string commitment = 3;
   string created_at = 4;
   string updated_at = 5;
+}
+
+// PROPOSALS
+// ================================================================================================
+
+message DeltaObject {
+  // JSON string.
+  string delta_payload = 4;
+}
+
+message PushDeltaProposalRequest {
+  string account_id = 1;
+  uint64 nonce = 2;
+  // JSON string.
+  string delta_payload = 3;
+}
+
+message PushDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  string commitment = 4;
+  string error_code = 5;
+}
+
+message GetDeltaProposalRequest {
+  string account_id = 1;
+  string commitment = 2;
+}
+
+message GetDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  DeltaObject proposal = 3;
+  string error_code = 4;
 }
 
 // EXECUTION

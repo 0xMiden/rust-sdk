@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use miden_client::transaction::{TransactionRequest, TransactionSummary};
 use miden_protocol::account::auth::{PublicKey, PublicKeyCommitment, Signature};
 use miden_protocol::account::{Account, AccountId};
 use miden_protocol::crypto::hash::rpo::Rpo256;
@@ -16,17 +17,25 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, Word};
 use miden_tx::auth::{SigningInputs, TransactionAuthenticator};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tonic::metadata::AsciiMetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Code, Status};
 
 use crate::errors::GuardedClientError;
+use crate::generated::auth_config::AuthType;
 use crate::generated::guardian_client::GuardianClient;
 use crate::generated::{
+    AuthConfig,
+    ConfigureRequest,
     ExecuteDeltaProposalRequest,
     ExecutionEnvelope,
     GetDeltaProposalExecutionRequest,
+    GetDeltaProposalRequest,
+    GetPubkeyRequest,
     GetStateRequest,
+    MidenFalconRpoAuth,
+    PushDeltaProposalRequest,
 };
 use crate::{ExecutionFailure, GuardianExecution, GuardianExecutionState};
 
@@ -43,6 +52,16 @@ const MAX_RETRIES: usize = 4;
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+const FALCON_SCHEME: &str = "falcon";
+
+/// Label of every proposal. Guardian uses it only for display.
+const PROPOSAL_TYPE: &str = "custom_transaction";
+
+/// Version of the envelope that carries the serialized request of a proposal.
+const ENVELOPE_FORMAT_VERSION: u32 = 1;
+/// Protocol version of the serialized request. Guardian refuses a request of another version.
+const PROTOCOL_LINE: &str = "0.18";
 
 // GRPC GUARDIAN CLIENT
 // ================================================================================================
@@ -76,17 +95,33 @@ impl<AUTH: TransactionAuthenticator> GrpcGuardianClient<AUTH> {
         }
     }
 
-    /// Opens a connection to Guardian.
-    async fn connect(&self) -> Result<GuardianClient<Channel>, GuardedClientError> {
-        let channel = Endpoint::from_shared(self.endpoint.clone())
-            .map_err(GuardedClientError::Connection)?
-            .timeout(REQUEST_TIMEOUT)
-            .tls_config(ClientTlsConfig::new().with_native_roots())
-            .map_err(GuardedClientError::Connection)?
-            .connect()
-            .await
-            .map_err(GuardedClientError::Connection)?;
-        Ok(GuardianClient::new(channel))
+    /// Registers the account in Guardian with `account` as its initial state, and `cosigners` as
+    /// the approvers in the order of the account storage.
+    pub(crate) async fn configure(
+        &self,
+        account: &Account,
+        cosigners: &[PublicKeyCommitment],
+    ) -> Result<(), GuardedClientError> {
+        let initial_state = serde_json::json!({
+            "data": STANDARD.encode(account.to_bytes()),
+            "account_id": self.account_id.to_hex(),
+        });
+        let cosigner_commitments =
+            cosigners.iter().map(|cosigner| Word::from(*cosigner).to_hex()).collect();
+        let message = ConfigureRequest {
+            account_id: self.account_id.to_hex(),
+            auth: Some(AuthConfig {
+                auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+                    cosigner_commitments,
+                })),
+            }),
+            initial_state: initial_state.to_string(),
+        };
+        let response = self
+            .call(message, &[], |mut api, request| async move { api.configure(request).await })
+            .await?;
+
+        ensure_success(response.success, response.error_code, response.message)
     }
 
     /// Returns the account state that Guardian holds.
@@ -97,7 +132,89 @@ impl<AUTH: TransactionAuthenticator> GrpcGuardianClient<AUTH> {
             .await?;
 
         let state = response.state.ok_or_else(|| invalid("missing account state"))?;
-        decode_account(&state.state_json)
+        let account = decode_account(&state.state_json)?;
+        if account.id() != self.account_id {
+            return Err(invalid(&format!(
+                "Guardian returned the state of account {}",
+                account.id()
+            )));
+        }
+        Ok(account)
+    }
+
+    /// Submits a proposal for the transaction with `summary`, which `request` reproduces, and signs
+    /// it as its proposer. `nonce` is the account nonce after the transaction.
+    pub(crate) async fn push_proposal(
+        &self,
+        nonce: u64,
+        summary: &TransactionSummary,
+        request: &TransactionRequest,
+    ) -> Result<(), GuardedClientError> {
+        let signature = self
+            .authenticator
+            .get_signature(
+                self.cosigner,
+                &SigningInputs::TransactionSummary(Box::new(summary.clone())),
+            )
+            .await
+            .map_err(GuardedClientError::Signing)?;
+
+        let request_bytes = request.to_bytes();
+        let payload = serde_json::json!({
+            "tx_summary": { "data": STANDARD.encode(summary.to_bytes()) },
+            "signatures": [{
+                "signer_id": Word::from(self.cosigner).to_hex(),
+                "signature": proposal_signature(&signature)?,
+            }],
+            "transaction_request": {
+                "format_version": ENVELOPE_FORMAT_VERSION,
+                "protocol_line": PROTOCOL_LINE,
+                "checksum": to_hex(&Sha256::digest(&request_bytes)),
+                "bytes": STANDARD.encode(&request_bytes),
+            },
+            "metadata": { "proposal_type": PROPOSAL_TYPE },
+        });
+        let message = PushDeltaProposalRequest {
+            account_id: self.account_id.to_hex(),
+            nonce,
+            delta_payload: payload.to_string(),
+        };
+        let response = self
+            .call(message, &[], |mut api, request| async move {
+                api.push_delta_proposal(request).await
+            })
+            .await?;
+        ensure_success(response.success, response.error_code, response.message)?;
+
+        // Guardian identifies a proposal by the commitment of its summary.
+        if parse_word(&response.commitment)? != summary.to_commitment() {
+            return Err(invalid("the proposal ID is not the commitment of the summary"));
+        }
+        Ok(())
+    }
+
+    /// Returns the summary of the proposal with ID `proposal_id`.
+    pub(crate) async fn proposal_summary(
+        &self,
+        proposal_id: Word,
+    ) -> Result<TransactionSummary, GuardedClientError> {
+        let message = GetDeltaProposalRequest {
+            account_id: self.account_id.to_hex(),
+            commitment: proposal_id.to_hex(),
+        };
+        let response =
+            self.call(message, &[], |mut api, request| async move {
+                api.get_delta_proposal(request).await
+            })
+            .await?;
+        ensure_success(response.success, response.error_code, response.message)?;
+
+        let proposal = response.proposal.ok_or_else(|| invalid("missing proposal"))?;
+        let summary = decode_summary(&proposal.delta_payload)?;
+        if summary.to_commitment() != proposal_id {
+            return Err(invalid("the summary of the proposal does not match its ID"));
+        }
+        Ok(summary)
     }
 
     /// Asks Guardian to execute the proposal with ID `proposal_id`.
@@ -154,7 +271,7 @@ impl<AUTH: TransactionAuthenticator> GrpcGuardianClient<AUTH> {
         let mut retries = 0;
         loop {
             let request = self.sign(message.clone(), tag).await?;
-            let status = match send(self.connect().await?, request).await {
+            let status = match send(connect(self.endpoint.clone()).await?, request).await {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(status) => status,
             };
@@ -213,6 +330,35 @@ impl<AUTH: TransactionAuthenticator> GrpcGuardianClient<AUTH> {
     }
 }
 
+/// Returns the commitment of the Falcon key that the Guardian at `endpoint` signs with. The request
+/// carries no signature.
+pub(crate) async fn guardian_key(
+    endpoint: String,
+) -> Result<PublicKeyCommitment, GuardedClientError> {
+    let request = GetPubkeyRequest { scheme: Some(FALCON_SCHEME.to_owned()) };
+    let response = connect(endpoint)
+        .await?
+        .get_pubkey(request)
+        .await
+        .map_err(|status| refused(&status))?
+        .into_inner();
+
+    Ok(PublicKeyCommitment::from(parse_word(&response.pubkey)?))
+}
+
+/// Opens a connection to Guardian.
+async fn connect(endpoint: String) -> Result<GuardianClient<Channel>, GuardedClientError> {
+    let channel = Endpoint::from_shared(endpoint)
+        .map_err(GuardedClientError::Connection)?
+        .timeout(REQUEST_TIMEOUT)
+        .tls_config(ClientTlsConfig::new().with_native_roots())
+        .map_err(GuardedClientError::Connection)?
+        .connect()
+        .await
+        .map_err(GuardedClientError::Connection)?;
+    Ok(GuardianClient::new(channel))
+}
+
 // REQUEST SIGNING
 // ================================================================================================
 
@@ -265,6 +411,18 @@ fn signature_hex(signature: &Signature) -> String {
     }
 }
 
+/// Encodes `signature` as the approval of a proposal. Guardian reads the Falcon signature as hex
+/// without a prefix.
+fn proposal_signature(signature: &Signature) -> Result<serde_json::Value, GuardedClientError> {
+    match signature {
+        Signature::Falcon512Poseidon2(signature) => Ok(serde_json::json!({
+            "scheme": FALCON_SCHEME,
+            "signature": hex::encode(signature.to_bytes()),
+        })),
+        Signature::EcdsaK256Keccak(_) => Err(GuardedClientError::UnsupportedKeyScheme),
+    }
+}
+
 // RESPONSES
 // ================================================================================================
 
@@ -283,10 +441,34 @@ struct RefusalMeta {
     retryable: bool,
 }
 
-/// The JSON of `AccountState.state_json`. `data` is the base64 encoding of the account bytes.
+/// The JSON of `AccountState.state_json` and of the summary in a proposal. `data` is the base64
+/// encoding of the serialized object.
 #[derive(Deserialize)]
-struct StateJson {
+struct EncodedJson {
     data: String,
+}
+
+/// The JSON of `DeltaObject.delta_payload` in a proposal.
+#[derive(Deserialize)]
+struct ProposalPayload {
+    tx_summary: EncodedJson,
+}
+
+/// Returns an error if Guardian answered without success.
+fn ensure_success(
+    success: bool,
+    error_code: String,
+    message: String,
+) -> Result<(), GuardedClientError> {
+    if success {
+        return Ok(());
+    }
+    Err(GuardedClientError::Refused {
+        code: error_code,
+        message,
+        retryable: false,
+        retry_after_secs: None,
+    })
 }
 
 fn refused(status: &Status) -> GuardedClientError {
@@ -356,10 +538,23 @@ fn parse_execution(
 }
 
 fn decode_account(state_json: &str) -> Result<Account, GuardedClientError> {
-    let state: StateJson =
+    let state: EncodedJson =
         serde_json::from_str(state_json).map_err(|err| invalid(&err.to_string()))?;
     let bytes = STANDARD.decode(state.data).map_err(|err| invalid(&err.to_string()))?;
     Account::read_from_bytes(&bytes).map_err(|err| invalid(&err.to_string()))
+}
+
+fn decode_summary(delta_payload: &str) -> Result<TransactionSummary, GuardedClientError> {
+    let payload: ProposalPayload =
+        serde_json::from_str(delta_payload).map_err(|err| invalid(&err.to_string()))?;
+    let bytes = STANDARD
+        .decode(payload.tx_summary.data)
+        .map_err(|err| invalid(&err.to_string()))?;
+    TransactionSummary::read_from_bytes(&bytes).map_err(|err| invalid(&err.to_string()))
+}
+
+fn parse_word(hex: &str) -> Result<Word, GuardedClientError> {
+    Word::try_from(hex).map_err(|err| invalid(&err.to_string()))
 }
 
 // HELPERS

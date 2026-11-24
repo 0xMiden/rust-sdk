@@ -21,6 +21,7 @@ use miden_protocol::account::{
     Account,
     AccountId,
     PartialAccount,
+    StorageMapKey,
     StorageMapPatch,
     StorageSlotPatch,
 };
@@ -134,6 +135,51 @@ where
         Ok(Self { client, account_id, guardian })
     }
 
+    /// Creates a client for `account_id` with the account state that Guardian holds. `client` must
+    /// not track the account. See [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`GuardedClientError::Refused`] if Guardian refuses the state request.
+    /// - Returns the errors of [`Self::new`].
+    pub async fn import(
+        mut client: Client<AUTH>,
+        account_id: AccountId,
+        guardian_endpoint: String,
+        cosigner: PublicKeyCommitment,
+    ) -> Result<Self, GuardedClientError> {
+        let authenticator = client
+            .authenticator()
+            .cloned()
+            .ok_or(GuardedClientError::MissingAuthenticator)?;
+        let guardian =
+            GrpcGuardianClient::new(guardian_endpoint.clone(), account_id, cosigner, authenticator);
+        let account = guardian.get_state().await?;
+        client.add_account(&account, false).await?;
+
+        Self::new(client, account_id, guardian_endpoint, cosigner).await
+    }
+
+    /// Returns the commitment of the key that the Guardian at `guardian_endpoint` signs with. A
+    /// guarded account stores it, so the account is built with it.
+    pub async fn guardian_key(
+        guardian_endpoint: String,
+    ) -> Result<PublicKeyCommitment, GuardedClientError> {
+        grpc::guardian_key(guardian_endpoint).await
+    }
+
+    // REGISTRATION
+    // --------------------------------------------------------------------------------------------
+
+    /// Registers the account in Guardian with the account state in the store as its initial state.
+    ///
+    /// Guardian accepts the registration only if the cosigners match the approvers that the account
+    /// stores, so the client reads them from the account.
+    pub async fn register(&self) -> Result<(), GuardedClientError> {
+        let account = self.account().await?;
+        self.guardian.configure(&account, &cosigner_commitments(&account)).await
+    }
+
     // TRANSACTIONS
     // --------------------------------------------------------------------------------------------
 
@@ -168,6 +214,38 @@ where
         }
 
         Ok((request, summary))
+    }
+
+    /// Submits a Guardian proposal for `request`, signed with the cosigner key. Returns the summary
+    /// of the transaction. Its commitment is the ID of the proposal.
+    ///
+    /// The proposal carries the request of [`Self::prepare_guardian_request`], which Guardian
+    /// reproduces when it executes the proposal.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`GuardedClientError::UnsupportedKeyScheme`] if the cosigner key is not a Falcon
+    ///   key.
+    /// - Returns [`GuardedClientError::Refused`] if Guardian refuses the proposal.
+    /// - Returns the errors of [`Self::prepare_guardian_request`].
+    pub async fn propose(
+        &self,
+        request: TransactionRequest,
+    ) -> Result<TransactionSummary, GuardedClientError> {
+        let (request, summary) = self.prepare_guardian_request(request).await?;
+        // A proposal names the nonce that the account has after the transaction.
+        let nonce = self.account().await?.nonce().as_canonical_u64() + 1;
+        self.guardian.push_proposal(nonce, &summary, &request).await?;
+
+        Ok(summary)
+    }
+
+    /// Returns the summary of the proposal with ID `proposal_id`.
+    pub async fn proposal_summary(
+        &self,
+        proposal_id: Word,
+    ) -> Result<TransactionSummary, GuardedClientError> {
+        self.guardian.proposal_summary(proposal_id).await
     }
 
     /// Proves and submits `request` with the client. The request must carry every signature that
@@ -279,14 +357,8 @@ where
             .await?
             .ok_or(GuardedClientError::AccountNotTracked(self.account_id))?;
         if status.is_locked() {
-            let account = self.guardian.get_state().await?;
             // `add_account` checks the state against the chain only for a tracked locked account.
-            if account.id() != self.account_id {
-                return Err(GuardedClientError::InvalidResponse(format!(
-                    "Guardian returned the state of account {}",
-                    account.id()
-                )));
-            }
+            let account = self.guardian.get_state().await?;
             self.client.add_account(&account, true).await?;
         }
 
@@ -341,6 +413,21 @@ fn is_guarded(account: &Account) -> bool {
 
     AccountComponentInterface::from_procedures(&procedures)
         .contains(&AccountComponentInterface::AuthGuardedMultisig)
+}
+
+/// Returns the key commitments of the approvers of the account, in the order of the storage map.
+/// The map keys are the indexes `[0, 0, 0, 0]`, `[1, 0, 0, 0]`, and so on.
+fn cosigner_commitments(account: &Account) -> Vec<PublicKeyCommitment> {
+    let slot = AuthGuardedMultisig::approver_public_keys_slot();
+    (0u32..)
+        .map(|index| {
+            account
+                .storage()
+                .get_map_item(slot, StorageMapKey::new(Word::from([index, 0, 0, 0])))
+        })
+        .map_while(|item| item.ok().filter(|commitment| *commitment != Word::empty()))
+        .map(PublicKeyCommitment::from)
+        .collect()
 }
 
 /// Returns `true` if the transaction changes the Guardian key of the account.

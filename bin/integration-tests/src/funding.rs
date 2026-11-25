@@ -129,6 +129,19 @@ impl Failure {
             _ => Self::retryable(err),
         }
     }
+
+    /// Classifies an answer to a status read by its status code.
+    ///
+    /// A status read changes nothing, so a retry is always safe. Only the codes that signal a
+    /// temporary condition are retried, so a wrong URL fails at once.
+    fn from_read_status(status: u16, message: String) -> Self {
+        let err = anyhow!("the funding service status answered {status}: {message}");
+
+        match status {
+            408 | 429 | 500..=599 => Self::retryable(err),
+            _ => Self::fatal(err),
+        }
+    }
 }
 
 // FUNDING SERVICE FUNDER
@@ -166,17 +179,7 @@ impl FundingServiceFunder {
             return Ok(*amount);
         }
 
-        let url = format!("{}/status", self.base_url);
-        let status: StatusResponse = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .with_context(|| format!("failed to read the funding service status at {url}"))?
-            .json()
-            .await
-            .with_context(|| format!("failed to parse the funding service status at {url}"))?;
+        let status = retry("read the funding service status", || self.status()).await?;
 
         let max_tx_fee = TransactionFee::new(MAX_TX_EXECUTION_CYCLES)?
             .compute_fee(&FeeParameters::new(status.verification_base_fee))?
@@ -192,40 +195,44 @@ impl FundingServiceFunder {
     /// Asks for one note, retrying an attempt that left the service's state untouched.
     async fn request_note(&self, target: AccountId, amount: u64) -> Result<(AccountId, Note)> {
         let body = RequestFundsRequest { account_id: target.to_hex(), amount };
-
-        let mut attempt = 1;
-        loop {
-            let Failure { retryable, error } = match self.post(&body).await {
-                Ok(note) => return Ok((target, note)),
-                Err(failure) => failure,
-            };
-
-            if !retryable || attempt == MAX_ATTEMPTS {
-                return Err(error.context(format!(
-                    "the funding service failed to fund {target} after {attempt} attempt(s)"
-                )));
-            }
-
-            let delay = RETRY_BASE_DELAY.saturating_mul(1 << (attempt - 1)).min(RETRY_MAX_DELAY);
-            warn!(
-                target_id = %target,
-                attempt,
-                %error,
-                "The funding service request failed, retrying",
-            );
-            tokio::time::sleep(delay).await;
-            attempt += 1;
-        }
+        let note = retry(&format!("fund {target}"), || self.post(&body)).await?;
+        Ok((target, note))
     }
 
-    /// Sends one request and decodes its answer.
+    /// Reads the service's status once.
+    async fn status(&self) -> Result<StatusResponse, Failure> {
+        let url = format!("{}/status", self.base_url);
+        let payload = self.exchange(self.http.get(&url), &url, Failure::from_read_status).await?;
+
+        serde_json::from_slice(&payload)
+            .with_context(|| format!("failed to parse the funding service status at {url}"))
+            .map_err(Failure::fatal)
+    }
+
+    /// Sends one funding request and decodes its answer.
     async fn post(&self, body: &RequestFundsRequest) -> Result<Note, Failure> {
         let url = format!("{}/request-funds", self.base_url);
+        let payload = self
+            .exchange(self.http.post(&url).json(body), &url, Failure::from_status)
+            .await?;
 
+        // Past this point the service has created the note, so a failure to read it is not
+        // something a retry fixes.
+        decode_note(&payload).map_err(Failure::fatal)
+    }
+
+    /// Sends `request` and returns the body of a successful answer. `classify` turns the status
+    /// code and reason of a failed answer into a [`Failure`].
+    async fn exchange(
+        &self,
+        request: reqwest::RequestBuilder,
+        url: &str,
+        classify: fn(u16, String) -> Failure,
+    ) -> Result<Vec<u8>, Failure> {
         // A transport error covers both a service that is not up yet and one that dropped the
         // connection mid-request, and neither says whether a note was created, so it is treated
         // like the statuses that carry the same doubt.
-        let response = self.http.post(&url).json(body).send().await.map_err(|err| {
+        let response = request.send().await.map_err(|err| {
             Failure::retryable(
                 anyhow::Error::new(err)
                     .context(format!("the request to the funding service at {url} failed")),
@@ -246,12 +253,35 @@ impl FundingServiceFunder {
                 .map(|body| body.error)
                 .unwrap_or_else(|_| String::from_utf8_lossy(&payload).trim().to_string());
 
-            return Err(Failure::from_status(status.as_u16(), message));
+            return Err(classify(status.as_u16(), message));
         }
 
-        // Past this point the service has created the note, so a failure to read it is not
-        // something a retry fixes.
-        decode_note(&payload).map_err(Failure::fatal)
+        Ok(payload.to_vec())
+    }
+}
+
+/// Runs `attempt` until it succeeds, fails with an error that a retry does not fix, or fails
+/// [`MAX_ATTEMPTS`] times. `action` names the operation in the logs and in the final error.
+async fn retry<T, F, Fut>(action: &str, mut attempt: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, Failure>>,
+{
+    let mut attempt_num = 1;
+    loop {
+        let Failure { retryable, error } = match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(failure) => failure,
+        };
+
+        if !retryable || attempt_num == MAX_ATTEMPTS {
+            return Err(error.context(format!("failed to {action} after {attempt_num} attempt(s)")));
+        }
+
+        let delay = RETRY_BASE_DELAY.saturating_mul(1 << (attempt_num - 1)).min(RETRY_MAX_DELAY);
+        warn!(action, attempt = attempt_num, %error, "The funding service request failed, retrying");
+        tokio::time::sleep(delay).await;
+        attempt_num += 1;
     }
 }
 
@@ -274,21 +304,22 @@ impl FeeFunder for FundingServiceFunder {
             return Ok(Vec::new());
         }
 
-        let amount = self.amount().await?;
+        let funding = async {
+            let amount = self.amount().await?;
 
-        // Sent together rather than one after another, so the notes are queued together and the
-        // service can put them into one transaction.
-        let requests = account_ids.iter().map(|target| self.request_note(*target, amount));
+            // Sent together rather than one after another, so the notes are queued together and the
+            // service can put them into one transaction.
+            let requests = account_ids.iter().map(|target| self.request_note(*target, amount));
+            futures::future::try_join_all(requests).await
+        };
 
-        tokio::time::timeout(FUNDING_DEADLINE, futures::future::try_join_all(requests))
-            .await
-            .map_err(|_| {
-                anyhow!(
-                    "the funding service did not fund {} account(s) within {}s",
-                    account_ids.len(),
-                    FUNDING_DEADLINE.as_secs()
-                )
-            })?
+        tokio::time::timeout(FUNDING_DEADLINE, funding).await.map_err(|_| {
+            anyhow!(
+                "the funding service did not fund {} account(s) within {}s",
+                account_ids.len(),
+                FUNDING_DEADLINE.as_secs()
+            )
+        })?
     }
 }
 

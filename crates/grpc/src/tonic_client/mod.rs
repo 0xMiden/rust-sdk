@@ -202,7 +202,6 @@ impl GrpcClient {
     pub async fn subscribe<M>(&self, method: M) -> Result<RpcStream<M::Item>, RpcError>
     where
         M: RpcStreamMethod + Send + 'static,
-        M::Item: Send,
     {
         let items = method.open(self).await?;
         Ok(validate_items(method, items))

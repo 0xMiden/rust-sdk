@@ -49,7 +49,6 @@ pub trait RpcStreamMethod {
 pub(crate) fn validate_items<M>(method: M, items: RpcStream<M::Item>) -> RpcStream<M::Item>
 where
     M: RpcStreamMethod + Send + 'static,
-    M::Item: Send,
 {
     let stream =
         futures::stream::try_unfold((method, items), |(mut method, mut items)| async move {

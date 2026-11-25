@@ -56,31 +56,25 @@ impl SqliteStore {
         .await
     }
 
+    // HELPERS
+    // --------------------------------------------------------------------------------------------
+
     /// Returns a witness that proves the presence or absence of the procedure in the code tree.
-    pub async fn get_procedure_witness(
-        &self,
+    pub(crate) fn query_procedure_witness(
+        conn: &mut Connection,
         procedure_root: ProcedureRoot,
     ) -> Result<CodeWitness, StoreError> {
-        self.interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            let forest = ScopedCodeForest::new(SqliteForestBackend::new(&tx))?;
-            forest.get_procedure_witness(procedure_root)
-        })
-        .await
+        let tx = conn.transaction().into_store_error()?;
+        let forest = ScopedCodeForest::new(SqliteForestBackend::new(&tx))?;
+        forest.get_procedure_witness(procedure_root)
     }
 
     /// Returns the root of the code tree.
-    pub async fn get_code_tree_root(&self) -> Result<CodeTreeRoot, StoreError> {
-        self.interact_with_connection(|conn| {
-            let tx = conn.transaction().into_store_error()?;
-            let forest = ScopedCodeForest::new(SqliteForestBackend::new(&tx))?;
-            Ok(forest.code_tree_root())
-        })
-        .await
+    pub(crate) fn query_code_tree_root(conn: &mut Connection) -> Result<CodeTreeRoot, StoreError> {
+        let tx = conn.transaction().into_store_error()?;
+        let forest = ScopedCodeForest::new(SqliteForestBackend::new(&tx))?;
+        Ok(forest.code_tree_root())
     }
-
-    // HELPERS
-    // --------------------------------------------------------------------------------------------
 
     /// Adds the MAST forests of the packages, their procedure roots and their debug info to the
     /// code registry, and their procedure roots to the code tree, in one database transaction.

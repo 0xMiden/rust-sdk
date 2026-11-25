@@ -53,6 +53,7 @@ use miden_protocol::account::{
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
@@ -681,6 +682,20 @@ impl Store for SqliteStore {
             SqliteStore::write_procedures_with_debug_info(conn, &packages)
         })
         .await
+    }
+
+    async fn get_procedure_witness(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<CodeWitness, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::query_procedure_witness(conn, procedure_root)
+        })
+        .await
+    }
+
+    async fn get_code_tree_root(&self) -> Result<CodeTreeRoot, StoreError> {
+        self.interact_with_connection(SqliteStore::query_code_tree_root).await
     }
 
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {

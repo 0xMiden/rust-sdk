@@ -221,7 +221,10 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
 
     // Create accounts
     let basic_account_1 = client_1.insert_wallet(AccountType::Private).await?;
-    client_2.insert_wallet(AccountType::Private).await?;
+    // Client 2 only syncs notes, so its wallet needs no funds.
+    client_2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     client_1.sync_state().await?;
     client_2.sync_state().await?;

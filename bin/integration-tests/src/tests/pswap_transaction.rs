@@ -226,8 +226,11 @@ pub async fn test_pswap_cancel_onchain(client_config: ClientConfig) -> Result<()
     let alice_account = alice_client.insert_wallet(AccountType::Private).await?;
 
     let btc_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
-    // The requested-side faucet exists only so the FungibleAsset is well-formed.
-    let eth_faucet_account = alice_client.insert_faucet(AccountType::Private).await?;
+    // The requested-side faucet exists only so the FungibleAsset is well-formed. It never
+    // transacts, so it needs no funds.
+    let (eth_faucet_account, _) = alice_client
+        .insert_account(AccountSetup::faucet(AccountType::Private).unfunded())
+        .await?;
 
     let tx_id = alice_client
         .mint_and_consume(alice_account.id(), btc_faucet_account.id(), NoteType::Private)

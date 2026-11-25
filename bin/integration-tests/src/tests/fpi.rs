@@ -128,7 +128,10 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
     // creation block
     client2.sync_state().await?;
 
-    let wallet = client2.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let output_stack = client2
         .execute_program(
@@ -664,7 +667,10 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
 
     // A fresh client, so no foreign account data is cached or tracked.
     let mut client = client_config.clone().into_client().await?;
-    let wallet = client.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
@@ -690,7 +696,10 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
         setup_fpi_vault_asset_read(&client_config).await?;
 
     let mut client = client_config.clone().into_client().await?;
-    let wallet = client.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     // Track the foreign account so the client's stored vault root matches the node's.
     client.import_account_by_id(foreign_account_id).await?;

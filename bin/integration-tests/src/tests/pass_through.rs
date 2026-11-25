@@ -25,7 +25,7 @@ use miden_client::note::{
     PartialNoteMetadata,
 };
 use miden_client::store::{InputNoteState, TransactionFilter};
-use miden_client::testing::common::TestClient;
+use miden_client::testing::common::{AccountSetup, TestClient};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Client, ClientRng, Word};
 use miden_protocol::MAX_TX_EXECUTION_CYCLES;
@@ -47,7 +47,10 @@ pub async fn test_pass_through(client_config: ClientConfig) -> Result<()> {
 
     // Create Client basic wallet (We'll call it accountA)
     let sender = client.insert_wallet(AccountType::Private).await?;
-    let target = client_2.insert_wallet(AccountType::Private).await?;
+    // The target only receives a note, so it needs no funds.
+    let (target, _) = client_2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let pass_through_account = create_pass_through_account(&mut client).await?;
 

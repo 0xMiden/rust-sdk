@@ -42,7 +42,7 @@ use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::vm::Package;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, MastForest, Word};
 
 use crate::errors::StoreError;
 use crate::note_transport::NoteTransportSyncState;
@@ -675,6 +675,14 @@ pub trait Store: Send + Sync {
         &self,
         packages: Vec<Arc<Package>>,
     ) -> Result<(), StoreError>;
+
+    /// Adds the procedures of all MAST forests to the code registry and to the code tree, without
+    /// debug info.
+    ///
+    /// The registry and the code tree are updated together. If one forest fails, no forest is
+    /// added. A procedure that is already registered keeps the forest that it was first registered
+    /// with.
+    async fn insert_procedures(&self, procedures: Vec<Arc<MastForest>>) -> Result<(), StoreError>;
 
     /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
     /// code registry has it, or `None` if the procedure is not registered.

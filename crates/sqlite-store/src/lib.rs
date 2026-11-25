@@ -61,7 +61,7 @@ use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
 use miden_protocol::vm::Package;
-use miden_protocol::{Felt, Word};
+use miden_protocol::{Felt, MastForest, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -670,6 +670,13 @@ impl Store for SqliteStore {
     ) -> Result<Option<LoadedMastForest>, StoreError> {
         self.interact_with_connection(move |conn| {
             SqliteStore::query_procedure(conn, procedure_root)
+        })
+        .await
+    }
+
+    async fn insert_procedures(&self, procedures: Vec<Arc<MastForest>>) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            with_write_tx(conn, |tx| SqliteStore::write_procedures(tx, &procedures))
         })
         .await
     }

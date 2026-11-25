@@ -45,7 +45,7 @@
 
 ### Breaking Changes
 
-* [BREAKING][type][rust] Added `Store::get_procedure`, `Store::insert_procedures_with_debug_info`, `Store::get_procedure_witness` and `Store::get_code_tree_root`, which implementations of `Store` must implement ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
+* [BREAKING][type][rust] Added `Store::get_procedure`, `Store::insert_procedures`, `Store::insert_procedures_with_debug_info`, `Store::get_procedure_witness` and `Store::get_code_tree_root`, which implementations of `Store` must implement ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [BREAKING][type][rust,store] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it. `SqliteStore` returns it instead of `StoreError::DatabaseError` when an account update is not based on the stored account state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][param][rust] `StateSyncUpdate::from_parts` takes `block_from`, the sync height that the update was built from, as its first argument. `Client::apply_state_sync` and `Client::apply_chain_updates` return `StaleUpdate::SyncHeightMismatch` if the store is at a different sync height ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][behavior][rust] `NoteScreener::check_notes_consumability` reports a note as successful when the trial execution reaches the account's authentication. Before, it reported the note as failed with `TransactionExecutorError::MissingAuthenticator` ([#2843](https://github.com/0xMiden/rust-sdk/pull/2843)).

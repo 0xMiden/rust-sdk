@@ -23,21 +23,6 @@ use crate::sql_error::SqlResultExt;
 use crate::{SqliteStore, blob_array, with_write_tx};
 
 impl SqliteStore {
-    /// Adds the procedures of all MAST forests to the code registry and to the code tree.
-    ///
-    /// The registry and the code tree are updated in one database transaction. If one forest fails,
-    /// no forest is added. A procedure that is already registered keeps the forest that it was
-    /// first registered with.
-    pub async fn insert_procedures(
-        &self,
-        procedures: Vec<Arc<MastForest>>,
-    ) -> Result<(), StoreError> {
-        self.interact_with_connection(move |conn| {
-            with_write_tx(conn, |tx| SqliteStore::write_procedures(tx, &procedures))
-        })
-        .await
-    }
-
     /// Adds the debug info of the MAST forest with the given commitment to the code registry.
     ///
     /// The debug info refers to the nodes of one forest, so it must belong to the forest that the
@@ -126,7 +111,7 @@ impl SqliteStore {
 
     /// Adds the procedures of the MAST forests to the code registry and to the code tree, in the
     /// transaction `tx`.
-    fn write_procedures(
+    pub(crate) fn write_procedures(
         tx: &Transaction<'_>,
         procedures: &[Arc<MastForest>],
     ) -> Result<(), StoreError> {

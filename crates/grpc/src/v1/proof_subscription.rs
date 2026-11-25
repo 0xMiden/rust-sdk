@@ -13,18 +13,20 @@ use crate::{GrpcClient, RpcStreamMethod, generated as proto};
 /// ends the stream with an error.
 pub struct ProofSubscription {
     /// The first block of the stream.
-    pub block_from: BlockNumber,
+    block_from: BlockNumber,
+    /// The block of the last validated proof. It is `None` before the first item.
+    previous_block_num: Option<BlockNumber>,
 }
 
-/// The validation state of a [`ProofSubscription`] stream.
-pub struct ProofSubscriptionState {
-    /// The block number that the next item must have.
-    next_block_num: BlockNumber,
+impl ProofSubscription {
+    /// Returns a subscription that starts at `block_from`.
+    pub fn new(block_from: BlockNumber) -> Self {
+        Self { block_from, previous_block_num: None }
+    }
 }
 
 impl RpcStreamMethod for ProofSubscription {
     type Item = SubscribedProof;
-    type State = ProofSubscriptionState;
 
     async fn open(&self, client: &GrpcClient) -> Result<RpcStream<Self::Item>, RpcError> {
         let request =
@@ -39,15 +41,13 @@ impl RpcStreamMethod for ProofSubscription {
             .await
     }
 
-    fn initial_state(&self) -> Self::State {
-        ProofSubscriptionState { next_block_num: self.block_from }
-    }
+    fn validate(&mut self, item: &Self::Item) -> Result<(), RpcError> {
+        let next_block_num = self.previous_block_num.map_or(self.block_from, BlockNumber::child);
 
-    fn validate(&self, state: &mut Self::State, item: &Self::Item) -> Result<(), RpcError> {
-        if item.block_num != state.next_block_num {
+        if item.block_num != next_block_num {
             return Err(RpcError::InvalidResponse(format!(
-                "node sent proof for block {} but block {} is the next block of the subscription",
-                item.block_num, state.next_block_num
+                "node sent proof for block {} but block {next_block_num} is the next block of the subscription",
+                item.block_num
             )));
         }
 
@@ -58,7 +58,7 @@ impl RpcStreamMethod for ProofSubscription {
             )));
         }
 
-        state.next_block_num = item.block_num.child();
+        self.previous_block_num = Some(item.block_num);
 
         Ok(())
     }

@@ -523,9 +523,8 @@ fn proof_subscription_validates_each_proof() {
         }
     };
     let validate = |block_from: u32, items: &[SubscribedProof]| {
-        let method = ProofSubscription { block_from: block_from.into() };
-        let mut state = method.initial_state();
-        items.iter().try_for_each(|item| method.validate(&mut state, item))
+        let mut method = ProofSubscription::new(block_from.into());
+        items.iter().try_for_each(|item| method.validate(item))
     };
 
     validate(0, &[item(0), item(1), item(2)]).expect("consecutive proofs must be accepted");

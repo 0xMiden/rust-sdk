@@ -413,7 +413,7 @@ impl NodeRpcClient for GrpcClient {
         &self,
         block_from: BlockNumber,
     ) -> Result<RpcStream<SubscribedProof>, RpcError> {
-        self.subscribe(v1::ProofSubscription { block_from }).await
+        self.subscribe(v1::ProofSubscription::new(block_from)).await
     }
 
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {

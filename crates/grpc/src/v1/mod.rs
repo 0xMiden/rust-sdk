@@ -35,7 +35,7 @@ pub use get_transaction_encryption_key::GetTransactionEncryptionKey;
 pub use get_transaction_logs::GetTransactionLogs;
 pub use is_account_allowed::IsAccountAllowed;
 pub use is_invitation_code_valid::IsInvitationCodeValid;
-pub use proof_subscription::{ProofSubscription, ProofSubscriptionState};
+pub use proof_subscription::ProofSubscription;
 pub use register_account::RegisterAccount;
 pub use submit_proven_tx::SubmitProvenTx;
 pub use submit_proven_tx_batch::SubmitProvenTxBatch;

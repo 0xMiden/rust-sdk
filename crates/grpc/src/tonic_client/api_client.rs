@@ -28,6 +28,8 @@ pub(crate) mod api_client_wrapper {
     pub struct ApiClient {
         pub(crate) client: InnerClient,
         wasm_client: WasmClient,
+        endpoint: String,
+        interceptor: MetadataInterceptor,
         bearer_token: Option<String>,
         max_decoding_message_size: usize,
     }
@@ -47,14 +49,16 @@ pub(crate) mod api_client_wrapper {
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
-            let wasm_client = WasmClient::new_with_options(endpoint, fetch_options);
+            let wasm_client = WasmClient::new_with_options(endpoint.clone(), fetch_options);
             let interceptor =
                 accept_header_interceptor(genesis_commitment, bearer_token.as_deref())?;
-            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)
+            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor.clone())
                 .max_decoding_message_size(max_decoding_message_size);
             Ok(ApiClient {
                 client,
                 wasm_client,
+                endpoint,
+                interceptor,
                 bearer_token,
                 max_decoding_message_size,
             })
@@ -72,14 +76,16 @@ pub(crate) mod api_client_wrapper {
             max_decoding_message_size: usize,
         ) -> Result<ApiClient, RpcError> {
             let fetch_options = FetchOptions::new().timeout(Duration::from_millis(timeout_ms));
-            let wasm_client = WasmClient::new_with_options(endpoint, fetch_options);
+            let wasm_client = WasmClient::new_with_options(endpoint.clone(), fetch_options);
             let interceptor =
                 MetadataInterceptor::default().with_bearer_token(bearer_token.as_deref())?;
-            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor)
+            let client = ProtoClient::with_interceptor(wasm_client.clone(), interceptor.clone())
                 .max_decoding_message_size(max_decoding_message_size);
             Ok(ApiClient {
                 client,
                 wasm_client,
+                endpoint,
+                interceptor,
                 bearer_token,
                 max_decoding_message_size,
             })
@@ -94,7 +100,20 @@ pub(crate) mod api_client_wrapper {
             let interceptor =
                 accept_header_interceptor(Some(genesis_commitment), self.bearer_token.as_deref())
                     .expect("bearer token already validated at construction time");
-            self.client = ProtoClient::with_interceptor(self.wasm_client.clone(), interceptor)
+            self.client =
+                ProtoClient::with_interceptor(self.wasm_client.clone(), interceptor.clone())
+                    .max_decoding_message_size(self.max_decoding_message_size);
+            self.interceptor = interceptor;
+            self
+        }
+
+        /// Returns this client with a transport that has no request timeout.
+        ///
+        /// The fetch timeout of the transport covers the response body, so it ends an open stream.
+        pub fn without_request_timeout(mut self) -> Self {
+            let wasm_client =
+                WasmClient::new_with_options(self.endpoint.clone(), FetchOptions::new());
+            self.client = ProtoClient::with_interceptor(wasm_client, self.interceptor.clone())
                 .max_decoding_message_size(self.max_decoding_message_size);
             self
         }
@@ -209,6 +228,14 @@ pub(crate) mod api_client_wrapper {
                     .expect("bearer token already validated at construction time");
             self.client = ProtoClient::with_interceptor(self.channel.clone(), interceptor)
                 .max_decoding_message_size(self.max_decoding_message_size);
+            self
+        }
+
+        /// Returns this client unchanged.
+        ///
+        /// The request timeout of the channel covers only the wait for the response headers, so it
+        /// does not end an open stream.
+        pub fn without_request_timeout(self) -> Self {
             self
         }
     }

@@ -1,5 +1,6 @@
 pub mod account;
 pub mod account_vault;
+pub mod block;
 pub mod note;
 pub mod nullifier;
 pub mod status;

@@ -4,11 +4,11 @@
 
 ### Features
 
-* [FEATURE][store] `miden-client-sqlite-store` builds for `wasm32-unknown-unknown`. There the store runs every query on a single connection, opens the database through the default SQLite VFS, and keeps the rollback journal instead of WAL. Building it needs a C compiler with a WebAssembly backend ([#TBD](https://github.com/0xMiden/rust-sdk/pull/TBD)).
+* [FEATURE][store] `miden-client-sqlite-store` builds for `wasm32-unknown-unknown`. There the store runs every query on a single connection, opens the database through the default SQLite VFS, and keeps the rollback journal instead of WAL. Building it needs a C compiler with a WebAssembly backend ([#2840](https://github.com/0xMiden/rust-sdk/pull/2840)).
 
 ### Changes
 
-* [store] Updated `rusqlite` to `0.41` and `rusqlite_migration` to `2.7` ([#TBD](https://github.com/0xMiden/rust-sdk/pull/TBD)).
+* [store] Updated `rusqlite` to `0.41` and `rusqlite_migration` to `2.7` ([#2840](https://github.com/0xMiden/rust-sdk/pull/2840)).
 
 ## 0.18.2 (2026-11-13)
 

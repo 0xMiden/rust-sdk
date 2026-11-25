@@ -73,8 +73,6 @@ use miden_protocol::account::{AccountCode, AccountCodeInterface, AccountId, Part
 use miden_protocol::asset::Asset;
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-#[cfg(feature = "dap")]
-use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::errors::AssetError;
 use miden_protocol::note::{
@@ -417,7 +415,7 @@ where
         account_id: AccountId,
         transaction_request: TransactionRequest,
     ) -> Result<TransactionResult, ClientError> {
-        self.load_known_procedures_into_cache().await?;
+        self.load_known_procedures_into_cache();
         self.execute_transaction_with_mode(
             account_id,
             transaction_request,
@@ -904,7 +902,7 @@ where
         advice_inputs: AdviceInputs,
         foreign_accounts: BTreeMap<AccountId, ForeignAccount>,
     ) -> Result<[Felt; MIN_STACK_DEPTH], ClientError> {
-        self.load_known_procedures_into_cache().await?;
+        self.load_known_procedures_into_cache();
         let (data_store, block_ref) =
             self.prepare_program_execution(account_id, foreign_accounts).await?;
 
@@ -1294,28 +1292,16 @@ where
         Ok(account_record)
     }
 
-    /// Adds the transaction kernel and the libraries to the client's MAST forest cache, and reads
-    /// from the store the ones that the cache does not have.
+    /// Adds the transaction kernel and the libraries to the client's MAST forest cache.
     ///
     /// The debug adapter polls each request to the host once and fails if the answer is not ready,
     /// so the code that a debug execution needs must be in memory before it starts.
     #[cfg(feature = "dap")]
-    async fn load_known_procedures_into_cache(&self) -> Result<(), ClientError> {
+    fn load_known_procedures_into_cache(&self) {
         for package in crate::builder::known_packages() {
-            let Some(procedure_root) = package.mast_forest().local_procedure_digests().next()
-            else {
-                continue;
-            };
-            if self.mast_forest_cache.get(&procedure_root).is_some() {
-                continue;
-            }
-            if let Some(forest) =
-                self.store.get_procedure(ProcedureRoot::from_raw(procedure_root)).await?
-            {
-                self.mast_forest_cache.insert(&forest);
-            }
+            let forest = miden_protocol::package::loaded_mast_forest_from_package(&package);
+            self.mast_forest_cache.insert(&forest);
         }
-        Ok(())
     }
 
     /// Creates a transaction executor configured for DAP (Debug Adapter Protocol) debugging.

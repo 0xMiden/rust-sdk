@@ -46,7 +46,7 @@ use miden_client::note::{
 };
 use miden_client::store::{InputNoteState, NoteFilter};
 use miden_client::sync::NoteTagSource;
-use miden_client::testing::common::TestClient;
+use miden_client::testing::common::{AccountSetup, TestClient};
 use miden_client::transaction::TransactionRequestBuilder;
 use miden_client::{Felt, Word, ZERO};
 use rand::{Rng, RngExt};
@@ -451,6 +451,46 @@ fn build_non_standard_mint(
     Ok((custom_script, mint_note, expected_output_commitment))
 }
 
+/// Builds a standard MINT note routed to `faucet` whose public output is a standard P2ID note for
+/// `target`. Returns the MINT note and the details commitment of the P2ID note that the network
+/// transaction is expected to emit for it.
+fn build_standard_p2id_mint(
+    client: &mut TestClient,
+    faucet: &Account,
+    faucet_owner: AccountId,
+    target: AccountId,
+    amount: u64,
+) -> Result<(Note, NoteDetailsCommitment)> {
+    let serial_num = client.rng().random::<Word>();
+    let recipient = P2idNoteStorage::new(target).into_recipient(serial_num);
+    let expected_asset = FungibleAsset::new(faucet.id(), amount)?;
+    let expected_assets = NoteAssets::new(vec![expected_asset.into()])?;
+    let expected_output_commitment = Note::with_attachments(
+        expected_assets,
+        PartialNoteMetadata::new(faucet.id(), NoteType::Public)
+            .with_tag(NoteTag::with_account_target(target)),
+        recipient.clone(),
+        NoteAttachments::default(),
+    )
+    .details_commitment();
+
+    let mint_storage = MintNoteStorage::new_public(
+        recipient,
+        expected_asset,
+        NoteTag::with_account_target(target),
+    )?;
+    let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
+    let mint_note: Note = MintNote::builder()
+        .sender(faucet_owner) // must equal the faucet owner, checked by mint_and_send
+        .mint_storage(mint_storage)
+        .attachment(target_ntx)
+        .generate_serial_number(client.rng())
+        .build()?
+        .into();
+
+    Ok((mint_note, expected_output_commitment))
+}
+
 // TESTS
 // ================================================================================================
 
@@ -717,66 +757,13 @@ pub async fn test_network_note_consumed_by_ntx(client_config: ClientConfig) -> R
     Ok(())
 }
 
-/// End-to-end integration test for the standard MINT note -> network faucet -> public P2ID output
-/// note flow.
-pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> Result<()> {
-    let mut client = client_config.clone().into_client().await?;
-    let mut client_2 = client_config.clone().into_client().await?;
-
-    let alice = client.insert_wallet(AccountType::Public).await?;
-    let bob = client_2.insert_wallet(AccountType::Public).await?;
-
-    let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
-
-    // Build the standard MINT note. Precompute Bob's P2ID recipient and details commitment so we
-    // can poll for the emitted public note on client_2.
-    let serial_num = client.rng().random::<Word>();
-    let bob_recipient = P2idNoteStorage::new(bob.id()).into_recipient(serial_num);
-    let expected_asset = FungibleAsset::new(faucet.id(), 100)?;
-    let expected_assets = NoteAssets::new(vec![expected_asset.into()])?;
-    let expected_output_commitment = Note::with_attachments(
-        expected_assets,
-        PartialNoteMetadata::new(faucet.id(), NoteType::Public)
-            .with_tag(NoteTag::with_account_target(bob.id())),
-        bob_recipient.clone(),
-        NoteAttachments::default(),
-    )
-    .details_commitment();
-
-    let mint_storage = MintNoteStorage::new_public(
-        bob_recipient,
-        expected_asset,
-        NoteTag::with_account_target(bob.id()),
-    )?;
-
-    let target_ntx = NetworkAccountTarget::new(faucet.id(), NoteExecutionHint::Always)?;
-    let mint_note: Note = MintNote::builder()
-        .sender(alice.id())
-        .mint_storage(mint_storage)
-        .attachment(target_ntx)
-        .generate_serial_number(client.rng())
-        .build()?
-        .into();
-
-    let mint_tx = TransactionRequestBuilder::new().own_output_notes(vec![mint_note]).build()?;
-    client.execute_tx_and_sync(alice.id(), mint_tx).await?;
-
-    ensure!(
-        wait_for_committed_note(&mut client, &mut client_2, expected_output_commitment, 15).await?,
-        "timed out waiting for committed P2ID note {expected_output_commitment:?} emitted by network faucet"
-    );
-
-    Ok(())
-}
-
-/// End-to-end NTX integration test for public output notes carrying NON-STANDARD note scripts,
-/// covering both the registered (built) and the unregistered (never built) case.
-///
-/// This is the general case of [`test_ntx_mint_produces_public_p2id`]. There the output is a
-/// standard P2ID note, which the node's NTX builder resolves directly, so no script
-/// pre-registration is needed. Here an output note uses a custom (non-standard) script, which the
-/// NTX builder must resolve from its registry when it builds the public output note, so the script
-/// has to be registered on the node first.
+/// End-to-end NTX integration test for the MINT note -> network faucet -> public output note flow.
+/// It covers three kinds of output note:
+///   - A standard P2ID note. The node's NTX builder resolves its script directly, so no script
+///     pre-registration is needed.
+///   - A note with a NON-STANDARD script that is registered on the node first. The NTX builder must
+///     resolve the script from its registry when it builds the public output note.
+///   - A note with a NON-STANDARD script that is never registered. The NTX builder cannot build it.
 ///
 /// Both cases share one network faucet and one pair of wallets, and each uses its own MINT note
 /// with a distinct per-run script nonce so the registered case cannot accidentally satisfy the
@@ -788,9 +775,11 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
 ///   1. Alice owns a network `NetworkFungibleFaucet`.
 ///   2. Registered case: Alice pre-registers a non-standard script via
 ///      [`TransactionRequestBuilder::expected_ntx_scripts`], waits for it to commit, then mints a
-///      note whose public output uses that script. The NTX builder resolves it and emits the public
-///      note. Bob imports the expected `NoteId`, observes it `Committed`, consumes it, and ends up
-///      holding the minted asset.
+///      note whose public output uses that script. The same transaction also mints a note whose
+///      public output is a standard P2ID note to Carol. The NTX builder emits both public notes.
+///      Bob's client observes both `Committed`. Carol is never deployed, so her client must keep a
+///      standard public note for an account that is not on chain. Bob consumes the non-standard
+///      note and ends up holding the minted asset.
 ///   3. Unregistered case: Alice mints a note whose public output uses a different,
 ///      never-registered non-standard script. The NTX builder cannot build the public output note,
 ///      so it never reaches `Committed` on Bob's client over a bounded window.
@@ -802,6 +791,10 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
 
     let alice = client.insert_wallet(AccountType::Public).await?;
     let bob = client_2.insert_wallet(AccountType::Public).await?;
+    // Carol receives the standard P2ID note and never transacts, so she is never deployed.
+    let (carol, _) = client_2
+        .insert_account(AccountSetup::wallet(AccountType::Public).unfunded())
+        .await?;
 
     let faucet = deploy_network_fungible_faucet(&mut client, alice.id()).await?;
 
@@ -841,13 +834,20 @@ pub async fn test_ntx_mint_produces_public_note_with_non_standard_script(
     client.execute_tx_and_sync(alice.id(), register_tx).await?;
     client.wait_for_blocks(1).await?;
 
+    let (p2id_mint, p2id_output_commitment) =
+        build_standard_p2id_mint(&mut client, &faucet, alice.id(), carol.id(), 100)?;
+
     let registered_mint_tx = TransactionRequestBuilder::new()
-        .own_output_notes(vec![registered_mint])
+        .own_output_notes(vec![registered_mint, p2id_mint])
         .build()?;
     client.execute_tx_and_sync(alice.id(), registered_mint_tx).await?;
 
-    // The NTX builder resolves the registered script and emits the public note. Observe it
-    // `Committed` on Bob's client.
+    // The NTX builder emits the standard P2ID note and, with the registered script, the
+    // non-standard note. Observe both `Committed` on Bob's client.
+    ensure!(
+        wait_for_committed_note(&mut client, &mut client_2, p2id_output_commitment, 15).await?,
+        "timed out waiting for committed P2ID note {p2id_output_commitment:?} emitted by network faucet"
+    );
     ensure!(
         wait_for_committed_note(&mut client, &mut client_2, registered_output_commitment, 15)
             .await?,

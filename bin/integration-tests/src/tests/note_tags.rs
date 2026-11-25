@@ -13,7 +13,7 @@ use crate::ClientConfig;
 // ================================================================================================
 
 /// Asserts that the client tracks no `Note`-sourced tags.
-async fn assert_no_note_sourced_tags(client: &TestClient, context: &str) -> Result<()> {
+pub(crate) async fn assert_no_note_sourced_tags(client: &TestClient, context: &str) -> Result<()> {
     let tags = client.get_note_tags().await?;
     assert!(
         tags.iter().all(|tag| !matches!(tag.source, NoteTagSource::Note(_))),
@@ -24,72 +24,6 @@ async fn assert_no_note_sourced_tags(client: &TestClient, context: &str) -> Resu
 
 // TESTS
 // ================================================================================================
-
-/// Output notes must not register tags: commitment and inclusion proof arrive via account-matched
-/// transaction sync, and the recipient still gets the note via its account tag.
-pub async fn test_output_notes_do_not_register_tags(client_config: ClientConfig) -> Result<()> {
-    // Client 1 runs the faucet; client 2 tracks the recipient wallet, so from client 1's
-    // perspective the minted note goes to an external account.
-    let mut client_1 = client_config.clone().into_client().await?;
-    let mut client_2 =
-        client_config.clone().with_note_transport_endpoint(None).into_client().await?;
-
-    let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
-    let basic_wallet = client_2.insert_wallet(AccountType::Private).await?;
-    client_1.sync_state().await?;
-    client_2.sync_state().await?;
-
-    let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
-        FungibleAsset::new(faucet_account.id(), MINT_AMOUNT)?,
-        basic_wallet.id(),
-        NoteType::Public,
-        client_1.rng(),
-    )?;
-    let note = tx_request
-        .expected_output_own_notes()
-        .pop()
-        .context("expected an output note in the mint transaction")?;
-
-    let tx_id = Box::pin(client_1.submit_new_transaction(faucet_account.id(), tx_request)).await?;
-
-    // Applying the transaction must not have registered a tag for the output note.
-    assert_no_note_sourced_tags(&client_1, "after applying a mint to an external account").await?;
-
-    client_1.wait_for_tx(tx_id).await?;
-
-    // The output note must be committed with its inclusion proof, obtained purely via
-    // account-matched transaction sync.
-    let output_note = client_1
-        .get_output_notes(NoteFilter::Unique(note.id()))
-        .await?
-        .pop()
-        .context("minted output note should be tracked")?;
-    assert!(output_note.is_committed(), "output note should be committed after sync");
-    assert!(
-        output_note.inclusion_proof().is_some(),
-        "committed output note should carry an inclusion proof from transaction sync"
-    );
-    assert_no_note_sourced_tags(&client_1, "after syncing the mint transaction").await?;
-
-    // The external recipient still receives the note through its account tag and can consume it.
-    client_2.sync_state().await?;
-    let received_record = client_2
-        .get_input_note(note.id())
-        .await?
-        .context("recipient should have received the minted note")?;
-    // Guard against the unauthenticated-input fallback: the conversion below succeeds even without
-    // an inclusion proof, so committedness must be asserted explicitly.
-    assert!(received_record.is_committed(), "received note should be committed");
-    let received_note: InputNote = received_record.try_into()?;
-    client_2
-        .consume_notes_and_wait(basic_wallet.id(), &[received_note.note().clone()])
-        .await?;
-    client_2
-        .assert_account_has_single_asset(basic_wallet.id(), faucet_account.id(), MINT_AMOUNT)
-        .await;
-
-    Ok(())
-}
 
 /// Expected input notes register exactly one tag and it is cleaned up on commit — covered for a
 /// self-directed transfer and for an expected note imported by details.

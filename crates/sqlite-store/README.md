@@ -6,6 +6,7 @@ persistence layer for std environments using SQLite (via `rusqlite`).
 - Persists accounts, notes, transactions, block headers, MMR nodes, and the account SMT forest
 - Atomic updates on transaction and state sync paths
 - WAL journaling and bundled SQLite for reproducible builds
+- Builds for `wasm32-unknown-unknown`, see [WebAssembly](#webassembly)
 
 ## Quick Start
 
@@ -18,6 +19,27 @@ miden-client-sqlite-store = { version = "0.18" }
 
 The `tonic` feature is what pulls in the gRPC client used to talk to a node. It is not enabled by
 default, so leave it out only when supplying your own `NodeRpcClient` implementation.
+
+## WebAssembly
+
+The store also builds for `wasm32-unknown-unknown`, where `rusqlite` links the SQLite build of
+[`sqlite-wasm-rs`](https://crates.io/crates/sqlite-wasm-rs) instead of the bundled one. Three things
+differ from the other targets:
+
+- **Building needs a C compiler with a WebAssembly backend.** SQLite is compiled from source for the
+  target. Apple's `clang` has no WebAssembly backend, so on macOS point `CC_wasm32_unknown_unknown`
+  at an LLVM `clang`, such as Homebrew's. The `llvm-ar` beside it is found on its own.
+- **The store runs on a single connection.** There is no blocking thread for a connection pool to
+  run a query on, so every query runs inline on the calling thread. SQLite is built without thread
+  safety, so only one thread may use the store.
+- **The application chooses where the data is kept.** `SqliteStore::new` opens `database_filepath`
+  through the default SQLite VFS, which is in-memory unless the application registers a persistent
+  one first, such as the OPFS VFS of [`sqlite-wasm-vfs`](https://crates.io/crates/sqlite-wasm-vfs).
+  These file systems have no shared memory for a WAL index, so the store keeps the rollback journal
+  with `synchronous = FULL` instead of using WAL.
+
+The store depends on `miden-protocol` with its `std` feature on every target, which turns on
+`miden-crypto`'s `concurrent` feature for the whole build.
 
 ## Migrations
 

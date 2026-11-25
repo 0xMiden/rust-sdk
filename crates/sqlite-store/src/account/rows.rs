@@ -16,11 +16,11 @@ use miden_client::account::{
 use miden_client::asset::{Asset, AssetId};
 use miden_client::store::{AccountStatus, AccountStorageFilter, ClientAccountType, StoreError};
 use miden_client::{Deserializable, Serializable, Word};
-use rusqlite::types::{ToSqlOutput, Value};
+use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Params, params, params_from_iter};
 
 use crate::sql_error::SqlResultExt;
-use crate::{column_value_as_u64, proto, text_array};
+use crate::{SqlParam, column_value_as_u64, proto, text_array};
 
 pub(crate) struct SerializedHeaderData {
     pub id: Vec<u8>,
@@ -237,14 +237,13 @@ pub(crate) fn query_storage_maps(
 ) -> Result<BTreeMap<StorageSlotName, StorageMap>, StoreError> {
     let base_query =
         "SELECT slot_name, key, value FROM latest_storage_map_entries WHERE account_id = ?1";
-    let mut map_params: Vec<ToSqlOutput<'static>> =
-        vec![ToSqlOutput::Owned(Value::Blob(account_id.to_bytes()))];
+    let mut map_params: Vec<SqlParam> = vec![SqlParam::Value(Value::Blob(account_id.to_bytes()))];
     let query = match slot_name_filter {
         Some(names) => {
             if names.is_empty() {
                 return Ok(BTreeMap::new());
             }
-            map_params.push(ToSqlOutput::Array(text_array(names.iter().cloned())));
+            map_params.push(SqlParam::Array(text_array(names.iter().cloned())));
             format!("{base_query} AND slot_name IN rarray(?2)")
         },
         None => base_query.to_string(),
@@ -287,12 +286,12 @@ fn query_filtered_storage_values(
     const BASE_QUERY: &str =
         "SELECT slot_name, slot_value, slot_type FROM latest_account_storage WHERE account_id = ?1";
 
-    let mut values_params: Vec<ToSqlOutput<'static>> =
-        vec![ToSqlOutput::Owned(Value::Blob(account_id.to_bytes()))];
+    let mut values_params: Vec<SqlParam> =
+        vec![SqlParam::Value(Value::Blob(account_id.to_bytes()))];
     let query = match filter {
         AccountStorageFilter::All => BASE_QUERY.to_string(),
         AccountStorageFilter::SlotName(name) => {
-            values_params.push(ToSqlOutput::Owned(Value::Text(name.to_string())));
+            values_params.push(SqlParam::Value(Value::Text(name.to_string())));
             format!("{BASE_QUERY} AND slot_name = ?2")
         },
         AccountStorageFilter::SlotNames(names) => {
@@ -300,11 +299,11 @@ fn query_filtered_storage_values(
                 return Ok(BTreeMap::new());
             }
             values_params
-                .push(ToSqlOutput::Array(text_array(names.iter().map(StorageSlotName::to_string))));
+                .push(SqlParam::Array(text_array(names.iter().map(StorageSlotName::to_string))));
             format!("{BASE_QUERY} AND slot_name IN rarray(?2)")
         },
         AccountStorageFilter::Root(root) => {
-            values_params.push(ToSqlOutput::Owned(Value::Blob(root.to_bytes())));
+            values_params.push(SqlParam::Value(Value::Blob(root.to_bytes())));
             format!("{BASE_QUERY} AND slot_value = ?2")
         },
     };

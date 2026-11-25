@@ -14,9 +14,11 @@ doctest    = false
 
 [dependencies]
 # Miden dependencies
-miden-client       = { features = ["std"], workspace = true }
+miden-client       = { workspace = true }
 miden-client-proto = { workspace = true }
-miden-protocol     = { workspace = true }
+# The account forest is persisted as `Subtree`s, which `miden-crypto` only builds with `concurrent`.
+# On native targets `miden-client/std` already enables it; on `wasm32` this is what does.
+miden-protocol = { features = ["std"], workspace = true }
 
 # Workspace dependencies
 anyhow      = { workspace = true }
@@ -26,11 +28,16 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 
 # External dependencies
-deadpool           = { default-features = false, features = ["managed", "rt_tokio_1"], version = "0.12" }
-deadpool-sync      = { version = "0.1" }
-rusqlite           = { features = ["array", "bundled", "vtab"], version = "0.37" }
-rusqlite_migration = { version = "2.1" }
-tokio              = { workspace = true }
+rusqlite           = { features = ["array", "bundled", "fallible_uint", "vtab"], version = "0.41" }
+rusqlite_migration = { version = "2.7" }
+
+# The connection pool runs each query on a blocking thread, which `wasm32` does not have. There the
+# store drives a single connection inline, and `miden-client` is built without `std`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+deadpool      = { default-features = false, features = ["managed", "rt_tokio_1"], version = "0.12" }
+deadpool-sync = { version = "0.1" }
+miden-client  = { features = ["std"], workspace = true }
+tokio         = { workspace = true }
 
 [lints]
 workspace = true

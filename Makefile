@@ -103,6 +103,9 @@ serve-docs: ## Serves the docs
 .PHONY: test
 test: ## Run tests
 	cargo nextest run --workspace --release --lib $(FEATURES_CLIENT)
+	# The sqlite store reaches its database through a connection pool, except on wasm32, where it
+	# runs on a single connection. This runs its tests again on the single connection.
+	MIDEN_SQLITE_STORE_SINGLE_CONNECTION=1 cargo nextest run --workspace --release --lib $(FEATURES_CLIENT) -E 'package(miden-client-sqlite-store)'
 
 .PHONY: test-miden-bench
 test-miden-bench: ## Run miden-bench CLI tests
@@ -205,6 +208,8 @@ build-wasm: ## Build the client library for wasm32 with no_std (no default featu
 	cargo build --package miden-client --target wasm32-unknown-unknown --no-default-features --locked
 	cargo build --package miden-client-proto --target wasm32-unknown-unknown --no-default-features --locked
 	cargo build --package miden-web3signer-authenticator --target wasm32-unknown-unknown --no-default-features --locked
+	# Compiles SQLite for wasm32, which needs a C compiler with a WebAssembly backend (not Apple clang).
+	cargo build --package miden-client-sqlite-store --target wasm32-unknown-unknown --locked
 
 # --- Check ---------------------------------------------------------------------------------------
 

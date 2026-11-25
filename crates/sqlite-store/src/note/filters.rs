@@ -7,11 +7,11 @@ use miden_client::account::AccountId;
 use miden_client::note::{BlockNumber, NoteId};
 use miden_client::store::{InputNoteCursor, InputNoteState, NoteFilter, OutputNoteState};
 use miden_client::utils::Serializable;
-use rusqlite::types::{ToSqlOutput, Value};
+use rusqlite::types::Value;
 
-use crate::blob_array;
+use crate::{SqlParam, blob_array};
 
-type NoteQueryParams = Vec<ToSqlOutput<'static>>;
+type NoteQueryParams = Vec<SqlParam>;
 
 /// Builds a `column IN rarray(?)` condition, pushing the bound value list onto `params`.
 ///
@@ -22,7 +22,7 @@ fn in_rarray_condition(
     values: Rc<Vec<Value>>,
     params: &mut NoteQueryParams,
 ) -> String {
-    params.push(ToSqlOutput::Array(values));
+    params.push(SqlParam::Array(values));
     format!("({column} IN rarray(?))")
 }
 
@@ -143,7 +143,7 @@ pub(super) fn note_filter_to_query_input_note_after(
 
     // `consumer_account_id` is the first column of `idx_input_notes_consumption`. The equality
     // avoids a full sort for the ORDER BY.
-    params.push(ToSqlOutput::from(consumer.to_bytes()));
+    params.push(SqlParam::from(consumer.to_bytes()));
     condition.push_str(" AND note.consumer_account_id = ?");
     condition.push_str(" AND note.consumed_tx_order IS NOT NULL");
 
@@ -159,21 +159,21 @@ pub(super) fn note_filter_to_query_input_note_after(
                 " AND (note.consumed_block_height, note.consumed_tx_order, \
                  note.details_commitment) > (?, ?, ?)",
             );
-            params.push(ToSqlOutput::from(cursor.consumed_block_height().as_u32()));
-            params.push(ToSqlOutput::from(cursor.consumed_tx_order()));
-            params.push(ToSqlOutput::from(cursor.details_commitment().to_bytes()));
+            params.push(SqlParam::from(cursor.consumed_block_height().as_u32()));
+            params.push(SqlParam::from(cursor.consumed_tx_order()));
+            params.push(SqlParam::from(cursor.details_commitment().to_bytes()));
         },
         None => {
             if let Some(start) = block_start {
                 condition.push_str(" AND note.consumed_block_height >= ?");
-                params.push(ToSqlOutput::from(start.as_u32()));
+                params.push(SqlParam::from(start.as_u32()));
             }
         },
     }
 
     if let Some(end) = block_end {
         condition.push_str(" AND note.consumed_block_height <= ?");
-        params.push(ToSqlOutput::from(end.as_u32()));
+        params.push(SqlParam::from(end.as_u32()));
     }
 
     // `details_commitment` is the primary key of the `WITHOUT ROWID` table, so it trails every

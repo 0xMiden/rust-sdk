@@ -1,11 +1,10 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use deadpool::Runtime;
 use deadpool::managed::{Manager, Metrics, RecycleError, RecycleResult};
 use rusqlite::Connection;
-use rusqlite::vtab::array;
 
+use super::connection::open_connection;
 use super::errors::SqliteStoreError;
 
 deadpool::managed_reexports!(
@@ -33,53 +32,7 @@ impl SqlitePoolManager {
     }
 
     fn new_connection(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.database_path)?;
-
-        // Restrict database file permissions to owner-only on Unix. Also covers WAL and SHM journal
-        // files that SQLite may create.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            for suffix in &["", "-wal", "-shm"] {
-                let mut path = self.database_path.as_os_str().to_owned();
-                path.push(suffix);
-                let path = std::path::PathBuf::from(path);
-                if path.exists()
-                    && let Err(e) = std::fs::set_permissions(&path, perms.clone())
-                {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "failed to restrict permissions on the database file"
-                    );
-                }
-            }
-        }
-
-        // Feature used to support `IN` and `NOT IN` queries. We need to load this module for every
-        // connection we create to the DB to support the queries we want to run
-        array::load_module(&conn)?;
-
-        conn.busy_timeout(Duration::from_secs(5))?;
-
-        let journal_mode: String =
-            conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") {
-            tracing::warn!(
-                journal_mode = %journal_mode,
-                path = %self.database_path.display(),
-                "database does not support WAL journal mode; commits will be slower and readers \
-                 will block on writes"
-            );
-        }
-
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-
-        // Enable foreign key checks.
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-
-        Ok(conn)
+        open_connection(&self.database_path)
     }
 }
 
@@ -125,11 +78,15 @@ mod tests {
 
     use crate::SqliteStore;
     use crate::sql_error::SqlResultExt;
-    use crate::tests::create_test_store;
+
+    /// Returns a store on a connection pool, whichever kind of store the other tests run on.
+    async fn create_pool_store() -> SqliteStore {
+        SqliteStore::new(create_test_store_path()).await.unwrap()
+    }
 
     #[tokio::test]
     async fn connection_pragmas_are_applied() -> anyhow::Result<()> {
-        let store = create_test_store().await;
+        let store = create_pool_store().await;
 
         let (journal_mode, synchronous, busy_timeout, foreign_keys) = store
             .interact_with_connection(|conn| {
@@ -165,7 +122,7 @@ mod tests {
     /// connection, otherwise the pool keeps handing the poisoned one back to callers.
     #[tokio::test]
     async fn poisoned_connection_is_replaced() -> anyhow::Result<()> {
-        let store = create_test_store().await;
+        let store = create_pool_store().await;
 
         let panicked = store
             .interact_with_connection(|_| -> Result<(), miden_client::store::StoreError> {
@@ -189,7 +146,7 @@ mod tests {
     /// from the next caller, so `recycle` has to roll it back.
     #[tokio::test]
     async fn leaked_transaction_is_rolled_back() -> anyhow::Result<()> {
-        let store = create_test_store().await;
+        let store = create_pool_store().await;
 
         store
             .interact_with_connection(|conn| {

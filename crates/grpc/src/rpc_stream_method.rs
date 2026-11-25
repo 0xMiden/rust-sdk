@@ -30,24 +30,17 @@ pub trait RpcStreamMethod {
     /// A decoded stream item.
     type Item;
 
-    /// The data of a validated item that [`validate`](Self::validate) checks the next item against.
-    type State;
-
     /// Sends the request to the node and returns the stream of decoded items.
     fn open(
         &self,
         client: &GrpcClient,
     ) -> impl FutureMaybeSend<Result<RpcStream<Self::Item>, RpcError>>;
 
-    /// Checks one decoded item against the request and the state of the previous item.
+    /// Checks one decoded item against the request and the items before it.
     ///
-    /// The value of `previous` is `None` for the first item of the stream. The returned state is
-    /// the `previous` value for the next item.
-    fn validate(
-        &self,
-        previous: Option<&Self::State>,
-        item: &Self::Item,
-    ) -> Result<Self::State, RpcError>;
+    /// [`GrpcClient::subscribe`] calls this function on each item in the order of the stream. The
+    /// function can change `self` to keep the data that it checks the next item against.
+    fn validate(&mut self, item: &Self::Item) -> Result<(), RpcError>;
 }
 
 /// Returns `items` with [`RpcStreamMethod::validate`] applied to each item.
@@ -57,18 +50,15 @@ pub(crate) fn validate_items<M>(method: M, items: RpcStream<M::Item>) -> RpcStre
 where
     M: RpcStreamMethod + Send + 'static,
     M::Item: Send,
-    M::State: Send,
 {
-    let stream = futures::stream::try_unfold(
-        (method, None::<M::State>, items),
-        |(method, previous, mut items)| async move {
+    let stream =
+        futures::stream::try_unfold((method, items), |(mut method, mut items)| async move {
             let Some(item) = items.next().await.transpose()? else {
                 return Ok(None);
             };
-            let state = method.validate(previous.as_ref(), &item)?;
-            Ok(Some((item, (method, Some(state), items))))
-        },
-    );
+            method.validate(&item)?;
+            Ok(Some((item, (method, items))))
+        });
 
     #[cfg(not(target_arch = "wasm32"))]
     return stream.boxed();

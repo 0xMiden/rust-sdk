@@ -203,7 +203,6 @@ impl GrpcClient {
     where
         M: RpcStreamMethod + Send + 'static,
         M::Item: Send,
-        M::State: Send,
     {
         let items = method.open(self).await?;
         Ok(validate_items(method, items))

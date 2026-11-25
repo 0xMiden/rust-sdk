@@ -22,7 +22,7 @@ mod sync_notes;
 mod sync_nullifiers;
 mod sync_transactions;
 
-pub use block_subscription::{BlockSubscription, BlockSubscriptionState};
+pub use block_subscription::BlockSubscription;
 pub use get_account::GetAccount;
 pub use get_block_by_number::GetBlockByNumber;
 pub use get_block_header_by_number::{BlockHeaderResponse, GetBlockHeaderByNumber};

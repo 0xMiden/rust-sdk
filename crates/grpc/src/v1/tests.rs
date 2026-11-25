@@ -475,9 +475,8 @@ fn block_subscription_validates_each_block() {
     // Validates `items` in order as one stream that starts at `block_from`, and returns the first
     // error.
     let validate = |block_from: u32, items: &[SubscribedBlock]| {
-        let method = BlockSubscription { block_from: block_from.into() };
-        let mut state = method.initial_state();
-        items.iter().try_for_each(|item| method.validate(&mut state, item))
+        let mut method = BlockSubscription::new(block_from.into());
+        items.iter().try_for_each(|item| method.validate(item))
     };
 
     validate(0, &[item(0, Some(&config)), item(1, None), item(2, None)])

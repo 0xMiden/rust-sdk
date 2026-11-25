@@ -17,26 +17,27 @@ use crate::{GrpcClient, RpcStreamMethod, generated as proto};
 /// [`GrpcClient::with_max_decoding_message_size`].
 pub struct BlockSubscription {
     /// The first block of the stream.
-    pub block_from: BlockNumber,
-}
-
-/// The validation state of a [`BlockSubscription`] stream.
-pub struct BlockSubscriptionState {
-    /// The block number that the next item must have.
-    next_block_num: BlockNumber,
-    /// The commitments of the last validated block. It is `None` before the first item.
+    block_from: BlockNumber,
+    /// The last validated block. It is `None` before the first item.
     previous: Option<PreviousBlock>,
 }
 
-/// The commitments of a validated block that the next block must agree with.
+/// The data of a validated block that the next block must agree with.
 struct PreviousBlock {
+    block_num: BlockNumber,
     commitment: Word,
     protocol_config_commitment: Word,
 }
 
+impl BlockSubscription {
+    /// Returns a subscription that starts at `block_from`.
+    pub fn new(block_from: BlockNumber) -> Self {
+        Self { block_from, previous: None }
+    }
+}
+
 impl RpcStreamMethod for BlockSubscription {
     type Item = SubscribedBlock;
-    type State = BlockSubscriptionState;
 
     async fn open(&self, client: &GrpcClient) -> Result<RpcStream<Self::Item>, RpcError> {
         let request =
@@ -51,21 +52,17 @@ impl RpcStreamMethod for BlockSubscription {
             .await
     }
 
-    fn initial_state(&self) -> Self::State {
-        BlockSubscriptionState {
-            next_block_num: self.block_from,
-            previous: None,
-        }
-    }
-
-    fn validate(&self, state: &mut Self::State, item: &Self::Item) -> Result<(), RpcError> {
+    fn validate(&mut self, item: &Self::Item) -> Result<(), RpcError> {
         let header = item.block.header();
         let block_num = header.block_num();
+        let next_block_num = self
+            .previous
+            .as_ref()
+            .map_or(self.block_from, |previous| previous.block_num.child());
 
-        if block_num != state.next_block_num {
+        if block_num != next_block_num {
             return Err(RpcError::InvalidResponse(format!(
-                "node sent block {block_num} but block {} is the next block of the subscription",
-                state.next_block_num
+                "node sent block {block_num} but block {next_block_num} is the next block of the subscription"
             )));
         }
 
@@ -76,7 +73,7 @@ impl RpcStreamMethod for BlockSubscription {
             )));
         }
 
-        if let Some(previous) = &state.previous
+        if let Some(previous) = &self.previous
             && header.prev_block_commitment() != previous.commitment
         {
             return Err(RpcError::InvalidResponse(format!(
@@ -87,7 +84,7 @@ impl RpcStreamMethod for BlockSubscription {
         // The caller cannot interpret a block without the configuration that its header commits to,
         // so the node must send each configuration that the caller has not seen.
         let expected = header.protocol_config_commitment();
-        let is_new_config = state
+        let is_new_config = self
             .previous
             .as_ref()
             .is_none_or(|previous| previous.protocol_config_commitment != expected);
@@ -108,8 +105,8 @@ impl RpcStreamMethod for BlockSubscription {
             None => {},
         }
 
-        state.next_block_num = block_num.child();
-        state.previous = Some(PreviousBlock {
+        self.previous = Some(PreviousBlock {
+            block_num,
             commitment: header.commitment(),
             protocol_config_commitment: expected,
         });

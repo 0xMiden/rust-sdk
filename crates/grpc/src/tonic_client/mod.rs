@@ -199,10 +199,10 @@ impl GrpcClient {
     /// The stream yields the first error and then ends. An error is a failure of the transport, a
     /// response that does not decode, or an item that fails validation. The client does not
     /// reconnect.
-    pub async fn subscribe<M>(&self, method: M) -> Result<RpcStream<M::Item>, RpcError>
-    where
-        M: RpcStreamMethod + Send + 'static,
-    {
+    pub async fn subscribe<M: RpcStreamMethod>(
+        &self,
+        method: M,
+    ) -> Result<RpcStream<M::Item>, RpcError> {
         let items = method.open(self).await?;
         Ok(validate_items(method, items))
     }

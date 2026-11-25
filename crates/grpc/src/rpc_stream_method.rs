@@ -26,7 +26,7 @@ pub type RpcStream<T> = futures::stream::LocalBoxStream<'static, Result<T, RpcEr
 ///
 /// [`GrpcClient::subscribe`] runs [`open`](Self::open) and then runs [`validate`](Self::validate)
 /// on each item of the stream.
-pub trait RpcStreamMethod {
+pub trait RpcStreamMethod: Send + 'static {
     /// A decoded stream item.
     type Item;
 
@@ -46,10 +46,10 @@ pub trait RpcStreamMethod {
 /// Returns `items` with [`RpcStreamMethod::validate`] applied to each item.
 ///
 /// The returned stream ends after the first error. After the end, each poll returns `None`.
-pub(crate) fn validate_items<M>(method: M, items: RpcStream<M::Item>) -> RpcStream<M::Item>
-where
-    M: RpcStreamMethod + Send + 'static,
-{
+pub(crate) fn validate_items<M: RpcStreamMethod>(
+    method: M,
+    items: RpcStream<M::Item>,
+) -> RpcStream<M::Item> {
     let stream =
         futures::stream::try_unfold((method, items), |(mut method, mut items)| async move {
             let Some(item) = items.next().await.transpose()? else {

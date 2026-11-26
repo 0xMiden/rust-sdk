@@ -57,17 +57,15 @@ async fn decode_standard_note_storage<AUTH>(
                 let resolved_faucet = resolver.resolve_asset(client, &requested_asset).await?;
                 let formatted_asset =
                     FormattedAsset::new(&requested_asset, &resolved_faucet, resolver.network_id());
-                let payback = match storage.payback() {
-                    SwapPayback::Public { payback_target_id } => {
-                        ("payback target", payback_target_id.to_string())
-                    },
-                    SwapPayback::Private { recipient } => ("payback recipient", recipient.to_hex()),
+                let payback_recipient = match storage.payback() {
+                    SwapPayback::Public { recipient } => recipient.digest().to_hex(),
+                    SwapPayback::Private { recipient } => recipient.to_hex(),
                 };
                 Some(vec![
                     ("requested", formatted_asset.to_string()),
                     ("payback note", storage.payback_note_type().to_string()),
                     ("payback tag", storage.payback_tag().to_string()),
-                    payback,
+                    ("payback recipient", payback_recipient),
                 ])
             },
             Err(_) => None,

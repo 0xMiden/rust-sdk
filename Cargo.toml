@@ -53,17 +53,17 @@ miden-client-proto             = { default-features = false, path = "crates/prot
 miden-client-sqlite-store      = { default-features = false, path = "crates/sqlite-store", version = "0.18" }
 
 # Miden protocol dependencies
-miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
+miden-agglayer  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-objects   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-protocol  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-standards = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-testing   = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-tx        = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
+miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "f1d579531f85b1f6cbe6f3002bb6a8f1a4cdc689" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "173188bec1e0c9b01997f00f0b456e1aeaa6dcdc" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "1f863f5e80affe6c5d5f72f5ed4069891bdfe8ac" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "=1.0.0-rc.1" }

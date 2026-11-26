@@ -862,15 +862,16 @@ dependencies = [
 
 [[package]]
 name = "compact_str"
-version = "0.10.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
+checksum = "9dfdd1c2274d9aa354115b09dc9a901d6c5576818cdf70d14cae2bdb47df00ab"
 dependencies = [
  "castaway",
  "cfg-if",
  "itoa",
+ "rustversion",
+ "ryu",
  "static_assertions",
- "zmij",
 ]
 
 [[package]]
@@ -2314,15 +2315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inventory"
-version = "0.3.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3153,13 +3145,13 @@ dependencies = [
 
 [[package]]
 name = "miden-debug"
-version = "0.19.0"
-source = "git+https://github.com/0xMiden/miden-debug?rev=d85794bd1bf482289006610b34210c0513a4f665#d85794bd1bf482289006610b34210c0513a4f665"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fadf3145f3e8160fe36ff64525756aea0128281fa729921481a11006ac1f835"
 dependencies = [
  "clap",
  "compact_str",
  "env_logger",
- "futures-executor",
  "log",
  "miden-assembly",
  "miden-assembly-syntax",
@@ -3175,8 +3167,9 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-dap"
-version = "0.19.0"
-source = "git+https://github.com/0xMiden/miden-debug?rev=d85794bd1bf482289006610b34210c0513a4f665#d85794bd1bf482289006610b34210c0513a4f665"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879872caf8c7a32335ca8c17a6ca6455d53c2d83dc117397289da679d55a4e62"
 dependencies = [
  "serde",
  "serde_json",
@@ -3185,12 +3178,12 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-engine"
-version = "0.19.0"
-source = "git+https://github.com/0xMiden/miden-debug?rev=d85794bd1bf482289006610b34210c0513a4f665#d85794bd1bf482289006610b34210c0513a4f665"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9708364fe82afc4f9eeaf8b4ce4a51574554b7c21dbb004d616850fe2a8eaf"
 dependencies = [
  "clap",
  "hashbrown 0.17.1",
- "inventory",
  "log",
  "miden-assembly-syntax",
  "miden-core",

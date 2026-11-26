@@ -57,19 +57,7 @@ async fn decode_standard_note_storage<AUTH>(
                 let resolved_faucet = resolver.resolve_asset(client, &requested_asset).await?;
                 let formatted_asset =
                     FormattedAsset::new(&requested_asset, &resolved_faucet, resolver.network_id());
-                let payback = match storage.payback() {
-                    SwapPayback::Public { recipient } => {
-                        let target = (StandardNote::from_script(recipient.script())
-                            == Some(StandardNote::P2ID))
-                        .then(|| P2idNoteStorage::try_from(recipient.storage().items()).ok())
-                        .flatten();
-                        target.map_or_else(
-                            || ("payback recipient", recipient.digest().to_hex()),
-                            |storage| ("payback target", storage.target().to_string()),
-                        )
-                    },
-                    SwapPayback::Private { recipient } => ("payback recipient", recipient.to_hex()),
-                };
+                let payback = format_swap_payback(storage.payback());
                 Some(vec![
                     ("requested", formatted_asset.to_string()),
                     ("payback note", storage.payback_note_type().to_string()),
@@ -125,6 +113,22 @@ async fn decode_standard_note_storage<AUTH>(
     };
 
     Ok(fields)
+}
+
+fn format_swap_payback(payback: &SwapPayback) -> (&'static str, String) {
+    match payback {
+        SwapPayback::Public { recipient } => {
+            let target = (StandardNote::from_script(recipient.script())
+                == Some(StandardNote::P2ID))
+            .then(|| P2idNoteStorage::try_from(recipient.storage().items()).ok())
+            .flatten();
+            target.map_or_else(
+                || ("payback recipient", recipient.digest().to_hex()),
+                |storage| ("payback target", storage.target().to_string()),
+            )
+        },
+        SwapPayback::Private { recipient } => ("payback recipient", recipient.to_hex()),
+    }
 }
 
 /// Returns the rows that show note storage and the label of their first column.
@@ -258,15 +262,34 @@ mod tests {
         NoteExecutionHint,
         PswapNoteAttachment,
         StandardNoteAttachment,
+        SwapPayback,
     };
-    use miden_client::note::{NetworkAccountTarget, NoteAttachment, NoteAttachmentScheme};
+    use miden_client::note::{
+        NetworkAccountTarget,
+        NoteAttachment,
+        NoteAttachmentScheme,
+        P2ideNoteStorage,
+    };
     use miden_client::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET;
     use miden_client::{Felt, Word};
 
-    use super::{decode_standard_note_attachment, standard_attachment_name};
+    use super::{decode_standard_note_attachment, format_swap_payback, standard_attachment_name};
 
     fn amount(units: u64) -> AssetAmount {
         AssetAmount::new(units).unwrap()
+    }
+
+    #[test]
+    fn public_non_p2id_payback_shows_recipient_digest() {
+        let target = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+        let recipient = P2ideNoteStorage::new(target, target, None, None)
+            .into_recipient(Word::from([1u32, 2, 3, 4]));
+        let digest = recipient.digest().to_hex();
+
+        assert_eq!(
+            format_swap_payback(&SwapPayback::Public { recipient }),
+            ("payback recipient", digest),
+        );
     }
 
     // NOTE ATTACHMENT DECODING

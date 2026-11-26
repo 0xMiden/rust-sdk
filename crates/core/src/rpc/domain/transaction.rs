@@ -6,11 +6,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, Nullifier};
 use miden_protocol::transaction::{
-    InputNoteCommitment,
-    TransactionHeader,
-    TransactionId,
-    TransactionLogDetails,
-    TransactionLogs,
+    InputNoteCommitment, TransactionHeader, TransactionId, TransactionLogDetails, TransactionLogs,
 };
 
 use super::note::CommittedNote;
@@ -24,8 +20,7 @@ use super::note::CommittedNote;
 pub struct TransactionRecord {
     /// Block number in which the transaction was included.
     pub block_num: BlockNumber,
-    /// Position of the transaction within its block. Together with `block_num`, it gives the order
-    /// in which transactions were committed.
+    /// Position of the transaction within its block.
     pub transaction_index: u32,
     /// A transaction header.
     pub transaction_header: TransactionHeader,

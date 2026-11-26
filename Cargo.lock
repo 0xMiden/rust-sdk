@@ -2695,7 +2695,7 @@ dependencies = [
 [[package]]
 name = "miden-agglayer"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2808,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "miden-block-prover"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -3318,7 +3318,7 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.18.3"
-source = "git+https://github.com/0xMiden/node?rev=5fb7deef7a79e0e6219cf8580a41f8f5642f6157#5fb7deef7a79e0e6219cf8580a41f8f5642f6157"
+source = "git+https://github.com/0xMiden/node?rev=0510acc38250cb81e4bfb2e90540bfef64d820f4#0510acc38250cb81e4bfb2e90540bfef64d820f4"
 dependencies = [
  "build-rs",
  "codegen",
@@ -3332,7 +3332,7 @@ dependencies = [
 [[package]]
 name = "miden-objects"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "miden-protobuf",
  "miden-protocol",
@@ -3434,7 +3434,7 @@ dependencies = [
 [[package]]
 name = "miden-protobuf"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "miden-protobuf-derive",
  "proc-macro-crate",
@@ -3446,7 +3446,7 @@ dependencies = [
 [[package]]
 name = "miden-protobuf-derive"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "heck",
  "proc-macro-crate",
@@ -3458,7 +3458,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "bech32",
  "bon",
@@ -3490,7 +3490,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol-build-utils"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -3543,7 +3543,7 @@ dependencies = [
 [[package]]
 name = "miden-standards"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -3585,7 +3585,7 @@ dependencies = [
 [[package]]
 name = "miden-testing"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
@@ -3606,7 +3606,7 @@ dependencies = [
 [[package]]
 name = "miden-tx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "bon",
  "miden-agglayer",
@@ -3621,7 +3621,7 @@ dependencies = [
 [[package]]
 name = "miden-tx-batch"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -3633,7 +3633,7 @@ dependencies = [
 [[package]]
 name = "miden-usdcx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden//protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
+source = "git+https://github.com/0xMiden/protocol?rev=20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42#20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42"
 dependencies = [
  "bon",
  "miden-assembly",

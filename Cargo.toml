@@ -63,7 +63,7 @@ miden-tx-batch  = { default-features = false, git = "https://github.com/0xMiden/
 miden-usdcx     = { default-features = false, git = "https://github.com/0xMiden/protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
 
 # Miden node dependencies
-miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "5fb7deef7a79e0e6219cf8580a41f8f5642f6157" }
+miden-node-proto-build = { default-features = false, git = "https://github.com/0xMiden/node", rev = "0510acc38250cb81e4bfb2e90540bfef64d820f4" }
 
 # Miden VM dependencies
 miden-assembly-syntax = { default-features = false, version = "=1.0.0-rc.1" }
@@ -126,19 +126,3 @@ module_name_repetitions     = "allow" # Many triggers, and is a stylistic choice
 must_use_candidate          = "allow" # This marks many fn's which isn't helpful.
 should_panic_without_expect = "allow" # We don't care about the specific panic message.
 # End of pedantic lints.
-
-# The pinned node revision depends on an earlier protocol revision. `miden-node-proto-build` embeds
-# the `miden-objects` schemas in the descriptors it exports, so it must build against the same
-# protocol revision as this workspace. This table moves every protocol crate in the dependency graph
-# to that revision. Cargo rejects a patch that points to the URL it patches, so the patch source
-# spells the same repository with a double slash. Remove this table when the node pins this protocol
-# revision.
-[patch."https://github.com/0xMiden/protocol"]
-miden-agglayer  = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-objects   = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-protocol  = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-standards = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-testing   = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-tx        = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-tx-batch  = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }
-miden-usdcx     = { git = "https://github.com/0xMiden//protocol", rev = "20a6bb42891f2081eb080bdb1eb6bf5bbcd04c42" }

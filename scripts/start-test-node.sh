@@ -54,10 +54,6 @@ PROVER="127.0.0.1:$PROVER_PORT"
 # MIDEN_FUNDING_SERVICE_URL, and with allowlist enforcement on the sequencer calls it for every
 # account that registers. Matches the port of the node's own compose file.
 FUNDING="127.0.0.1:50401"
-# Native asset base units the sequencer asks the funding service to pay each registered account.
-# Matches `FUNDING_AMOUNT` in `bin/integration-tests/src/funding.rs`, which covers the fees of every
-# transaction a test runs against the account.
-FUNDING_AMOUNT=10000000
 # How long a single network transaction proof may take. The prover enforces it server-side and the
 # ntx-builder waits that long for the response. Shared so the two cannot drift apart: if the
 # ntx-builder waited less, it would abandon a request the prover is still working on, re-queue the
@@ -69,6 +65,13 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 # Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
 # real chain. At 0 fees are never charged.
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
+# Native asset base units the sequencer asks the funding service to pay each registered account.
+# Matches the amount in `bin/integration-tests/src/funding.rs`, which pays for
+# `MIN_FUNDED_TRANSACTIONS` transactions at the largest fee. The largest fee is the base fee times
+# 30 verification cycles, which is `ilog2(MAX_TX_EXECUTION_CYCLES) + 1`.
+MIN_FUNDED_TRANSACTIONS=10
+MAX_TX_FEE=$((VERIFICATION_BASE_FEE * 30))
+FUNDING_AMOUNT=$((MAX_TX_FEE * MIN_FUNDED_TRANSACTIONS))
 # Account that receives the batch builder's fees in a P2ID note. The sequencer requires the value
 # but never reads the account, so this is the same placeholder id the node repo uses for local
 # runs. No test consumes the fee notes.

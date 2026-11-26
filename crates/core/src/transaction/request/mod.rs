@@ -22,6 +22,7 @@ use miden_protocol::note::{
     PartialNote,
 };
 use miden_protocol::transaction::{
+    IesSealSeed,
     InputNote,
     InputNotes,
     TransactionArgs,
@@ -177,6 +178,9 @@ pub struct TransactionRequest {
     /// New code of the executing account, set through
     /// [`TransactionRequestBuilder::account_code_upgrade`].
     account_code_upgrade: Option<AccountCodeUpgrade>,
+    /// Seed from which the transaction host derives the ephemeral secrets of the IES `seal`
+    /// requests, set through [`TransactionRequestBuilder::ies_seal_seed`].
+    ies_seal_seed: Option<IesSealSeed>,
 }
 
 impl TransactionRequest {
@@ -284,6 +288,11 @@ impl TransactionRequest {
     /// Returns the new code that the transaction gives to the executing account, if any.
     pub fn account_code_upgrade(&self) -> Option<&AccountCodeUpgrade> {
         self.account_code_upgrade.as_ref()
+    }
+
+    /// Returns the seed of the IES `seal` requests of the transaction, if any.
+    pub fn ies_seal_seed(&self) -> Option<&IesSealSeed> {
+        self.ies_seal_seed.as_ref()
     }
 
     // STATE MUTATORS
@@ -399,6 +408,7 @@ impl TransactionRequest {
             merkle_store,
             account_code_upgrade,
             auth_args,
+            ies_seal_seed,
             ..
         } = self;
 
@@ -416,6 +426,10 @@ impl TransactionRequest {
 
         if let Some(account_code_upgrade) = account_code_upgrade {
             tx_args = tx_args.with_account_code_upgrade(account_code_upgrade);
+        }
+
+        if let Some(ies_seal_seed) = ies_seal_seed {
+            tx_args = tx_args.with_ies_seal_seed(ies_seal_seed);
         }
 
         tx_args.extend_output_note_recipients(
@@ -612,6 +626,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
+    use miden_protocol::transaction::IesSealSeed;
     use miden_protocol::{EMPTY_WORD, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
@@ -640,6 +655,26 @@ mod tests {
             request.advice_map().get(&commitment).unwrap().as_ref(),
             auth_args.to_elements()
         );
+    }
+
+    #[test]
+    fn ies_seal_seed_is_set_on_the_request_and_the_transaction_args() {
+        let seed = IesSealSeed::new([7; 32]);
+
+        let request = TransactionRequestBuilder::new().ies_seal_seed(seed.clone()).build().unwrap();
+        assert_eq!(request.ies_seal_seed(), Some(&seed));
+
+        let tx_args = request.into_transaction_args(None);
+        assert_eq!(tx_args.ies_seal_seed(), Some(&seed));
+    }
+
+    #[test]
+    fn request_without_ies_seal_seed_gives_transaction_args_without_seed() {
+        let request = TransactionRequestBuilder::new().build().unwrap();
+        assert_eq!(request.ies_seal_seed(), None);
+
+        let tx_args = request.into_transaction_args(None);
+        assert_eq!(tx_args.ies_seal_seed(), None);
     }
 
     #[test]

@@ -168,6 +168,7 @@ mod result;
 pub use miden_protocol::transaction::{
     AccountInputs,
     ExecutedTransaction,
+    IesSealSeed,
     InputNote,
     InputNotes,
     LogTopic,

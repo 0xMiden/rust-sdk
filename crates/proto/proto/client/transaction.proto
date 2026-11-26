@@ -102,6 +102,9 @@ message TransactionRequestV1 {
   repeated note.NoteScript expected_ntx_scripts = 11;
   // New code of the executing account.
   account.AccountCodeUpgrade account_code_upgrade = 12;
+  // Seed from which the transaction host derives the ephemeral secrets of the IES `seal` requests.
+  // An absent value means that the request has no seed.
+  .transaction.IesSealSeed ies_seal_seed = 13;
 }
 
 // Auth args that the executing client passes to the auth procedure of the account.

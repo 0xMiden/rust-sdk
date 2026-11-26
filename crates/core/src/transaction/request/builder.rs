@@ -25,7 +25,7 @@ use miden_protocol::note::{
     NoteType,
     PartialNoteMetadata,
 };
-use miden_protocol::transaction::{InputNote, TransactionScript};
+use miden_protocol::transaction::{IesSealSeed, InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
@@ -99,6 +99,11 @@ pub struct TransactionRequestBuilder {
     ///
     /// See [`TransactionRequestBuilder::account_code_upgrade`] for details.
     account_code_upgrade: Option<AccountCodeUpgrade>,
+    /// Seed from which the transaction host derives the ephemeral secrets of the IES `seal`
+    /// requests.
+    ///
+    /// See [`TransactionRequestBuilder::ies_seal_seed`] for details.
+    ies_seal_seed: Option<IesSealSeed>,
 }
 
 impl TransactionRequestBuilder {
@@ -124,6 +129,7 @@ impl TransactionRequestBuilder {
             fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
             account_code_upgrade: None,
+            ies_seal_seed: None,
         }
     }
 
@@ -395,6 +401,21 @@ impl TransactionRequestBuilder {
     #[must_use]
     pub fn account_code_upgrade(mut self, code: AccountCode) -> Self {
         self.account_code_upgrade = Some(AccountCodeUpgrade::new(code));
+        self
+    }
+
+    /// Sets the seed from which the transaction host derives the ephemeral secrets of the IES
+    /// `seal` requests of the transaction.
+    ///
+    /// A transaction that makes an IES `seal` request needs a seed. For example, a transaction
+    /// seals when it sends an asset of a faucet that encrypts the assets it sends. The execution of
+    /// such a transaction fails without a seed.
+    ///
+    /// Use a fresh seed for each transaction, for example from [`IesSealSeed::with_rng`]. Keep the
+    /// seed as private as the data that the transaction seals.
+    #[must_use]
+    pub fn ies_seal_seed(mut self, seed: IesSealSeed) -> Self {
+        self.ies_seal_seed = Some(seed);
         self
     }
 
@@ -821,6 +842,7 @@ impl TransactionRequestBuilder {
             auth_args,
             expected_ntx_scripts: self.expected_ntx_scripts,
             account_code_upgrade: self.account_code_upgrade,
+            ies_seal_seed: self.ies_seal_seed,
         })
     }
 }

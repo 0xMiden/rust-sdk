@@ -46,6 +46,7 @@ use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag};
 use miden_protocol::transaction::{
     AccountInputs,
     ExecutedTransaction,
+    IesSealSeed,
     TransactionInputs,
     TransactionMeasurements,
     TransactionOutputs,
@@ -215,6 +216,7 @@ impl ProtobufValue for TransactionRequest {
             auth_args: encode_auth_args(self.auth_args()),
             expected_ntx_scripts: self.expected_ntx_scripts().iter().map(Into::into).collect(),
             account_code_upgrade: self.account_code_upgrade().map(Into::into),
+            ies_seal_seed: self.ies_seal_seed().map(Into::into),
         };
 
         Self::Message {
@@ -282,6 +284,8 @@ fn decode_transaction_request_v1(
         .account_code_upgrade
         .map(DecodeMessageExt::decode_and_verify)
         .transpose()?;
+    let ies_seal_seed: Option<IesSealSeed> =
+        request.ies_seal_seed.map(DecodeMessageExt::decode_and_verify).transpose()?;
 
     // BUILDING
     // ----------------------------------------------------------------------------------------
@@ -323,6 +327,9 @@ fn decode_transaction_request_v1(
     }
     if let Some(account_code_upgrade) = account_code_upgrade {
         builder = builder.account_code_upgrade(account_code_upgrade.into_code());
+    }
+    if let Some(ies_seal_seed) = ies_seal_seed {
+        builder = builder.ies_seal_seed(ies_seal_seed);
     }
 
     let mut transaction_request =
@@ -924,6 +931,7 @@ mod tests {
     use miden_protocol::transaction::{
         AccountInputs,
         ExecutedTransaction,
+        IesSealSeed,
         InputNote,
         TransactionScript,
     };
@@ -1115,10 +1123,26 @@ mod tests {
             .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.random::<Word>()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
+            .ies_seal_seed(IesSealSeed::new([7; 32]))
             .build()
             .unwrap();
 
         assert_eq!(decode::<TransactionRequest>(&encode(&request)).unwrap(), request);
+    }
+
+    /// The IES seal seed of a request is present after a round trip, and a request without a seed
+    /// has no seed after a round trip.
+    #[test]
+    fn transaction_request_ies_seal_seed_round_trips() {
+        let seed = IesSealSeed::new([7; 32]);
+        let request = TransactionRequestBuilder::new().ies_seal_seed(seed.clone()).build().unwrap();
+
+        let decoded = decode::<TransactionRequest>(&encode(&request)).unwrap();
+        assert_eq!(decoded.ies_seal_seed(), Some(&seed));
+
+        let request = TransactionRequestBuilder::new().build().unwrap();
+        let decoded = decode::<TransactionRequest>(&encode(&request)).unwrap();
+        assert_eq!(decoded.ies_seal_seed(), None);
     }
 
     /// A request with a custom script and the fields that a send notes request cannot have.

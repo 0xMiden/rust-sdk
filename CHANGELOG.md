@@ -17,6 +17,7 @@
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][cli] Added `call --trace`, which prints the hierarchy of procedure calls the execution made, with the arguments, return value and cycle count of each call. By default only the contract's own procedures are shown; `-v` adds library functions and `-vv` shows every frame that has a name. It requires `--package`, which names the frames. Behind the new `trace` cargo feature ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
 * [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host. `replay_call_trace` replays the recording through the debug engine to produce a `CallTrace`. The replay blocks the thread, so the caller chooses where it runs ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
+* [FEATURE][rust] Added `TransactionRequestBuilder::ies_seal_seed` and `TransactionRequest::ies_seal_seed`, which set and return the `IesSealSeed` of a transaction. A transaction that makes an IES `seal` request needs the seed, for example when it sends an asset of a faucet with the encrypted assets send policy. `miden_client::transaction` exports `IesSealSeed`, and the protobuf encoding of `TransactionRequest` holds the seed in the new optional field `ies_seal_seed` of `TransactionRequestV1`.
 
 ### Fixes
 

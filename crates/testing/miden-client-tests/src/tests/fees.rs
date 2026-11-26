@@ -15,6 +15,7 @@ use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, AssetAmount, FungibleAsset};
 use miden_client::auth::{AuthSchemeId, AuthSecretKey, BoundSignature, SignatureKey};
 use miden_client::keystore::Keystore;
+use miden_client::note::{FailedNote, NoteConsumptionStatus};
 use miden_client::store::NoteFilter;
 use miden_client::testing::common::TestClient;
 use miden_client::testing::mock::MockRpcApi;
@@ -184,7 +185,7 @@ async fn fee_can_be_paid_from_a_note_consumed_in_the_same_transaction() {
 }
 
 /// An account that does not hold the fee asset cannot pay, even with correctly committed conversion
-/// info: `pay_fee` withdraws the fee from the account vault.
+/// info: `pay_fee` checks the fee asset balance of the account vault.
 #[tokio::test]
 async fn fee_payment_fails_without_fee_asset_balance() {
     let (chain, account, fee_faucet_id) = fee_charging_chain(0);
@@ -203,16 +204,16 @@ async fn fee_payment_fails_without_fee_asset_balance() {
     )
     .await;
 
-    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
-    // than as a client-side balance check.
+    // The fee payment aborts on the balance check, so the failure surfaces as a kernel assertion
+    // rather than as a client-side balance check.
     let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
     else {
         panic!("expected the fee withdrawal to fail while executing the transaction program");
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee balance check to abort, got: {err:?}"
     );
 }
 
@@ -400,12 +401,10 @@ async fn note_screening_finds_a_custom_script_note_consumable_by_a_multisig_acco
 /// it needs conversion info of its own on a fee-charging chain. This covers the second injection
 /// call site, which the screening test above does not reach.
 ///
-/// It asserts on the failure REASON rather than on `successful`. The screener attaches no
-/// authenticator on purpose, and this API has no "consumable once authorized" verdict of the kind
-/// `can_consume` produces through `handle_epilogue_error`, so a signature-authenticated account
-/// never lands a note in `successful` whatever the fee does. What the injected conversion info
-/// decides is how far the trial gets: with it, execution reaches the signature request; without it,
-/// it aborts earlier in `fee::pay_fee`.
+/// The screener attaches no authenticator on purpose. The checker counts a trial that stops at the
+/// signature request as successful. What the injected conversion info decides is how far the trial
+/// gets: with it, execution reaches the signature request and the note is successful; without it,
+/// the trial aborts earlier in `fee::pay_fee` and the note fails.
 #[tokio::test]
 async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
     let (client, account) = Box::pin(fee_charging_client()).await;
@@ -427,17 +426,21 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .await
         .expect("checking consumability should not error");
 
-    let failed = consumption_info
-        .failed()
-        .iter()
-        .find(|failed| failed.note().id() == note.id())
-        .expect("the note should be accounted for");
-
-    let error = failed.execution_error();
+    let failed = consumption_info.failed();
     assert!(
-        matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
+        failed.is_empty(),
         "the trial should get as far as requesting a signature rather than aborting on the unpaid \
-         fee, got: {error:?}"
+         fee, got: {:?}",
+        failed.iter().map(FailedNote::failure).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        consumption_info
+            .successful()
+            .iter()
+            .map(|successful| successful.note().id())
+            .collect::<Vec<_>>(),
+        vec![note.id()],
+        "the note should be accounted for"
     );
 }
 
@@ -539,14 +542,8 @@ async fn serialized_multisig_request_uses_native_auth_args(
     let result = Box::pin(client.execute_transaction(account.id(), request))
         .await
         .expect("the signed request should execute");
-    // The smart multisig auth component does not create a fee note.
-    let expected_note_count =
-        if matches!(auth_component, AccountComponentInterface::AuthMultisigSmart) {
-            1
-        } else {
-            2
-        };
-    assert_eq!(result.executed_transaction().output_notes().num_notes(), expected_note_count);
+    // Each multisig auth component creates a fee note next to the own output note.
+    assert_eq!(result.executed_transaction().output_notes().num_notes(), 2);
 }
 
 /// A multisig proposal can bind its summary to an old block and execute against the current chain
@@ -693,8 +690,8 @@ async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee balance check to abort, got: {err:?}"
     );
 }
 
@@ -729,7 +726,9 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
 
     // The delayed path requires an approval expiration.
     let bound_block = client.get_sync_height().await.unwrap();
+    let conversion_info = FeeConversionInfo::one_to_one(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap());
     let auth_args = MultisigAuthArgs::new(bound_block, Word::from([1u32, 0, 0, 0]))
+        .with_conversion_info(conversion_info)
         .with_approval_expiration_delta(NonZeroU32::new(100).unwrap())
         .unwrap();
     let mut execute = TransactionRequestBuilder::new()
@@ -750,7 +749,10 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
         .custom_script(compile(format!(
             "push.{commitment} call.{procedures}::propose_transaction dropw dropw dropw dropw dropw"
         )))
-        .auth_args(&MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0])))
+        .auth_args(
+            &MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0]))
+                .with_conversion_info(conversion_info),
+        )
         .build()
         .unwrap();
 
@@ -818,14 +820,26 @@ async fn reused_screener_reads_current_account_state() {
         .build()
         .unwrap();
     let screener = client.note_screener();
-    assert_eq!(screener.get_consumability(&note).await.unwrap().len(), 1);
+    let funded = screener.get_consumability(&note).await.unwrap();
+    assert_eq!(funded.len(), 1);
+    assert!(
+        !matches!(funded[0].1, NoteConsumptionStatus::InsufficientFee),
+        "the funded account can pay the fee"
+    );
     let mut updated = client.get_account(account.id()).await.unwrap().unwrap();
     let asset =
         FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), FEE_ASSET_BALANCE).unwrap();
     updated.vault_mut().remove_asset(asset.into()).unwrap();
     client.test_store().update_account(&updated).await.unwrap();
+    // The screener keeps a note that fails only because the account cannot pay the fee.
     let fresh = client.note_screener().get_consumability(&note).await.unwrap();
-    assert!(fresh.is_empty(), "the account cannot pay a fee after its balance is removed");
+    assert!(
+        matches!(fresh.as_slice(), [(id, NoteConsumptionStatus::InsufficientFee)] if *id == account.id()),
+        "the account cannot pay a fee after its balance is removed, got: {fresh:?}"
+    );
     let reused = screener.get_consumability(&note).await.unwrap();
-    assert!(reused.is_empty(), "reusing a screener must see the current account balance");
+    assert!(
+        matches!(reused.as_slice(), [(id, NoteConsumptionStatus::InsufficientFee)] if *id == account.id()),
+        "reusing a screener must see the current account balance, got: {reused:?}"
+    );
 }

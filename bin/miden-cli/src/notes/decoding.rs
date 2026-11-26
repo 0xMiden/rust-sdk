@@ -16,6 +16,7 @@ use miden_client::note::{
     NetworkAccountTarget,
     NoteAttachment,
     NoteAttachmentScheme,
+    P2idNote,
     P2idNoteStorage,
     P2ideNoteStorage,
     StandardNote,
@@ -58,8 +59,16 @@ async fn decode_standard_note_storage<AUTH>(
                 let formatted_asset =
                     FormattedAsset::new(&requested_asset, &resolved_faucet, resolver.network_id());
                 let payback = match storage.payback() {
-                    SwapPayback::Public { payback_target_id } => {
-                        ("payback target", payback_target_id.to_string())
+                    // A P2ID payback names its target account in the recipient storage. Any other
+                    // payback script is shown by its recipient digest.
+                    SwapPayback::Public { recipient } => {
+                        let p2id_storage = (recipient.script().root() == P2idNote::script_root())
+                            .then(|| P2idNoteStorage::try_from(recipient.storage().items()).ok())
+                            .flatten();
+                        match p2id_storage {
+                            Some(storage) => ("payback target", storage.target().to_string()),
+                            None => ("payback recipient", recipient.digest().to_hex()),
+                        }
                     },
                     SwapPayback::Private { recipient } => ("payback recipient", recipient.to_hex()),
                 };

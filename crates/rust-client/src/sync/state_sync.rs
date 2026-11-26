@@ -2723,7 +2723,8 @@ mod tests {
                     push.{asset_value}
                     push.{asset_id}
                     call.::miden::standards::faucets::fungible::mint_and_send
-                    dropw dropw dropw dropw
+                    exec.::miden::protocol::output_note::seal
+                    dropw dropw dropw drop drop drop
                 end
                 ",
                 recipient = recipient,

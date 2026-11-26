@@ -244,11 +244,13 @@ impl NoteScreener {
 
     /// Returns `tx_args` carrying the auth arg the account needs to settle its fee.
     ///
-    /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
-    /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
-    /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
-    /// standard ones are answered without it. The auth args come from
-    /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
+    /// Screening runs the full kernel, so a fee payment without conversion info aborts the trial
+    /// execution, and [`NoteConsumptionChecker`] reports that as
+    /// [`NoteConsumptionStatus::UnconsumableConditions`] — which [`is_relevant`] drops from the
+    /// sync. Only custom-script notes reach execution; standard ones are answered without it. The
+    /// auth args come from [`AuthArgsLayout::default_auth_args`], so screening measures the fee
+    /// execution would pay. An account that holds too little of the fee asset gets
+    /// [`NoteConsumptionStatus::InsufficientFee`], which [`is_relevant`] keeps.
     ///
     /// A multisig account is an exception. Its auth procedure pays the fee after the signature
     /// check, and the trial has no signatures. The trial thus stops before the fee payment, and

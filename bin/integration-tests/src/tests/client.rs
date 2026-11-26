@@ -294,11 +294,16 @@ pub async fn test_import_expected_notes(client_config: ClientConfig) -> Result<(
 }
 
 pub async fn test_import_expected_note_uncommitted(client_config: ClientConfig) -> Result<()> {
+    // No account transacts, so neither needs funds.
     let mut client_1 = client_config.clone().into_client().await?;
-    let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
+    let (faucet_account, _) = client_1
+        .insert_account(AccountSetup::faucet(AccountType::Private).unfunded())
+        .await?;
 
     let mut client_2 = client_config.clone().into_client().await?;
-    let client_2_account = client_2.insert_wallet(AccountType::Private).await?;
+    let (client_2_account, _) = client_2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
         FungibleAsset::new(faucet_account.id(), MINT_AMOUNT).unwrap(),
@@ -333,8 +338,11 @@ pub async fn test_import_expected_notes_from_the_past_as_committed(
     client_config: ClientConfig,
 ) -> Result<()> {
     let mut client_1 = client_config.clone().into_client().await?;
-    let (first_basic_account, faucet_account) =
-        client_1.setup_wallet_and_faucet(AccountType::Private).await?;
+    let faucet_account = client_1.insert_faucet(AccountType::Private).await?;
+    // The wallet only receives a note, so it needs no funds.
+    let (first_basic_account, _) = client_1
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let mut client_2 = client_config.clone().into_client().await?;
 
@@ -630,8 +638,11 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
 ) -> Result<()> {
     let mut client = client_config.into_client().await?;
 
-    let (first_regular_account, faucet_account_header) =
-        client.setup_wallet_and_faucet(AccountType::Private).await?;
+    let faucet_account_header = client.insert_faucet(AccountType::Private).await?;
+    // The wallet only receives notes, so it needs no funds.
+    let (first_regular_account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let from_account_id = first_regular_account.id();
     let faucet_account_id = faucet_account_header.id();
@@ -1245,7 +1256,10 @@ pub async fn test_expired_transaction_fails(client_config: ClientConfig) -> Resu
     let mut client = client_config.into_client().await?;
     let faucet_account = client.insert_faucet(AccountType::Private).await?;
 
-    let private_account = client.insert_wallet(AccountType::Private).await?;
+    // The wallet only receives a note, so it needs no funds.
+    let (private_account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let from_account_id = private_account.id();
     let faucet_account_id = faucet_account.id();
@@ -1456,8 +1470,19 @@ pub async fn test_unused_rpc_api(client_config: ClientConfig) -> Result<()> {
 
 pub async fn test_ignore_invalid_notes(client_config: ClientConfig) -> Result<()> {
     let mut client = client_config.into_client().await?;
-    let (regular_account, second_regular_account, faucet_account_header) =
-        client.setup_two_wallets_and_faucet(AccountType::Private).await?;
+    let (faucet_account_header, _) = client
+        .insert_account(AccountSetup::faucet(AccountType::Private).unfunded())
+        .await?;
+    let (regular_account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
+    client
+        .fund_if_needed(&[faucet_account_header.id(), regular_account.id()])
+        .await?;
+    // The second wallet only receives notes, so it needs no funds.
+    let (second_regular_account, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let account_id = regular_account.id();
     let second_account_id = second_regular_account.id();

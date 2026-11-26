@@ -6,7 +6,11 @@ use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, Nullifier};
 use miden_protocol::transaction::{
-    InputNoteCommitment, TransactionHeader, TransactionId, TransactionLogDetails, TransactionLogs,
+    InputNoteCommitment,
+    TransactionHeader,
+    TransactionId,
+    TransactionLogDetails,
+    TransactionLogs,
 };
 
 use super::note::CommittedNote;

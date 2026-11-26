@@ -29,8 +29,13 @@ use super::{
 use crate::ClientError;
 use crate::note::{NoteConsumption, NoteUpdateTracker};
 use crate::rpc::domain::account::{
-    AccountDetails, AccountFetch, AccountProof, AccountStorageMapDetails, GetAccountRequest,
-    StorageMapFetch, VaultFetch,
+    AccountDetails,
+    AccountFetch,
+    AccountProof,
+    AccountStorageMapDetails,
+    GetAccountRequest,
+    StorageMapFetch,
+    VaultFetch,
 };
 use crate::rpc::domain::note::{CommittedNote, FetchedNote};
 use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
@@ -806,8 +811,8 @@ impl StateSync {
         Ok(())
     }
 
-    /// Validates the transaction positions that the node reports in `sync_transactions` records.
-    /// In position order, each transaction of an account must start from the final state of the
+    /// Validates the transaction positions that the node reports in `sync_transactions` records. In
+    /// position order, each transaction of an account must start from the final state of the
     /// previous transaction of that account.
     fn validate_transaction_records_order(
         records: &[RpcTransactionRecord],
@@ -1655,7 +1660,12 @@ mod tests {
 
     use async_trait::async_trait;
     use miden_protocol::account::{
-        Account, AccountStorageHeader, StorageMap, StorageMapKey, StorageSlot, StorageSlotHeader,
+        Account,
+        AccountStorageHeader,
+        StorageMap,
+        StorageMapKey,
+        StorageSlot,
+        StorageSlotHeader,
         StorageSlotName,
     };
     use miden_protocol::assembly::DefaultSourceManager;
@@ -1665,13 +1675,24 @@ mod tests {
     use miden_protocol::crypto::merkle::MerklePath;
     use miden_protocol::crypto::merkle::mmr::{Forest, InOrderIndex, PartialMmr};
     use miden_protocol::note::{
-        Note, NoteAssets, NoteAttachment, NoteAttachments, NoteHeader, NoteMetadata, NoteRecipient,
-        NoteStorage, NoteTag, NoteType, PartialNoteMetadata,
+        Note,
+        NoteAssets,
+        NoteAttachment,
+        NoteAttachments,
+        NoteHeader,
+        NoteMetadata,
+        NoteRecipient,
+        NoteStorage,
+        NoteTag,
+        NoteType,
+        PartialNoteMetadata,
     };
     use miden_protocol::testing::account_id::{
-        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE, ACCOUNT_ID_SENDER,
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        ACCOUNT_ID_SENDER,
     };
     use miden_protocol::transaction::{InputNotes, RawOutputNote, TransactionHeader};
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
@@ -2324,7 +2345,8 @@ mod tests {
         use miden_protocol::block::code_tree::CodePatch;
         use miden_protocol::note::Nullifier;
         use miden_protocol::testing::account_id::{
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
         };
         use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
 

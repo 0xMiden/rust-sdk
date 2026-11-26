@@ -856,8 +856,6 @@ mod schema_commitment_tests {
     use miden_protocol::EMPTY_WORD;
     use miden_protocol::account::auth::AuthSecretKey;
     use miden_standards::account::inspection::AccountSchemaCommitment;
-    use rand::SeedableRng;
-    use rand_chacha::ChaCha20Rng;
 
     use super::{
         AccountBuilder,
@@ -871,7 +869,7 @@ mod schema_commitment_tests {
 
     #[test]
     fn wallet_build_includes_schema_commitment_metadata_slot() {
-        let key = AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(0));
+        let key = AuthSecretKey::new_falcon512_eidos();
         let account = AccountBuilder::new([2u8; 32])
             .account_type(AccountType::Private)
             .with_component(AuthSingleSig::new(Approver::new(

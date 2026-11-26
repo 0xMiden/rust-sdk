@@ -396,8 +396,13 @@ async fn note_screening_finds_a_custom_script_note_consumable_by_a_multisig_acco
     );
 }
 
-/// Trial execution must pay the fee before it requests authorization. The checker reports notes as
-/// successful when only authorization remains.
+/// This covers the fee-conversion injection in `check_notes_consumability`. The screening test
+/// covers a separate call site.
+///
+/// The screener does not attach an authenticator, so the trial cannot authorize this account. The
+/// checker still reports notes as successful if execution reaches the authorization step. Missing
+/// conversion info must fail earlier in `fee::pay_fee`. The successful result therefore checks that
+/// this path supplies the conversion info needed by a fee-charging chain.
 #[tokio::test]
 async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
     let (client, account) = Box::pin(fee_charging_client()).await;

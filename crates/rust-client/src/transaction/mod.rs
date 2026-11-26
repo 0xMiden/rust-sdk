@@ -2026,7 +2026,7 @@ mod tests {
 
     #[test]
     fn fee_conversion_info_is_accepted_by_a_signature_authenticated_account() {
-        let key = AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(0));
+        let key = AuthSecretKey::new_falcon512_eidos();
         let auth = AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
             AuthSchemeId::Falcon512Eidos,
@@ -2134,7 +2134,7 @@ mod tests {
     }
 
     fn singlesig_account() -> Account {
-        let key = AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(1));
+        let key = AuthSecretKey::new_falcon512_eidos();
         account_with_auth(AuthSingleSig::new(Approver::new(
             key.public_key().to_commitment(),
             AuthSchemeId::Falcon512Eidos,
@@ -2144,9 +2144,7 @@ mod tests {
     fn guarded_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(2))
-                    .public_key()
-                    .to_commitment(),
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
                 AuthSchemeId::Falcon512Eidos,
             )],
             1,
@@ -2154,9 +2152,7 @@ mod tests {
         .unwrap();
 
         let guardian = GuardianConfig::new(Approver::new(
-            AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(3))
-                .public_key()
-                .to_commitment(),
+            AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
             AuthSchemeId::Falcon512Eidos,
         ));
 
@@ -2227,9 +2223,7 @@ mod tests {
     fn multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(4))
-                    .public_key()
-                    .to_commitment(),
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
                 AuthSchemeId::Falcon512Eidos,
             )],
             1,
@@ -2303,9 +2297,7 @@ mod tests {
     fn smart_multisig_account() -> Account {
         let approvers = ApproverSet::new(
             vec![Approver::new(
-                AuthSecretKey::new_falcon512_eidos_with_rng(&mut ChaCha20Rng::seed_from_u64(5))
-                    .public_key()
-                    .to_commitment(),
+                AuthSecretKey::new_falcon512_eidos().public_key().to_commitment(),
                 AuthSchemeId::Falcon512Eidos,
             )],
             1,

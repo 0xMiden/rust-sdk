@@ -545,27 +545,6 @@ mod tests {
 
     use super::{DEFAULT_MAX_RESPONSE_SIZE_BYTES, Endpoint, GrpcClient};
 
-    async fn local_server() -> (Endpoint, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = Endpoint::new(
-            "http".into(),
-            "127.0.0.1".into(),
-            Some(listener.local_addr().unwrap().port()),
-        );
-        let (_, service) = tonic_health::server::health_reporter();
-        let server = tokio::spawn(async move {
-            let incoming = futures::stream::unfold(listener, |listener| async move {
-                let socket = listener.accept().await.map(|(socket, _)| socket);
-                Some((socket, listener))
-            });
-            tonic::transport::Server::builder()
-                .serve_with_incoming(service, incoming)
-                .await
-                .unwrap();
-        });
-        (endpoint, server)
-    }
-
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
@@ -671,8 +650,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_genesis_commitment_updates_the_client_if_already_connected() {
-        let (endpoint, server) = local_server().await;
-        let client = GrpcClient::new(&endpoint, 10000);
+        let endpoint = &Endpoint::devnet();
+        let client = GrpcClient::new(endpoint, 10000);
 
         // "Connect" the client
         client.connect().await.unwrap();
@@ -682,7 +661,6 @@ mod tests {
 
         assert_eq!(client.connection.read().genesis_commitment, Some(commitment));
         assert!(client.connection.read().client.is_some());
-        server.abort();
     }
 
     #[test]
@@ -721,8 +699,8 @@ mod tests {
 
     #[tokio::test]
     async fn with_bearer_auth_is_preserved_across_set_genesis_commitment() {
-        let (endpoint, server) = local_server().await;
-        let client = GrpcClient::new(&endpoint, 10000).with_bearer_auth("token".to_string());
+        let endpoint = &Endpoint::devnet();
+        let client = GrpcClient::new(endpoint, 10000).with_bearer_auth("token".to_string());
         client.connect().await.unwrap();
 
         client.set_genesis_commitment(Word::default()).await.unwrap();
@@ -730,7 +708,6 @@ mod tests {
         // Rebuilding the interceptor after a genesis update must not drop the caller token.
         assert_eq!(client.bearer_token.as_deref(), Some("token"));
         assert!(client.connection.read().client.is_some());
-        server.abort();
     }
 
     #[test]

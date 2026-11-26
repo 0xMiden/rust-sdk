@@ -86,13 +86,13 @@ typos-check: ## Run typos to check for spelling mistakes
 # --- Documentation -------------------------------------------------------------------------------
 
 .PHONY: doc
-doc: ## Generate & check rust documentation. Ensure you have the nightly toolchain installed.
+doc: ## Generate & check rust documentation
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release
+	$(WARNINGS) cargo doc --lib --no-deps --all-features --keep-going --release
 
-doc-open: ## Generate & open rust documentation in browser. Ensure you have the nightly toolchain installed.
+doc-open: ## Generate & open rust documentation in browser
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release --open
+	$(WARNINGS) cargo doc --lib --no-deps --all-features --keep-going --release --open
 
 .PHONY: serve-docs
 serve-docs: ## Serves the docs

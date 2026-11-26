@@ -16,9 +16,9 @@ use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use tracing::info;
 
+use super::account_update_tracker::AccountUpdateTracker;
 use super::state_sync_update::build_account_patch;
 use super::{
-    AccountUpdates,
     NoteObserver,
     PartialBlockchainUpdates,
     PublicAccountUpdate,
@@ -341,7 +341,7 @@ impl StateSync {
 
         let note_updates = NoteUpdateTracker::new(input_notes, output_notes);
         let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
         else {
@@ -478,8 +478,8 @@ impl StateSync {
                 block_from,
                 partial_blockchain_updates,
                 note_updates.into_note_updates(),
-                transaction_updates,
-                account_updates,
+                transaction_updates.into_transaction_updates(),
+                account_updates.into_account_updates(),
                 None,
             ));
         };
@@ -512,8 +512,8 @@ impl StateSync {
             chain_tip,
             partial_blockchain_updates,
             note_updates.into_note_updates(),
-            transaction_updates,
-            account_updates,
+            transaction_updates.into_transaction_updates(),
+            account_updates.into_account_updates(),
             protocol_config,
         ))
     }
@@ -1000,7 +1000,7 @@ impl StateSync {
     /// caller must discard the transactions that produced them.
     async fn account_state_sync(
         &self,
-        account_updates: &mut AccountUpdates,
+        account_updates: &mut AccountUpdateTracker,
         accounts: &[AccountHeader],
         account_commitment_updates: &[(AccountId, Word)],
         block_from: BlockNumber,
@@ -1045,15 +1045,11 @@ impl StateSync {
             .try_collect()
             .await?;
 
-        let mismatched_private_accounts: Vec<(AccountId, Word)> = diverging_private_accounts
-            .iter()
-            .zip(proven_commitments)
-            .filter_map(|(header, proven_commitment)| {
-                proven_commitment.map(|commitment| (header.id(), commitment))
-            })
-            .collect();
-
-        account_updates.extend(AccountUpdates::new(Vec::new(), mismatched_private_accounts));
+        for (header, commitment) in diverging_private_accounts.into_iter().zip(proven_commitments) {
+            if let Some(commitment) = commitment {
+                account_updates.apply_private_account_commitment(header.id(), commitment);
+            }
+        }
 
         Ok(superseded_states)
     }
@@ -1119,7 +1115,7 @@ impl StateSync {
     /// over the synced block range.
     async fn sync_public_accounts(
         &self,
-        account_updates: &mut AccountUpdates,
+        account_updates: &mut AccountUpdateTracker,
         commitment_updates: &[(AccountId, Word)],
         current_public_accounts: &[&AccountHeader],
         block_from: BlockNumber,
@@ -1150,15 +1146,14 @@ impl StateSync {
 
         // Local states that lost a same-nonce race; their transactions must be discarded.
         let mut superseded_states = Vec::new();
-        let mut account_witnesses = Vec::with_capacity(synced_accounts.len());
         for ((account_id, local_header), (witness, synced_account)) in
             diverging_accounts.iter().zip(synced_accounts)
         {
-            account_witnesses.push((*account_id, witness));
+            account_updates.insert_account_witness(*account_id, witness);
 
             match synced_account {
                 PublicAccountSync::Apply(public_update) => {
-                    account_updates.extend(AccountUpdates::new(vec![*public_update], Vec::new()));
+                    account_updates.apply_public_account_update(*public_update);
                 },
                 PublicAccountSync::Superseded => {
                     superseded_states.push(local_header.to_commitment());
@@ -1166,8 +1161,6 @@ impl StateSync {
                 PublicAccountSync::Ignore => {},
             }
         }
-
-        account_updates.extend(AccountUpdates::default().with_account_witnesses(account_witnesses));
 
         Ok(superseded_states)
     }
@@ -1504,7 +1497,7 @@ pub struct ChainSyncData {
     transaction_updates: TransactionUpdateTracker,
     /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
     /// keeps fresh, which the sync only queries when their state changed.
-    pub(crate) account_updates: AccountUpdates,
+    pub(super) account_updates: AccountUpdateTracker,
 }
 
 impl ChainSyncData {
@@ -1841,7 +1834,7 @@ mod tests {
             AccountHeader::new(account.id(), Felt::from(2u32), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(
@@ -1855,7 +1848,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            account_updates.updated_public_accounts().is_empty(),
+            account_updates.into_account_updates().updated_public_accounts().is_empty(),
             "public account sync should ignore node snapshots that are older than local"
         );
         assert!(
@@ -1880,7 +1873,7 @@ mod tests {
             AccountHeader::new(account.id(), account.nonce(), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(
@@ -1894,7 +1887,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            account_updates.updated_public_accounts().is_empty(),
+            account_updates.into_account_updates().updated_public_accounts().is_empty(),
             "a same-nonce fork must not overwrite the account while its tx is still pending"
         );
         assert_eq!(
@@ -2072,7 +2065,7 @@ mod tests {
 
         let current_public_accounts = vec![&local_header];
         let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdates::default();
+        let mut account_updates = AccountUpdateTracker::default();
 
         let superseded = state_sync
             .sync_public_accounts(
@@ -2087,7 +2080,7 @@ mod tests {
 
         assert!(superseded.is_empty(), "the transaction must not be superseded");
         assert!(
-            account_updates.updated_public_accounts().is_empty(),
+            account_updates.into_account_updates().updated_public_accounts().is_empty(),
             "the target state must not overwrite the local account"
         );
     }

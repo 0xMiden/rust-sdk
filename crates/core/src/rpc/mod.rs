@@ -27,6 +27,7 @@ use domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
+use domain::block::{SubscribedBlock, SubscribedProof};
 use domain::note::{FetchedNote, SyncNotesBlock};
 use domain::nullifier::NullifierUpdate;
 use domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
@@ -94,6 +95,8 @@ pub enum RpcEndpoint {
     GetNetworkNoteStatus,
     GetTransactionEncryptionKey,
     GetTransactionLogs,
+    BlockSubscription,
+    ProofSubscription,
 }
 
 impl RpcEndpoint {
@@ -121,6 +124,8 @@ impl RpcEndpoint {
             RpcEndpoint::GetLimits => "GetLimits",
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
             RpcEndpoint::GetTransactionLogs => "GetTransactionLogs",
+            RpcEndpoint::BlockSubscription => "BlockSubscription",
+            RpcEndpoint::ProofSubscription => "ProofSubscription",
         }
     }
 
@@ -155,7 +160,9 @@ impl RpcEndpoint {
             | RpcEndpoint::GetLimits
             | RpcEndpoint::GetNetworkNoteStatus
             | RpcEndpoint::GetTransactionEncryptionKey
-            | RpcEndpoint::GetTransactionLogs => true,
+            | RpcEndpoint::GetTransactionLogs
+            | RpcEndpoint::BlockSubscription
+            | RpcEndpoint::ProofSubscription => true,
         }
     }
 }
@@ -190,9 +197,26 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::GetLimits => write!(f, "get_limits"),
             RpcEndpoint::GetNetworkNoteStatus => write!(f, "get_network_note_status"),
             RpcEndpoint::GetTransactionLogs => write!(f, "get_transaction_logs"),
+            RpcEndpoint::BlockSubscription => write!(f, "block_subscription"),
+            RpcEndpoint::ProofSubscription => write!(f, "proof_subscription"),
         }
     }
 }
+
+// RPC STREAM
+// ================================================================================================
+
+/// A stream of decoded items from a server-streaming node RPC endpoint.
+///
+/// The stream does not borrow the client that opens it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RpcStream<T> = futures::stream::BoxStream<'static, Result<T, RpcError>>;
+
+/// A stream of decoded items from a server-streaming node RPC endpoint.
+///
+/// The stream does not borrow the client that opens it.
+#[cfg(target_arch = "wasm32")]
+pub type RpcStream<T> = futures::stream::LocalBoxStream<'static, Result<T, RpcError>>;
 
 // NODE RPC CLIENT TRAIT
 // ================================================================================================
@@ -285,6 +309,34 @@ pub trait NodeRpcClient: Send + Sync {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError>;
+
+    /// Subscribes to the committed blocks of the node using the `/BlockSubscription` RPC endpoint.
+    ///
+    /// The stream yields the blocks from `block_from` (inclusive) in order. It first yields the
+    /// blocks that are already committed, and then yields each new block when the node commits it.
+    ///
+    /// The stream yields the first error and then ends. It does not reconnect. To resume, subscribe
+    /// again from the block after the last block that the stream yielded. The node ends the stream
+    /// with [`RpcError::SubscriberLagged`] when the caller reads the blocks too slowly.
+    async fn subscribe_blocks(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedBlock>, RpcError>;
+
+    /// Subscribes to the block proofs of the node using the `/ProofSubscription` RPC endpoint.
+    ///
+    /// The stream yields the proofs from `block_from` (inclusive) in order. It first yields the
+    /// proofs that are already available, and then yields each new proof when the node proves a
+    /// block. The genesis block has no proof. Subscribing from [`BlockNumber::GENESIS`] ends the
+    /// stream with an error.
+    ///
+    /// The stream yields the first error and then ends. It does not reconnect. To resume, subscribe
+    /// again from the block after the last block that the stream yielded. The node ends the stream
+    /// with [`RpcError::SubscriberLagged`] when the caller reads the proofs too slowly.
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError>;
 
     /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById` RPC endpoint.
     ///

@@ -145,6 +145,8 @@ mod tests {
             RpcEndpoint::GetBlockHeaderByNumber,
             RpcEndpoint::IsAccountAllowed,
             RpcEndpoint::IsInvitationCodeValid,
+            RpcEndpoint::BlockSubscription,
+            RpcEndpoint::ProofSubscription,
         ] {
             assert!(is_retryable(endpoint, &Status::new(Code::Unavailable, "transport error")));
             assert!(is_retryable(endpoint, &Status::new(Code::ResourceExhausted, "rate limited")));

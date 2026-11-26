@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use assert_matches::assert_matches;
+use futures::StreamExt;
 use miden_client::account::component::{AccountComponent, AccountComponentMetadata};
 use miden_client::account::standards::auth::{Approver, AuthSingleSig};
 use miden_client::account::standards::wallets::BasicWallet;
@@ -533,6 +534,55 @@ pub async fn test_sync_notes_chunks_when_exceeding_limits(
         blocks.iter().any(|b| b.notes.contains_key(&minted_note.id())),
         "expected the minted note in the sync_notes response",
     );
+
+    Ok(())
+}
+
+/// Verifies that a block subscription yields blocks from the requested block and stays open for
+/// longer than the request timeout of the client.
+pub async fn test_subscribe_blocks_streams_past_the_request_timeout(
+    client_config: ClientConfig,
+) -> Result<()> {
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+    let timeout_ms = u64::try_from(REQUEST_TIMEOUT.as_millis())?;
+    let grpc = GrpcClient::new(&client_config.rpc_endpoint, timeout_ms);
+
+    // The genesis block of the test node exceeds the default response size limit of the client.
+    let block_from = BlockNumber::GENESIS.child();
+    let mut blocks = grpc.subscribe_blocks(block_from).await?;
+    let opened_at = Instant::now();
+    let mut next_block_num = block_from;
+    // The loop ends only with a block that arrives after the request timeout.
+    while opened_at.elapsed() <= REQUEST_TIMEOUT {
+        let item = tokio::time::timeout(Duration::from_secs(60), blocks.next())
+            .await
+            .context("no block arrived in time")?
+            .context("the subscription ended")??;
+
+        assert_eq!(item.block.header().block_num(), next_block_num);
+        next_block_num = next_block_num.child();
+    }
+
+    Ok(())
+}
+
+/// Verifies that a proof subscription yields the proof of the requested block and that it matches
+/// `get_block_by_number`.
+pub async fn test_subscribe_proofs(client_config: ClientConfig) -> Result<()> {
+    let grpc = GrpcClient::new(&client_config.rpc_endpoint, client_config.rpc_timeout_ms);
+
+    let block_from = BlockNumber::GENESIS.child();
+    let mut proofs = grpc.subscribe_proofs(block_from).await?;
+    let item = tokio::time::timeout(Duration::from_secs(60), proofs.next())
+        .await
+        .context("no proof arrived in time")?
+        .context("the subscription ended")??;
+
+    assert_eq!(item.block_num, block_from);
+    assert!(item.proven_chain_tip >= block_from);
+
+    let (_, expected_proof) = grpc.get_block_by_number(block_from, true).await?;
+    assert_eq!(Some(item.proof), expected_proof);
 
     Ok(())
 }

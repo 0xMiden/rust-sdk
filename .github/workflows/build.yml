@@ -73,11 +73,11 @@ jobs:
           rustup update --no-self-update
           rustup target add wasm32-unknown-unknown
       - name: Add Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
         with:
-          shared-key: rust-release-${{ runner.arch }}
+          shared-key: rust-wasm32-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - build-wasm
         run: make build-wasm
 
@@ -100,8 +100,9 @@ jobs:
       - name: Add Rust Cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: rust-release-${{ runner.arch }}
+          shared-key: rust-${{ matrix.target }}-${{ runner.arch }}
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: false
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
       - name: make - ${{ matrix.target }}
         run: make ${{ matrix.target }}

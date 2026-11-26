@@ -2897,6 +2897,7 @@ version = "0.18.2"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
  "miden-objects",
  "miden-protocol",
  "miden-standards",

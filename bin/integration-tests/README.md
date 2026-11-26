@@ -140,6 +140,10 @@ transaction first consumes that note, as described below. An account a test buil
 funded and deployed on the spot with `TestClient::deploy_account`, whose deploy transaction
 consumes the funding note and thereby settles its own fee.
 
+Each funded account receives enough of the native asset to pay for at least 10 transactions. The
+funder reads the base fee of the chain from the status of the service, so the amount follows the
+chain. The testing node pays a registered account the same amount.
+
 The service builds one transaction at a time and waits for each to commit before it builds the
 next, so accounts are funded in batches wherever a test creates more than one: the `setup_*` helpers create their accounts with the `insert_new_*_unfunded`
 variants and then pass the whole set to `TestClient::fund_if_needed`, which asks for them all at

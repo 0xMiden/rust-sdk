@@ -21,6 +21,8 @@ use miden_client::testing::mock::MockRpcApi;
 use miden_client::transaction::{
     DiscardCause,
     ForeignAccount,
+    InputNote,
+    InputNoteAuthentication,
     LocalTransactionProver,
     ProvenTransaction,
     TransactionExecutorError,
@@ -52,7 +54,7 @@ use miden_protocol::account::{
 use miden_protocol::assembly::diagnostics::miette::GraphicalReportHandler;
 use miden_protocol::asset::{Asset, FungibleAsset, PartialVault};
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteRecipient, NoteStorage, NoteType};
+use miden_protocol::note::{NoteId, NoteInclusionProof, NoteRecipient, NoteStorage, NoteType};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
@@ -1254,4 +1256,101 @@ async fn discarded_transaction_releases_its_input_notes(#[case] authenticated: b
     let record = client.get_input_note(note.id()).await.unwrap().unwrap();
     assert!(record.is_consumed(), "the note should be consumed, got: {}", record.state());
     assert_eq!(record.consumer_transaction_id(), Some(&second_tx_id));
+}
+
+/// Returns a note from `faucet` to `wallet` that is not on chain.
+fn unsubmitted_note(client: &mut TestClient, wallet: AccountId, faucet: AccountId) -> Note {
+    TransactionRequestBuilder::new()
+        .build_mint_fungible_asset(
+            FungibleAsset::new(faucet, 5u64).unwrap(),
+            wallet,
+            NoteType::Private,
+            client.rng(),
+        )
+        .unwrap()
+        .expected_output_own_notes()
+        .pop()
+        .unwrap()
+}
+
+/// Returns the proof with which `request` consumes the note with `note_id`.
+fn pinned_proof(request: &TransactionRequest, note_id: NoteId) -> Option<NoteInclusionProof> {
+    let request_note = request.input_notes().iter().find(|note| note.id() == note_id).unwrap();
+    match request_note.authentication() {
+        InputNoteAuthentication::Explicit(input_note) => input_note.proof().cloned(),
+        InputNoteAuthentication::Inferred(_) => panic!("note {note_id} is not pinned"),
+    }
+}
+
+#[tokio::test]
+async fn pin_input_notes_uses_the_stored_proofs_and_fetches_the_missing_ones() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+
+    let stored = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+    let stored_record = client.get_input_note(stored.id()).await.unwrap().unwrap();
+    let stored_proof = stored_record.inclusion_proof().unwrap().clone();
+
+    // The store holds the proof, so the client does not call the node.
+    let calls_before = rpc_api.get_notes_by_id_call_count();
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(stored.clone(), None)])
+        .build()
+        .unwrap();
+    let request = client.pin_input_notes(request).await.unwrap();
+    assert_eq!(pinned_proof(&request, stored.id()), Some(stored_proof.clone()));
+    assert_eq!(rpc_api.get_notes_by_id_call_count(), calls_before);
+
+    // The note is on chain, but the client does not sync, so the store holds no proof for it.
+    let unsynced = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    let explicit = unsubmitted_note(&mut client, wallet.id(), faucet.id());
+
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(stored.clone(), None), (unsynced.clone(), None)])
+        .explicit_input_notes([(InputNote::unauthenticated(explicit.clone()), None)])
+        .build()
+        .unwrap();
+    let request = client.pin_input_notes(request).await.unwrap();
+    assert_eq!(rpc_api.get_notes_by_id_call_count(), calls_before + 1);
+    assert_eq!(pinned_proof(&request, stored.id()), Some(stored_proof));
+    assert_eq!(pinned_proof(&request, explicit.id()), None);
+
+    client.sync_state().await.unwrap();
+    let unsynced_record = client.get_input_note(unsynced.id()).await.unwrap().unwrap();
+    assert_eq!(
+        pinned_proof(&request, unsynced.id()).as_ref(),
+        unsynced_record.inclusion_proof()
+    );
+}
+
+#[tokio::test]
+async fn pin_input_notes_rejects_a_note_that_is_not_on_chain() {
+    let (mut client, _) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    let note = unsubmitted_note(&mut client, wallet.id(), faucet.id());
+
+    let request = TransactionRequestBuilder::new()
+        .input_notes([(note.clone(), None)])
+        .build()
+        .unwrap();
+    let err = client.pin_input_notes(request).await.unwrap_err();
+
+    assert!(matches!(err, ClientError::NoteNotFoundOnChain(id) if id == note.id()));
+}
+
+#[tokio::test]
+async fn execute_for_summary_rejects_a_transaction_that_needs_no_signatures() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    let note = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let request = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
+    let err = Box::pin(client.execute_for_summary(wallet.id(), request)).await.unwrap_err();
+
+    assert!(matches!(err, ClientError::NoSignaturesRequired));
 }

@@ -80,6 +80,7 @@ use miden_protocol::note::{
     NoteAttachments,
     NoteDetails,
     NoteId,
+    NoteInclusionProof,
     NoteRecipient,
     NoteScript,
     NoteTag,
@@ -352,6 +353,113 @@ where
             TransactionExecutionMode::Standard,
         ))
         .await
+    }
+
+    /// Executes a transaction that needs signatures and returns the [`TransactionSummary`] that the
+    /// signers sign. It doesn't change the local database.
+    ///
+    /// The auth procedure of the account stops the execution when the signatures are missing, and
+    /// reports the summary of the transaction.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::NoSignaturesRequired`] if the execution succeeds, because
+    ///   the auth procedure of the account needs no more signatures.
+    /// - Returns the errors of [`Self::execute_transaction`].
+    pub async fn execute_for_summary(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<TransactionSummary, ClientError> {
+        match self.execute_transaction(account_id, transaction_request).await {
+            Err(ClientError::TransactionExecutorError(TransactionExecutorError::Unauthorized(
+                summary,
+            ))) => Ok(*summary),
+            Ok(_) => Err(ClientError::NoSignaturesRequired),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Returns `transaction_request` with every inferred input note pinned as authenticated, so
+    /// that any executor consumes the notes in the same mode. Explicit input notes are left
+    /// unchanged.
+    ///
+    /// The client takes the inclusion proofs from the store, and fetches from the node the proofs
+    /// that the store does not hold.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`ClientError::NoteNotFoundOnChain`] if the node has no inclusion proof for a note.
+    pub async fn pin_input_notes(
+        &self,
+        mut transaction_request: TransactionRequest,
+    ) -> Result<TransactionRequest, ClientError> {
+        let inferred_notes: Vec<Note> = transaction_request
+            .input_notes()
+            .iter()
+            .filter_map(|request_note| match request_note.authentication() {
+                InputNoteAuthentication::Inferred(note) => Some(note.clone()),
+                InputNoteAuthentication::Explicit(_) => None,
+            })
+            .collect();
+        if inferred_notes.is_empty() {
+            return Ok(transaction_request);
+        }
+
+        let note_ids: Vec<NoteId> = inferred_notes.iter().map(Note::id).collect();
+        let mut proofs: BTreeMap<NoteId, NoteInclusionProof> = self
+            .store
+            .get_input_notes(NoteFilter::List(note_ids.clone()))
+            .await?
+            .into_iter()
+            .filter(InputNoteRecord::is_authenticated)
+            .filter_map(|record| Some((record.id()?, record.inclusion_proof()?.clone())))
+            .collect();
+
+        let missing: Vec<NoteId> =
+            note_ids.into_iter().filter(|note_id| !proofs.contains_key(note_id)).collect();
+        if !missing.is_empty() {
+            for fetched in self.rpc_api.get_notes_by_id(&missing).await? {
+                proofs.insert(fetched.id(), fetched.inclusion_proof().clone());
+            }
+        }
+
+        for note in inferred_notes {
+            let note_id = note.id();
+            let proof = proofs.remove(&note_id).ok_or(ClientError::NoteNotFoundOnChain(note_id))?;
+            transaction_request.pin_input_note(InputNote::authenticated(note, proof))?;
+        }
+
+        Ok(transaction_request)
+    }
+
+    /// Prepares `transaction_request` so that an executor that does not hold the store of this
+    /// client computes the same [`TransactionSummary`]. Returns the prepared request and the
+    /// summary that the signers sign.
+    ///
+    /// The client pins the input notes with [`Self::pin_input_notes`], executes the request with
+    /// [`Self::execute_for_summary`], and declares the block that the summary binds. The auth args
+    /// must be explicit, because default auth args bind the reference block of each executor.
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`TransactionRequestError::AuthArgsNotExplicit`] if the request has no explicit
+    ///   auth args.
+    /// - Returns the errors of [`Self::pin_input_notes`] and [`Self::execute_for_summary`].
+    pub async fn prepare_reproducible_request(
+        &self,
+        account_id: AccountId,
+        transaction_request: TransactionRequest,
+    ) -> Result<(TransactionRequest, TransactionSummary), ClientError> {
+        if !matches!(transaction_request.auth_args(), RequestAuthArgs::Explicit(_)) {
+            return Err(TransactionRequestError::AuthArgsNotExplicit.into());
+        }
+
+        let mut transaction_request = self.pin_input_notes(transaction_request).await?;
+        let summary = self.execute_for_summary(account_id, transaction_request.clone()).await?;
+        transaction_request.add_block_number(summary.block_number());
+
+        Ok((transaction_request, summary))
     }
 
     /// Returns the block header at the client's current sync height and a partial blockchain

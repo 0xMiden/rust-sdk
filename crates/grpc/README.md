@@ -1,15 +1,17 @@
 # Miden Client gRPC
 
-Default gRPC implementation of the `NodeRpcClient` trait from `miden-client-core`.
+Default gRPC clients for the services that a Miden client uses: the node, the note transport service and the remote prover.
 
-- `GrpcClient`, which implements `NodeRpcClient` and talks to a Miden node over gRPC. It rejects node responses that do not match the request
+- `GrpcClient`, which implements the `NodeRpcClient` trait from `miden-client-core` and talks to a Miden node over gRPC. It rejects node responses that do not match the request
 - `RpcMethod` and the `v1` module, with one type per endpoint of the node RPC API version, for callers that choose the API version of each call
 - `RpcStreamMethod` and `GrpcClient::subscribe`, which open a server-streaming endpoint and validate each item of the stream
 - `Endpoint`, the address of the node, with presets for the public networks
 - The protobuf code generated from the node RPC API, and the conversions between its messages and the `miden-client-core` types
 - The parsing of the typed errors that the node returns
+- `note_transport::GrpcNoteTransportClient`, which implements the `NoteTransportClient` trait from `miden-client-core` and exchanges private notes with the note transport service
+- `remote_prover::RemoteTransactionProver`, which sends a transaction witness to a remote prover and returns the proven transaction
 
-On native targets, `GrpcClient` uses the `tonic` transport with TLS. On `wasm32` targets, it uses `tonic-web-wasm-client`.
+On native targets, the clients use the `tonic` transport with TLS. On `wasm32` targets, they use `tonic-web-wasm-client`.
 
 ## Quick Start
 

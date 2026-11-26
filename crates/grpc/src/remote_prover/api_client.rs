@@ -7,7 +7,6 @@ pub(crate) use api_client_wrapper::{ApiClient, InnerClient};
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod api_client_wrapper {
-    use alloc::string::String;
     use core::time::Duration;
 
     use crate::remote_prover::RemoteProverClientError;
@@ -41,7 +40,6 @@ pub(crate) mod api_client_wrapper {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod api_client_wrapper {
-    use alloc::string::String;
     use core::time::Duration;
 
     use crate::remote_prover::RemoteProverClientError;

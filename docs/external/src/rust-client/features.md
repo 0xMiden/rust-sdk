@@ -35,8 +35,8 @@ The `miden-client` crate gates some of the functionality above behind Cargo feat
 
 | Feature | Description |
 | ------- | ----------- |
-| `tonic` | Includes the gRPC pieces that talk to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up (`for_mainnet`, `for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). Uses `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
-| `std` | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. This turns on the `tonic` dependency's transport and TLS features, which is not the same as the `tonic` feature above: gRPC support still has to be requested explicitly. |
+| `tonic` | Includes the gRPC pieces that talk to a node: `GrpcClient`, `RemoteTransactionProver`, the gRPC note transport client, and the `ClientBuilder` methods that wire them up (`for_mainnet`, `for_testnet`, `for_devnet`, `for_localhost`, `grpc_client`). The clients come from the `miden-client-grpc` crate. They use `tonic` transport with TLS on native targets and `tonic-web-wasm-client` on `wasm32`. **Disabled by default.** |
+| `std` | Enables `std` support and concurrent execution in `miden-tx`. Enabled by default for native targets. Together with the `tonic` feature, it turns on the native transport and TLS of the gRPC clients. It does not turn on the `tonic` feature: gRPC support still has to be requested explicitly. |
 | `concurrent` | Enables Rayon-parallel proving without pulling in the rest of `std`, for `wasm32` consumers that cannot use it. Native builds get it through `std`. |
 | `testing` | Enables mocks and helpers meant for test environments. **Disabled by default.** |
 | `dap` | Enables running a transaction under a Debug Adapter Protocol client instead of proving it. Implies `std`. **Disabled by default.** |

@@ -17,13 +17,13 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.cargo-machete]
-# "prost-types" and "tonic-prost" are ignored because they are needed by the generated proto bindings.
-ignored = ["getrandom", "prost-types", "tonic-prost"]
+# getrandom is used through rand's wasm backend selection.
+ignored = ["getrandom"]
 
 [package.metadata.cargo-shear]
 # getrandom is used through rand's wasm backend selection. The other entries are used by
-# generated proto bindings and std-only keystore code that shear does not fully resolve.
-ignored = ["getrandom", "prost", "prost-types", "serde", "serde_json", "tempfile", "tonic-prost"]
+# std-only keystore code that shear does not fully resolve.
+ignored = ["getrandom", "serde", "serde_json", "tempfile"]
 
 [lib]
 crate-type = ["lib"]
@@ -34,7 +34,7 @@ crate-type = ["lib"]
 # MT WASM bundle, the miden-mobile-prover crate that ships in iOS/Android
 # Capacitor plugins) can opt in to parallel proving without dragging in
 # the heavy `miden-client/std` deps - `dep:tokio`, `dep:tempfile`, and
-# `tonic`'s `transport`/`tls-*` features.
+# the native `tonic` transport that `miden-client-grpc/std` enables.
 #
 # Note: `miden-tx`'s own `concurrent` feature is defined upstream as
 # `["miden-prover/concurrent", "std"]`, so enabling `concurrent` here
@@ -63,9 +63,6 @@ std = [
   "miden-protocol/std",
   "miden-tx/std",
   "miden-usdcx/std",
-  "tonic?/tls-native-roots",
-  "tonic?/tls-ring",
-  "tonic?/transport",
 ]
 testing = [
   "dep:miden-testing",
@@ -77,7 +74,7 @@ testing = [
   "miden-tx/testing",
   "miden-usdcx/testing",
 ]
-tonic = ["dep:miden-client-grpc", "dep:tonic", "dep:tonic-health", "dep:tonic-prost", "dep:tonic-web-wasm-client"]
+tonic = ["dep:miden-client-grpc"]
 trace = ["dep:miden-debug-engine", "std"]
 
 [dependencies]
@@ -99,37 +96,21 @@ miden-tx-batch        = { workspace = true }
 miden-usdcx           = { workspace = true }
 
 # External dependencies
-anyhow       = { workspace = true }
-async-trait  = { workspace = true }
-futures      = { workspace = true }
-prost        = { features = ["derive"], workspace = true }
-prost-types  = { version = "0.14" }
-rand         = { workspace = true }
-rand_chacha  = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-tempfile     = { optional = true, workspace = true }
-thiserror    = { workspace = true }
-tokio        = { features = ["sync", "time"], optional = true, workspace = true }
-tonic        = { features = ["codegen"], optional = true, workspace = true }
-tonic-health = { optional = true, workspace = true }
-tonic-prost  = { optional = true, workspace = true }
-tracing      = { workspace = true }
-uuid         = { features = ["js", "serde", "v4"], optional = true, workspace = true }
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+futures     = { workspace = true }
+rand        = { workspace = true }
+rand_chacha = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tempfile    = { optional = true, workspace = true }
+thiserror   = { workspace = true }
+tokio       = { features = ["time"], optional = true, workspace = true }
+tracing     = { workspace = true }
+uuid        = { features = ["js", "serde", "v4"], optional = true, workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom             = { features = ["wasm_js"], version = "0.3" }
-gloo-timers           = { workspace = true }
-tokio                 = { default-features = false, features = ["sync"], version = "1.48" }
-tonic-web-wasm-client = { optional = true, workspace = true }
-
-[build-dependencies]
-miden-node-proto-build = { workspace = true }
-miden-objects          = { workspace = true }
-miden-protocol         = { workspace = true }
-miden-standards        = { workspace = true }
-miette                 = { workspace = true }
-tonic-prost-build      = { workspace = true }
+getrandom = { features = ["wasm_js"], version = "0.3" }
 
 [dev-dependencies]
 miden-client-core = { features = ["testing"], workspace = true }

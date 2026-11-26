@@ -667,7 +667,7 @@ pub trait Store: Send + Sync {
     /// procedure roots to the code tree.
     ///
     /// A package whose forest already has debug info in the registry is skipped. A package without
-    /// debug info is skipped.
+    /// debug info is added without debug info.
     ///
     /// The client calls this method when it is built, to store the transaction kernel and the
     /// libraries it is built with.

@@ -65,8 +65,8 @@ impl SqliteStore {
     /// code registry, and their procedure roots to the code tree, in one database transaction.
     ///
     /// A package whose forest already has debug info in the registry is skipped. A package without
-    /// debug info is skipped. The packages to skip are found with a read, so the debug info is
-    /// decoded and a write transaction is opened only when a package is missing.
+    /// debug info is added without debug info. The packages to skip are found with a read, so the
+    /// debug info is decoded and a write transaction is opened only when a package is missing.
     pub(crate) fn write_procedures_with_debug_info(
         conn: &mut Connection,
         packages: &[Arc<Package>],
@@ -90,9 +90,7 @@ impl SqliteStore {
             }
             let debug_info =
                 package.debug_info().map_err(|err| StoreError::ParsingError(err.to_string()))?;
-            if let Some(debug_info) = debug_info {
-                missing.push((Arc::clone(mast), debug_info));
-            }
+            missing.push((Arc::clone(mast), debug_info));
         }
         if missing.is_empty() {
             return Ok(());
@@ -103,7 +101,9 @@ impl SqliteStore {
                 missing.iter().map(|(mast, _)| Arc::clone(mast)).collect();
             SqliteStore::write_procedures(tx, &forests)?;
             for (mast, debug_info) in &missing {
-                SqliteStore::write_debug_info(tx, mast.commitment(), debug_info)?;
+                if let Some(debug_info) = debug_info {
+                    SqliteStore::write_debug_info(tx, mast.commitment(), debug_info)?;
+                }
             }
             Ok(())
         })
@@ -387,6 +387,24 @@ mod tests {
         let counts = row_counts(&store).await;
         store.insert_procedures_with_debug_info(vec![package]).await.unwrap();
         assert_eq!(row_counts(&store).await, counts);
+        assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
+    }
+
+    #[tokio::test]
+    async fn insert_procedures_with_debug_info_adds_a_package_without_debug_info() {
+        let store = create_test_store().await;
+        let mut package = ProtocolLib::default().as_ref().clone();
+        package.sections.retain(|section| !section.id.is_debug());
+        let package = Arc::new(package);
+        let procedure_root = ProcedureRoot::from_raw(
+            package.mast_forest().local_procedure_digests().next().unwrap(),
+        );
+
+        store.insert_procedures_with_debug_info(vec![package.clone()]).await.unwrap();
+
+        let loaded = store.get_procedure(procedure_root).await.unwrap().unwrap();
+        assert!(loaded.package_debug_info().unwrap().is_none());
+        let code_tree = CodeTree::with_entries(procedure_roots_of(package.mast_forest())).unwrap();
         assert_eq!(store.get_code_tree_root().await.unwrap(), code_tree.root());
     }
 

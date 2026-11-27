@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+//! gRPC client of the remote transaction prover.
+
 use core::error::Error as CoreError;
 
 use thiserror::Error;

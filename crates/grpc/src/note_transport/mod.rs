@@ -3,10 +3,16 @@
 //! On native targets, the connection is established lazily on the first request using a TLS-enabled
 //! `tonic` channel. On WASM, a `tonic_web_wasm_client` is created on demand.
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
+mod generated;
 
+use miden_client_core::errors::NoteTransportError;
+use miden_client_core::note_transport::{
+    NoteInfo,
+    NoteTransportClient,
+    NoteTransportCursor,
+    NoteTransportPage,
+    TransportNote,
+};
 use miden_objects::{
     ConversionError,
     ConversionResultExt,
@@ -23,7 +29,7 @@ use miden_protocol::note::{
     NoteTag,
 };
 use miden_protocol::utils::serde::Serializable;
-use miden_tx::utils::sync::RwLock;
+use miden_protocol::utils::sync::RwLock;
 use thiserror::Error;
 use tonic::{Code, Request, Status};
 use tonic_health::pb::HealthCheckRequest;
@@ -36,21 +42,21 @@ use {
     tonic::transport::{Channel, ClientTlsConfig},
 };
 
-use super::generated::note_transport::note_transport_service_client::NoteTransportServiceClient;
-use super::generated::note_transport::{
+use self::generated::note_transport_service_client::NoteTransportServiceClient;
+use self::generated::{
     FetchNotesCursor,
     FetchNotesRequest,
     FetchedNote,
     SendNoteWithProofRequest,
     TransportNote as ProtoTransportNote,
 };
-use super::{NoteInfo, NoteTransportCursor, NoteTransportError, NoteTransportPage, TransportNote};
 use crate::grpc_support::{async_sleep, extract_retry_after};
 
 // FETCHED NOTE DECODING
 // ================================================================================================
 
-/// The decoded fields of a [`FetchedNote`], before the details are checked against the header.
+/// The decoded fields of a `FetchedNote` message, before the details are checked against the
+/// header.
 pub struct DecodedFetchedNote {
     header: NoteHeader,
     details: NoteDetails,
@@ -373,7 +379,7 @@ impl GrpcNoteTransportClient {
 }
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl super::NoteTransportClient for GrpcNoteTransportClient {
+impl NoteTransportClient for GrpcNoteTransportClient {
     async fn send_note_with_proof(
         &self,
         note: TransportNote,
@@ -498,8 +504,7 @@ fn retry_delay(failure: &SendFailure, retry: u32, retry_interval_ms: u64) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
-
+    use miden_protocol::Word;
     use miden_protocol::account::AccountId;
     use miden_protocol::asset::FungibleAsset;
     use miden_protocol::note::{Note, NoteType};
@@ -510,8 +515,6 @@ mod tests {
     };
     use miden_protocol::utils::serde::Deserializable;
     use miden_standards::note::P2idNote;
-    use rand::{RngExt, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
     use tonic::metadata::MetadataMap;
 
     use super::*;
@@ -521,14 +524,13 @@ mod tests {
         let sender = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target = AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = ChaCha20Rng::seed_from_u64(u64::from(seed));
 
         P2idNote::builder()
             .sender(sender)
             .target(target)
             .asset(FungibleAsset::new(faucet, 100).unwrap())
             .note_type(NoteType::Private)
-            .serial_number(rng.random())
+            .serial_number(Word::from([seed, 0, 0, 0]))
             .build()
             .unwrap()
             .into()

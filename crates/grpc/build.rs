@@ -3,14 +3,16 @@ use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use miden_node_proto_build::rpc_api_descriptor;
+use miden_node_proto_build::{
+    note_transport_api_descriptor,
+    remote_prover_api_descriptor,
+    rpc_api_descriptor,
+};
 use miette::IntoDiagnostic;
+use tonic_prost_build::FileDescriptorSet;
 
-const RPC_STD_DIR: &str = "rpc/std";
-const RPC_NOSTD_DIR: &str = "rpc/nostd";
-
-const RPC_STD_WRAPPER: &str = "rpc_std.rs";
-const RPC_NOSTD_WRAPPER: &str = "rpc_nostd.rs";
+/// Messages of the node RPC API whose bindings do not implement `Debug`.
+const RPC_SKIP_DEBUG: &[&str] = &["RegisterAccountRequest", "IsInvitationCodeValidRequest"];
 
 fn main() -> miette::Result<()> {
     // Proto definitions come from build-dependency crates. Cargo automatically re-runs this
@@ -21,10 +23,9 @@ fn main() -> miette::Result<()> {
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").into_diagnostic()?);
 
-    compile_tonic_client_proto(&out_dir)?;
-
-    generate_wrapper(&out_dir, RPC_STD_DIR, RPC_STD_WRAPPER)?;
-    generate_wrapper(&out_dir, RPC_NOSTD_DIR, RPC_NOSTD_WRAPPER)?;
+    compile_client_proto(&out_dir, "rpc", rpc_api_descriptor(), RPC_SKIP_DEBUG)?;
+    compile_client_proto(&out_dir, "note_transport", note_transport_api_descriptor(), &[])?;
+    compile_client_proto(&out_dir, "remote_prover", remote_prover_api_descriptor(), &[])?;
 
     Ok(())
 }
@@ -44,42 +45,54 @@ fn canonical_object_config() -> tonic_prost_build::Config {
     config
 }
 
-// NODE RPC CLIENT PROTO CODEGEN
+// CLIENT PROTO CODEGEN
 // ===============================================================================================
 
-/// Generates the Rust protobuf bindings for the RPC client.
-fn compile_tonic_client_proto(out_dir: &Path) -> miette::Result<()> {
-    let file_descriptors = rpc_api_descriptor();
+/// Generates the Rust client bindings of one gRPC API.
+///
+/// The bindings for native targets go to `out_dir/<api>/std`. The bindings for `wasm32` go to
+/// `out_dir/<api>/nostd`. The wrapper files `out_dir/<api>_std.rs` and `out_dir/<api>_nostd.rs`
+/// include the bindings of one directory as modules.
+///
+/// The bindings of the messages in `skip_debug` do not implement `Debug`.
+fn compile_client_proto(
+    out_dir: &Path,
+    api: &str,
+    file_descriptors: FileDescriptorSet,
+    skip_debug: &[&str],
+) -> miette::Result<()> {
+    let std_dir = format!("{api}/std");
+    let nostd_dir = format!("{api}/nostd");
+    fs::create_dir_all(out_dir.join(&std_dir)).into_diagnostic()?;
+    fs::create_dir_all(out_dir.join(&nostd_dir)).into_diagnostic()?;
 
-    let std_out = out_dir.join(RPC_STD_DIR);
-    let nostd_out = out_dir.join(RPC_NOSTD_DIR);
-    fs::create_dir_all(&std_out).into_diagnostic()?;
-    fs::create_dir_all(&nostd_out).into_diagnostic()?;
+    let mut std_config = canonical_object_config();
+    std_config.skip_debug(skip_debug);
 
-    let mut prost_config = canonical_object_config();
-    prost_config.skip_debug(["RegisterAccountRequest", "IsInvitationCodeValidRequest"]);
+    let mut nostd_config = canonical_object_config();
+    nostd_config.skip_debug(skip_debug);
+    // Use BTreeMap so the `wasm32` bindings do not depend on std::collections::HashMap.
+    nostd_config.btree_map(["."]);
 
-    let mut web_tonic_prost_config = canonical_object_config();
-    web_tonic_prost_config.skip_debug(["RegisterAccountRequest", "IsInvitationCodeValidRequest"]);
-
-    // Use BTreeMap so the no_std bindings don't depend on std::collections::HashMap
-    web_tonic_prost_config.btree_map(["."]);
-
-    // Generate the header of the user facing server from its proto file
+    // On `wasm32`, `tonic-web-wasm-client` provides the transport. The bindings must not use the
+    // transport of `tonic`.
     tonic_prost_build::configure()
         .build_client(true)
         .build_transport(false)
         .build_server(false)
-        .out_dir(&nostd_out)
-        .compile_fds_with_config(file_descriptors.clone(), web_tonic_prost_config)
+        .out_dir(out_dir.join(&nostd_dir))
+        .compile_fds_with_config(file_descriptors.clone(), nostd_config)
         .into_diagnostic()?;
 
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(false)
-        .out_dir(&std_out)
-        .compile_fds_with_config(file_descriptors, prost_config)
+        .out_dir(out_dir.join(&std_dir))
+        .compile_fds_with_config(file_descriptors, std_config)
         .into_diagnostic()?;
+
+    generate_wrapper(out_dir, &std_dir, &format!("{api}_std.rs"))?;
+    generate_wrapper(out_dir, &nostd_dir, &format!("{api}_nostd.rs"))?;
 
     Ok(())
 }

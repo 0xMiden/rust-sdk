@@ -1,7 +1,3 @@
-pub mod generated;
-#[cfg(feature = "tonic")]
-pub mod grpc;
-
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
@@ -17,6 +13,8 @@ pub use miden_client_core::note_transport::{
     NoteTransportSyncState,
     TransportNote,
 };
+#[cfg(feature = "tonic")]
+pub use miden_client_grpc::note_transport as grpc;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{

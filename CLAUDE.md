@@ -15,7 +15,7 @@ Miden Client is the official client library for interacting with the Miden rollu
 **Library crates (`crates/`):**
 - `rust-client` (`miden-client`) - Main client library (no_std compatible)
 - `core` (`miden-client-core`) - Shared traits and types, including the `Store` and `NodeRpcClient` traits (no_std)
-- `grpc` (`miden-client-grpc`) - Default gRPC implementation of `NodeRpcClient`
+- `grpc` (`miden-client-grpc`) - Default gRPC clients: the `NodeRpcClient` implementation, the note transport client, and the remote prover client
 - `proto` (`miden-client-proto`) - Protobuf serialization of client types
 - `sqlite-store` (`miden-client-sqlite-store`) - SQLite persistence backend
 - `web3signer-authenticator` (`miden-web3signer-authenticator`) - Transaction authenticator backed by a Web3Signer instance
@@ -103,7 +103,7 @@ crates/
 │   ├── rpc/          # Re-exports of the RPC trait and gRPC client
 │   ├── store/        # Re-exports of store types, executor data store adapter
 │   └── sync/         # State synchronization
-├── grpc/src/         # gRPC (tonic) RPC client
+├── grpc/src/         # gRPC (tonic) clients: node RPC, note transport, remote prover
 ├── proto/src/        # Protobuf conversions
 └── sqlite-store/src/ # SQLite implementation
 bin/

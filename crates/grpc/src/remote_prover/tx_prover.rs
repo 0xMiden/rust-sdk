@@ -1,6 +1,5 @@
-use alloc::string::String;
-use alloc::sync::Arc;
 use core::time::Duration;
+use std::sync::Arc;
 
 use miden_objects::{BuildUnchecked, DecodeMessage};
 use miden_protocol::transaction::{ProvenTransaction, TransactionWitness};

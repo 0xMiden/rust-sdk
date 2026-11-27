@@ -123,8 +123,6 @@ pub mod note;
 pub mod note_transport;
 pub mod protocol_config;
 pub mod pswap;
-#[cfg(feature = "tonic")]
-pub mod remote_prover;
 pub mod rpc;
 pub mod settings;
 pub mod store;
@@ -318,6 +316,8 @@ pub mod vm {
 
 pub use async_trait::async_trait;
 pub use errors::*;
+#[cfg(feature = "tonic")]
+pub use miden_client_grpc::remote_prover::{self, RemoteTransactionProver};
 use miden_protocol::assembly::SourceManagerSync;
 pub use miden_protocol::{
     EMPTY_WORD,
@@ -332,8 +332,6 @@ pub use miden_protocol::{
     ZERO,
 };
 pub use miden_tx::{ExecutionOptions, NetworkNotePricer, NotePricingError};
-#[cfg(feature = "tonic")]
-pub use remote_prover::RemoteTransactionProver;
 
 /// Provides test utilities for working with accounts and account IDs within the Miden network. This
 /// module is only available when the `testing` feature is enabled.

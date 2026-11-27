@@ -17,6 +17,7 @@
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][cli] Added `call --trace`, which prints the hierarchy of procedure calls the execution made, with the arguments, return value and cycle count of each call. By default only the contract's own procedures are shown; `-v` adds library functions and `-vv` shows every frame that has a name. It requires `--package`, which names the frames. Behind the new `trace` cargo feature ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
 * [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host. `replay_call_trace` replays the recording through the debug engine to produce a `CallTrace`. The replay blocks the thread, so the caller chooses where it runs ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
+* [FEATURE][rust] `miden-client-grpc` holds the gRPC note transport client and the remote prover client, as `miden_client_grpc::note_transport::GrpcNoteTransportClient` and `miden_client_grpc::remote_prover::RemoteTransactionProver`. `miden-client` re-exports both at their previous paths under the `tonic` feature (#TBD).
 
 ### Fixes
 
@@ -30,6 +31,7 @@
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 * [test] The integration tests no longer fund accounts that never submit a transaction ([#2839](https://github.com/0xMiden/rust-sdk/pull/2839)).
 * [test] The integration tests fund each account with enough of the native asset to pay for at least 10 transactions at the chain's base fee, instead of a fixed 10,000,000 base units ([#2838](https://github.com/0xMiden/rust-sdk/pull/2838)).
+* [rust] `miden-client` has no build script and no direct dependency on `tonic` or `prost`. Its `tonic` feature only turns on `miden-client-grpc` (#TBD).
 
 ### Features
 
@@ -122,6 +124,7 @@
 * [BREAKING][param][rust] `Client::set_setting` takes the value as `Vec<u8>` and `Client::get_setting` returns `Option<Vec<u8>>`, so the caller encodes the value ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [BREAKING][removal][rust] Removed `ClientError::DataDeserializationError`. The client no longer decodes setting values, so nothing produced it ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [BREAKING][arch][rust] Moved the `NoteTransportClient` trait, `NoteTransportPage`, `NoteInfo`, `TransportNote` and `NoteTransportError` to `miden-client-core`. `miden_client::note_transport` re-exports them, so their paths keep working. Removed the `miden_client::note_transport::errors` module ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [BREAKING][removal][rust] Removed the public `miden_client::note_transport::generated` module with the protobuf bindings of the note transport API. `miden-client-grpc` keeps the bindings private (#TBD).
 
 ### Features
 

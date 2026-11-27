@@ -53,6 +53,10 @@ type SmtMutationSet = MutationSet<SMT_DEPTH, Word, Word>;
 pub(crate) type ScopedAccountForest<'a, 'conn> =
     miden_client_core::store::AccountSmtForest<SqliteForestBackend<'a, 'conn>>;
 
+/// A code SMT forest scoped to a rusqlite transaction.
+pub(crate) type ScopedCodeForest<'a, 'conn> =
+    miden_client_core::store::CodeSmtForest<SqliteForestBackend<'a, 'conn>>;
+
 // FOREST REVISION
 // ================================================================================================
 

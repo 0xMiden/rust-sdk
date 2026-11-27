@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::string::{String, ToString};
+use std::sync::Arc;
 use std::time::Duration;
 use std::vec::Vec;
 
@@ -38,6 +39,7 @@ use miden_client_core::store::{
 use miden_client_core::sync::{NoteTagRecord, StateSyncUpdate};
 use miden_client_core::transaction::{BatchStoreUpdate, TransactionRecord, TransactionStoreUpdate};
 use miden_client_proto as proto;
+use miden_processor::LoadedMastForest;
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -51,12 +53,15 @@ use miden_protocol::account::{
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks};
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::{Felt, Word};
+use miden_protocol::vm::Package;
+use miden_protocol::{Felt, MastForest, Word};
 use rusqlite::Connection;
 use rusqlite::types::Value;
 use sql_error::SqlResultExt;
@@ -71,6 +76,7 @@ use crate::settings::{
 
 mod account;
 mod chain_data;
+mod code;
 mod db_management;
 mod forest;
 mod note;
@@ -656,6 +662,47 @@ impl Store for SqliteStore {
             )
         })
         .await
+    }
+
+    async fn get_procedure(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::query_procedure(conn, procedure_root)
+        })
+        .await
+    }
+
+    async fn insert_procedures(&self, procedures: Vec<Arc<MastForest>>) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            with_write_tx(conn, |tx| SqliteStore::write_procedures(tx, &procedures))
+        })
+        .await
+    }
+
+    async fn insert_procedures_with_debug_info(
+        &self,
+        packages: Vec<Arc<Package>>,
+    ) -> Result<(), StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::write_procedures_with_debug_info(conn, &packages)
+        })
+        .await
+    }
+
+    async fn get_procedure_witness(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<CodeWitness, StoreError> {
+        self.interact_with_connection(move |conn| {
+            SqliteStore::query_procedure_witness(conn, procedure_root)
+        })
+        .await
+    }
+
+    async fn get_code_tree_root(&self) -> Result<CodeTreeRoot, StoreError> {
+        self.interact_with_connection(SqliteStore::query_code_tree_root).await
     }
 
     async fn get_rpc_limits(&self) -> Result<Option<RpcLimits>, StoreError> {

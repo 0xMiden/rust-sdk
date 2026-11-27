@@ -13,8 +13,10 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use miden_processor::LoadedMastForest;
 use miden_protocol::account::{
     Account,
     AccountCode,
@@ -30,14 +32,17 @@ use miden_protocol::account::{
 use miden_protocol::address::Address;
 use miden_protocol::asset::{Asset, AssetId, AssetVault, AssetWitness};
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::errors::AccountError;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{TransactionId, TransactionLogs};
-use miden_protocol::{Felt, Word};
+use miden_protocol::vm::Package;
+use miden_protocol::{Felt, MastForest, Word};
 
 use crate::errors::StoreError;
 use crate::note_transport::NoteTransportSyncState;
@@ -75,6 +80,9 @@ pub use note_record::{
 
 mod note_updates;
 pub use note_updates::{InputNoteUpdate, NoteUpdateType, NoteUpdates, OutputNoteUpdate};
+
+mod code_smt_forest;
+pub use code_smt_forest::CodeSmtForest;
 
 mod smt_forest;
 pub use smt_forest::{AccountSmtForest, AccountUpdate};
@@ -651,6 +659,46 @@ pub trait Store: Send + Sync {
     /// methods must use the same encoding, so that [`Store::get_protocol_config`] can read the
     /// configurations from both sources.
     async fn insert_protocol_config(&self, config: &ProtocolConfig) -> Result<(), StoreError>;
+
+    // CODE REGISTRY
+    // --------------------------------------------------------------------------------------------
+
+    /// Adds the MAST forests of the packages and their debug info to the code registry, and their
+    /// procedure roots to the code tree.
+    ///
+    /// A package whose forest already has debug info in the registry is skipped. A package without
+    /// debug info is added without debug info.
+    ///
+    /// The client calls this method when it is built, to store the transaction kernel and the
+    /// libraries it is built with.
+    async fn insert_procedures_with_debug_info(
+        &self,
+        packages: Vec<Arc<Package>>,
+    ) -> Result<(), StoreError>;
+
+    /// Adds the procedures of all MAST forests to the code registry and to the code tree, without
+    /// debug info.
+    ///
+    /// The registry and the code tree are updated together. If one forest fails, no forest is
+    /// added. A procedure that is already registered keeps the forest that it was first registered
+    /// with.
+    async fn insert_procedures(&self, procedures: Vec<Arc<MastForest>>) -> Result<(), StoreError>;
+
+    /// Returns the MAST forest that holds the procedure, with the debug info of the forest if the
+    /// code registry has it, or `None` if the procedure is not registered.
+    async fn get_procedure(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<Option<LoadedMastForest>, StoreError>;
+
+    /// Returns a witness that proves the presence or absence of the procedure in the code tree.
+    async fn get_procedure_witness(
+        &self,
+        procedure_root: ProcedureRoot,
+    ) -> Result<CodeWitness, StoreError>;
+
+    /// Returns the root of the code tree.
+    async fn get_code_tree_root(&self) -> Result<CodeTreeRoot, StoreError>;
 
     // RPC LIMITS
     // --------------------------------------------------------------------------------------------

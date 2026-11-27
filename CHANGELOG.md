@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added support for storing the code registry and the code tree in `SqliteStore`. `ClientBuilder::build` now stores known packages (transaction kernel, core libraries, etc) in the code registry of the store ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [FEATURE][cli] `network-note-status` shows the fee sponsorship notes that the node binds to the network note, with their fee asset, reclaim height, commit block and last execution error ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `NodeRpcClient::get_transaction_logs` and the `miden_client_grpc::v1::GetTransactionLogs` method, which fetch the logs of a committed transaction from the node's `GetTransactionLogs` endpoint. The result is a `TransactionLogsInfo`, with the logs of a public account or the logs commitment of a private account ([#2808](https://github.com/0xMiden/rust-sdk/pull/2808)).
@@ -44,6 +45,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][type][rust] Added `Store::get_procedure`, `Store::insert_procedures`, `Store::insert_procedures_with_debug_info`, `Store::get_procedure_witness` and `Store::get_code_tree_root`, which implementations of `Store` must implement ([#2818](https://github.com/0xMiden/rust-sdk/pull/2818)).
 * [BREAKING][type][rust,store] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it. `SqliteStore` returns it instead of `StoreError::DatabaseError` when an account update is not based on the stored account state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][param][rust] `StateSyncUpdate::from_parts` takes `block_from`, the sync height that the update was built from, as its first argument. `Client::apply_state_sync` and `Client::apply_chain_updates` return `StaleUpdate::SyncHeightMismatch` if the store is at a different sync height ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][behavior][rust] `NoteScreener::check_notes_consumability` reports a note as successful when the trial execution reaches the account's authentication. Before, it reported the note as failed with `TransactionExecutorError::MissingAuthenticator` ([#2843](https://github.com/0xMiden/rust-sdk/pull/2843)).

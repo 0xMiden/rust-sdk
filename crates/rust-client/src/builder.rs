@@ -3,10 +3,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use miden_agglayer::agglayer_package;
 use miden_protocol::assembly::{DefaultSourceManager, SourceManagerSync};
 use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::{MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_protocol::transaction::TransactionKernel;
+use miden_protocol::utils::sync::LazyLock;
+use miden_protocol::vm::Package;
+use miden_protocol::{CoreLibrary, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES, ProtocolLib};
+use miden_standards::StandardsLib;
 use miden_tx::auth::TransactionAuthenticator;
 use miden_tx::{ExecutionOptions, LocalTransactionProver};
 use rand::SeedableRng;
@@ -529,6 +534,8 @@ where
             store_genesis(store.as_ref(), block_header, protocol_config).await?;
         }
 
+        store.insert_procedures_with_debug_info(known_packages()).await?;
+
         // Initialize genesis commitment in RPC client
         if let Some((genesis, _)) = store.get_block_header_by_num(BlockNumber::GENESIS).await? {
             rpc_api.set_genesis_commitment(genesis.commitment()).await?;
@@ -583,6 +590,25 @@ where
         };
         Ok(client)
     }
+}
+
+// KNOWN PACKAGES
+// ================================================================================================
+
+/// The package of the agglayer library. [`agglayer_package`] returns a copy of the package, so it
+/// is kept here to copy it only once.
+static AGGLAYER_PACKAGE: LazyLock<Arc<Package>> = LazyLock::new(|| Arc::new(agglayer_package()));
+
+/// Returns the packages of the transaction kernel and of the libraries that the client is built
+/// with. These are the packages that [`miden_tx::TransactionMastStore::new`] loads.
+pub(crate) fn known_packages() -> Vec<Arc<Package>> {
+    vec![
+        TransactionKernel::package(),
+        CoreLibrary::default().package(),
+        ProtocolLib::default().package(),
+        StandardsLib::default().package(),
+        AGGLAYER_PACKAGE.clone(),
+    ]
 }
 
 // GENESIS SEEDING

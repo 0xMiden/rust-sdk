@@ -75,7 +75,8 @@ struct FetchedSyncData {
     /// Blocks with matching notes that the client is interested in, each note carrying its
     /// attachments and, for a fetched public note, its body.
     note_blocks: Vec<ResolvedSyncNotesBlock>,
-    /// Transaction records for the synced range, as returned by `sync_transactions`.
+    /// Transaction records for the synced range, as returned by `sync_transactions`, sorted in
+    /// commit order.
     transactions: Vec<RpcTransactionRecord>,
     /// The protocol configuration active at the chain tip. The node sends it when the sync starts
     /// at genesis, or when the starting block and the chain tip commit to different configurations.
@@ -660,7 +661,7 @@ impl StateSync {
 
         // Steps 2 and 3: note inclusions and transaction records are independent given the chain
         // tip, so both are driven concurrently and the first failure aborts the pass.
-        let (note_blocks, transaction_records) = futures::try_join!(
+        let (note_blocks, mut transaction_records) = futures::try_join!(
             self.fetch_note_blocks(current_block_num + 1, chain_tip, note_tags),
             self.fetch_transactions(current_block_num + 1, chain_tip, account_ids),
         )?;
@@ -680,6 +681,7 @@ impl StateSync {
             current_block_num,
             chain_tip,
         )?;
+        sort_in_commit_order(&mut transaction_records);
         Self::validate_transaction_records_order(&transaction_records)?;
 
         Ok(Some(FetchedSyncData {
@@ -814,13 +816,15 @@ impl StateSync {
     /// Validates the transaction positions that the node reports in `sync_transactions` records. In
     /// position order, each transaction of an account must start from the final state of the
     /// previous transaction of that account.
+    ///
+    /// The records must be in commit order.
     fn validate_transaction_records_order(
         records: &[RpcTransactionRecord],
     ) -> Result<(), ClientError> {
         let mut latest_states: BTreeMap<AccountId, Word> = BTreeMap::new();
         let mut previous_position = None;
 
-        for record in in_commit_order(records) {
+        for record in records {
             let block_num = record.block_num;
             let transaction_index = record.transaction_index;
             if previous_position == Some((block_num, transaction_index)) {
@@ -1553,7 +1557,7 @@ struct ChainAdvance {
     /// Note blocks as the node returned them. [`StateSync::derive_state_updates`] drains these into
     /// `relevant_note_blocks`, so this is empty by the time the update is built.
     note_blocks_awaiting_screening: Vec<ResolvedSyncNotesBlock>,
-    /// Transaction records as the node returned them, read by [`StateSync::derive_state_updates`].
+    /// Transaction records in commit order, read by [`StateSync::derive_state_updates`].
     transactions: Vec<RpcTransactionRecord>,
     /// Screened blocks holding a client-relevant note, each with its `sync_notes` MMR path.
     relevant_note_blocks: Vec<RelevantNoteBlock>,
@@ -1608,24 +1612,22 @@ pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNum
         .into())
 }
 
-/// Returns the transaction records in the order they were committed to the chain.
+/// Sorts the transaction records in the order they were committed to the chain.
 ///
 /// Records are ordered by block number and then by their position within the block, both reported
 /// by the node.
-fn in_commit_order(transaction_records: &[RpcTransactionRecord]) -> Vec<&RpcTransactionRecord> {
-    let mut ordered: Vec<&RpcTransactionRecord> = transaction_records.iter().collect();
-    ordered.sort_by_key(|record| (record.block_num, record.transaction_index));
-    ordered
+fn sort_in_commit_order(transaction_records: &mut [RpcTransactionRecord]) {
+    transaction_records.sort_by_key(|record| (record.block_num, record.transaction_index));
 }
 
-/// Derives account commitment updates from transaction records.
+/// Derives account commitment updates from transaction records in commit order.
 ///
 /// For each unique account, returns the `final_state_commitment` of its last committed transaction.
 fn derive_account_commitments(
     transaction_records: &[RpcTransactionRecord],
 ) -> Vec<(AccountId, Word)> {
-    let latest_by_account: BTreeMap<AccountId, Word> = in_commit_order(transaction_records)
-        .into_iter()
+    let latest_by_account: BTreeMap<AccountId, Word> = transaction_records
+        .iter()
         .map(|record| {
             (
                 record.transaction_header.account_id(),
@@ -1639,10 +1641,11 @@ fn derive_account_commitments(
 
 /// Returns input note nullifiers in the order their consuming transactions were committed.
 ///
-/// Nullifiers of the same transaction keep the order of the transaction's input notes.
+/// The records must be in commit order. Nullifiers of the same transaction keep the order of the
+/// transaction's input notes.
 fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> Vec<Nullifier> {
-    in_commit_order(transaction_records)
-        .into_iter()
+    transaction_records
+        .iter()
         .flat_map(|record| {
             record
                 .transaction_header
@@ -1938,7 +1941,7 @@ mod tests {
         // Account A chains 1 -> 2 -> 3 within block 5 and 3 -> 4 in block 6, interleaved with
         // account B. A transaction that leaves the state unchanged also chains. Records arrive out
         // of order.
-        let records = [
+        let mut records = [
             make_positioned_tx_record(account_a, 3, 4, 6, 0),
             make_positioned_tx_record(account_b, 10, 20, 5, 1),
             make_positioned_tx_record(account_a, 2, 3, 5, 2),
@@ -1946,6 +1949,7 @@ mod tests {
             make_positioned_tx_record(account_b, 20, 20, 6, 1),
         ];
 
+        sort_in_commit_order(&mut records);
         StateSync::validate_transaction_records_order(&records).unwrap();
         StateSync::validate_transaction_records_order(&[]).unwrap();
     }
@@ -1972,7 +1976,8 @@ mod tests {
             make_positioned_tx_record(account_b, 10, 20, 5, 0),
         ];
 
-        for records in [swapped, swapped_blocks, duplicated] {
+        for mut records in [swapped, swapped_blocks, duplicated] {
+            sort_in_commit_order(&mut records);
             let result = StateSync::validate_transaction_records_order(&records);
             assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
         }
@@ -2405,7 +2410,9 @@ mod tests {
             let tx_b = make_rpc_tx(account_a(), &[20], 5, 1);
             let tx_c = make_rpc_tx(account_a(), &[30], 5, 2);
 
-            let result = super::super::compute_ordered_nullifiers(&[tx_c, tx_a, tx_b]);
+            let mut records = [tx_c, tx_a, tx_b];
+            super::super::sort_in_commit_order(&mut records);
+            let result = super::super::compute_ordered_nullifiers(&records);
 
             assert_eq!(result, nullifiers(&[10, 20, 30]));
         }
@@ -2417,9 +2424,9 @@ mod tests {
             let tx_a_b6_0 = make_rpc_tx(account_a(), &[30], 6, 0);
             let tx_b_b5_2 = make_rpc_tx(account_b(), &[40], 5, 2);
 
-            let result = super::super::compute_ordered_nullifiers(&[
-                tx_a_b6_0, tx_a_b5_3, tx_b_b5_2, tx_a_b5_1,
-            ]);
+            let mut records = [tx_a_b6_0, tx_a_b5_3, tx_b_b5_2, tx_a_b5_1];
+            super::super::sort_in_commit_order(&mut records);
+            let result = super::super::compute_ordered_nullifiers(&records);
 
             assert_eq!(result, nullifiers(&[10, 40, 20, 30]));
         }
@@ -2429,7 +2436,9 @@ mod tests {
             let tx_first = make_rpc_tx(account_a(), &[10, 20, 30], 5, 0);
             let tx_second = make_rpc_tx(account_a(), &[40], 5, 1);
 
-            let result = super::super::compute_ordered_nullifiers(&[tx_second, tx_first]);
+            let mut records = [tx_second, tx_first];
+            super::super::sort_in_commit_order(&mut records);
+            let result = super::super::compute_ordered_nullifiers(&records);
 
             assert_eq!(result, nullifiers(&[10, 20, 30, 40]));
         }
@@ -2489,9 +2498,9 @@ mod tests {
         let tx_b_b6 = make_tx(account_b, 10, 20, 6, 2);
 
         // Insert transactions not ordered by commit order.
-        let result = super::derive_account_commitments(&[
-            tx_a_b6_1, tx_b_b6, tx_a_b5_2, tx_a_b6_2, tx_a_b5_1,
-        ]);
+        let mut records = [tx_a_b6_1, tx_b_b6, tx_a_b5_2, tx_a_b6_2, tx_a_b5_1];
+        super::sort_in_commit_order(&mut records);
+        let result = super::derive_account_commitments(&records);
 
         assert_eq!(result.len(), 2, "one entry per account");
         assert!(

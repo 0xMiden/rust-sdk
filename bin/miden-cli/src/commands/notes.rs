@@ -514,6 +514,9 @@ fn note_consumption_status_type(note_consumption_status: &NoteConsumptionStatus)
         NoteConsumptionStatus::ConsumableWithAuthorization => {
             "Consumable with authorization".to_string()
         },
+        NoteConsumptionStatus::InsufficientFee => {
+            "Consumable when the account can pay the fee".to_string()
+        },
         NoteConsumptionStatus::UnconsumableConditions => {
             "Unconsumable due to conditions".to_string()
         },

@@ -39,7 +39,13 @@ use miden_client_core::sync::{
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::note::{NoteAttachment, NoteAttachmentScheme, NoteDetails, NoteScript};
+use miden_protocol::note::{
+    NoteAttachment,
+    NoteAttachmentScheme,
+    NoteDetails,
+    NoteDetailsCommitment,
+    NoteScript,
+};
 use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
     ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
@@ -492,7 +498,7 @@ async fn input_note_reader_separates_notes_consumed_by_the_same_transaction() {
     }
 
     let mut expected: Vec<_> = notes.iter().map(InputNoteRecord::details_commitment).collect();
-    expected.sort_by_key(Serializable::to_bytes);
+    expected.sort_by_key(NoteDetailsCommitment::as_bytes);
 
     assert_eq!(collected, expected);
 }

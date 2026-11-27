@@ -178,9 +178,9 @@ impl NoteScreener {
             let account_code = self.get_account_code(account_id).await?;
             data_store.mast_store().load_account_code(&account_code);
 
-            let account_tx_args = self
-                .with_default_auth_args(tx_args.clone(), account_id, &account_code, block_ref)
-                .await?;
+            let layout = AuthArgsLayout::of(&account_code.interface(account_id));
+            let account_tx_args =
+                self.with_default_auth_args(tx_args.clone(), &layout, block_ref).await?;
 
             for note in notes {
                 let consumption_status = match consumption_checker
@@ -222,9 +222,8 @@ impl NoteScreener {
     ) -> Result<NoteConsumptionInfo, NoteScreenerError> {
         let block_ref = self.store.get_sync_height().await?;
         let account_code = self.get_account_code(account_id).await?;
-        let tx_args = self
-            .with_default_auth_args(self.tx_args(), account_id, &account_code, block_ref)
-            .await?;
+        let layout = AuthArgsLayout::of(&account_code.interface(account_id));
+        let tx_args = self.with_default_auth_args(self.tx_args(), &layout, block_ref).await?;
 
         let data_store = self.data_store();
         let transaction_executor: TransactionExecutor<'_, '_, _, ()> =
@@ -242,27 +241,22 @@ impl NoteScreener {
         Ok(note_consumption_info)
     }
 
-    /// Returns `tx_args` carrying the auth arg the account needs to settle its fee.
+    /// Returns `tx_args` with the auth args that a real execution of the account would use.
     ///
-    /// Screening runs the full kernel, so a fee it cannot pay aborts the trial execution, and
-    /// [`NoteConsumptionChecker`] reports that as [`NoteConsumptionStatus::UnconsumableConditions`]
-    /// — which [`is_relevant`] drops from the sync. Only custom-script notes reach execution;
-    /// standard ones are answered without it. The auth args come from
-    /// [`AuthArgsLayout::default_auth_args`], so screening measures the fee execution would pay.
+    /// Screening runs a trial transaction to check if the account can consume a note. On a chain
+    /// that charges fees, the auth args tell the transaction how to pay the fee. Without them, the
+    /// trial fails in the fee payment and the note is dropped, even if the account can consume it.
     ///
-    /// A multisig account is an exception. Its auth procedure pays the fee after the signature
-    /// check, and the trial has no signatures. The trial thus stops before the fee payment, and
-    /// screening does not detect a fee that the account cannot pay.
+    /// If the account does not hold enough of the fee asset, the trial reports
+    /// [`NoteConsumptionStatus::InsufficientFee`] and the note is kept.
     ///
-    /// TODO: remove once the checker can report a note as consumable-but-unaffordable, which would
-    /// make the fee irrelevant to screening rather than something to satisfy:
-    /// <https://github.com/0xMiden/protocol/issues/3710>. That would also cover the case this
-    /// cannot: an account whose vault is too empty to pay even with the info attached.
+    /// A multisig account checks the signatures before it pays the fee. The trial has no
+    /// signatures, so it stops before the fee payment. Screening thus does not check if a multisig
+    /// account can pay the fee.
     async fn with_default_auth_args(
         &self,
         tx_args: TransactionArgs,
-        account_id: AccountId,
-        account_code: &AccountCode,
+        layout: &AuthArgsLayout,
         block_ref: BlockNumber,
     ) -> Result<TransactionArgs, NoteScreenerError> {
         // Auth args the caller set are the caller's business, as on the execution path.
@@ -275,7 +269,6 @@ impl NoteScreener {
             return Ok(tx_args);
         };
 
-        let layout = AuthArgsLayout::of(&account_code.interface(account_id));
         let multisig = matches!(layout, AuthArgsLayout::Multisig(_));
 
         // Without a fee, only multisig components read auth args. Returning here also skips loading

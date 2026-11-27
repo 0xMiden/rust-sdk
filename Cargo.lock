@@ -1489,7 +1489,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2687,7 +2687,7 @@ dependencies = [
 [[package]]
 name = "miden-agglayer"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -2800,7 +2800,7 @@ dependencies = [
 [[package]]
 name = "miden-block-prover"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -3311,7 +3311,7 @@ dependencies = [
 [[package]]
 name = "miden-node-proto-build"
 version = "0.18.3"
-source = "git+https://github.com/0xMiden/node?rev=fc7fa219ffb2b92a7a6b60c531c28727f4fd263d#fc7fa219ffb2b92a7a6b60c531c28727f4fd263d"
+source = "git+https://github.com/0xMiden/node?rev=cb483a65e9ad45cdfe5a1297fb2c8b779ede3053#cb483a65e9ad45cdfe5a1297fb2c8b779ede3053"
 dependencies = [
  "build-rs",
  "codegen",
@@ -3325,7 +3325,7 @@ dependencies = [
 [[package]]
 name = "miden-objects"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "miden-protobuf",
  "miden-protocol",
@@ -3427,7 +3427,7 @@ dependencies = [
 [[package]]
 name = "miden-protobuf"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "miden-protobuf-derive",
  "proc-macro-crate",
@@ -3439,7 +3439,7 @@ dependencies = [
 [[package]]
 name = "miden-protobuf-derive"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "heck",
  "proc-macro-crate",
@@ -3451,7 +3451,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "bech32",
  "bon",
@@ -3483,7 +3483,7 @@ dependencies = [
 [[package]]
 name = "miden-protocol-build-utils"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -3536,7 +3536,7 @@ dependencies = [
 [[package]]
 name = "miden-standards"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -3578,7 +3578,7 @@ dependencies = [
 [[package]]
 name = "miden-testing"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
@@ -3599,10 +3599,11 @@ dependencies = [
 [[package]]
 name = "miden-tx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "bon",
  "miden-agglayer",
+ "miden-core-lib",
  "miden-processor",
  "miden-protocol",
  "miden-prover",
@@ -3613,7 +3614,7 @@ dependencies = [
 [[package]]
 name = "miden-tx-batch"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -3625,7 +3626,7 @@ dependencies = [
 [[package]]
 name = "miden-usdcx"
 version = "1.0.0-rc.1"
-source = "git+https://github.com/0xMiden/protocol?rev=28ff7f34cee969c831a15df6f7b6e715df57db7c#28ff7f34cee969c831a15df6f7b6e715df57db7c"
+source = "git+https://github.com/0xMiden/protocol?rev=0a5cbc49dd5e61782e779da4741b74ebe24ab108#0a5cbc49dd5e61782e779da4741b74ebe24ab108"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -4754,7 +4755,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5208,7 +5209,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5827,7 +5828,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6756,7 +6757,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

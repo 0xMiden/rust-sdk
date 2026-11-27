@@ -46,7 +46,7 @@ use miden_standards::account::auth::{
     MultisigAuthArgs,
 };
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{NoteConsumptionStatus, P2idNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use rand::SeedableRng;
@@ -203,16 +203,16 @@ async fn fee_payment_fails_without_fee_asset_balance() {
     )
     .await;
 
-    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
-    // than as a client-side balance check.
+    // The fee payment checks the balance, so the failure surfaces as a kernel assertion rather than
+    // as a client-side balance check.
     let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
     else {
-        panic!("expected the fee withdrawal to fail while executing the transaction program");
+        panic!("expected the fee payment to fail while executing the transaction program");
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee payment to abort on the fee asset balance, got: {err:?}"
     );
 }
 
@@ -676,12 +676,12 @@ async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
         TransactionExecutorError::TransactionProgramExecutionFailed(err),
     ) = err
     else {
-        panic!("expected the fee withdrawal to fail in the transaction program, got {err:?}");
+        panic!("expected the fee payment to fail in the transaction program, got {err:?}");
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee payment to abort on the fee asset balance, got: {err:?}"
     );
 }
 
@@ -829,8 +829,20 @@ async fn reused_screener_reads_current_account_state() {
         FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), FEE_ASSET_BALANCE).unwrap();
     updated.vault_mut().remove_asset(asset.into()).unwrap();
     client.test_store().update_account(&updated).await.unwrap();
+    let is_insufficient_fee = |consumability: &[(AccountId, NoteConsumptionStatus)]| {
+        matches!(
+            consumability,
+            [(id, NoteConsumptionStatus::InsufficientFee)] if *id == account.id()
+        )
+    };
     let fresh = client.note_screener().get_consumability(&note).await.unwrap();
-    assert!(fresh.is_empty(), "the account cannot pay a fee after its balance is removed");
+    assert!(
+        is_insufficient_fee(&fresh),
+        "the account cannot pay a fee after its balance is removed, got: {fresh:?}"
+    );
     let reused = screener.get_consumability(&note).await.unwrap();
-    assert!(reused.is_empty(), "reusing a screener must see the current account balance");
+    assert!(
+        is_insufficient_fee(&reused),
+        "reusing a screener must see the current account balance, got: {reused:?}"
+    );
 }

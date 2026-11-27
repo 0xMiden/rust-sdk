@@ -27,6 +27,7 @@ use domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
+use domain::block::{SubscribedBlock, SubscribedProof};
 use domain::note::{FetchedNote, SyncNotesBlock};
 use domain::nullifier::NullifierUpdate;
 use domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
@@ -41,13 +42,13 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::vm::ExecutionProof;
 
 use crate::errors::RpcError;
 use crate::rpc::domain::account_vault::AccountVaultInfo;
 use crate::rpc::domain::storage_map::StorageMapInfo;
-use crate::rpc::domain::transaction::TransactionRecord;
+use crate::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 
 /// Contains domain types related to RPC requests and responses, as well as utility functions for
 /// dealing with them.
@@ -93,6 +94,9 @@ pub enum RpcEndpoint {
     GetLimits,
     GetNetworkNoteStatus,
     GetTransactionEncryptionKey,
+    GetTransactionLogs,
+    BlockSubscription,
+    ProofSubscription,
 }
 
 impl RpcEndpoint {
@@ -119,6 +123,9 @@ impl RpcEndpoint {
             RpcEndpoint::SyncTransactions => "SyncTransactions",
             RpcEndpoint::GetLimits => "GetLimits",
             RpcEndpoint::GetNetworkNoteStatus => "GetNetworkNoteStatus",
+            RpcEndpoint::GetTransactionLogs => "GetTransactionLogs",
+            RpcEndpoint::BlockSubscription => "BlockSubscription",
+            RpcEndpoint::ProofSubscription => "ProofSubscription",
         }
     }
 
@@ -152,7 +159,10 @@ impl RpcEndpoint {
             | RpcEndpoint::SyncTransactions
             | RpcEndpoint::GetLimits
             | RpcEndpoint::GetNetworkNoteStatus
-            | RpcEndpoint::GetTransactionEncryptionKey => true,
+            | RpcEndpoint::GetTransactionEncryptionKey
+            | RpcEndpoint::GetTransactionLogs
+            | RpcEndpoint::BlockSubscription
+            | RpcEndpoint::ProofSubscription => true,
         }
     }
 }
@@ -186,9 +196,27 @@ impl fmt::Display for RpcEndpoint {
             RpcEndpoint::SyncTransactions => write!(f, "sync_transactions"),
             RpcEndpoint::GetLimits => write!(f, "get_limits"),
             RpcEndpoint::GetNetworkNoteStatus => write!(f, "get_network_note_status"),
+            RpcEndpoint::GetTransactionLogs => write!(f, "get_transaction_logs"),
+            RpcEndpoint::BlockSubscription => write!(f, "block_subscription"),
+            RpcEndpoint::ProofSubscription => write!(f, "proof_subscription"),
         }
     }
 }
+
+// RPC STREAM
+// ================================================================================================
+
+/// A stream of decoded items from a server-streaming node RPC endpoint.
+///
+/// The stream does not borrow the client that opens it.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RpcStream<T> = futures::stream::BoxStream<'static, Result<T, RpcError>>;
+
+/// A stream of decoded items from a server-streaming node RPC endpoint.
+///
+/// The stream does not borrow the client that opens it.
+#[cfg(target_arch = "wasm32")]
+pub type RpcStream<T> = futures::stream::LocalBoxStream<'static, Result<T, RpcError>>;
 
 // NODE RPC CLIENT TRAIT
 // ================================================================================================
@@ -281,6 +309,34 @@ pub trait NodeRpcClient: Send + Sync {
         block_num: BlockNumber,
         include_proof: bool,
     ) -> Result<(SignedBlock, Option<ExecutionProof>), RpcError>;
+
+    /// Subscribes to the committed blocks of the node using the `/BlockSubscription` RPC endpoint.
+    ///
+    /// The stream yields the blocks from `block_from` (inclusive) in order. It first yields the
+    /// blocks that are already committed, and then yields each new block when the node commits it.
+    ///
+    /// The stream yields the first error and then ends. It does not reconnect. To resume, subscribe
+    /// again from the block after the last block that the stream yielded. The node ends the stream
+    /// with [`RpcError::SubscriberLagged`] when the caller reads the blocks too slowly.
+    async fn subscribe_blocks(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedBlock>, RpcError>;
+
+    /// Subscribes to the block proofs of the node using the `/ProofSubscription` RPC endpoint.
+    ///
+    /// The stream yields the proofs from `block_from` (inclusive) in order. It first yields the
+    /// proofs that are already available, and then yields each new proof when the node proves a
+    /// block. The genesis block has no proof. Subscribing from [`BlockNumber::GENESIS`] ends the
+    /// stream with an error.
+    ///
+    /// The stream yields the first error and then ends. It does not reconnect. To resume, subscribe
+    /// again from the block after the last block that the stream yielded. The node ends the stream
+    /// with [`RpcError::SubscriberLagged`] when the caller reads the proofs too slowly.
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError>;
 
     /// Fetches note-related data for a list of [`NoteId`] using the `/GetNotesById` RPC endpoint.
     ///
@@ -636,6 +692,22 @@ pub trait NodeRpcClient: Send + Sync {
         block_to: BlockNumber,
         account_ids: Vec<AccountId>,
     ) -> Result<Vec<TransactionRecord>, RpcError>;
+
+    /// Fetches the logs of a committed transaction, using the `/GetTransactionLogs` RPC endpoint.
+    ///
+    /// - `account_id`: The account that executed the transaction.
+    /// - `transaction_id`: The transaction that emitted the logs.
+    ///
+    /// Returns `None` if the node has no committed transaction with this ID for this account. The
+    /// node holds only the commitment to the logs of a private account.
+    ///
+    /// Implementations must reject a response for a different transaction or account. They must
+    /// also reject logs that do not match the returned commitment.
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError>;
 
     /// Fetches the network ID of the node.
     /// Errors:

@@ -18,7 +18,7 @@ use miden_client::account::{
 };
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{AssetId, FungibleAsset, PartialVault};
-use miden_client::auth::{AuthSchemeId, AuthSecretKey, RPO_FALCON_SCHEME_ID};
+use miden_client::auth::{AuthSchemeId, AuthSecretKey, FALCON512_EIDOS_SCHEME_ID};
 use miden_client::keystore::Keystore;
 use miden_client::note::NoteType;
 use miden_client::rpc::domain::account::{
@@ -51,11 +51,11 @@ pub(crate) const FPI_STORAGE_VALUE: [Felt; 4] = [
 ];
 
 pub async fn test_standard_fpi_public(client_config: ClientConfig) -> Result<()> {
-    standard_fpi(AccountType::Public, client_config, RPO_FALCON_SCHEME_ID).await
+    standard_fpi(AccountType::Public, client_config, FALCON512_EIDOS_SCHEME_ID).await
 }
 
 pub async fn test_standard_fpi_private(client_config: ClientConfig) -> Result<()> {
-    standard_fpi(AccountType::Private, client_config, RPO_FALCON_SCHEME_ID).await
+    standard_fpi(AccountType::Private, client_config, FALCON512_EIDOS_SCHEME_ID).await
 }
 
 pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()> {
@@ -74,7 +74,7 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
                 exec.active_account::get_map_item
             end"
         .to_string(),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
     let foreign_account_id = foreign_account.id();
@@ -128,7 +128,10 @@ pub async fn test_fpi_execute_program(client_config: ClientConfig) -> Result<()>
     // creation block
     client2.sync_state().await?;
 
-    let wallet = client2.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     let output_stack = client2
         .execute_program(
@@ -167,7 +170,7 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
                 exec.active_account::get_map_item
             end"
         .to_string(),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
     let inner_foreign_account_id = inner_foreign_account.id();
@@ -216,7 +219,7 @@ pub async fn test_nested_fpi_calls(client_config: ClientConfig) -> Result<()> {
             account_id_prefix = inner_foreign_account_id.prefix().as_u64(),
             account_id_suffix = inner_foreign_account_id.suffix(),
         ),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
     let outer_foreign_account_id = outer_foreign_account.id();
@@ -309,7 +312,7 @@ pub async fn test_lazy_fpi_loading(client_config: ClientConfig) -> Result<()> {
                 swapw dropw
             end"#,
         ),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
     let foreign_account_id = foreign_account.id();
@@ -378,7 +381,7 @@ pub async fn test_lazy_fpi_loading_with_storage_map(client_config: ClientConfig)
             end"#,
             map_key = Word::from(MAP_KEY)
         ),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
 
@@ -601,7 +604,7 @@ async fn setup_fpi_vault_asset_read(
                 exec.active_account::get_asset
             end"
         .to_string(),
-        RPO_FALCON_SCHEME_ID,
+        FALCON512_EIDOS_SCHEME_ID,
     )
     .await?;
     let foreign_account_id = foreign_account.id();
@@ -664,7 +667,10 @@ pub async fn test_fpi_vault_asset_read_untracked(client_config: ClientConfig) ->
 
     // A fresh client, so no foreign account data is cached or tracked.
     let mut client = client_config.clone().into_client().await?;
-    let wallet = client.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
     let tx_script = client.code_builder().compile_tx_script(&tx_script_code)?;
     let foreign_accounts = BTreeMap::from([(
         foreign_account_id,
@@ -690,7 +696,10 @@ pub async fn test_fpi_vault_asset_read_tracked(client_config: ClientConfig) -> R
         setup_fpi_vault_asset_read(&client_config).await?;
 
     let mut client = client_config.clone().into_client().await?;
-    let wallet = client.insert_wallet(AccountType::Private).await?;
+    // A program execution charges no fee, so the wallet needs no funds.
+    let (wallet, _) = client
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     // Track the foreign account so the client's stored vault root matches the node's.
     client.import_account_by_id(foreign_account_id).await?;

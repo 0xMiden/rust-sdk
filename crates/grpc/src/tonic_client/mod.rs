@@ -1,15 +1,17 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+use futures::StreamExt;
 use miden_client_core::errors::{AcceptHeaderContext, AcceptHeaderError, GrpcError, RpcError};
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client_core::rpc::domain::account_vault::AccountVaultInfo;
+use miden_client_core::rpc::domain::block::{SubscribedBlock, SubscribedProof};
 use miden_client_core::rpc::domain::note::{FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
 use miden_client_core::rpc::domain::status::{NetworkNoteStatusInfo, RpcStatusInfo};
 use miden_client_core::rpc::domain::storage_map::StorageMapInfo;
 use miden_client_core::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
-use miden_client_core::rpc::domain::transaction::TransactionRecord;
+use miden_client_core::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_client_core::rpc::encryption::{
     AttestedTransactionEncryptionKey,
     SealedTransactionInputs,
@@ -23,14 +25,15 @@ use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::ProvenTransaction;
+use miden_protocol::transaction::{ProvenTransaction, TransactionId};
 use miden_protocol::utils::sync::RwLock;
 use miden_protocol::vm::ExecutionProof;
 use tonic::Status;
 
 use crate::generated::{self as proto};
 use crate::node_errors::{parse_node_error, parse_status_error};
-use crate::{Endpoint, RpcMethod, v1};
+use crate::rpc_stream_method::{boxed, validate_items};
+use crate::{Endpoint, RpcMethod, RpcStream, RpcStreamMethod, v1};
 
 mod api_client;
 mod retry;
@@ -193,6 +196,19 @@ impl GrpcClient {
         Ok(output)
     }
 
+    /// Opens a server-streaming node endpoint and validates each item of the stream.
+    ///
+    /// The stream yields the first error and then ends. An error is a failure of the transport, a
+    /// response that does not decode, or an item that fails validation. The client does not
+    /// reconnect.
+    pub async fn subscribe<M: RpcStreamMethod>(
+        &self,
+        method: M,
+    ) -> Result<RpcStream<M::Item>, RpcError> {
+        let items = method.open(self).await?;
+        Ok(validate_items(method, items))
+    }
+
     /// Returns the cached transport or establishes a connection.
     async fn ensure_connected(&self) -> Result<ApiClient, RpcError> {
         if let Some(client) = self.connection.read().client.as_ref() {
@@ -218,34 +234,7 @@ impl GrpcClient {
     }
 
     fn rpc_error_from_status(&self, endpoint: RpcEndpoint, status: Status) -> RpcError {
-        let genesis_commitment = self
-            .connection
-            .read()
-            .genesis_commitment
-            .as_ref()
-            .map_or_else(|| "none".to_string(), Word::to_hex);
-        let context = AcceptHeaderContext { genesis_commitment };
-
-        if let Some(accept_error) =
-            AcceptHeaderError::try_from_message_with_context(status.message(), context)
-        {
-            return RpcError::AcceptHeaderError(accept_error);
-        }
-
-        let error_kind = grpc_error_from_status(&status);
-
-        // Parse the application-level error from the status details
-        let endpoint_error = parse_node_error(endpoint, status.details(), status.message())
-            .or_else(|| parse_status_error(endpoint, &error_kind, status.message()));
-
-        let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
-
-        RpcError::RequestError {
-            endpoint,
-            error_kind,
-            endpoint_error,
-            source: Some(source),
-        }
+        rpc_error_from_status(endpoint, status, self.connection.read().genesis_commitment)
     }
 
     /// Executes an RPC call and automatically retries transient failures.
@@ -280,6 +269,39 @@ impl GrpcClient {
                 Err(status) => return Err(self.rpc_error_from_status(endpoint, status)),
             }
         }
+    }
+
+    /// Opens a server-streaming RPC call and returns the stream of its items, each decoded with
+    /// `decode`. A status of the stream becomes an [`RpcError`].
+    ///
+    /// The retry policy of [`Self::send_with_retry`] applies until the node accepts the call. A
+    /// failure of the open stream is not retried. On `wasm32` targets, the request timeout does not
+    /// apply to the call, because it would end the stream.
+    pub(crate) async fn open_stream<T, U, Fut>(
+        &self,
+        endpoint: RpcEndpoint,
+        mut call: impl FnMut(ApiClient) -> Fut,
+        decode: fn(T) -> Result<U, RpcError>,
+    ) -> Result<RpcStream<U>, RpcError>
+    where
+        T: Send + 'static,
+        U: 'static,
+        Fut: Future<Output = Result<tonic::Response<tonic::Streaming<T>>, Status>>,
+    {
+        let response = self
+            .send_with_retry(endpoint, |rpc_api| call(rpc_api.without_request_timeout()))
+            .await?;
+        let genesis_commitment = self.connection.read().genesis_commitment;
+
+        // The node sends `ResourceExhausted` on an open stream only when the subscriber is too
+        // slow. Before the stream opens, the same code is a rate limit.
+        Ok(boxed(response.into_inner().map(move |item| match item {
+            Ok(item) => decode(item),
+            Err(status) if status.code() == tonic::Code::ResourceExhausted => {
+                Err(RpcError::SubscriberLagged { endpoint })
+            },
+            Err(status) => Err(rpc_error_from_status(endpoint, status, genesis_commitment)),
+        })))
     }
 
     /// Fetches RPC status without injecting an Accept header.
@@ -380,6 +402,20 @@ impl NodeRpcClient for GrpcClient {
         Ok((response.block_header, protocol_config))
     }
 
+    async fn subscribe_blocks(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedBlock>, RpcError> {
+        self.subscribe(v1::BlockSubscription::new(block_from)).await
+    }
+
+    async fn subscribe_proofs(
+        &self,
+        block_from: BlockNumber,
+    ) -> Result<RpcStream<SubscribedProof>, RpcError> {
+        self.subscribe(v1::ProofSubscription::new(block_from)).await
+    }
+
     async fn get_notes_by_id(&self, note_ids: &[NoteId]) -> Result<Vec<FetchedNote>, RpcError> {
         self.call(v1::GetNotesById { note_ids }).await
     }
@@ -456,6 +492,14 @@ impl NodeRpcClient for GrpcClient {
         self.call(v1::GetNoteScriptByRoot { root }).await
     }
 
+    async fn get_transaction_logs(
+        &self,
+        account_id: AccountId,
+        transaction_id: TransactionId,
+    ) -> Result<Option<TransactionLogsInfo>, RpcError> {
+        self.call(v1::GetTransactionLogs { account_id, transaction_id }).await
+    }
+
     async fn sync_storage_maps(
         &self,
         block_from: BlockNumber,
@@ -523,6 +567,40 @@ impl NodeRpcClient for GrpcClient {
 
 // ERRORS
 // ================================================================================================
+
+/// Converts a gRPC status of a call to `endpoint` to an [`RpcError`].
+///
+/// `genesis_commitment` is the commitment that the call sent to the node.
+fn rpc_error_from_status(
+    endpoint: RpcEndpoint,
+    status: Status,
+    genesis_commitment: Option<Word>,
+) -> RpcError {
+    let genesis_commitment =
+        genesis_commitment.as_ref().map_or_else(|| "none".to_string(), Word::to_hex);
+    let context = AcceptHeaderContext { genesis_commitment };
+
+    if let Some(accept_error) =
+        AcceptHeaderError::try_from_message_with_context(status.message(), context)
+    {
+        return RpcError::AcceptHeaderError(accept_error);
+    }
+
+    let error_kind = grpc_error_from_status(&status);
+
+    // Parse the application-level error from the status details
+    let endpoint_error = parse_node_error(endpoint, status.details(), status.message())
+        .or_else(|| parse_status_error(endpoint, &error_kind, status.message()));
+
+    let source = Box::new(status) as Box<dyn Error + Send + Sync + 'static>;
+
+    RpcError::RequestError {
+        endpoint,
+        error_kind,
+        endpoint_error,
+        source: Some(source),
+    }
+}
 
 fn grpc_error_from_status(status: &Status) -> GrpcError {
     GrpcError::from_code(status.code() as i32, Some(status.message().to_string()))

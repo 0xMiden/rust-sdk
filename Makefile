@@ -13,7 +13,13 @@ ifneq ($(BUILD_TARGET),)
 TARGET_FLAG = --target $(BUILD_TARGET)
 endif
 
-FEATURES_CLIENT=--features "std dap"
+FEATURES_CLIENT=--features "std dap trace"
+# The debugger features are off by default, so the lints must ask for them. Without this the DAP
+# and call trace code is never checked.
+FEATURES_LINT=--features "testing std dap trace"
+# The `call --trace` CLI tests compile only with the `trace` feature. Without it the integration
+# targets skip them.
+FEATURES_INTEGRATION=--features miden-client-cli/trace
 WARNINGS=RUSTDOCFLAGS="-D warnings"
 
 TEST_MIDEN_NOTE_TRANSPORT_URL?=http://127.0.0.1:57292
@@ -42,11 +48,11 @@ STORE_BENCH_ARGS?=--notes 1000,10000 --accounts 100,1000 --iterations 5
 
 .PHONY: clippy
 clippy: ## Run Clippy with configs
-	cargo clippy --workspace --features "testing std" --all-targets -- -D warnings
+	cargo clippy --workspace $(FEATURES_LINT) --all-targets -- -D warnings
 
 .PHONY: fix
 fix: ## Run Fix with configs
-	cargo fix --workspace --features "testing std" --all-targets --allow-staged --allow-dirty
+	cargo fix --workspace $(FEATURES_LINT) --all-targets --allow-staged --allow-dirty
 
 .PHONY: format
 format: ## Run format using nightly toolchain, then reflow comments
@@ -80,13 +86,13 @@ typos-check: ## Run typos to check for spelling mistakes
 # --- Documentation -------------------------------------------------------------------------------
 
 .PHONY: doc
-doc: ## Generate & check rust documentation. Ensure you have the nightly toolchain installed.
+doc: ## Generate & check rust documentation
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release
+	$(WARNINGS) cargo doc --lib --no-deps --all-features --keep-going --release
 
-doc-open: ## Generate & open rust documentation in browser. Ensure you have the nightly toolchain installed.
+doc-open: ## Generate & open rust documentation in browser
 	@cd crates/rust-client && \
-	RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --lib --no-deps --all-features --keep-going --release --open
+	$(WARNINGS) cargo doc --lib --no-deps --all-features --keep-going --release --open
 
 .PHONY: serve-docs
 serve-docs: ## Serves the docs
@@ -140,18 +146,18 @@ start-note-transport:
 
 .PHONY: integration-test
 integration-test: ## Run integration tests
-	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'not test(/allowlist/)'
+	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration $(FEATURES_INTEGRATION) -E 'not test(/allowlist/)'
 
 # The agglayer tests run in their own job against their own node: they spend most of their time
 # waiting on network transactions, so sharing a node with the rest only stretches everyone out.
 .PHONY: integration-test-non-agglayer
 integration-test-non-agglayer: ## Run every integration test except the agglayer ones, ignored tests included (requires note transport service)
-	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo nextest run --workspace --release --test=integration -E 'not test(/agglayer/) and not test(/allowlist/)'
-	cargo nextest run --workspace --release --test=integration --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
+	TEST_MIDEN_NOTE_TRANSPORT_URL=$(TEST_MIDEN_NOTE_TRANSPORT_URL) cargo nextest run --workspace --release --test=integration $(FEATURES_INTEGRATION) -E 'not test(/agglayer/) and not test(/allowlist/)'
+	cargo nextest run --workspace --release --test=integration $(FEATURES_INTEGRATION) --run-ignored ignored-only -- import_genesis_accounts_can_be_used_for_transactions
 
 .PHONY: integration-test-agglayer
 integration-test-agglayer: ## Run only the agglayer integration tests
-	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration -E 'test(/agglayer/)'
+	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --release --test=integration $(FEATURES_INTEGRATION) -E 'test(/agglayer/)'
 
 # The allowlist tests need a node that enforces the account allowlist, which rejects the account
 # creations every other test does. They run in their own job against their own node, started with
@@ -160,7 +166,7 @@ integration-test-agglayer: ## Run only the agglayer integration tests
 # they create through the same service.
 .PHONY: integration-test-allowlist
 integration-test-allowlist: ## Run only the account allowlist integration tests (requires MIDEN_ACCOUNT_ALLOWLIST=1 on the node)
-	MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) cargo nextest run --workspace --release --test=integration -E 'test(/allowlist/)'
+	MIDEN_NODE_ADMIN_URL=$(MIDEN_NODE_ADMIN_URL) cargo nextest run --workspace --release --test=integration $(FEATURES_INTEGRATION) -E 'test(/allowlist/)'
 
 .PHONY: integration-test-miden-bench
 integration-test-miden-bench: install-bench ## Run miden-bench smoke tests
@@ -172,7 +178,7 @@ test-dev: ## Run tests with debug assertions enabled via test-dev profile
 
 .PHONY: integration-test-dev
 integration-test-dev: ## Run integration tests with debug assertions enabled via test-dev profile
-	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration -E 'not test(/allowlist/)'
+	AGGLAYER_ACCOUNTS_DIR=$(AGGLAYER_ACCOUNTS_DIR) cargo nextest run --workspace --cargo-profile test-dev --test=integration $(FEATURES_INTEGRATION) -E 'not test(/allowlist/)'
 
 
 # --- Installing ----------------------------------------------------------------------------------

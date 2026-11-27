@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,14 +15,16 @@ use miden_protocol::account::{
     StorageSlotName,
 };
 use miden_protocol::asset::{AssetId, AssetWitness};
+use miden_protocol::block::code_tree::{CodeTreeRoot, CodeWitness};
 use miden_protocol::block::{BlockHeader, BlockNumber};
+use miden_protocol::code::ProcedureRoot;
 use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrPeaks, PartialMmr};
 use miden_protocol::note::{NoteScript, NoteScriptRoot};
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::{AccountInputs, PartialBlockchain};
 use miden_protocol::vm::FutureMaybeSend;
-use miden_protocol::{Word, ZERO};
+use miden_protocol::{MastForest, Word, ZERO};
 use miden_tx::{
     DataStore,
     DataStoreError,
@@ -43,7 +44,7 @@ use crate::rpc::domain::account::{
 };
 use crate::rpc::{AccountStateAt, NodeRpcClient};
 use crate::store::StoreError;
-use crate::transaction::{ChainAnchor, ChainAnchorError, fetch_public_account_inputs};
+use crate::transaction::fetch_public_account_inputs;
 
 mod cache;
 use cache::DataStoreCache;
@@ -59,10 +60,6 @@ pub struct ClientDataStore {
     cache: DataStoreCache,
     /// RPC client used to lazy-load foreign account data on cache miss.
     rpc_api: Arc<dyn NodeRpcClient>,
-    /// When set, chain data (reference block header and partial blockchain) is served from this
-    /// anchor instead of being rebuilt at the store's sync height. Boxed to keep the data store
-    /// small: it is held inline by every execution future.
-    anchor: Option<Box<ChainAnchor>>,
 }
 
 impl ClientDataStore {
@@ -80,21 +77,7 @@ impl ClientDataStore {
             store,
             cache: DataStoreCache::new(mast_store),
             rpc_api,
-            anchor: None,
         }
-    }
-
-    /// Serves chain data from the provided [`ChainAnchor`] instead of rebuilding it at the store's
-    /// sync height, pinning execution to the anchor's reference block.
-    ///
-    /// The store's account data is still used as-is: only the reference block header and the
-    /// partial blockchain come from the anchor. The anchor must track all blocks required by the
-    /// request and all creation blocks of authenticated input notes. Otherwise,
-    /// `get_transaction_inputs` fails.
-    #[must_use]
-    pub fn with_chain_anchor(mut self, anchor: ChainAnchor) -> Self {
-        self.anchor = Some(Box::new(anchor));
-        self
     }
 
     /// Enables memoization of `get_transaction_inputs` and `get_vault_asset_witnesses` for the
@@ -412,31 +395,7 @@ impl DataStore for ClientDataStore {
                 partial_account
             };
 
-        let (block_header, partial_blockchain) = if let Some(anchor) = &self.anchor {
-            // Anchored execution: serve the pinned chain data. The executor-derived reference block
-            // must match the anchor. The anchor's partial blockchain must track every other block
-            // in the set.
-            if ref_block != anchor.block_num() {
-                return Err(DataStoreError::other_with_source(
-                    "anchored data store cannot serve the requested reference block",
-                    ChainAnchorError::ReferenceBlockMismatch {
-                        requested: ref_block,
-                        anchor: anchor.block_num(),
-                    },
-                ));
-            }
-
-            for block_num in block_refs.iter().filter(|block_num| **block_num != ref_block) {
-                if !anchor.partial_blockchain().contains_block(*block_num) {
-                    return Err(DataStoreError::other_with_source(
-                        "anchored data store cannot serve an untracked block",
-                        ChainAnchorError::BlockNotTracked { block_num: *block_num },
-                    ));
-                }
-            }
-
-            (anchor.header().clone(), anchor.partial_blockchain().clone())
-        } else if let Some((block_header, partial_blockchain)) =
+        let (block_header, partial_blockchain) = if let Some((block_header, partial_blockchain)) =
             self.cache.get_blockchain(&block_refs)
         {
             (block_header, partial_blockchain)
@@ -592,6 +551,25 @@ impl DataStore for ClientDataStore {
 
         self.fetch_and_cache_foreign_account(foreign_account_id, AccountStateAt::Block(ref_block))
             .await
+    }
+
+    /// The transaction executor does not call this method. The client stores no code tree, so it
+    /// cannot open code witnesses.
+    fn get_code_witnesses(
+        &self,
+        _code_tree_root: CodeTreeRoot,
+        _procedure_roots: Vec<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<CodeWitness>, DataStoreError>> {
+        async move { unreachable!("the transaction executor does not request code witnesses") }
+    }
+
+    /// The transaction executor does not call this method. The client has no code designated for
+    /// publication in the code registry.
+    fn get_code_to_register(
+        &self,
+        _procedure_roots: BTreeSet<ProcedureRoot>,
+    ) -> impl FutureMaybeSend<Result<Vec<Arc<MastForest>>, DataStoreError>> {
+        async move { unreachable!("the transaction executor does not request code to register") }
     }
 
     /// Returns the [`NoteScript`] for the given script root from the registered session scripts,

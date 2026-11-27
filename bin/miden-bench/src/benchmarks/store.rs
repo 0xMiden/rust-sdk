@@ -217,6 +217,7 @@ async fn note_write_measurements(
                     store_data::insert_batch(consumer, INSERT_BATCH_SIZE, i + iterations + 1);
                 let update = StateSyncUpdate::from_parts(
                     sync_block,
+                    sync_block,
                     PartialBlockchainUpdates::default(),
                     NoteUpdates::from_records(notes, [], []),
                     TransactionUpdates::default(),

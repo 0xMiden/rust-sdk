@@ -9,7 +9,7 @@
 /// [`ClientDataStore`] at creation time.
 pub(crate) mod data_store;
 
-pub use miden_client_core::errors::{NoteRecordError, StoreError};
+pub use miden_client_core::errors::{NoteRecordError, StaleUpdate, StoreError};
 pub use miden_client_core::store::{
     AccountStatus,
     BlockRelevance,

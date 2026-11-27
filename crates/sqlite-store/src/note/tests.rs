@@ -781,6 +781,7 @@ async fn output_notes_filtered_by_script_root() {
 
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
+        BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [swap_note.clone(), partial_note.clone()]),
         TransactionUpdates::default(),
@@ -835,6 +836,7 @@ async fn output_note_state_blob_does_not_embed_script() {
     let note = create_expected_output_note_with_script(0, StandardNote::SWAP.script());
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
+        BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdates::default(),
@@ -870,6 +872,7 @@ async fn consumed_output_note_round_trips() {
     let note = create_consumed_output_note_with_script(0, StandardNote::P2ID.script());
     let state_sync_update = StateSyncUpdate::from_parts(
         BlockNumber::from(0u32),
+        BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [], [note.clone()]),
         TransactionUpdates::default(),
@@ -901,6 +904,7 @@ async fn state_sync_stores_scripts_of_new_input_notes() {
     // Applying the same update twice takes the insert branch and then the DO UPDATE branch.
     for _ in 0..2 {
         let state_sync_update = StateSyncUpdate::from_parts(
+            BlockNumber::from(0u32),
             BlockNumber::from(0u32),
             PartialBlockchainUpdates::default(),
             NoteUpdates::from_records(notes.clone(), [], []),
@@ -1027,6 +1031,7 @@ async fn input_note_state_update_persists_attachments() {
     assert_eq!(updated.details_commitment(), note.details_commitment());
 
     let state_sync_update = StateSyncUpdate::from_parts(
+        BlockNumber::from(0u32),
         BlockNumber::from(0u32),
         PartialBlockchainUpdates::default(),
         NoteUpdates::from_records([], [updated], []),

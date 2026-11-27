@@ -6,10 +6,8 @@ package client.transaction;
 
 import "account.proto";
 import "asset.proto";
-import "block.proto";
 import "block_number.proto";
 import "note.proto";
-import "partial_blockchain.proto";
 import "primitives.proto";
 import "transaction.proto";
 import "transaction_inputs.proto";
@@ -89,22 +87,32 @@ message TransactionRequestV1 {
   repeated blockchain.BlockNumber block_numbers = 1;
   // Notes that the transaction consumes, in consumption order.
   repeated RequestInputNote input_notes = 2;
-  TransactionScriptTemplate script_template = 3;
+  RequestTransactionScript transaction_script = 3;
+  // Recipients of the notes that a custom script or the scripts of the input notes are expected to
+  // create.
   repeated note.NoteRecipient expected_output_recipients = 4;
   repeated ExpectedFutureNote expected_future_notes = 5;
   primitives.AdviceMap advice_map = 6;
   primitives.MerkleStore merkle_store = 7;
   repeated ForeignAccount foreign_accounts = 8;
-  optional uint32 expiration_delta = 9;
-  bool ignore_invalid_input_notes = 10;
-  // Word that the transaction script receives on the operand stack.
-  primitives.Word script_arg = 11;
-  // Word that the authentication procedure receives on the operand stack.
-  primitives.Word auth_arg = 12;
-  primitives.Word fee_conversion_salt = 13;
-  repeated note.NoteScript expected_ntx_scripts = 14;
+  bool ignore_invalid_input_notes = 9;
+  // An absent value means that the executing client builds the default auth args with its default
+  // salt.
+  RequestAuthArgs auth_args = 10;
+  repeated note.NoteScript expected_ntx_scripts = 11;
   // New code of the executing account.
-  account.AccountCodeUpgrade account_code_upgrade = 15;
+  account.AccountCodeUpgrade account_code_upgrade = 12;
+}
+
+// Auth args that the executing client passes to the auth procedure of the account.
+message RequestAuthArgs {
+  oneof auth_args {
+    // Salt that the executing client builds the default auth args with.
+    primitives.Word default_with_salt = 1;
+    // Commitment of the auth args that the caller sets. The advice map of the request holds their
+    // preimage.
+    primitives.Word explicit = 2;
+  }
 }
 
 // An input note of a transaction request, with its arguments.
@@ -119,17 +127,31 @@ message RequestInputNote {
   primitives.Word args = 3;
 }
 
-// Template from which the client builds the transaction script.
-message TransactionScriptTemplate {
-  // Notes that the transaction script must create.
-  message SendNotes {
-    repeated note.PartialNote notes = 1;
+// Transaction script of a transaction request.
+message RequestTransactionScript {
+  // The transaction runs no transaction script.
+  message Empty {}
+
+  // A script that the executing client generates.
+  message Generated {
+    // Notes that the script creates.
+    repeated note.Note own_output_notes = 1;
+    // Number of blocks after the reference block at which the transaction expires. An absent
+    // value means that the transaction does not expire.
+    optional uint32 expiration_delta = 2;
   }
 
-  oneof template {
-    // The exact transaction script to execute.
-    .transaction.TransactionScript custom_script = 1;
-    SendNotes send_notes = 2;
+  // The exact transaction script to execute.
+  message Custom {
+    .transaction.TransactionScript script = 1;
+    // Word that the script receives on the operand stack.
+    primitives.Word arg = 2;
+  }
+
+  oneof script {
+    Generated generated = 1;
+    Custom custom = 2;
+    Empty empty = 3;
   }
 }
 
@@ -199,17 +221,47 @@ message AccountStorageRequirements {
   repeated SlotKeys slots = 1;
 }
 
+// Cycle counts of the stages of a transaction execution.
+message TransactionMeasurements {
+  // Cycle count of the execution of one input note.
+  message NoteExecution {
+    note.NoteId note_id = 1;
+    uint64 cycles = 2;
+  }
+
+  uint64 prologue = 1;
+  uint64 notes_processing = 2;
+  repeated NoteExecution note_execution = 3;
+  uint64 tx_script_processing = 4;
+  uint64 epilogue = 5;
+  uint64 auth_procedure = 6;
+}
+
+// A transaction that the client executed, with the inputs to execute it again.
+message ExecutedTransaction {
+  .transaction.TransactionInputs inputs = 1;
+  // Header of the account after the transaction.
+  account.AccountHeader final_account = 2;
+  .transaction.RawOutputNotes output_notes = 3;
+  // Block at which the transaction expires.
+  blockchain.BlockNumber expiration_block_num = 4;
+  .transaction.TransactionLogs logs = 5;
+  .transaction.CodePatch code_patch = 6;
+  // Changes that the transaction makes to the account. The reader computes the commitment to the
+  // patch from this field.
+  account.AccountPatch account_patch = 7;
+  TransactionMeasurements measurements = 8;
+}
+
 // An executed transaction with the notes that later transactions create from it.
 message TransactionResult {
-  // Upstream encoding of the executed transaction.
-  bytes executed_transaction = 1;
+  ExecutedTransaction executed_transaction = 1;
   repeated ExpectedFutureNote future_notes = 2;
 }
 
 // Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
-  // Executed transaction in its protocol encoding.
-  bytes executed_transaction = 1;
+  ExecutedTransaction executed_transaction = 1;
   // Block at which the transaction was submitted.
   blockchain.BlockNumber submission_height = 2;
   repeated ExpectedFutureNote future_notes = 3;
@@ -240,10 +292,4 @@ message InputNoteUpdate {
 message OutputNoteUpdate {
   output_note.OutputNoteRecord note = 1;
   NoteUpdateType update_type = 2;
-}
-
-// A reference block with a partial blockchain that is consistent with it.
-message ChainAnchor {
-  blockchain.BlockHeader header = 1;
-  blockchain.PartialBlockchain partial_blockchain = 2;
 }

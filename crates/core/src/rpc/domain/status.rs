@@ -1,6 +1,9 @@
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use miden_protocol::Word;
+use miden_protocol::asset::Asset;
+use miden_protocol::note::NoteId;
 
 /// Represents node status info with fields converted into domain types.
 pub struct RpcStatusInfo {
@@ -59,5 +62,27 @@ pub struct NetworkNoteStatusInfo {
     /// The total number of times the node has attempted to process this note.
     pub attempt_count: u32,
     /// The block number at which the last processing attempt occurred, if any.
+    pub last_attempt_block_num: Option<u32>,
+    /// The fee sponsorship notes that the node binds to this note.
+    pub sponsorships: Vec<NetworkNoteSponsorship>,
+}
+
+/// A fee sponsorship note that pays the fee for a network note.
+pub struct NetworkNoteSponsorship {
+    /// The ID of the sponsorship note.
+    pub note_id: NoteId,
+    /// The fee asset that the sponsorship note carries.
+    pub fee_asset: Asset,
+    /// The block number at or after which the reclaimer can reclaim the note. `None` if reclaim is
+    /// disabled.
+    pub reclaim_height: Option<u32>,
+    /// The block number in which the sponsorship note was consumed. `None` while the note is not
+    /// consumed.
+    pub committed_block_num: Option<u32>,
+    /// The error message from the most recent failed processing attempt of the sponsorship note, if
+    /// any.
+    pub last_error: Option<String>,
+    /// The block number at which the last failed processing attempt of the sponsorship note
+    /// occurred, if any.
     pub last_attempt_block_num: Option<u32>,
 }

@@ -600,6 +600,8 @@ mod tests {
                 result.to_commitment(),
                 miden_protocol::transaction::InputNotes::new_unchecked(vec![]),
                 vec![],
+                Word::empty(),
+                miden_protocol::block::code_tree::CodePatch::default().commitment(),
             )
             .unwrap();
             transactions.apply_transaction_inclusion(BlockNumber::from(1u32), &header, 0);
@@ -615,6 +617,7 @@ mod tests {
             accounts.reconcile_pending(pending, &DiscardConditions::default());
         }
         crate::sync::StateSyncUpdate::from_parts(
+            BlockNumber::GENESIS,
             BlockNumber::from(1u32),
             crate::sync::PartialBlockchainUpdates::default(),
             miden_client_core::store::NoteUpdates::default(),
@@ -698,6 +701,7 @@ mod tests {
                 .unwrap();
             assert_eq!(lookup, expect_lookup.then_some((local.id(), proven)));
             let update = crate::sync::StateSyncUpdate::from_parts(
+                BlockNumber::GENESIS,
                 BlockNumber::from(1u32),
                 crate::sync::PartialBlockchainUpdates::default(),
                 miden_client_core::store::NoteUpdates::default(),

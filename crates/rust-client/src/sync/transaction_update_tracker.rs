@@ -176,6 +176,7 @@ impl TransactionUpdateTracker {
 #[cfg(test)]
 mod tests {
     use miden_protocol::Felt;
+    use miden_protocol::block::code_tree::CodePatch;
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
     use miden_protocol::transaction::{InputNoteCommitment, InputNotes, RawOutputNotes};
 
@@ -209,6 +210,8 @@ mod tests {
             word(final_state),
             input_notes,
             vec![],
+            Word::empty(),
+            CodePatch::default().commitment(),
         )
         .unwrap()
     }

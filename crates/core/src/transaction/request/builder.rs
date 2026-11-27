@@ -3,6 +3,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
+use core::num::NonZeroU16;
 
 use miden_protocol::account::{AccountCode, AccountCodeUpgrade, AccountId};
 use miden_protocol::asset::{Asset, AssetAmount, FungibleAsset, NonFungibleAsset};
@@ -10,7 +11,6 @@ use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::SequentialCommit;
 use miden_protocol::crypto::merkle::InnerNodeInfo;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::crypto::rand::FeltRng;
 use miden_protocol::errors::NoteError;
 use miden_protocol::note::{
     Note,
@@ -23,23 +23,24 @@ use miden_protocol::note::{
     NoteStorage,
     NoteTag,
     NoteType,
-    PartialNote,
     PartialNoteMetadata,
 };
 use miden_protocol::transaction::{InputNote, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 use miden_protocol::{Felt, Word};
 use miden_standards::note::{BurnNote, P2idNote, P2ideNote, PswapNote, PswapNoteStorage, SwapNote};
+use rand::{Rng, RngExt};
 
 use super::code_upgrade::account_code_upgrade_script;
 use super::{
     ForeignAccount,
     InputNoteAuthentication,
     NoteArgs,
+    RequestAuthArgs,
     RequestInputNote,
+    RequestTransactionScript,
     TransactionRequest,
     TransactionRequestError,
-    TransactionScriptTemplate,
 };
 
 // TRANSACTION REQUEST BUILDER
@@ -85,12 +86,10 @@ pub struct TransactionRequestBuilder {
     /// execution. If the advice map is extended with some user defined entries, this script
     /// argument could be used as a key to access the corresponding value.
     script_arg: Option<Word>,
-    /// Optional [`Word`] that will be pushed to the stack for the authentication procedure during
-    /// transaction execution.
-    auth_arg: Option<Word>,
-    /// Salt the native fee conversion info is committed under when the transaction is prepared, set
-    /// through [`TransactionRequestBuilder::fee_conversion_salt`]. `None` leaves the client to use
-    /// its fixed default salt.
+    /// Commitment of the explicit auth args that the executing client passes to the auth procedure
+    /// of the account.
+    auth_args: Option<Word>,
+    /// Salt the client commits the fee conversion info under when it builds the default auth args.
     fee_conversion_salt: Option<Word>,
     /// Note scripts that the node's NTX builder will need in its script registry.
     ///
@@ -121,7 +120,7 @@ impl TransactionRequestBuilder {
             foreign_accounts: BTreeMap::default(),
             ignore_invalid_input_notes: false,
             script_arg: None,
-            auth_arg: None,
+            auth_args: None,
             fee_conversion_salt: None,
             expected_ntx_scripts: vec![],
             account_code_upgrade: None,
@@ -172,8 +171,7 @@ impl TransactionRequestBuilder {
     /// transaction summary. Use this for a request that is shared across clients.
     ///
     /// To consume an authenticated note, the executing client must be able to serve the header of
-    /// the note's creation block, from its store or from the `ChainAnchor` the request executes
-    /// against.
+    /// the note's creation block.
     #[must_use]
     pub fn explicit_input_notes(
         mut self,
@@ -187,20 +185,13 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Specifies the output notes that should be created in the transaction script and will be used
-    /// as a transaction script template. These notes will also be added to the expected output
-    /// recipients of the transaction.
+    /// Specifies the output notes that the generated transaction script creates.
     ///
-    /// If a transaction script template is already set (e.g. by calling `with_custom_script`), the
-    /// [`TransactionRequestBuilder::build`] method will return an error.
+    /// If a custom script is also set, the [`TransactionRequestBuilder::build`] method will return
+    /// an error.
     #[must_use]
     pub fn own_output_notes(mut self, notes: impl IntoIterator<Item = Note>) -> Self {
-        for note in notes {
-            self.expected_output_recipients
-                .insert(note.recipient().digest(), note.recipient().clone());
-            self.own_output_notes.push(note);
-        }
-
+        self.own_output_notes.extend(notes);
         self
     }
 
@@ -318,29 +309,34 @@ impl TransactionRequestBuilder {
         self
     }
 
-    /// Sets an optional [`Word`] that will be pushed to the operand stack before the transaction
-    /// script execution. If the advice map is extended with some user defined entries, this script
+    /// Sets an optional [`Word`] that will be pushed to the operand stack before the custom script
+    /// execution. If the advice map is extended with some user defined entries, this script
     /// argument could be used as a key to access the corresponding value.
+    ///
+    /// The argument applies only to a script set with [`Self::custom_script`]. Without a custom
+    /// script, [`TransactionRequestBuilder::build`] returns an error.
     #[must_use]
     pub fn script_arg(mut self, script_arg: Word) -> Self {
         self.script_arg = Some(script_arg);
         self
     }
 
-    /// Sets the auth arg to the commitment of `auth_args` and adds their preimage to the advice
-    /// map.
+    /// Sets `auth_args` as the explicit auth args of the request and adds their preimage to the
+    /// advice map. The executing client passes their commitment to the auth procedure.
     ///
     /// Use this method for auth components that load their auth args from the advice map, for
     /// example [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs).
     ///
     /// The client does not change auth args that the caller sets. The client tracks the bound block
-    /// of multisig auth args.
+    /// of multisig auth args. Multisig auth args with a max fee let the signed transaction execute
+    /// against a later reference block than the one of the unsigned execution.
+    ///
+    /// [`Self::build`] fails if a fee conversion salt is also set.
     #[must_use]
     pub fn auth_args<A: SequentialCommit<Commitment = Word>>(mut self, auth_args: &A) -> Self {
-        let auth_arg = auth_args.to_commitment();
-        self.advice_map.insert(auth_arg, auth_args.to_elements());
-        self.auth_arg = Some(auth_arg);
-        self.fee_conversion_salt = None;
+        let commitment = auth_args.to_commitment();
+        self.advice_map.insert(commitment, auth_args.to_elements());
+        self.auth_args = Some(commitment);
         self
     }
 
@@ -349,13 +345,23 @@ impl TransactionRequestBuilder {
     /// Fees are settled in the chain's native fee asset at rate 1/1. The client commits that info
     /// through the transaction's auth args when preparing the transaction.
     ///
-    /// Multisig accounts require a caller-declared salt. The client also binds their auth args to
-    /// the transaction's reference block. Use the same reference block when collecting signatures
-    /// across repeated executions. See `Client::execute_transaction_at`.
+    /// Multisig accounts require a caller-declared salt. The client binds their auth args to the
+    /// transaction's reference block, which is the sync height at execution time, and sets no max
+    /// fee. The multisig auth procedure then estimates the fee on each execution, and the
+    /// transaction summary binds the bound block and the estimate. Signatures for one execution are
+    /// valid for a later execution only if the client does not sync between the two executions.
+    ///
+    /// To collect signatures across syncs, do not use this method. Build
+    /// [`MultisigAuthArgs`](miden_standards::account::auth::MultisigAuthArgs) with a fixed bound
+    /// block and a max fee, for example with `MultisigAuthArgs::with_estimated_max_fee`, and set
+    /// them with [`Self::auth_args`]. The summary then binds the max fee, and not the estimate of
+    /// one execution. On a chain that charges fees, these auth args must also include the fee
+    /// conversion info.
+    ///
+    /// [`Self::build`] fails if explicit auth args are also set.
     #[must_use]
     pub fn fee_conversion_salt(mut self, salt: Word) -> Self {
         self.fee_conversion_salt = Some(salt);
-        self.auth_arg = None;
         self
     }
 
@@ -423,7 +429,7 @@ impl TransactionRequestBuilder {
         asset: FungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Minting emits a P2ID note, and a P2ID note carrying nothing is rejected on the transfer
         // path for the same reason: it costs a transaction and leaves the target a note with
@@ -461,7 +467,7 @@ impl TransactionRequestBuilder {
         asset: NonFungibleAsset,
         target_id: AccountId,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = P2idNote::builder()
             .sender(asset.faucet_id())
@@ -493,7 +499,7 @@ impl TransactionRequestBuilder {
         self,
         asset: NonFungibleAsset,
         sender: AccountId,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let created_note = BurnNote::builder()
             .sender(sender)
@@ -520,7 +526,7 @@ impl TransactionRequestBuilder {
         self,
         payment_data: PaymentNoteDescription,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         if payment_data
             .assets()
@@ -552,7 +558,7 @@ impl TransactionRequestBuilder {
         swap_data: &SwapTransactionData,
         note_type: NoteType,
         payback_note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Both sides carry value: the SWAP note holds the offered asset, and filling it emits a
         // P2ID payback carrying the requested one. A zero amount on either side leaves one of those
@@ -601,12 +607,12 @@ impl TransactionRequestBuilder {
         self,
         sender_account_id: AccountId,
         scripts: Vec<NoteScript>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         let registration_notes: Vec<Note> = scripts
             .into_iter()
             .map(|script| {
-                let serial_num = rng.draw_word();
+                let serial_num = rng.random::<Word>();
                 let note_storage = NoteStorage::new(vec![])?;
                 let recipient = NoteRecipient::new(serial_num, script, note_storage);
                 let note_assets = NoteAssets::new(vec![])?;
@@ -639,7 +645,7 @@ impl TransactionRequestBuilder {
         note_type: NoteType,
         payback_note_type: NoteType,
         note_attachment: Option<NoteAttachment>,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<TransactionRequest, TransactionRequestError> {
         // Same exchange invariant as build_swap; PSWAP is fungible on both sides.
         if is_zero_fungible(&pswap_data.offered_asset().into()) {
@@ -658,7 +664,7 @@ impl TransactionRequestBuilder {
         let pswap_note = PswapNote::builder()
             .sender(pswap_data.creator_account_id())
             .storage(storage)
-            .serial_number(rng.draw_word())
+            .serial_number(rng.random::<Word>())
             .note_type(note_type)
             .offered_asset(pswap_data.offered_asset())
             .maybe_attachment(note_attachment)
@@ -788,26 +794,31 @@ impl TransactionRequestBuilder {
     /// - If the expiration delta is zero.
     /// - If an expiration delta is set when a custom script is set.
     /// - If both a custom script and own output notes are set.
+    /// - If a script argument is set without a custom script.
     /// - If a note appears more than once among the input notes.
+    /// - If both explicit auth args and a fee conversion salt are set.
     pub fn build(self) -> Result<TransactionRequest, TransactionRequestError> {
         check_expiration_delta(self.expiration_delta, self.custom_script.as_ref())?;
-        let script_template = build_script_template(self.custom_script, self.own_output_notes)?;
+        let transaction_script = build_transaction_script(
+            self.custom_script,
+            self.script_arg,
+            self.own_output_notes,
+            self.expiration_delta.and_then(NonZeroU16::new),
+        )?;
         check_no_duplicate_input_notes(&self.input_notes)?;
+        let auth_args = build_auth_args(self.auth_args, self.fee_conversion_salt)?;
 
         Ok(TransactionRequest {
             block_numbers: self.block_numbers,
             input_notes: self.input_notes,
-            script_template,
+            transaction_script,
             expected_output_recipients: self.expected_output_recipients,
             expected_future_notes: self.expected_future_notes,
             advice_map: self.advice_map,
             merkle_store: self.merkle_store,
             foreign_accounts: self.foreign_accounts,
-            expiration_delta: self.expiration_delta,
             ignore_invalid_input_notes: self.ignore_invalid_input_notes,
-            script_arg: self.script_arg,
-            auth_arg: self.auth_arg,
-            fee_conversion_salt: self.fee_conversion_salt,
+            auth_args,
             expected_ntx_scripts: self.expected_ntx_scripts,
             account_code_upgrade: self.account_code_upgrade,
         })
@@ -847,24 +858,45 @@ fn check_no_duplicate_input_notes(
     Ok(())
 }
 
-/// Builds the transaction script template from the custom script and the own output notes. At most
-/// one of the two can be set.
-fn build_script_template(
+/// Builds the auth args of the request. The client builds the default auth args with the fee
+/// conversion salt, so a salt together with explicit auth args has no effect.
+fn build_auth_args(
+    explicit: Option<Word>,
+    fee_conversion_salt: Option<Word>,
+) -> Result<RequestAuthArgs, TransactionRequestError> {
+    match (explicit, fee_conversion_salt) {
+        (Some(_), Some(_)) => Err(TransactionRequestError::AuthArgsWithFeeConversionSalt),
+        (Some(commitment), None) => Ok(RequestAuthArgs::Explicit(commitment)),
+        (None, Some(salt)) => Ok(RequestAuthArgs::DefaultWithSalt(salt)),
+        (None, None) => Ok(RequestAuthArgs::Default),
+    }
+}
+
+/// Builds the transaction script of the request. At most one of the custom script and the own
+/// output notes can be set, and the script argument applies only to the custom script. Without own
+/// output notes and without an expiration delta, the request runs no script.
+///
+/// [`check_expiration_delta`] must run first: it rejects an expiration delta together with a custom
+/// script.
+fn build_transaction_script(
     custom_script: Option<TransactionScript>,
+    script_arg: Option<Word>,
     own_output_notes: Vec<Note>,
-) -> Result<Option<TransactionScriptTemplate>, TransactionRequestError> {
+    expiration_delta: Option<NonZeroU16>,
+) -> Result<RequestTransactionScript, TransactionRequestError> {
     match (custom_script, own_output_notes.is_empty()) {
         (Some(_), false) => Err(TransactionRequestError::ScriptTemplateError(
             "Cannot set both a custom script and own output notes".to_string(),
         )),
-        (Some(script), true) => Ok(Some(TransactionScriptTemplate::CustomScript(script))),
-        (None, false) => {
-            let partial_notes: Vec<PartialNote> =
-                own_output_notes.into_iter().map(Into::into).collect();
-
-            Ok(Some(TransactionScriptTemplate::SendNotes(partial_notes)))
-        },
-        (None, true) => Ok(None),
+        (Some(script), true) => Ok(RequestTransactionScript::Custom {
+            script,
+            arg: script_arg.unwrap_or_default(),
+        }),
+        (None, _) if script_arg.is_some() => Err(TransactionRequestError::ScriptTemplateError(
+            "Cannot set a script argument without a custom script".to_string(),
+        )),
+        (None, true) if expiration_delta.is_none() => Ok(RequestTransactionScript::Empty),
+        (None, _) => Ok(RequestTransactionScript::Generated { own_output_notes, expiration_delta }),
     }
 }
 
@@ -961,7 +993,7 @@ impl PaymentNoteDescription {
     pub(crate) fn into_note(
         self,
         note_type: NoteType,
-        rng: &mut impl FeltRng,
+        rng: &mut impl Rng,
     ) -> Result<Note, NoteError> {
         if self.reclaim_height.is_none() && self.timelock_height.is_none() {
             // Create a P2ID note

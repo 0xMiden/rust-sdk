@@ -54,10 +54,6 @@ PROVER="127.0.0.1:$PROVER_PORT"
 # MIDEN_FUNDING_SERVICE_URL, and with allowlist enforcement on the sequencer calls it for every
 # account that registers. Matches the port of the node's own compose file.
 FUNDING="127.0.0.1:50401"
-# Native asset base units the sequencer asks the funding service to pay each registered account.
-# Matches `FUNDING_AMOUNT` in `bin/integration-tests/src/funding.rs`, which covers the fees of every
-# transaction a test runs against the account.
-FUNDING_AMOUNT=10000000
 # How long a single network transaction proof may take. The prover enforces it server-side and the
 # ntx-builder waits that long for the response. Shared so the two cannot drift apart: if the
 # ntx-builder waited less, it would abandon a request the prover is still working on, re-queue the
@@ -69,6 +65,13 @@ NETWORK_TX_AUTH="${MIDEN_NETWORK_TX_AUTH:-miden-client-testing-ntx-secret}"
 # Genesis `verification_base_fee`. Every transaction pays out of its own account's vault, as on a
 # real chain. At 0 fees are never charged.
 VERIFICATION_BASE_FEE="${MIDEN_VERIFICATION_BASE_FEE:-500}"
+# Native asset base units the sequencer asks the funding service to pay each registered account.
+# Matches the amount in `bin/integration-tests/src/funding.rs`, which pays for
+# `MIN_FUNDED_TRANSACTIONS` transactions at the largest fee. The largest fee is the base fee times
+# 30 verification cycles, which is `ilog2(MAX_TX_EXECUTION_CYCLES) + 1`.
+MIN_FUNDED_TRANSACTIONS=10
+MAX_TX_FEE=$((VERIFICATION_BASE_FEE * 30))
+FUNDING_AMOUNT=$((MAX_TX_FEE * MIN_FUNDED_TRANSACTIONS))
 # Account that receives the batch builder's fees in a P2ID note. The sequencer requires the value
 # but never reads the account, so this is the same placeholder id the node repo uses for local
 # runs. No test consumes the fee notes.
@@ -78,7 +81,7 @@ BATCH_BUILDER_WALLET="${MIDEN_BATCH_BUILDER_WALLET:-0xcc0000000000dd010000ee0000
 ACCOUNT_ALLOWLIST="${MIDEN_ACCOUNT_ALLOWLIST:-0}"
 
 NODE_BINS=(miden-validator miden-node miden-ntx-builder miden-remote-prover miden-funding-service
-    miden-note-transport)
+    miden-note-transport miden-genesis)
 
 # Resolve the node source from Cargo.lock. By default, install the crates.io version that
 # Cargo.lock locks for `miden-node-proto-build`. A git pin of the node in Cargo.lock takes
@@ -195,15 +198,15 @@ done
 # earlier chain state depends on it. If a node bump changes the key format, regenerate all three
 # with `miden-validator keygen`.
 SIGNING_KEY="9cbcf0fc18b2a4afeff56ef43ad96af92e804fae64615c9802cff2a182e9cae2"
-VALIDATOR_PUBLIC_KEY="020c06515b355a62133ae98e53e4b5d3e6ee9ff60ce620a436780e4e308a3ff3e9"
+VALIDATOR_PUBLIC_KEY="0x020c06515b355a62133ae98e53e4b5d3e6ee9ff60ce620a436780e4e308a3ff3e9"
 ENCRYPTION_KEY="9964dbb2590adeb415d3291b64a0a9991fbcac5adacb05ee17efee5296d081d7"
 
 {
-    # Genesis generation is separate from bootstrap: `genesis` builds the block once, then every
-    # component seeds its database from the resulting file. The native faucet and the funding
-    # account are required inputs with their own flags; the fee and the timestamp are genesis
-    # parameters rather than accounts, so they are passed here instead of through the fixtures.
-    "$BIN/miden-validator" genesis --genesis-block-directory "$DATA/genesis" \
+    # Genesis generation is separate from bootstrap: `miden-genesis build` builds the block once,
+    # then every component seeds its database from the resulting file. The native faucet and the
+    # funding account are required inputs with their own flags. The fee and the timestamp are
+    # genesis parameters, not accounts, so they are passed here and not through the fixtures.
+    "$BIN/miden-genesis" build --genesis-block-directory "$DATA/genesis" \
         --accounts-directory "$DATA/accounts" \
         --accounts-config "$DATA/genesis-config/accounts.toml" \
         --native-faucet "$DATA/genesis-config/native_faucet.mac" \

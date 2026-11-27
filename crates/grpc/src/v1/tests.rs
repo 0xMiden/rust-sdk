@@ -3,11 +3,14 @@ use std::collections::BTreeSet;
 use miden_client_core::errors::RpcError;
 use miden_client_core::rpc::AccountStateAt;
 use miden_client_core::rpc::domain::account::{AccountProof, GetAccountRequest};
+use miden_client_core::rpc::domain::block::{SubscribedBlock, SubscribedProof};
 use miden_client_core::rpc::domain::note::{CommittedNote, FetchedNote, SyncNotesBlock};
 use miden_client_core::rpc::domain::nullifier::NullifierUpdate;
-use miden_client_core::rpc::domain::transaction::TransactionRecord;
+use miden_client_core::rpc::domain::transaction::{TransactionLogsInfo, TransactionRecord};
 use miden_protocol::account::AccountId;
+use miden_protocol::asset::AssetId;
 use miden_protocol::block::account_tree::AccountWitness;
+use miden_protocol::block::code_tree::CodePatch;
 use miden_protocol::block::{BlockBody, BlockHeader, BlockNumber, BlockSignatures, SignedBlock};
 use miden_protocol::crypto::merkle::{MerklePath, SparseMerklePath};
 use miden_protocol::note::{
@@ -20,26 +23,41 @@ use miden_protocol::note::{
     Nullifier,
     PartialNoteMetadata,
 };
+use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::testing::account_id::{
+    ACCOUNT_ID_PRIVATE_SENDER,
+    ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
     ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
     ACCOUNT_ID_SENDER,
 };
-use miden_protocol::transaction::{InputNotes, OrderedTransactionHeaders, TransactionHeader};
+use miden_protocol::transaction::{
+    InputNotes,
+    OrderedTransactionHeaders,
+    PublicTransactionLogs,
+    TransactionHeader,
+    TransactionId,
+    TransactionLogDetails,
+    TransactionLogs,
+};
 use miden_protocol::{Felt, Word};
 use miden_standards::note::StandardNote;
+use miden_testing::MockChain;
 
 use super::{
     BlockHeaderResponse,
+    BlockSubscription,
     GetAccount,
     GetBlockByNumber,
     GetBlockHeaderByNumber,
     GetNoteScriptByRoot,
     GetNotesById,
+    GetTransactionLogs,
+    ProofSubscription,
     SyncNotes,
     SyncNullifiers,
     SyncTransactions,
 };
-use crate::RpcMethod;
+use crate::{RpcMethod, RpcStreamMethod};
 
 // FIXTURES
 // ================================================================================================
@@ -76,7 +94,8 @@ fn signed_block(block_num: u32) -> SignedBlock {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        OrderedTransactionHeaders::new_unchecked(Vec::new()),
+        vec![OrderedTransactionHeaders::new_unchecked(Vec::new())],
+        PublicTransactionLogs::default(),
     );
     let signatures = BlockSignatures::new(Vec::new()).expect("no signatures is a valid set");
 
@@ -138,6 +157,8 @@ fn transaction_record(account_id: AccountId) -> TransactionRecord {
             Word::default(),
             InputNotes::new_unchecked(vec![]),
             vec![],
+            Word::empty(),
+            CodePatch::default().commitment(),
         )
         .unwrap(),
         vec![],
@@ -153,6 +174,36 @@ fn account_proof() -> AccountProof {
         .expect("the path depth matches the account tree depth");
 
     AccountProof::new(witness, None).expect("a proof without details has nothing to cross-check")
+}
+
+fn private_account_id() -> AccountId {
+    AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).expect("test private sender ID is well formed")
+}
+
+fn transaction_id(value: u32) -> TransactionId {
+    TransactionId::from_raw(Word::from([value; 4]))
+}
+
+fn transaction_logs_info(
+    account_id: AccountId,
+    transaction_id: TransactionId,
+    log_details: TransactionLogDetails,
+) -> TransactionLogsInfo {
+    TransactionLogsInfo {
+        transaction_id,
+        account_id,
+        block_num: BlockNumber::from(3u32),
+        transaction_index: 0,
+        log_details,
+    }
+}
+
+fn public_logs() -> TransactionLogDetails {
+    TransactionLogDetails::Public(TransactionLogs::default())
+}
+
+fn private_logs() -> TransactionLogDetails {
+    TransactionLogDetails::Private(Word::empty())
 }
 
 fn is_invalid_response(result: Result<(), RpcError>) -> bool {
@@ -349,4 +400,143 @@ fn sync_transactions_accepts_empty_response() {
     };
 
     method.validate(&Vec::new()).expect("an empty response must be accepted");
+}
+
+#[test]
+fn get_transaction_logs_verifies_transaction_and_account() {
+    let public_account = other_account_id();
+    let method = GetTransactionLogs {
+        account_id: public_account,
+        transaction_id: transaction_id(1),
+    };
+
+    method.validate(&None).expect("an unknown transaction must pass through");
+    method
+        .validate(&Some(transaction_logs_info(public_account, transaction_id(1), public_logs())))
+        .expect("the logs of the requested transaction must be accepted");
+
+    // A different transaction.
+    assert!(is_invalid_response(method.validate(&Some(transaction_logs_info(
+        public_account,
+        transaction_id(2),
+        public_logs()
+    )))));
+    // A different account.
+    assert!(is_invalid_response(method.validate(&Some(transaction_logs_info(
+        private_account_id(),
+        transaction_id(1),
+        private_logs()
+    )))));
+}
+
+#[test]
+fn get_transaction_logs_verifies_log_visibility() {
+    let public_account = other_account_id();
+    let private_account = private_account_id();
+    assert!(public_account.is_public());
+    assert!(!private_account.is_public());
+
+    let method = |account_id| GetTransactionLogs {
+        account_id,
+        transaction_id: transaction_id(1),
+    };
+    let info = |account_id, log_details| {
+        Some(transaction_logs_info(account_id, transaction_id(1), log_details))
+    };
+
+    method(private_account)
+        .validate(&info(private_account, private_logs()))
+        .expect("a commitment must be accepted for a private account");
+
+    // A public account must come with its logs.
+    assert!(is_invalid_response(
+        method(public_account).validate(&info(public_account, private_logs()))
+    ));
+    // The node does not hold the logs of a private account.
+    assert!(is_invalid_response(
+        method(private_account).validate(&info(private_account, public_logs()))
+    ));
+}
+
+#[test]
+fn block_subscription_validates_each_block() {
+    let mut chain = MockChain::new();
+    chain.prove_next_block().unwrap();
+    chain.prove_next_block().unwrap();
+    let config = chain.protocol_config().clone();
+    let item = |block_num: usize, protocol_config: Option<&ProtocolConfig>| {
+        let (header, body, signatures, _proof) =
+            chain.proven_blocks()[block_num].clone().into_parts();
+        SubscribedBlock {
+            block: SignedBlock::new_unchecked(header, body, signatures),
+            committed_chain_tip: 2u32.into(),
+            protocol_config: protocol_config.cloned(),
+        }
+    };
+    // Validates `items` in order as one stream that starts at `block_from`, and returns the first
+    // error.
+    let validate = |block_from: u32, items: &[SubscribedBlock]| {
+        let mut method = BlockSubscription::new(block_from.into());
+        items.iter().try_for_each(|item| method.validate(item))
+    };
+
+    validate(0, &[item(0, Some(&config)), item(1, None), item(2, None)])
+        .expect("consecutive blocks with the configuration on the first block must be accepted");
+    validate(1, &[item(1, Some(&config)), item(2, Some(&config))])
+        .expect("a repeated configuration that matches the header must be accepted");
+
+    // The first block is not the requested block.
+    assert!(is_invalid_response(validate(1, &[item(0, Some(&config))])));
+    // The node skips a block.
+    assert!(is_invalid_response(validate(0, &[item(0, Some(&config)), item(2, None)])));
+    // The block has the expected number but does not follow the block before it.
+    let unlinked = SubscribedBlock { block: signed_block(1), ..item(1, None) };
+    assert!(is_invalid_response(validate(0, &[item(0, Some(&config)), unlinked])));
+    // The committed chain tip is below the block.
+    let stale_tip = SubscribedBlock {
+        committed_chain_tip: 1u32.into(),
+        ..item(2, Some(&config))
+    };
+    assert!(is_invalid_response(validate(2, &[stale_tip])));
+    // The header does not commit to the configuration.
+    let other_config = ProtocolConfig::current(AssetId::new_fungible(
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2.try_into().unwrap(),
+    ))
+    .unwrap();
+    assert!(is_invalid_response(validate(0, &[item(0, Some(&other_config))])));
+    // The first block has no configuration.
+    assert!(matches!(validate(0, &[item(0, None)]), Err(RpcError::ExpectedDataMissing(_))));
+}
+
+#[test]
+fn proof_subscription_validates_each_proof() {
+    let mut chain = MockChain::new();
+    chain.prove_next_block().unwrap();
+    chain.prove_next_block().unwrap();
+    let item = |block_num: usize| {
+        let (header, _body, _signatures, proof) =
+            chain.proven_blocks()[block_num].clone().into_parts();
+        SubscribedProof {
+            block_num: header.block_num(),
+            proof,
+            proven_chain_tip: 2u32.into(),
+        }
+    };
+    let validate = |block_from: u32, items: &[SubscribedProof]| {
+        let mut method = ProofSubscription::new(block_from.into());
+        items.iter().try_for_each(|item| method.validate(item))
+    };
+
+    validate(0, &[item(0), item(1), item(2)]).expect("consecutive proofs must be accepted");
+    validate(1, &[item(1), item(2)]).expect("proofs from a later block must be accepted");
+
+    // The first proof is not for the requested block.
+    assert!(is_invalid_response(validate(1, &[item(0)])));
+    // The node skips a block.
+    assert!(is_invalid_response(validate(0, &[item(0), item(2)])));
+    // The node repeats a block.
+    assert!(is_invalid_response(validate(0, &[item(0), item(0)])));
+    // The proven chain tip is below the block.
+    let stale_tip = SubscribedProof { proven_chain_tip: 1u32.into(), ..item(2) };
+    assert!(is_invalid_response(validate(2, &[stale_tip])));
 }

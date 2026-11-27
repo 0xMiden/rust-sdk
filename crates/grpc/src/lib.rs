@@ -1,7 +1,7 @@
 //! Default gRPC implementation of the `miden-client-core` `NodeRpcClient` trait.
 //!
 //! [`GrpcClient::call`] calls one endpoint of a specific node RPC API version, such as the types in
-//! [`v1`].
+//! [`v1`]. [`GrpcClient::subscribe`] opens one server-streaming endpoint.
 
 mod conversions;
 mod endpoint;
@@ -13,6 +13,10 @@ mod generated;
 
 mod rpc_method;
 pub use rpc_method::RpcMethod;
+
+mod rpc_stream_method;
+pub use miden_client_core::rpc::RpcStream;
+pub use rpc_stream_method::RpcStreamMethod;
 
 mod tonic_client;
 pub use tonic_client::GrpcClient;

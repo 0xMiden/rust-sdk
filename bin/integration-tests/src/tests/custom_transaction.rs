@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use miden_client::account::{AccountId, AccountType};
 use miden_client::asset::FungibleAsset;
-use miden_client::crypto::{MerkleStore, MerkleTree, NodeIndex, Poseidon2};
+use miden_client::crypto::{Hasher, MerkleStore, MerkleTree, NodeIndex};
 use miden_client::note::{
     Note,
     NoteAssets,
@@ -66,7 +66,7 @@ pub async fn test_transaction_request(client_config: ClientConfig) -> Result<()>
 
     // If these args were to be modified, the transaction would fail because the note code expects
     // these exact arguments
-    let note_args_commitment = Poseidon2::hash_elements(&NOTE_ARGS);
+    let note_args_commitment = Hasher::hash_elements(&NOTE_ARGS);
 
     let note_args_map = vec![(note.clone(), Some(note_args_commitment))];
     let mut advice_map = AdviceMap::default();
@@ -149,7 +149,7 @@ pub async fn test_merkle_store(client_config: ClientConfig) -> Result<()> {
 
     // If these args were to be modified, the transaction would fail because the note code expects
     // these exact arguments
-    let note_args_commitment = Poseidon2::hash_elements(&NOTE_ARGS);
+    let note_args_commitment = Hasher::hash_elements(&NOTE_ARGS);
 
     let note_args_map = vec![(note, Some(note_args_commitment))];
     let mut advice_map = AdviceMap::default();
@@ -221,7 +221,10 @@ pub async fn test_onchain_notes_sync_with_tag(client_config: ClientConfig) -> Re
 
     // Create accounts
     let basic_account_1 = client_1.insert_wallet(AccountType::Private).await?;
-    client_2.insert_wallet(AccountType::Private).await?;
+    // Client 2 only syncs notes, so its wallet needs no funds.
+    client_2
+        .insert_account(AccountSetup::wallet(AccountType::Private).unfunded())
+        .await?;
 
     client_1.sync_state().await?;
     client_2.sync_state().await?;

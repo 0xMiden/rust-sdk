@@ -21,26 +21,40 @@ use miden_client_core::transaction::{
     ForeignAccount,
     InputNoteAuthentication,
     NoteArgs,
+    RequestAuthArgs,
     RequestInputNote,
+    RequestTransactionScript,
     TransactionDetails,
     TransactionRequest,
     TransactionRequestBuilder,
-    TransactionScriptTemplate,
     TransactionStatus,
     TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
-use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{
+    AccountCodeUpgrade,
+    AccountHeader,
+    AccountPatch,
+    PartialAccount,
+    StorageMapKey,
+    StorageSlotName,
+};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::note::{Note, NoteDetails, NoteRecipient, NoteTag, PartialNote};
-use miden_protocol::transaction::{AccountInputs, TransactionScript};
-use miden_protocol::utils::serde::Serializable;
+use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag};
+use miden_protocol::transaction::{
+    AccountInputs,
+    ExecutedTransaction,
+    TransactionInputs,
+    TransactionMeasurements,
+    TransactionOutputs,
+    TransactionScript,
+};
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
-use crate::{ProtoDecodeError, ProtobufValue, read_upstream, required};
+use crate::{ProtoDecodeError, ProtobufValue, required};
 
 impl ProtobufValue for TransactionDetails {
     type Message = proto::TransactionDetails;
@@ -188,7 +202,7 @@ impl ProtobufValue for TransactionRequest {
                 .map(|block_num| (*block_num).into())
                 .collect(),
             input_notes: self.input_notes().iter().map(Into::into).collect(),
-            script_template: self.script_template().as_ref().map(Into::into),
+            transaction_script: Some(self.transaction_script().into()),
             expected_output_recipients: self.expected_output_recipients().map(Into::into).collect(),
             expected_future_notes: self
                 .expected_future_notes()
@@ -197,11 +211,8 @@ impl ProtobufValue for TransactionRequest {
             advice_map: Some(self.advice_map().into()),
             merkle_store: Some(self.merkle_store().into()),
             foreign_accounts: self.foreign_accounts().values().map(Into::into).collect(),
-            expiration_delta: self.expiration_delta().map(u32::from),
             ignore_invalid_input_notes: self.ignore_invalid_input_notes(),
-            script_arg: self.script_arg().map(Into::into),
-            auth_arg: self.auth_arg().map(Into::into),
-            fee_conversion_salt: self.fee_conversion_salt().map(Into::into),
+            auth_args: encode_auth_args(self.auth_args()),
             expected_ntx_scripts: self.expected_ntx_scripts().iter().map(Into::into).collect(),
             account_code_upgrade: self.account_code_upgrade().map(Into::into),
         };
@@ -245,8 +256,8 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(DecodeMessageExt::decode_and_verify)
         .collect::<Result<Vec<NoteRecipient>, _>>()?;
-    let (custom_script, own_output_notes) =
-        decode_script_template(request.script_template, &expected_output_recipients)?;
+    let script =
+        decode_script(required(request.transaction_script, MESSAGE, "transaction script")?)?;
     let expected_future_notes = request
         .expected_future_notes
         .into_iter()
@@ -261,19 +272,7 @@ fn decode_transaction_request_v1(
         .into_iter()
         .map(ForeignAccount::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    let expiration_delta = request
-        .expiration_delta
-        .map(|expiration_delta| {
-            u16::try_from(expiration_delta).map_err(|_| {
-                ProtoDecodeError::InvalidValue(format!(
-                    "expiration delta {expiration_delta} does not fit in 16 bits"
-                ))
-            })
-        })
-        .transpose()?;
-    let script_arg = request.script_arg.map(Word::try_from).transpose()?;
-    let auth_arg = request.auth_arg.map(Word::try_from).transpose()?;
-    let fee_conversion_salt = request.fee_conversion_salt.map(Word::try_from).transpose()?;
+    let auth_args = decode_auth_args(request.auth_args)?;
     let expected_ntx_scripts = request
         .expected_ntx_scripts
         .into_iter()
@@ -299,28 +298,27 @@ fn decode_transaction_request_v1(
             },
         };
     }
-    if let Some(script) = custom_script {
-        builder = builder.custom_script(script);
+    if let Some(custom_script) = script.custom_script {
+        builder = builder.custom_script(custom_script);
     }
-    builder = builder.own_output_notes(own_output_notes);
-    // This call replaces the recipients that `own_output_notes` added, so it receives all of them.
+    if let Some(script_arg) = script.script_arg {
+        builder = builder.script_arg(script_arg);
+    }
+    if let Some(expiration_delta) = script.expiration_delta {
+        builder = builder.expiration_delta(expiration_delta);
+    }
     builder = builder
+        .own_output_notes(script.own_output_notes)
         .expected_output_recipients(expected_output_recipients)
         .expected_future_notes(expected_future_notes)
         .extend_advice_map(advice_map)
         .extend_merkle_store(merkle_store.inner_nodes())
         .foreign_accounts(foreign_accounts)
         .expected_ntx_scripts(expected_ntx_scripts);
-    if let Some(expiration_delta) = expiration_delta {
-        builder = builder.expiration_delta(expiration_delta);
-    }
     if request.ignore_invalid_input_notes {
         builder = builder.ignore_invalid_input_notes();
     }
-    if let Some(script_arg) = script_arg {
-        builder = builder.script_arg(script_arg);
-    }
-    if let Some(salt) = fee_conversion_salt {
+    if let RequestAuthArgs::DefaultWithSalt(salt) = auth_args {
         builder = builder.fee_conversion_salt(salt);
     }
     if let Some(account_code_upgrade) = account_code_upgrade {
@@ -329,31 +327,52 @@ fn decode_transaction_request_v1(
 
     let mut transaction_request =
         builder.build().map_err(|err| ProtoDecodeError::InvalidValue(err.to_string()))?;
-    if let Some(auth_arg) = auth_arg {
-        set_auth_arg(&mut transaction_request, auth_arg)?;
+    // The builder takes explicit auth args only as a type that commits to them, so the decoded
+    // commitment is set on the built request. The decoded advice map must hold its preimage.
+    if let RequestAuthArgs::Explicit(commitment) = auth_args {
+        let preimage = transaction_request
+            .advice_map()
+            .get(&commitment)
+            .ok_or_else(|| {
+                ProtoDecodeError::InvalidValue(format!(
+                    "advice map holds no preimage for the auth args {}",
+                    commitment.to_hex()
+                ))
+            })?
+            .to_vec();
+        transaction_request.commit_auth_args(commitment, preimage);
     }
 
     Ok(transaction_request)
 }
 
-/// Sets `auth_arg` on `transaction_request`.
-///
-/// A request always stores the preimage of its auth arg in its advice map.
-///
-/// # Errors
-/// - If the advice map of the request has no preimage for `auth_arg`.
-fn set_auth_arg(
-    transaction_request: &mut TransactionRequest,
-    auth_arg: Word,
-) -> Result<(), ProtoDecodeError> {
-    let preimage = transaction_request.advice_map().get(&auth_arg).ok_or_else(|| {
-        ProtoDecodeError::InvalidValue(format!(
-            "advice map has no preimage for auth arg {auth_arg}"
-        ))
-    })?;
-    let preimage = preimage.to_vec();
-    transaction_request.commit_auth_args(auth_arg, preimage);
-    Ok(())
+/// Decodes the auth args of a request. An absent message means the default auth args.
+fn decode_auth_args(
+    auth_args: Option<proto::RequestAuthArgs>,
+) -> Result<RequestAuthArgs, ProtoDecodeError> {
+    use proto::request_auth_args::AuthArgs;
+
+    let Some(auth_args) = auth_args else {
+        return Ok(RequestAuthArgs::Default);
+    };
+
+    match required(auth_args.auth_args, "request auth args", "auth args")? {
+        AuthArgs::DefaultWithSalt(salt) => Ok(RequestAuthArgs::DefaultWithSalt(salt.try_into()?)),
+        AuthArgs::Explicit(commitment) => Ok(RequestAuthArgs::Explicit(commitment.try_into()?)),
+    }
+}
+
+/// Encodes the auth args of a request. The default auth args have no message.
+fn encode_auth_args(auth_args: &RequestAuthArgs) -> Option<proto::RequestAuthArgs> {
+    use proto::request_auth_args::AuthArgs;
+
+    let auth_args = match auth_args {
+        RequestAuthArgs::Default => return None,
+        RequestAuthArgs::DefaultWithSalt(salt) => AuthArgs::DefaultWithSalt(salt.into()),
+        RequestAuthArgs::Explicit(commitment) => AuthArgs::Explicit(commitment.into()),
+    };
+
+    Some(proto::RequestAuthArgs { auth_args: Some(auth_args) })
 }
 
 /// Decodes an input note of a request into its authentication and its arguments.
@@ -394,73 +413,74 @@ impl From<&RequestInputNote> for proto::RequestInputNote {
     }
 }
 
-/// Decodes the transaction script template of a request into the custom script and the own output
-/// notes that the builder takes. At most one of the two is set, and neither is set when the request
-/// has no template.
-///
-/// The own output notes are built from their partial notes and from `expected_output_recipients`.
-fn decode_script_template(
-    template: Option<proto::TransactionScriptTemplate>,
-    expected_output_recipients: &[NoteRecipient],
-) -> Result<(Option<TransactionScript>, Vec<Note>), ProtoDecodeError> {
-    use proto::transaction_script_template::Template;
+/// The values of a request script that the builder takes.
+#[derive(Default)]
+struct DecodedScript {
+    custom_script: Option<TransactionScript>,
+    script_arg: Option<Word>,
+    own_output_notes: Vec<Note>,
+    expiration_delta: Option<u16>,
+}
 
-    let Some(template) = template else {
-        return Ok((None, Vec::new()));
-    };
+/// Decodes the script of a request into the values that the builder takes. Every value is empty
+/// when the request has no script.
+fn decode_script(
+    script: proto::RequestTransactionScript,
+) -> Result<DecodedScript, ProtoDecodeError> {
+    use proto::request_transaction_script::Script;
 
-    match required(template.template, "transaction script template", "variant")? {
-        Template::CustomScript(script) => Ok((Some(script.decode_and_verify()?), Vec::new())),
-        Template::SendNotes(send_notes) => {
-            let notes = send_notes
-                .notes
+    match required(script.script, "request transaction script", "variant")? {
+        Script::Empty(_) => Ok(DecodedScript::default()),
+        Script::Generated(generated) => Ok(DecodedScript {
+            own_output_notes: generated
+                .own_output_notes
                 .into_iter()
-                .map(|note| own_output_note(note, expected_output_recipients))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((None, notes))
-        },
+                .map(DecodeMessageExt::decode_and_verify)
+                .collect::<Result<Vec<_>, _>>()?,
+            expiration_delta: generated
+                .expiration_delta
+                .map(decode_expiration_delta)
+                .transpose()?,
+            ..Default::default()
+        }),
+        Script::Custom(custom) => Ok(DecodedScript {
+            custom_script: Some(
+                required(custom.script, "custom script", "script")?.decode_and_verify()?,
+            ),
+            script_arg: Some(required(custom.arg, "custom script", "arg")?.try_into()?),
+            ..Default::default()
+        }),
     }
 }
 
-/// Builds an own output note from its partial note and the recipient that the partial note commits
-/// to.
-fn own_output_note(
-    note: miden_objects::proto::note::PartialNote,
-    recipients: &[NoteRecipient],
-) -> Result<Note, ProtoDecodeError> {
-    let partial: PartialNote = note.decode_and_verify()?;
-    let recipient = recipients
-        .iter()
-        .find(|recipient| recipient.digest() == partial.recipient_digest())
-        .ok_or_else(|| {
-            ProtoDecodeError::InvalidValue(format!(
-                "own output note has no expected recipient with digest {}",
-                partial.recipient_digest()
-            ))
-        })?;
-
-    Ok(Note::with_attachments(
-        partial.assets().clone(),
-        *partial.partial_metadata(),
-        recipient.clone(),
-        partial.attachments().clone(),
-    ))
+/// Decodes an expiration delta, which the builder takes as a 16-bit value.
+fn decode_expiration_delta(expiration_delta: u32) -> Result<u16, ProtoDecodeError> {
+    u16::try_from(expiration_delta).map_err(|_| {
+        ProtoDecodeError::InvalidValue(format!(
+            "expiration delta {expiration_delta} does not fit in 16 bits"
+        ))
+    })
 }
 
-impl From<&TransactionScriptTemplate> for proto::TransactionScriptTemplate {
-    fn from(template: &TransactionScriptTemplate) -> Self {
-        use proto::transaction_script_template::{SendNotes, Template};
+impl From<&RequestTransactionScript> for proto::RequestTransactionScript {
+    fn from(script: &RequestTransactionScript) -> Self {
+        use proto::request_transaction_script::{Custom, Empty, Generated, Script};
 
-        let template = match template {
-            TransactionScriptTemplate::CustomScript(script) => {
-                Template::CustomScript(script.into())
+        let script = match script {
+            RequestTransactionScript::Empty => Script::Empty(Empty {}),
+            RequestTransactionScript::Generated { own_output_notes, expiration_delta } => {
+                Script::Generated(Generated {
+                    own_output_notes: own_output_notes.iter().map(Into::into).collect(),
+                    expiration_delta: expiration_delta.map(|delta| u32::from(delta.get())),
+                })
             },
-            TransactionScriptTemplate::SendNotes(notes) => Template::SendNotes(SendNotes {
-                notes: notes.iter().map(Into::into).collect(),
+            RequestTransactionScript::Custom { script, arg } => Script::Custom(Custom {
+                script: Some(script.into()),
+                arg: Some((*arg).into()),
             }),
         };
 
-        Self { template: Some(template) }
+        Self { script: Some(script) }
     }
 }
 
@@ -633,6 +653,124 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
     }
 }
 
+// EXECUTED TRANSACTION
+// ================================================================================================
+
+/// The transaction inputs are not authenticated against a trusted chain. Decode an executed
+/// transaction only from a trusted source.
+impl ProtobufValue for ExecutedTransaction {
+    type Message = proto::ExecutedTransaction;
+
+    fn to_proto(&self) -> Self::Message {
+        Self::Message {
+            inputs: Some(self.tx_inputs().into()),
+            final_account: Some(self.final_account().into()),
+            output_notes: Some(self.output_notes().into()),
+            expiration_block_num: Some(self.expiration_block_num().into()),
+            logs: Some(self.logs().into()),
+            code_patch: Some(self.code_patch().into()),
+            account_patch: Some(self.account_patch().into()),
+            measurements: Some(self.measurements().into()),
+        }
+    }
+
+    fn from_proto(transaction: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "executed transaction";
+
+        let tx_inputs: TransactionInputs =
+            required(transaction.inputs, MESSAGE, "inputs")?.decode_and_build_unchecked()?;
+        let final_account: AccountHeader =
+            required(transaction.final_account, MESSAGE, "final account")?.decode_and_verify()?;
+        let output_notes =
+            required(transaction.output_notes, MESSAGE, "output notes")?.decode_and_verify()?;
+        let expiration_block_num =
+            required(transaction.expiration_block_num, MESSAGE, "expiration block number")?
+                .decode_and_verify()?;
+        let logs = required(transaction.logs, MESSAGE, "logs")?.decode_and_verify()?;
+        let code_patch =
+            required(transaction.code_patch, MESSAGE, "code patch")?.decode_and_verify()?;
+        let account_patch: AccountPatch =
+            required(transaction.account_patch, MESSAGE, "account patch")?.decode_and_verify()?;
+        let measurements =
+            required(transaction.measurements, MESSAGE, "measurements")?.try_into()?;
+
+        // `ExecutedTransaction::new` panics on this mismatch.
+        if tx_inputs.account().id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "transaction inputs and transaction outputs name different accounts".to_string(),
+            ));
+        }
+        if account_patch.id() != final_account.id() {
+            return Err(ProtoDecodeError::InvalidValue(
+                "account patch and transaction outputs name different accounts".to_string(),
+            ));
+        }
+
+        // The transaction executor accepts a transaction only if the kernel commits to the patch
+        // that the host built. The commitment of the patch is thus the commitment of the outputs.
+        let tx_outputs = TransactionOutputs::new(
+            final_account,
+            account_patch.to_commitment(),
+            output_notes,
+            expiration_block_num,
+            logs,
+            code_patch,
+        );
+
+        Ok(ExecutedTransaction::new(tx_inputs, tx_outputs, account_patch, measurements))
+    }
+}
+
+impl From<&TransactionMeasurements> for proto::TransactionMeasurements {
+    fn from(measurements: &TransactionMeasurements) -> Self {
+        Self {
+            prologue: measurements.prologue as u64,
+            notes_processing: measurements.notes_processing as u64,
+            note_execution: measurements
+                .note_execution
+                .iter()
+                .map(|(note_id, cycles)| proto::transaction_measurements::NoteExecution {
+                    note_id: Some(note_id.into()),
+                    cycles: *cycles as u64,
+                })
+                .collect(),
+            tx_script_processing: measurements.tx_script_processing as u64,
+            epilogue: measurements.epilogue as u64,
+            auth_procedure: measurements.auth_procedure as u64,
+        }
+    }
+}
+
+impl TryFrom<proto::TransactionMeasurements> for TransactionMeasurements {
+    type Error = ProtoDecodeError;
+
+    fn try_from(measurements: proto::TransactionMeasurements) -> Result<Self, Self::Error> {
+        let note_execution = measurements
+            .note_execution
+            .into_iter()
+            .map(|entry| {
+                let note_id: NoteId =
+                    required(entry.note_id, "note execution", "note id")?.decode_and_verify()?;
+                Ok((note_id, cycle_count(entry.cycles)?))
+            })
+            .collect::<Result<_, ProtoDecodeError>>()?;
+
+        Ok(Self {
+            prologue: cycle_count(measurements.prologue)?,
+            notes_processing: cycle_count(measurements.notes_processing)?,
+            note_execution,
+            tx_script_processing: cycle_count(measurements.tx_script_processing)?,
+            epilogue: cycle_count(measurements.epilogue)?,
+            auth_procedure: cycle_count(measurements.auth_procedure)?,
+        })
+    }
+}
+
+fn cycle_count(cycles: u64) -> Result<usize, ProtoDecodeError> {
+    usize::try_from(cycles)
+        .map_err(|_| ProtoDecodeError::InvalidValue(format!("cycle count {cycles} is too large")))
+}
+
 // TRANSACTION STORE UPDATE
 // ================================================================================================
 
@@ -642,7 +780,7 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn to_proto(&self) -> Self::Message {
         let note_updates = self.note_updates();
         Self::Message {
-            executed_transaction: self.executed_transaction().to_bytes(),
+            executed_transaction: Some(self.executed_transaction().to_proto()),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
@@ -668,7 +806,11 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction = read_upstream(&update.executed_transaction)?;
+        let executed_transaction = ExecutedTransaction::from_proto(required(
+            update.executed_transaction,
+            MESSAGE,
+            "executed transaction",
+        )?)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
@@ -772,19 +914,25 @@ mod tests {
     use miden_protocol::block::BlockNumber;
     use miden_protocol::block::account_tree::AccountTree;
     use miden_protocol::crypto::merkle::MerkleTree;
-    use miden_protocol::crypto::rand::{FeltRng, RandomCoin};
+    use miden_protocol::crypto::rand::EidosRandomCoin;
     use miden_protocol::note::{Note, NoteScript, NoteTag, NoteType};
     use miden_protocol::testing::account_id::{
         ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
+    use miden_protocol::transaction::{
+        AccountInputs,
+        ExecutedTransaction,
+        InputNote,
+        TransactionScript,
+    };
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
     use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
+    use rand::RngExt;
 
     use super::{
         AccountFetch,
@@ -799,7 +947,7 @@ mod tests {
         VaultFetch,
         proto,
     };
-    use crate::{decode, encode};
+    use crate::{ProtoDecodeError, decode, encode};
 
     /// A store update with an executed transaction, every note update type, an output note and
     /// every tag source.
@@ -860,6 +1008,19 @@ mod tests {
     }
 
     #[test]
+    fn executed_transaction_without_inputs_is_rejected() {
+        let bytes = prost::Message::encode_to_vec(&proto::ExecutedTransaction::default());
+
+        assert!(matches!(
+            decode::<ExecutedTransaction>(&bytes),
+            Err(ProtoDecodeError::MissingField {
+                message: "executed transaction",
+                field: "inputs"
+            })
+        ));
+    }
+
+    #[test]
     fn note_update_type_unspecified_is_rejected() {
         assert!(NoteUpdateType::try_from(proto::NoteUpdateType::Unspecified).is_err());
     }
@@ -896,7 +1057,7 @@ mod tests {
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let mut notes = notes(8, &mut rng);
 
         let private_account = mock_private_account([0; 32]);
@@ -910,24 +1071,28 @@ mod tests {
             (&prefetched_account).into(),
             account_tree.open(prefetched_account.id()),
         );
-        let merkle_tree =
-            MerkleTree::new([rng.draw_word(), rng.draw_word(), rng.draw_word(), rng.draw_word()])
-                .unwrap();
+        let merkle_tree = MerkleTree::new([
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+            rng.random::<Word>(),
+        ])
+        .unwrap();
 
         let request = TransactionRequestBuilder::new()
             .block_numbers([BlockNumber::from(1u32), BlockNumber::from(3u32)])
             .input_notes([(notes.pop().unwrap(), None)])
             .explicit_input_notes([(
                 InputNote::unauthenticated(notes.pop().unwrap()),
-                Some(rng.draw_word()),
+                Some(rng.random::<Word>()),
             )])
-            .input_notes([(notes.pop().unwrap(), Some(rng.draw_word()))])
+            .input_notes([(notes.pop().unwrap(), Some(rng.random::<Word>()))])
             .expected_output_recipients([notes.pop().unwrap().recipient().clone()])
             .expected_future_notes(vec![(
                 notes.pop().unwrap().into(),
                 NoteTag::with_account_target(sender_id),
             )])
-            .extend_advice_map([(rng.draw_word(), vec![Felt::from(1u32), Felt::from(2u32)])])
+            .extend_advice_map([(rng.random::<Word>(), vec![Felt::from(1u32), Felt::from(2u32)])])
             .extend_merkle_store(merkle_tree.inner_nodes())
             .foreign_accounts([
                 ForeignAccount::public(
@@ -947,8 +1112,7 @@ mod tests {
             ])
             .own_output_notes([notes.pop().unwrap(), notes.pop().unwrap()])
             .expiration_delta(10)
-            .script_arg(rng.draw_word())
-            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.draw_word()))
+            .auth_args(&MultisigAuthArgs::new(BlockNumber::from(7u32), rng.random::<Word>()))
             .expected_ntx_scripts(vec![notes.pop().unwrap().recipient().script().clone()])
             .account_code_upgrade(AccountCode::mock())
             .build()
@@ -960,7 +1124,7 @@ mod tests {
     /// A request with a custom script and the fields that a send notes request cannot have.
     #[test]
     fn transaction_request_with_custom_script_round_trips() {
-        let mut rng = RandomCoin::new(Word::default());
+        let mut rng = EidosRandomCoin::new(Word::default());
         let note_script = NoteScript::mock();
         let script =
             TransactionScript::from_parts(note_script.mast(), note_script.entrypoint()).unwrap();
@@ -968,8 +1132,9 @@ mod tests {
         let request = TransactionRequestBuilder::new()
             .input_notes(notes(2, &mut rng).into_iter().map(|note| (note, None)))
             .custom_script(script)
+            .script_arg(rng.random::<Word>())
             .ignore_invalid_input_notes()
-            .fee_conversion_salt(rng.draw_word())
+            .fee_conversion_salt(rng.random::<Word>())
             .build()
             .unwrap();
 
@@ -990,7 +1155,7 @@ mod tests {
             .with_component(MockAccountComponent::with_empty_slots())
             .with_component(AuthSingleSig::new(Approver::new(
                 PublicKeyCommitment::from(EMPTY_WORD),
-                AuthScheme::Falcon512Poseidon2,
+                AuthScheme::Falcon512Eidos,
             )))
             .account_type(AccountType::Private)
             .build_existing()
@@ -998,7 +1163,7 @@ mod tests {
     }
 
     /// Returns `count` P2ID notes with different serial numbers and amounts.
-    fn notes(count: u64, rng: &mut RandomCoin) -> Vec<Note> {
+    fn notes(count: u64, rng: &mut EidosRandomCoin) -> Vec<Note> {
         let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
         let target_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();

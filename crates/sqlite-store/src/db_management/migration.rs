@@ -15,7 +15,7 @@ use super::schema::SchemaHash;
 /// fingerprint the schema has once it has been applied.
 pub(crate) const CLIENT_MIGRATIONS: [SqliteMigration; 1] = [SqliteMigration::new(
     include_str!("../migrations/0001_init.sql"),
-    "0xad62d7ac7da10ac3876f87df916b78c4e745dbaf3e282db90323d6717f9199cf",
+    "0x5c58ada9def96c3e35c6cbb87f11aa7d942f39004857c8d7770356f052921681",
 )];
 
 /// The migrations this client ships.

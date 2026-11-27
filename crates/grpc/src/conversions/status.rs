@@ -2,11 +2,14 @@ use miden_client_core::errors::RpcError;
 use miden_client_core::rpc::domain::status::{
     BlockProducerStatusInfo,
     MempoolStatsInfo,
+    NetworkNoteSponsorship,
     NetworkNoteStatus,
     NetworkNoteStatusInfo,
     RpcStatusInfo,
 };
+use miden_objects::DecodeMessageExt;
 
+use super::MissingFieldHelper;
 use crate::generated as proto;
 
 fn network_note_status_from_proto(value: i32) -> Result<NetworkNoteStatus, RpcError> {
@@ -37,12 +40,42 @@ impl TryFrom<proto::node::v1::GetNetworkNoteStatusResponse> for NetworkNoteStatu
         let last_error = value.last_error;
         let attempt_count = value.attempt_count;
         let last_attempt_block_num = value.last_attempt_block_num;
+        let sponsorships = value
+            .sponsorships
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(NetworkNoteStatusInfo {
             status,
             last_error,
             attempt_count,
             last_attempt_block_num,
+            sponsorships,
+        })
+    }
+}
+
+impl TryFrom<proto::node::v1::NetworkNoteSponsorship> for NetworkNoteSponsorship {
+    type Error = RpcError;
+
+    fn try_from(value: proto::node::v1::NetworkNoteSponsorship) -> Result<Self, Self::Error> {
+        let note_id = value
+            .note_id
+            .ok_or(proto::node::v1::NetworkNoteSponsorship::missing_field(stringify!(note_id)))?
+            .decode_and_verify()?;
+        let fee_asset = value
+            .fee_asset
+            .ok_or(proto::node::v1::NetworkNoteSponsorship::missing_field(stringify!(fee_asset)))?
+            .decode_and_verify()?;
+
+        Ok(NetworkNoteSponsorship {
+            note_id,
+            fee_asset,
+            reclaim_height: value.reclaim_height,
+            committed_block_num: value.committed_block_num,
+            last_error: value.last_error,
+            last_attempt_block_num: value.last_attempt_block_num,
         })
     }
 }

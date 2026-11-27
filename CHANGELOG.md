@@ -30,6 +30,7 @@
 * [rust] `TestClient` in `miden_client::testing::common` emits `tracing` events with the account ID, transaction ID and note IDs when it executes and submits transactions. The integration tests log through `tracing` instead of printing to stdout and stderr ([#2691](https://github.com/0xMiden/rust-sdk/pull/2691)).
 * [test] The integration tests no longer fund accounts that never submit a transaction ([#2839](https://github.com/0xMiden/rust-sdk/pull/2839)).
 * [test] The integration tests fund each account with enough of the native asset to pay for at least 10 transactions at the chain's base fee, instead of a fixed 10,000,000 base units ([#2838](https://github.com/0xMiden/rust-sdk/pull/2838)).
+* [test] The integration tests drop or merge tests that repeat the flow of another test, and the custom prover error check moves to the unit tests ([#2841](https://github.com/0xMiden/rust-sdk/pull/2841)).
 
 ### Features
 

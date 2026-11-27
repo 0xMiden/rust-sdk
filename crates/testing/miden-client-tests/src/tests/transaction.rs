@@ -445,11 +445,15 @@ async fn prover_fallback_pattern_allows_retry_with_different_prover() {
     ))
     .await;
 
-    // Verify first attempt fails with TransactionProvingError
-    assert!(
-        matches!(result, Err(ClientError::TransactionProvingError(_))),
-        "expected TransactionProvingError on first attempt"
-    );
+    // Verify first attempt fails with TransactionProvingError, and that the error of the prover
+    // reaches the caller unchanged.
+    let Err(ClientError::TransactionProvingError(TransactionProverError::Other {
+        error_msg, ..
+    })) = result
+    else {
+        panic!("expected TransactionProvingError on first attempt, got {result:?}");
+    };
+    assert_eq!(error_msg.as_ref(), "simulated remote prover failure");
 
     // Retry with the client's default prover (which should work)
     let tx_id = Box::pin(client.submit_new_transaction(faucet.id(), tx_request)).await;

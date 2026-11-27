@@ -46,13 +46,9 @@ use miden_client::testing::common::*;
 use miden_client::transaction::{
     DiscardCause,
     PaymentNoteDescription,
-    ProvenTransaction,
-    TransactionProver,
-    TransactionProverError,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
-    TransactionWitness,
 };
 use miden_client::{ClientError, Felt, Word};
 use miden_client_sqlite_store::SqliteStore;
@@ -632,7 +628,8 @@ pub async fn test_sync_transactions_chunks_when_exceeding_limits(
 }
 
 /// This test runs 3 mint transactions that get included in different blocks so that once we sync we
-/// can check that each transaction gets marked as committed in the corresponding block.
+/// can check that each transaction gets marked as committed in the corresponding block. It then
+/// prunes the account history of the faucet and checks that the current state does not change.
 pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_without_sync(
     client_config: ClientConfig,
 ) -> Result<()> {
@@ -781,6 +778,20 @@ pub async fn test_multiple_transactions_can_be_committed_in_different_blocks_wit
             panic!("All three TXs should be committed in different blocks")
         },
     }
+
+    // Each mint advanced the faucet nonce, so the store holds older committed states of the faucet.
+    // Pruning up to nonce 1 deletes them and leaves the current state unchanged.
+    let faucet_before = client.get_account(faucet_account_id).await?.unwrap();
+    let deleted = client.prune_account_history(faucet_account_id, Felt::from(1u32)).await?;
+    assert!(deleted > 0, "Should have pruned old committed states");
+
+    let faucet_after = client.get_account(faucet_account_id).await?.unwrap();
+    assert_eq!(
+        faucet_before.to_commitment(),
+        faucet_after.to_commitment(),
+        "Account state should be identical after pruning"
+    );
+    assert!(client.get_account(from_account_id).await?.is_some());
     Ok(())
 }
 
@@ -1143,60 +1154,6 @@ pub async fn test_discarded_transaction(client_config: ClientConfig) -> Result<(
         account_hash_after_sync, account_hash_before_tx,
         "Account hash should be rolled back to the value before the transaction"
     );
-    Ok(())
-}
-
-struct AlwaysFailingProver;
-
-impl AlwaysFailingProver {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait::async_trait]
-impl TransactionProver for AlwaysFailingProver {
-    async fn prove(
-        &self,
-        _witness: TransactionWitness,
-    ) -> Result<ProvenTransaction, TransactionProverError> {
-        return Err(TransactionProverError::other("This prover always fails"));
-    }
-}
-
-pub async fn test_custom_transaction_prover_error_caught(
-    client_config: ClientConfig,
-) -> Result<()> {
-    let mut client = client_config.into_client().await?;
-    let (first_regular_account, faucet_account_header) =
-        client.setup_wallet_and_faucet(AccountType::Private).await?;
-
-    let from_account_id = first_regular_account.id();
-    let faucet_account_id = faucet_account_header.id();
-
-    let fungible_asset = FungibleAsset::new(faucet_account_id, MINT_AMOUNT).unwrap();
-
-    let tx_request = TransactionRequestBuilder::new().build_mint_fungible_asset(
-        fungible_asset,
-        from_account_id,
-        NoteType::Private,
-        client.rng(),
-    )?;
-
-    let transaction_result =
-        client.execute_transaction(faucet_account_id, tx_request.clone()).await.unwrap();
-
-    let result = client
-        .prove_transaction_with(&transaction_result, Arc::new(AlwaysFailingProver::new()))
-        .await;
-
-    let Err(ClientError::TransactionProvingError(TransactionProverError::Other {
-        error_msg, ..
-    })) = result
-    else {
-        panic!("expected different prover error");
-    };
-    assert_eq!(error_msg.as_ref(), "This prover always fails");
     Ok(())
 }
 
@@ -1775,50 +1732,6 @@ pub async fn test_get_account_returns_vault_details(client_config: ClientConfig)
         assets.is_empty(),
         "expected empty assets when vault commitment is not requested"
     );
-
-    Ok(())
-}
-
-/// Tests that pruning account history removes old committed states without affecting the current
-/// account state. Sets up a faucet, mints twice to build up history, then verifies that
-/// `prune_account_history` deletes intermediate states while keeping the account readable and
-/// unchanged.
-pub async fn test_prune_account_history(client_config: ClientConfig) -> Result<()> {
-    let mut client = client_config.into_client().await?;
-
-    let (basic_account, faucet_account) =
-        client.setup_wallet_and_faucet(AccountType::Private).await?;
-
-    let faucet_id = faucet_account.id();
-    let wallet_id = basic_account.id();
-
-    // Mint twice: each mint advances the faucet nonce, creating historical entries.
-    let (tx_id_1, _) = client.mint_note(wallet_id, faucet_id, NoteType::Public).await?;
-    client.wait_for_tx(tx_id_1).await?;
-
-    let (tx_id_2, _) = client.mint_note(wallet_id, faucet_id, NoteType::Public).await?;
-    client.wait_for_tx(tx_id_2).await?;
-
-    // Record faucet state before pruning.
-    let faucet_before = client.get_account(faucet_id).await?.unwrap();
-
-    // Prune faucet history up to nonce 1: should remove old committed states.
-    let deleted = client.prune_account_history(faucet_id, Felt::from(1u32)).await?;
-    assert!(deleted > 0, "Should have pruned old committed states");
-
-    // Account should still be fully readable and unchanged.
-    let faucet_after = client.get_account(faucet_id).await?.unwrap();
-    assert_eq!(
-        faucet_before.to_commitment(),
-        faucet_after.to_commitment(),
-        "Account state should be identical after pruning"
-    );
-
-    // Both accounts should still be readable.
-    assert!(client.get_account(wallet_id).await?.is_some());
-    assert!(client.get_account(faucet_id).await?.is_some());
-
-    info!(deleted_single = deleted, "Prune account history test completed");
 
     Ok(())
 }

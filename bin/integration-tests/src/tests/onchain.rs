@@ -37,11 +37,15 @@ use miden_client::{ClientError, EMPTY_WORD, Word};
 use rand::Rng;
 use tracing::info;
 
+use super::note_tags::assert_no_note_sourced_tags;
 use crate::ClientConfig;
 
 // TESTS
 // ================================================================================================
 
+/// Mints a public note to an account of another client, transfers part of the assets to a third
+/// client, and checks what each client tracks. The client that mints the note must register no tag
+/// for its output note, and must still get the commitment and the inclusion proof of the note.
 pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> {
     // Client 1 is an private faucet which will mint an onchain note for client 2
     let mut client_1 = client_config.clone().into_client().await?;
@@ -83,17 +87,37 @@ pub async fn test_onchain_notes_flow(client_config: ClientConfig) -> Result<()> 
         .pop()
         .with_context(|| "no expected output notes found in onchain transaction from faucet")?
         .clone();
-    client_1.execute_tx_and_sync(faucet_account.id(), tx_request).await?;
+    let tx_id = Box::pin(client_1.submit_new_transaction(faucet_account.id(), tx_request)).await?;
 
-    // Client 2's account should receive the note here:
+    // The note goes to an account that client 1 does not track. Output notes register no tag,
+    // because the commitment and the inclusion proof arrive through the transaction sync of the
+    // account.
+    assert_no_note_sourced_tags(&client_1, "after applying a mint to an external account").await?;
+    client_1.wait_for_tx(tx_id).await?;
+
+    let output_note = client_1
+        .get_output_notes(NoteFilter::Unique(note.id()))
+        .await?
+        .pop()
+        .context("minted output note should be tracked")?;
+    assert!(output_note.is_committed(), "output note should be committed after sync");
+    assert!(
+        output_note.inclusion_proof().is_some(),
+        "committed output note should carry an inclusion proof from transaction sync"
+    );
+    assert_no_note_sourced_tags(&client_1, "after syncing the mint transaction").await?;
+
+    // Client 2's account should receive the note here through its account tag:
     client_2.sync_state().await?;
 
-    // Assert that the note is the same
-    let received_note: InputNote = client_2
+    // Assert that the note is the same. The conversion below succeeds even without an inclusion
+    // proof, so the committed state is asserted explicitly.
+    let received_record = client_2
         .get_input_note(note.id())
         .await?
-        .with_context(|| format!("Note {} not found in client_2", note.id()))?
-        .try_into()?;
+        .with_context(|| format!("Note {} not found in client_2", note.id()))?;
+    assert!(received_record.is_committed(), "received note should be committed");
+    let received_note: InputNote = received_record.try_into()?;
     assert_eq!(received_note.note().id(), note.id());
 
     // consume the note

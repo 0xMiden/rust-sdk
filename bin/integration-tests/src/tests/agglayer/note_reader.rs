@@ -1,6 +1,8 @@
 use anyhow::Result;
-use miden_agglayer::{ExitRoot, UpdateGerNote};
+use miden_agglayer::{AggLayerBridge, ExitRoot, UpdateGerNote};
 use miden_client::transaction::TransactionRequestBuilder;
+use miden_protocol::account::StorageMapKey;
+use miden_protocol::{Hasher, ONE, Word, ZERO};
 
 use super::AgglayerScenario;
 use crate::ClientConfig;
@@ -17,6 +19,9 @@ use crate::ClientConfig;
 /// network transaction within the same batch it's created, so the note is erased from the block
 /// body. The same client then reads them back via `input_note_reader(bridge_id)` in consumption
 /// order. Consumed notes have no id, so they're matched by their details commitment.
+///
+/// After the bridge consumes each note, the test also checks that the bridge registered the GER of
+/// the note in its GER map.
 pub async fn test_agglayer_note_reader_reads_consumed_notes(
     client_config: ClientConfig,
 ) -> Result<()> {
@@ -35,7 +40,8 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
     // distinct, increasing blocks and the reader's order is asserted at every step.
     let mut expected = Vec::with_capacity(NOTE_COUNT);
     for _ in 0..NOTE_COUNT {
-        let ger = ExitRoot::from(rand::random::<[u8; 32]>());
+        let ger_bytes: [u8; 32] = rand::random();
+        let ger = ExitRoot::from(ger_bytes);
         let note = UpdateGerNote::create(ger, ger_manager_id, bridge_id, ger_manager.rng())?;
         expected.push(note.details_commitment());
 
@@ -61,6 +67,24 @@ pub async fn test_agglayer_note_reader_reads_consumed_notes(
         assert_eq!(
             consumed, expected,
             "InputNoteReader should return the bridge's consumed UPDATE_GER notes in consumption order"
+        );
+
+        // The bridge consumed the note, so the synced bridge state holds the GER in its GER map.
+        let ger_elements = ger.to_elements();
+        let ger_lower: Word = ger_elements[0..4].try_into().expect("to_elements returns 8 felts");
+        let ger_upper: Word = ger_elements[4..8].try_into().expect("to_elements returns 8 felts");
+        let ger_key = Hasher::hash_double_word(&[ger_lower, ger_upper]);
+        let stored_value = ger_manager
+            .account_reader(bridge_id)
+            .get_storage_map_item(
+                AggLayerBridge::ger_map_slot_name().clone(),
+                StorageMapKey::new(ger_key),
+            )
+            .await?;
+        assert_eq!(
+            stored_value,
+            Word::new([ONE, ZERO, ZERO, ZERO]),
+            "GER {ger_bytes:02x?} was not registered in the bridge account"
         );
     }
 

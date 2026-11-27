@@ -16,8 +16,8 @@ use crate::store::{InputNoteRecord, NoteFilter, Store};
 ///
 /// # Ordering
 ///
-/// Notes are returned in on-chain consumption order: first by block number, then by per-account
-/// transaction order within the block. Notes consumed by the same transaction are returned in a
+/// Notes are returned in on-chain consumption order: first by block number, then by the position of
+/// the consuming transaction in the block. Notes consumed by the same transaction are returned in a
 /// deterministic order that is consistent across calls.
 pub struct InputNoteReader {
     store: Arc<dyn Store>,

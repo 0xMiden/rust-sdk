@@ -47,6 +47,7 @@ impl TryFrom<proto::node::v1::TransactionRecord> for TransactionRecord {
 
         Ok(Self::new(
             block_num,
+            value.transaction_index,
             transaction_header,
             output_notes,
             erased_output_notes,

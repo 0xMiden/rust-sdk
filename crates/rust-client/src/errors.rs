@@ -132,7 +132,7 @@ pub enum ClientError {
     #[error("failed to prove batch")]
     ProvenBatchError(#[from] ProvenBatchError),
     #[error(
-        "cannot recover consumed note {0}: its nullifier has no position in the sync's transaction execution order"
+        "cannot recover consumed note {0}: the sync did not receive the transaction that consumed it"
     )]
     MissingConsumedNoteOrder(NoteId),
     #[error(

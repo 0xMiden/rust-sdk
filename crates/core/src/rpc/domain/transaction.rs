@@ -24,6 +24,8 @@ use super::note::CommittedNote;
 pub struct TransactionRecord {
     /// Block number in which the transaction was included.
     pub block_num: BlockNumber,
+    /// Position of the transaction within its block.
+    pub transaction_index: u32,
     /// A transaction header.
     pub transaction_header: TransactionHeader,
     /// Output notes with inclusion proofs, as returned by the node's `SyncTransactions` response.
@@ -43,6 +45,7 @@ impl TransactionRecord {
     /// Creates a new [`TransactionRecord`].
     pub fn new(
         block_num: BlockNumber,
+        transaction_index: u32,
         transaction_header: TransactionHeader,
         output_notes: Vec<CommittedNote>,
         erased_output_notes: Vec<NoteHeader>,
@@ -50,6 +53,7 @@ impl TransactionRecord {
     ) -> Self {
         Self {
             block_num,
+            transaction_index,
             transaction_header,
             output_notes,
             erased_output_notes,

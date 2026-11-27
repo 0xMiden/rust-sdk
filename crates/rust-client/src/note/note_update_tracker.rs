@@ -89,10 +89,8 @@ pub(crate) struct NoteUpdateTracker {
     input_notes_by_id: BTreeMap<NoteId, NoteDetailsCommitment>,
     /// Fast lookup map from nullifier to output note id.
     output_notes_by_nullifier: BTreeMap<Nullifier, NoteId>,
-    /// Map from nullifier to its per-account position in the consuming transaction order.
-    /// Nullifiers from the same account are in execution order; ordering across different accounts
-    /// is not guaranteed.
-    nullifier_order: BTreeMap<Nullifier, u32>,
+    /// Map from nullifier to the position of its consuming transaction in the block.
+    nullifier_positions: BTreeMap<Nullifier, u32>,
 }
 
 impl NoteUpdateTracker {
@@ -199,10 +197,10 @@ impl NoteUpdateTracker {
         self.output_notes_by_nullifier.get(&nullifier).copied()
     }
 
-    /// Returns the position of the given nullifier in the consuming transaction order, or `None` if
-    /// it is not present.
-    fn get_nullifier_order(&self, nullifier: Nullifier) -> Option<u32> {
-        self.nullifier_order.get(&nullifier).copied()
+    /// Returns the position of the transaction that consumed the given nullifier in its block, or
+    /// `None` if the nullifier is not present.
+    fn get_nullifier_position(&self, nullifier: Nullifier) -> Option<u32> {
+        self.nullifier_positions.get(&nullifier).copied()
     }
 
     /// Returns the details commitment of a tracked metadata-less note whose id, combined with
@@ -236,15 +234,15 @@ impl NoteUpdateTracker {
         }
     }
 
-    /// Appends nullifiers to the per-account ordered nullifier list.
+    /// Records the position in the block of the transaction that consumed each nullifier.
     ///
-    /// Nullifiers from the same account must be in execution order; ordering across different
-    /// accounts is not guaranteed.
-    pub(crate) fn extend_nullifiers(&mut self, nullifiers: impl IntoIterator<Item = Nullifier>) {
-        for nullifier in nullifiers {
-            let next_pos =
-                u32::try_from(self.nullifier_order.len()).expect("nullifier count exceeds u32");
-            self.nullifier_order.entry(nullifier).or_insert(next_pos);
+    /// The first position recorded for a nullifier is kept.
+    pub(crate) fn record_nullifier_positions(
+        &mut self,
+        positions: impl IntoIterator<Item = (Nullifier, u32)>,
+    ) {
+        for (nullifier, position) in positions {
+            self.nullifier_positions.entry(nullifier).or_insert(position);
         }
     }
 
@@ -443,11 +441,14 @@ impl NoteUpdateTracker {
             });
 
         if let Some((nullifier, consumer_account)) = unconsumed_input {
+            // The consuming transaction is in the synced records only if the consumer is tracked.
+            // Position 0 keeps the note visible to ordered queries when the position is unknown.
+            let position = self.get_nullifier_position(nullifier).unwrap_or(0);
             let input_note = self
                 .get_input_note_by_id(note_id)
                 .expect("input note was just found in the tracker");
             input_note.consumed_externally(nullifier, block_num, consumer_account)?;
-            input_note.set_consumed_tx_order(Some(0));
+            input_note.set_consumed_tx_order(Some(position));
         }
 
         Ok(())
@@ -471,10 +472,9 @@ impl NoteUpdateTracker {
         }
         let nullifier = note.nullifier();
         // The consuming transaction belongs to this sync, so its nullifier must have a position in
-        // the execution order; storing the record without one would break the ordering guarantees
-        // of `InputNoteReader`.
+        // the block. `InputNoteReader` skips records without a position.
         let order = self
-            .get_nullifier_order(nullifier)
+            .get_nullifier_position(nullifier)
             .ok_or(ClientError::MissingConsumedNoteOrder(note_id))?;
         let mut record = InputNoteRecord::from(note);
         record.consumed_externally(nullifier, block_num, Some(consumer))?;
@@ -504,7 +504,7 @@ impl NoteUpdateTracker {
         let nullifier = consumption.nullifier;
         let block_num = consumption.block_num;
         let external_consumer = consumption.external_consumer;
-        let order = self.get_nullifier_order(nullifier);
+        let order = self.get_nullifier_position(nullifier);
         let input_present = self.has_input_note_with_nullifier(nullifier);
 
         if let Some(input_note_update) = self.get_input_note_update_by_nullifier(nullifier) {

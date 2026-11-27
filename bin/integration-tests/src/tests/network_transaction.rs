@@ -434,7 +434,7 @@ fn build_non_standard_mint(
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_public_output(
         recipient,
         expected_asset,
         NoteTag::with_account_target(target),
@@ -743,7 +743,7 @@ pub async fn test_ntx_mint_produces_public_p2id(client_config: ClientConfig) -> 
     )
     .details_commitment();
 
-    let mint_storage = MintNoteStorage::new_public(
+    let mint_storage = MintNoteStorage::new_public_output(
         bob_recipient,
         expected_asset,
         NoteTag::with_account_target(bob.id()),

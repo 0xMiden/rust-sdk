@@ -197,7 +197,7 @@ CREATE TABLE input_notes (
     state BLOB NOT NULL,                                    -- serialized note state
     created_at INTEGER NOT NULL,                            -- timestamp of the note creation/import
     consumed_block_height INTEGER NULL,                     -- block height at which the note was consumed; NULL for non-consumed notes
-    consumed_tx_order INTEGER NULL,                         -- per-account position of the consuming tx in the account's execution chain within the block; NULL for external consumption or non-consumed notes
+    consumed_tx_order INTEGER NULL,                         -- position of the note nullifier in the commit order of the transactions of one sync; only the relative order within the same consumer account and block is meaningful; NULL if the sync did not receive the consuming transaction or the note is not consumed
     consumer_account_id BLOB NULL,                          -- serialized account ID that consumed this note; NULL for non-consumed or externally consumed notes
 
     PRIMARY KEY (details_commitment),

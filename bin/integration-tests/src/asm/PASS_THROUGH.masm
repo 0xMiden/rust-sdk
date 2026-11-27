@@ -1,4 +1,5 @@
 use miden::protocol::active_note
+use miden::protocol::output_note
 use miden::standards::wallets::basic as basic_wallet
 use miden::standards::note::note_creator
 
@@ -9,7 +10,7 @@ use miden::standards::note::note_creator
 const ERR_PASS_THROUGH_WRONG_NUMBER_OF_STORAGE_ITEMS="wrong number of storage items"
 
 #! PASS_THROUGH script:
-#! Creates a note consumable by pass-through, containing the same asset.
+#! Creates a note consumable by pass-through, containing the same asset, and seals it.
 #!
 #! Requires that the account exposes:
 #! - miden::standards::note::note_creator::create_note procedure.
@@ -63,17 +64,24 @@ pub proc main
     movdn.8 dropw dropw
     # => [note_idx, pad(7)]
 
+    # keep a copy of note_idx below the call frame to seal the note later
+    dup movdn.8
+    # => [note_idx, pad(7), note_idx]
+
     # load ASSET_VALUE and ASSET_KEY
     padw mem_loadw_le.4
-    # => [ASSET_VALUE, note_idx, pad(7)]
+    # => [ASSET_VALUE, note_idx, pad(7), note_idx]
     padw mem_loadw_le.0
-    # => [ASSET_KEY, ASSET_VALUE, note_idx, pad(7)]
+    # => [ASSET_KEY, ASSET_VALUE, note_idx, pad(7), note_idx]
 
     # move the asset from the account vault into the created note
     call.basic_wallet::move_asset_to_note
-    # => [pad(16)]
+    # => [pad(16), note_idx]
 
-    # clean stack
     dropw dropw dropw dropw
+    # => [note_idx]
+
+    # the note holds its asset and is final
+    exec.output_note::seal
     # => []
 end

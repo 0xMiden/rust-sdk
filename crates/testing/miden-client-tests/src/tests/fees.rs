@@ -46,7 +46,7 @@ use miden_standards::account::auth::{
     MultisigAuthArgs,
 };
 use miden_standards::account::wallets::BasicWallet;
-use miden_standards::note::P2idNote;
+use miden_standards::note::{NoteConsumptionStatus, P2idNote};
 use miden_standards::testing::note::NoteBuilder;
 use miden_testing::{Auth, MockChain, MockChainBuilder};
 use rand::SeedableRng;
@@ -203,16 +203,16 @@ async fn fee_payment_fails_without_fee_asset_balance() {
     )
     .await;
 
-    // The withdrawal aborts inside the vault, so the failure surfaces as a kernel assertion rather
-    // than as a client-side balance check.
+    // The fee payment checks the balance, so the failure surfaces as a kernel assertion rather than
+    // as a client-side balance check.
     let TransactionExecutorError::TransactionProgramExecutionFailed(err) = result.unwrap_err()
     else {
-        panic!("expected the fee withdrawal to fail while executing the transaction program");
+        panic!("expected the fee payment to fail while executing the transaction program");
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee payment to abort on the fee asset balance, got: {err:?}"
     );
 }
 
@@ -400,12 +400,9 @@ async fn note_screening_finds_a_custom_script_note_consumable_by_a_multisig_acco
 /// it needs conversion info of its own on a fee-charging chain. This covers the second injection
 /// call site, which the screening test above does not reach.
 ///
-/// It asserts on the failure REASON rather than on `successful`. The screener attaches no
-/// authenticator on purpose, and this API has no "consumable once authorized" verdict of the kind
-/// `can_consume` produces through `handle_epilogue_error`, so a signature-authenticated account
-/// never lands a note in `successful` whatever the fee does. What the injected conversion info
-/// decides is how far the trial gets: with it, execution reaches the signature request; without it,
-/// it aborts earlier in `fee::pay_fee`.
+/// The screener attaches no authenticator, so the trial stops at the signature request. The checker
+/// reports a note that reaches the signature request as successful. Without the injected conversion
+/// info, execution aborts earlier in `fee::pay_fee` and the note fails.
 #[tokio::test]
 async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
     let (client, account) = Box::pin(fee_charging_client()).await;
@@ -427,17 +424,13 @@ async fn checking_note_consumability_pays_the_fee_on_a_fee_charging_chain() {
         .await
         .expect("checking consumability should not error");
 
-    let failed = consumption_info
-        .failed()
-        .iter()
-        .find(|failed| failed.note().id() == note.id())
-        .expect("the note should be accounted for");
-
-    let error = failed.execution_error();
     assert!(
-        matches!(error, Some(TransactionExecutorError::MissingAuthenticator)),
+        consumption_info
+            .successful()
+            .iter()
+            .any(|successful| successful.note().id() == note.id()),
         "the trial should get as far as requesting a signature rather than aborting on the unpaid \
-         fee, got: {error:?}"
+         fee, got: {consumption_info:?}"
     );
 }
 
@@ -539,14 +532,8 @@ async fn serialized_multisig_request_uses_native_auth_args(
     let result = Box::pin(client.execute_transaction(account.id(), request))
         .await
         .expect("the signed request should execute");
-    // The smart multisig auth component does not create a fee note.
-    let expected_note_count =
-        if matches!(auth_component, AccountComponentInterface::AuthMultisigSmart) {
-            1
-        } else {
-            2
-        };
-    assert_eq!(result.executed_transaction().output_notes().num_notes(), expected_note_count);
+    // The own note and the fee note.
+    assert_eq!(result.executed_transaction().output_notes().num_notes(), 2);
 }
 
 /// A multisig proposal can bind its summary to an old block and execute against the current chain
@@ -689,12 +676,12 @@ async fn signed_multisig_transaction_fails_without_fee_asset_balance() {
         TransactionExecutorError::TransactionProgramExecutionFailed(err),
     ) = err
     else {
-        panic!("expected the fee withdrawal to fail in the transaction program, got {err:?}");
+        panic!("expected the fee payment to fail in the transaction program, got {err:?}");
     };
     assert!(
         format!("{err}")
-            .contains("amount of the asset in the vault is less than the amount to remove"),
-        "expected the vault withdrawal to abort, got: {err:?}"
+            .contains("native account vault holds less of the fee asset than the fee to pay"),
+        "expected the fee payment to abort on the fee asset balance, got: {err:?}"
     );
 }
 
@@ -729,28 +716,46 @@ async fn smart_multisig_proposal_executes_after_the_timelock() {
 
     // The delayed path requires an approval expiration.
     let bound_block = client.get_sync_height().await.unwrap();
+    let conversion_info = FeeConversionInfo::one_to_one(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap());
     let auth_args = MultisigAuthArgs::new(bound_block, Word::from([1u32, 0, 0, 0]))
+        .with_conversion_info(conversion_info)
         .with_approval_expiration_delta(NonZeroU32::new(100).unwrap())
         .unwrap();
+    let execute_script = compile(format!(
+        "push.1 push.2 push.40 call.{procedures}::update_delayed_execution_policy drop drop drop"
+    ));
+    let summary = unauthorized_summary(
+        Box::pin(
+            client.execute_transaction(
+                account.id(),
+                TransactionRequestBuilder::new()
+                    .custom_script(execute_script.clone())
+                    .auth_args(&auth_args)
+                    .build()
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap_err(),
+    );
+    let commitment = summary.to_commitment();
+
+    // The summary binds the estimated max fee, so the execution must pass that max fee back to
+    // reproduce the proposed commitment.
     let mut execute = TransactionRequestBuilder::new()
-        .custom_script(compile(format!(
-            "push.1 push.2 push.40 call.{procedures}::update_delayed_execution_policy drop drop drop"
-        )))
-        .auth_args(&auth_args)
+        .custom_script(execute_script)
+        .auth_args(&auth_args.with_max_fee_from_summary(&summary).unwrap())
         .build()
         .unwrap();
-    let commitment = unauthorized_summary(
-        Box::pin(client.execute_transaction(account.id(), execute.clone()))
-            .await
-            .unwrap_err(),
-    )
-    .to_commitment();
 
     let mut propose = TransactionRequestBuilder::new()
         .custom_script(compile(format!(
             "push.{commitment} call.{procedures}::propose_transaction dropw dropw dropw dropw dropw"
         )))
-        .auth_args(&MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0])))
+        .auth_args(
+            &MultisigAuthArgs::new(bound_block, Word::from([2u32, 0, 0, 0]))
+                .with_conversion_info(conversion_info),
+        )
         .build()
         .unwrap();
 
@@ -824,8 +829,20 @@ async fn reused_screener_reads_current_account_state() {
         FungibleAsset::new(ACCOUNT_ID_FEE_FAUCET.try_into().unwrap(), FEE_ASSET_BALANCE).unwrap();
     updated.vault_mut().remove_asset(asset.into()).unwrap();
     client.test_store().update_account(&updated).await.unwrap();
+    let is_insufficient_fee = |consumability: &[(AccountId, NoteConsumptionStatus)]| {
+        matches!(
+            consumability,
+            [(id, NoteConsumptionStatus::InsufficientFee)] if *id == account.id()
+        )
+    };
     let fresh = client.note_screener().get_consumability(&note).await.unwrap();
-    assert!(fresh.is_empty(), "the account cannot pay a fee after its balance is removed");
+    assert!(
+        is_insufficient_fee(&fresh),
+        "the account cannot pay a fee after its balance is removed, got: {fresh:?}"
+    );
     let reused = screener.get_consumability(&note).await.unwrap();
-    assert!(reused.is_empty(), "reusing a screener must see the current account balance");
+    assert!(
+        is_insufficient_fee(&reused),
+        "reusing a screener must see the current account balance, got: {reused:?}"
+    );
 }

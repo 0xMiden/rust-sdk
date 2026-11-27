@@ -286,6 +286,30 @@ impl TransactionRequest {
         self.account_code_upgrade.as_ref()
     }
 
+    /// Checks that executors with different stores and reference blocks read this request the same
+    /// way: the auth args are explicit and each input note carries its authentication.
+    ///
+    /// The check does not cover the foreign account state, which each executor reads at its own
+    /// reference block.
+    ///
+    /// # Errors
+    /// - If the auth args are not explicit.
+    /// - If an input note was added without an explicit authentication.
+    pub fn check_reproducible(&self) -> Result<(), TransactionRequestError> {
+        if !matches!(self.auth_args, RequestAuthArgs::Explicit(_)) {
+            return Err(TransactionRequestError::AuthArgsNotExplicit);
+        }
+        if let Some(note) = self
+            .input_notes
+            .iter()
+            .find(|note| matches!(note.authentication(), InputNoteAuthentication::Inferred(_)))
+        {
+            return Err(TransactionRequestError::InputNoteNotExplicit(note.id()));
+        }
+
+        Ok(())
+    }
+
     // STATE MUTATORS
     // --------------------------------------------------------------------------------------------
 
@@ -521,6 +545,14 @@ pub enum TransactionRequestError {
     AssetError(#[from] AssetError),
     #[error("duplicate input note: note {0} was added more than once to the transaction")]
     DuplicateInputNote(NoteId),
+    #[error(
+        "the request has no explicit auth args, so executors at different blocks compute different summaries"
+    )]
+    AuthArgsNotExplicit,
+    #[error(
+        "input note {0} has no explicit authentication, so executors with different stores compute different summaries"
+    )]
+    InputNoteNotExplicit(NoteId),
     #[error("transaction expiration delta must be greater than zero")]
     ZeroExpirationDelta,
     #[error("cannot set both explicit auth args and a fee conversion salt")]

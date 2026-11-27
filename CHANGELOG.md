@@ -20,6 +20,8 @@
 * [FEATURE][rust] Added `Client::execute_for_summary`, which executes a transaction that needs signatures and returns the `TransactionSummary` to sign without changing the store. It returns `ClientError::NoSignaturesRequired` when the transaction needs no signatures ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 * [FEATURE][rust] Added `Client::track_expected_output_notes`, which stores the output notes of a transaction that another party executes, so that sync commits them ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `TransactionSummary` and `Account` with the messages of `miden-objects` ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
+* [FEATURE][rust] Added the `miden-guarded-client` crate. `GuardedClient` manages one guarded multisig account: it submits signed transactions itself or asks Guardian to execute them, waits for the execution, and updates a locked private account with the Guardian state on sync ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
+* [FEATURE][rust] Added `TransactionRequest::check_reproducible`, which fails when the request has no explicit auth args or has an input note without an explicit authentication ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 
 ### Fixes
 
@@ -68,6 +70,7 @@
 * [BREAKING][type][rust] Added the `RpcEndpoint::ProofSubscription` variant. `NodeRpcClient` implementations must implement `subscribe_proofs`.
 * [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed ([#2826](https://github.com/0xMiden/rust-sdk/pull/2826)).
 * [BREAKING][param][store] Added the required `Store::upsert_output_notes` method. Store implementations must implement it ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
+* [BREAKING][type][rust] Added the `TransactionRequestError::AuthArgsNotExplicit` and `TransactionRequestError::InputNoteNotExplicit` variants, so exhaustive matches on `TransactionRequestError` must handle them ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

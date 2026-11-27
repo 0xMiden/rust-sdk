@@ -3256,6 +3256,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-guarded-client"
+version = "0.18.2"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "miden-client",
+ "miden-client-proto",
+ "miden-protocol",
+ "miden-standards",
+ "miden-tx",
+ "miette",
+ "prost",
+ "protox",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "miden-mast-package"
 version = "1.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

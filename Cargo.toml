@@ -7,6 +7,7 @@ members = [
   "bin/miden-cli",
   "crates/core",
   "crates/grpc",
+  "crates/guarded-client",
   "crates/proto",
   "crates/rust-client",
   "crates/sqlite-store",

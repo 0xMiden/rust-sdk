@@ -25,6 +25,7 @@ use miden_client_core::transaction::{
     RequestInputNote,
     RequestTransactionScript,
     TransactionDetails,
+    TransactionOutcome,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
@@ -35,22 +36,14 @@ use miden_protocol::Word;
 use miden_protocol::account::{
     AccountCodeUpgrade,
     AccountHeader,
-    AccountPatch,
     PartialAccount,
     StorageMapKey,
     StorageSlotName,
 };
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
-use miden_protocol::note::{Note, NoteDetails, NoteId, NoteRecipient, NoteTag};
-use miden_protocol::transaction::{
-    AccountInputs,
-    ExecutedTransaction,
-    TransactionInputs,
-    TransactionMeasurements,
-    TransactionOutputs,
-    TransactionScript,
-};
+use miden_protocol::note::{Note, NoteDetails, NoteRecipient, NoteTag};
+use miden_protocol::transaction::{AccountInputs, TransactionEffects, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
@@ -653,122 +646,64 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
     }
 }
 
-// EXECUTED TRANSACTION
+// TRANSACTION OUTCOME
 // ================================================================================================
 
-/// The transaction inputs are not authenticated against a trusted chain. Decode an executed
-/// transaction only from a trusted source.
-impl ProtobufValue for ExecutedTransaction {
-    type Message = proto::ExecutedTransaction;
+/// Decoding checks that the account headers agree with the effects. The store compares the initial
+/// header with the stored state and writes the final header as the new state, so a header for
+/// another state would corrupt the account.
+impl ProtobufValue for TransactionOutcome {
+    type Message = proto::TransactionOutcome;
 
     fn to_proto(&self) -> Self::Message {
         Self::Message {
-            inputs: Some(self.tx_inputs().into()),
+            effects: Some(self.effects().into()),
+            initial_account: Some(self.initial_account().into()),
             final_account: Some(self.final_account().into()),
-            output_notes: Some(self.output_notes().into()),
-            expiration_block_num: Some(self.expiration_block_num().into()),
-            logs: Some(self.logs().into()),
-            code_patch: Some(self.code_patch().into()),
-            account_patch: Some(self.account_patch().into()),
-            measurements: Some(self.measurements().into()),
+            tx_script: self.tx_script().map(Into::into),
         }
     }
 
-    fn from_proto(transaction: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "executed transaction";
+    fn from_proto(outcome: Self::Message) -> Result<Self, ProtoDecodeError> {
+        const MESSAGE: &str = "transaction outcome";
 
-        let tx_inputs: TransactionInputs =
-            required(transaction.inputs, MESSAGE, "inputs")?.decode_and_build_unchecked()?;
+        let effects: TransactionEffects =
+            required(outcome.effects, MESSAGE, "effects")?.decode_and_verify()?;
+        let initial_account: AccountHeader =
+            required(outcome.initial_account, MESSAGE, "initial account")?.decode_and_verify()?;
         let final_account: AccountHeader =
-            required(transaction.final_account, MESSAGE, "final account")?.decode_and_verify()?;
-        let output_notes =
-            required(transaction.output_notes, MESSAGE, "output notes")?.decode_and_verify()?;
-        let expiration_block_num =
-            required(transaction.expiration_block_num, MESSAGE, "expiration block number")?
-                .decode_and_verify()?;
-        let logs = required(transaction.logs, MESSAGE, "logs")?.decode_and_verify()?;
-        let code_patch =
-            required(transaction.code_patch, MESSAGE, "code patch")?.decode_and_verify()?;
-        let account_patch: AccountPatch =
-            required(transaction.account_patch, MESSAGE, "account patch")?.decode_and_verify()?;
-        let measurements =
-            required(transaction.measurements, MESSAGE, "measurements")?.try_into()?;
+            required(outcome.final_account, MESSAGE, "final account")?.decode_and_verify()?;
+        let tx_script: Option<TransactionScript> =
+            outcome.tx_script.map(DecodeMessageExt::decode_and_verify).transpose()?;
 
-        // `ExecutedTransaction::new` panics on this mismatch.
-        if tx_inputs.account().id() != final_account.id() {
+        let account_id = effects.account_patch().id();
+        if initial_account.id() != account_id || final_account.id() != account_id {
             return Err(ProtoDecodeError::InvalidValue(
-                "transaction inputs and transaction outputs name different accounts".to_string(),
+                "account headers and account patch name different accounts".to_string(),
             ));
         }
-        if account_patch.id() != final_account.id() {
+        if final_account.to_commitment() != effects.final_state_commitment() {
             return Err(ProtoDecodeError::InvalidValue(
-                "account patch and transaction outputs name different accounts".to_string(),
+                "final account header does not commit to the final state of the effects"
+                    .to_string(),
+            ));
+        }
+        // The effects of a transaction against a new account hold the empty word as the initial
+        // state commitment.
+        let initial_matches = if effects.initial_state_commitment() == Word::empty() {
+            initial_account.nonce().as_canonical_u64() == 0
+        } else {
+            initial_account.to_commitment() == effects.initial_state_commitment()
+        };
+        if !initial_matches {
+            return Err(ProtoDecodeError::InvalidValue(
+                "initial account header does not match the initial state of the effects"
+                    .to_string(),
             ));
         }
 
-        // The transaction executor accepts a transaction only if the kernel commits to the patch
-        // that the host built. The commitment of the patch is thus the commitment of the outputs.
-        let tx_outputs = TransactionOutputs::new(
-            final_account,
-            account_patch.to_commitment(),
-            output_notes,
-            expiration_block_num,
-            logs,
-            code_patch,
-        );
-
-        Ok(ExecutedTransaction::new(tx_inputs, tx_outputs, account_patch, measurements))
+        Ok(TransactionOutcome::new(effects, initial_account, final_account, tx_script))
     }
-}
-
-impl From<&TransactionMeasurements> for proto::TransactionMeasurements {
-    fn from(measurements: &TransactionMeasurements) -> Self {
-        Self {
-            prologue: measurements.prologue as u64,
-            notes_processing: measurements.notes_processing as u64,
-            note_execution: measurements
-                .note_execution
-                .iter()
-                .map(|(note_id, cycles)| proto::transaction_measurements::NoteExecution {
-                    note_id: Some(note_id.into()),
-                    cycles: *cycles as u64,
-                })
-                .collect(),
-            tx_script_processing: measurements.tx_script_processing as u64,
-            epilogue: measurements.epilogue as u64,
-            auth_procedure: measurements.auth_procedure as u64,
-        }
-    }
-}
-
-impl TryFrom<proto::TransactionMeasurements> for TransactionMeasurements {
-    type Error = ProtoDecodeError;
-
-    fn try_from(measurements: proto::TransactionMeasurements) -> Result<Self, Self::Error> {
-        let note_execution = measurements
-            .note_execution
-            .into_iter()
-            .map(|entry| {
-                let note_id: NoteId =
-                    required(entry.note_id, "note execution", "note id")?.decode_and_verify()?;
-                Ok((note_id, cycle_count(entry.cycles)?))
-            })
-            .collect::<Result<_, ProtoDecodeError>>()?;
-
-        Ok(Self {
-            prologue: cycle_count(measurements.prologue)?,
-            notes_processing: cycle_count(measurements.notes_processing)?,
-            note_execution,
-            tx_script_processing: cycle_count(measurements.tx_script_processing)?,
-            epilogue: cycle_count(measurements.epilogue)?,
-            auth_procedure: cycle_count(measurements.auth_procedure)?,
-        })
-    }
-}
-
-fn cycle_count(cycles: u64) -> Result<usize, ProtoDecodeError> {
-    usize::try_from(cycles)
-        .map_err(|_| ProtoDecodeError::InvalidValue(format!("cycle count {cycles} is too large")))
 }
 
 // TRANSACTION STORE UPDATE
@@ -780,7 +715,7 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn to_proto(&self) -> Self::Message {
         let note_updates = self.note_updates();
         Self::Message {
-            executed_transaction: Some(self.executed_transaction().to_proto()),
+            transaction: Some(self.transaction().to_proto()),
             submission_height: Some(self.submission_height().into()),
             future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
             input_notes: note_updates
@@ -806,11 +741,8 @@ impl ProtobufValue for TransactionStoreUpdate {
     fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
         const MESSAGE: &str = "transaction store update";
 
-        let executed_transaction = ExecutedTransaction::from_proto(required(
-            update.executed_transaction,
-            MESSAGE,
-            "executed transaction",
-        )?)?;
+        let transaction =
+            TransactionOutcome::from_proto(required(update.transaction, MESSAGE, "transaction")?)?;
         let submission_height = required(update.submission_height, MESSAGE, "submission height")?
             .decode_and_verify()?;
         let future_notes = update
@@ -853,7 +785,7 @@ impl ProtobufValue for TransactionStoreUpdate {
             .collect::<Result<_, _>>()?;
 
         Ok(TransactionStoreUpdate::new(
-            executed_transaction,
+            transaction,
             submission_height,
             NoteUpdates::new(input_notes, output_notes),
             future_notes,
@@ -905,6 +837,7 @@ mod tests {
         Account,
         AccountBuilder,
         AccountCode,
+        AccountHeader,
         AccountId,
         AccountType,
         StorageMapKey,
@@ -921,12 +854,7 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{
-        AccountInputs,
-        ExecutedTransaction,
-        InputNote,
-        TransactionScript,
-    };
+    use miden_protocol::transaction::{AccountInputs, InputNote, TransactionScript};
     use miden_protocol::{EMPTY_WORD, Felt, Word};
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
@@ -943,6 +871,7 @@ mod tests {
         NoteUpdates,
         OutputNoteUpdate,
         StorageMapFetch,
+        TransactionOutcome,
         TransactionStoreUpdate,
         VaultFetch,
         proto,
@@ -996,8 +925,32 @@ mod tests {
             },
         ];
 
+        let outcome = TransactionOutcome::from(&executed_transaction);
+        assert_eq!(outcome.initial_account(), &AccountHeader::from(&account));
+        assert_ne!(outcome.initial_account(), outcome.final_account());
+
+        // A header of the other account state does not match the effects.
+        let swapped_final = TransactionOutcome::new(
+            outcome.effects().clone(),
+            outcome.initial_account().clone(),
+            outcome.initial_account().clone(),
+            None,
+        );
+        let swapped_initial = TransactionOutcome::new(
+            outcome.effects().clone(),
+            outcome.final_account().clone(),
+            outcome.final_account().clone(),
+            None,
+        );
+        for mismatched in [swapped_final, swapped_initial] {
+            assert!(matches!(
+                decode::<TransactionOutcome>(&encode(&mismatched)),
+                Err(ProtoDecodeError::InvalidValue(_))
+            ));
+        }
+
         let update = TransactionStoreUpdate::new(
-            executed_transaction,
+            outcome,
             BlockNumber::from(42u32),
             note_updates,
             vec![(note.into(), tag)],
@@ -1008,14 +961,14 @@ mod tests {
     }
 
     #[test]
-    fn executed_transaction_without_inputs_is_rejected() {
-        let bytes = prost::Message::encode_to_vec(&proto::ExecutedTransaction::default());
+    fn transaction_store_update_without_transaction_is_rejected() {
+        let bytes = prost::Message::encode_to_vec(&proto::TransactionStoreUpdate::default());
 
         assert!(matches!(
-            decode::<ExecutedTransaction>(&bytes),
+            decode::<TransactionStoreUpdate>(&bytes),
             Err(ProtoDecodeError::MissingField {
-                message: "executed transaction",
-                field: "inputs"
+                message: "transaction store update",
+                field: "transaction"
             })
         ));
     }

@@ -270,16 +270,7 @@ where
             }));
         }
 
-        // Observer failures are logged and never propagate, as in `submit_new_transaction`.
-        for tx_result in &submission.tx_results {
-            for observer in &self.transaction_observers {
-                crate::errors::log_observer_failure(
-                    observer.name(),
-                    "TransactionObserver::apply",
-                    observer.apply(tx_result).await,
-                );
-            }
-        }
+        self.notify_transaction_observers(batch_update.transactions()).await;
 
         Ok(block_num)
     }
@@ -303,23 +294,24 @@ where
         }
 
         Ok(BatchStoreUpdate::new(
-            tx_results
-                .iter()
-                .map(|tx_result| tx_result.executed_transaction().clone())
-                .collect(),
+            tx_results.iter().map(TransactionResult::outcome).collect(),
             submission_height,
             note_updates,
             new_tags,
         ))
     }
 
-    /// Persists the result of a submitted transaction batch into the local store. This is the batch
-    /// counterpart of [`Client::apply_transaction_update`].
+    /// Persists the result of a submitted transaction batch into the local store, and then runs the
+    /// transaction observers on each transaction in batch order. This is the batch counterpart of
+    /// [`Client::apply_transaction_update`].
     pub async fn apply_batch_update(
         &self,
         batch_update: BatchStoreUpdate,
     ) -> Result<(), ClientError> {
-        Ok(self.store.apply_transaction_batch(batch_update).await?)
+        let transactions = batch_update.transactions().to_vec();
+        self.store.apply_transaction_batch(batch_update).await?;
+        self.notify_transaction_observers(&transactions).await;
+        Ok(())
     }
 }
 

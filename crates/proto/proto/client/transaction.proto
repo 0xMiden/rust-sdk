@@ -10,6 +10,7 @@ import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
+import "transaction_effects.proto";
 import "transaction_inputs.proto";
 import "client/input_note.proto";
 import "client/output_note.proto";
@@ -221,47 +222,29 @@ message AccountStorageRequirements {
   repeated SlotKeys slots = 1;
 }
 
-// Cycle counts of the stages of a transaction execution.
-message TransactionMeasurements {
-  // Cycle count of the execution of one input note.
-  message NoteExecution {
-    note.NoteId note_id = 1;
-    uint64 cycles = 2;
-  }
-
-  uint64 prologue = 1;
-  uint64 notes_processing = 2;
-  repeated NoteExecution note_execution = 3;
-  uint64 tx_script_processing = 4;
-  uint64 epilogue = 5;
-  uint64 auth_procedure = 6;
-}
-
-// A transaction that the client executed, with the inputs to execute it again.
-message ExecutedTransaction {
-  .transaction.TransactionInputs inputs = 1;
-  // Header of the account after the transaction.
+// The parts of an executed transaction that the store records. It does not carry the transaction
+// inputs.
+message TransactionOutcome {
+  .transaction.TransactionEffects effects = 1;
+  // Header of the account after the transaction. It must commit to the final state commitment of
+  // the effects.
   account.AccountHeader final_account = 2;
-  .transaction.RawOutputNotes output_notes = 3;
-  // Block at which the transaction expires.
-  blockchain.BlockNumber expiration_block_num = 4;
-  .transaction.TransactionLogs logs = 5;
-  .transaction.CodePatch code_patch = 6;
-  // Changes that the transaction makes to the account. The reader computes the commitment to the
-  // patch from this field.
-  account.AccountPatch account_patch = 7;
-  TransactionMeasurements measurements = 8;
-}
-
-// An executed transaction with the notes that later transactions create from it.
-message TransactionResult {
-  ExecutedTransaction executed_transaction = 1;
-  repeated ExpectedFutureNote future_notes = 2;
+  // Script that the transaction executed. It is absent when the transaction has no script.
+  .transaction.TransactionScript tx_script = 3;
+  // Header of the account before the transaction. For an existing account, it must commit to the
+  // initial state commitment of the effects. For a new account, the effects hold the empty word
+  // and the header has nonce zero.
+  account.AccountHeader initial_account = 4;
 }
 
 // Store changes that an executed transaction makes.
 message TransactionStoreUpdate {
-  ExecutedTransaction executed_transaction = 1;
+  // Field 1 must not get a new meaning. An encoding that uses it has no `transaction` field, so it
+  // does not decode.
+  reserved 1;
+  reserved "executed_transaction";
+
+  TransactionOutcome transaction = 7;
   // Block at which the transaction was submitted.
   blockchain.BlockNumber submission_height = 2;
   repeated ExpectedFutureNote future_notes = 3;

@@ -1092,15 +1092,7 @@ async fn notes_show_decodes_swap_note_storage() -> Result<()> {
     // `new_faucet_cli` uses the BTC symbol with 10 decimals.
     let requested = "0.0000000200 BTC";
 
-    // Compute the expected payback recipient from the swap serial number.
-    let payback_recipient = |serial_num| {
-        P2idNoteStorage::new(sender)
-            .into_recipient(payback_serial_from_swap(serial_num))
-            .digest()
-            .to_hex()
-    };
-
-    let (note_id, serial_num) = swap_note("public").await?;
+    let (note_id, _) = swap_note("public").await?;
     let stdout = notes_show_stdout(&temp_dir, &note_id)?;
     assert_eq!(
         horizontal_table_rows(&stdout, "Note Storage"),
@@ -1109,12 +1101,17 @@ async fn notes_show_decodes_swap_note_storage() -> Result<()> {
             &["requested", requested],
             &["payback note", "public"],
             &["payback tag", &payback_tag],
-            &["payback recipient", &payback_recipient(serial_num)],
+            &["payback target", &sender_account_id],
         ]),
         "{stdout}"
     );
 
+    // Compute the expected payback recipient from the swap serial number.
     let (note_id, serial_num) = swap_note("private").await?;
+    let payback_recipient = P2idNoteStorage::new(sender)
+        .into_recipient(payback_serial_from_swap(serial_num))
+        .digest()
+        .to_hex();
     let stdout = notes_show_stdout(&temp_dir, &note_id)?;
     assert_eq!(
         horizontal_table_rows(&stdout, "Note Storage"),
@@ -1123,7 +1120,7 @@ async fn notes_show_decodes_swap_note_storage() -> Result<()> {
             &["requested", requested],
             &["payback note", "private"],
             &["payback tag", &payback_tag],
-            &["payback recipient", &payback_recipient(serial_num)],
+            &["payback recipient", &payback_recipient],
         ]),
         "{stdout}"
     );

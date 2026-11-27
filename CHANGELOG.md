@@ -17,6 +17,9 @@
 * [FEATURE][rust] Added the protobuf encoding of `TransactionStoreUpdate` to `miden-client-proto`, and `ProtobufValue` implementations for `InputNoteRecord`, `OutputNoteRecord` and `NoteTagRecord` ([#2768](https://github.com/0xMiden/rust-sdk/pull/2768)).
 * [FEATURE][cli] Added `call --trace`, which prints the hierarchy of procedure calls the execution made, with the arguments, return value and cycle count of each call. By default only the contract's own procedures are shown; `-v` adds library functions and `-vv` shows every frame that has a name. It requires `--package`, which names the frames. Behind the new `trace` cargo feature ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
 * [FEATURE][rust] Added `Client::execute_program_with_trace` and the `trace` feature, which records a program execution against the transaction host. `replay_call_trace` replays the recording through the debug engine to produce a `CallTrace`. The replay blocks the thread, so the caller chooses where it runs ([#2791](https://github.com/0xMiden/rust-sdk/pull/2791)).
+* [FEATURE][rust] Added `Client::execute_for_summary`, which executes a transaction that needs signatures and returns the `TransactionSummary` to sign without changing the store. It returns `ClientError::NoSignaturesRequired` when the transaction needs no signatures ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
+* [FEATURE][rust] Added `Client::track_expected_output_notes`, which stores the output notes of a transaction that another party executes, so that sync commits them ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
+* [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `TransactionSummary` and `Account` with the messages of `miden-objects` ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 
 ### Fixes
 
@@ -64,6 +67,7 @@
 * [BREAKING][type][rust] Added the `RpcEndpoint::BlockSubscription` and `RpcError::SubscriberLagged` variants. `NodeRpcClient` implementations must implement `subscribe_blocks` ([#2823](https://github.com/0xMiden/rust-sdk/pull/2823)).
 * [BREAKING][type][rust] Added the `RpcEndpoint::ProofSubscription` variant. `NodeRpcClient` implementations must implement `subscribe_proofs`.
 * [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed ([#2826](https://github.com/0xMiden/rust-sdk/pull/2826)).
+* [BREAKING][param][store] Added the required `Store::upsert_output_notes` method. Store implementations must implement it ([#2829](https://github.com/0xMiden/rust-sdk/pull/2829)).
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

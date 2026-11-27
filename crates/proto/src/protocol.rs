@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::vec::Vec;
 
 use miden_objects::{DecodeMessageExt, proto as objects};
-use miden_protocol::account::{AccountCode, AccountProcedureRoot};
+use miden_protocol::account::{Account, AccountCode, AccountProcedureRoot};
 use miden_protocol::assembly::mast::UntrustedMastForest;
 use miden_protocol::block::BlockHeader;
 use miden_protocol::block::account_tree::AccountWitness;
@@ -19,7 +19,7 @@ use miden_protocol::note::{
     NoteStorage,
 };
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::TransactionScript;
+use miden_protocol::transaction::{TransactionScript, TransactionSummary};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{Felt, MastForest, MastNodeId, Word};
 
@@ -177,6 +177,18 @@ impl ProtobufValue for NoteMetadata {
     }
 }
 
+impl ProtobufValue for Account {
+    type Message = objects::account::Account;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
 impl ProtobufValue for AccountWitness {
     type Message = objects::account::AccountWitness;
 
@@ -205,6 +217,18 @@ impl ProtobufValue for BlockHeader {
 
 impl ProtobufValue for ProtocolConfig {
     type Message = objects::protocol_config::ProtocolConfig;
+
+    fn to_proto(&self) -> Self::Message {
+        self.into()
+    }
+
+    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
+        Ok(message.decode_and_verify()?)
+    }
+}
+
+impl ProtobufValue for TransactionSummary {
+    type Message = objects::transaction::TransactionSummary;
 
     fn to_proto(&self) -> Self::Message {
         self.into()

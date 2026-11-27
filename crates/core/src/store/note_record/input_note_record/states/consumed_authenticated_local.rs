@@ -23,8 +23,7 @@ pub struct ConsumedAuthenticatedLocalNoteState {
     pub nullifier_block_height: BlockNumber,
     /// Information about the submission of the note.
     pub submission_data: NoteSubmissionData,
-    /// Per-account position of the consuming transaction within the account's execution chain for
-    /// the block. `None` if the order has not been determined yet.
+    /// Position of the consuming transaction in its block. `None` if the position is not known.
     pub consumed_tx_order: Option<u32>,
 }
 

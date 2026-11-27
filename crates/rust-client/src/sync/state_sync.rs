@@ -14,7 +14,6 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
-use miden_protocol::transaction::InputNoteCommitment;
 use tracing::info;
 
 use super::account_update_tracker::AccountUpdateTracker;
@@ -986,7 +985,7 @@ impl StateSync {
         note_updates: &mut NoteUpdateTracker,
         transaction_updates: &mut TransactionUpdateTracker,
     ) -> Result<(), ClientError> {
-        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
+        note_updates.record_nullifier_positions(consumed_nullifier_positions(transactions));
 
         for record in transactions {
             transaction_updates.apply_transaction_inclusion(
@@ -1639,11 +1638,10 @@ fn derive_account_commitments(
     latest_by_account.into_iter().collect()
 }
 
-/// Returns input note nullifiers in the order their consuming transactions were committed.
-///
-/// The records must be in commit order. Nullifiers of the same transaction keep the order of the
-/// transaction's input notes.
-fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> Vec<Nullifier> {
+/// Returns each input note nullifier with the position of its consuming transaction in the block.
+fn consumed_nullifier_positions(
+    transaction_records: &[RpcTransactionRecord],
+) -> Vec<(Nullifier, u32)> {
     transaction_records
         .iter()
         .flat_map(|record| {
@@ -1651,7 +1649,7 @@ fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> V
                 .transaction_header
                 .input_notes()
                 .iter()
-                .map(InputNoteCommitment::nullifier)
+                .map(|input| (input.nullifier(), record.transaction_index))
         })
         .collect()
 }
@@ -2337,12 +2335,11 @@ mod tests {
         );
     }
 
-    // COMPUTE NULLIFIER TX ORDER TESTS
+    // CONSUMED NULLIFIER POSITION TESTS
     // --------------------------------------------------------------------------------------------
 
-    mod compute_nullifiers_tests {
+    mod consumed_nullifier_positions_tests {
         use alloc::vec;
-        use alloc::vec::Vec;
 
         use miden_protocol::Word;
         use miden_protocol::account::AccountId;
@@ -2398,54 +2395,34 @@ mod tests {
             ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap()
         }
 
-        fn nullifiers(vals: &[u64]) -> Vec<Nullifier> {
-            vals.iter().map(|v| Nullifier::from_raw(word(*v))).collect()
+        fn nullifier(val: u64) -> Nullifier {
+            Nullifier::from_raw(word(val))
         }
 
         #[test]
-        fn orders_nullifiers_by_position_in_block() {
-            // Passed in reverse order to verify ordering uses the reported position, not insertion
-            // order.
-            let tx_a = make_rpc_tx(account_a(), &[10], 5, 0);
-            let tx_b = make_rpc_tx(account_a(), &[20], 5, 1);
-            let tx_c = make_rpc_tx(account_a(), &[30], 5, 2);
-
-            let mut records = [tx_c, tx_a, tx_b];
-            super::super::sort_in_commit_order(&mut records);
-            let result = super::super::compute_ordered_nullifiers(&records);
-
-            assert_eq!(result, nullifiers(&[10, 20, 30]));
-        }
-
-        #[test]
-        fn orders_nullifiers_across_blocks_and_accounts() {
+        fn pairs_each_nullifier_with_its_transaction_position() {
             let tx_a_b5_1 = make_rpc_tx(account_a(), &[10], 5, 1);
-            let tx_a_b5_3 = make_rpc_tx(account_a(), &[20], 5, 3);
             let tx_a_b6_0 = make_rpc_tx(account_a(), &[30], 6, 0);
             let tx_b_b5_2 = make_rpc_tx(account_b(), &[40], 5, 2);
 
-            let mut records = [tx_a_b6_0, tx_a_b5_3, tx_b_b5_2, tx_a_b5_1];
-            super::super::sort_in_commit_order(&mut records);
-            let result = super::super::compute_ordered_nullifiers(&records);
+            let result =
+                super::super::consumed_nullifier_positions(&[tx_a_b5_1, tx_a_b6_0, tx_b_b5_2]);
 
-            assert_eq!(result, nullifiers(&[10, 40, 20, 30]));
+            assert_eq!(result, vec![(nullifier(10), 1), (nullifier(30), 0), (nullifier(40), 2)]);
         }
 
         #[test]
-        fn multiple_nullifiers_per_transaction_are_consecutive() {
-            let tx_first = make_rpc_tx(account_a(), &[10, 20, 30], 5, 0);
-            let tx_second = make_rpc_tx(account_a(), &[40], 5, 1);
+        fn nullifiers_of_one_transaction_share_its_position() {
+            let tx = make_rpc_tx(account_a(), &[10, 20, 30], 5, 4);
 
-            let mut records = [tx_second, tx_first];
-            super::super::sort_in_commit_order(&mut records);
-            let result = super::super::compute_ordered_nullifiers(&records);
+            let result = super::super::consumed_nullifier_positions(&[tx]);
 
-            assert_eq!(result, nullifiers(&[10, 20, 30, 40]));
+            assert_eq!(result, vec![(nullifier(10), 4), (nullifier(20), 4), (nullifier(30), 4)]);
         }
 
         #[test]
         fn empty_input_returns_empty_vec() {
-            let result = super::super::compute_ordered_nullifiers(&[]);
+            let result = super::super::consumed_nullifier_positions(&[]);
             assert!(result.is_empty());
         }
     }

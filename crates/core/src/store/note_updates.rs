@@ -68,9 +68,8 @@ impl InputNoteUpdate {
         self.note.id()
     }
 
-    /// Returns the per-account position of the consuming transaction within the account's execution
-    /// chain for the block. `None` for non-consumed notes or when the order has not been determined
-    /// yet.
+    /// Returns the position of the consuming transaction in its block. `None` for non-consumed
+    /// notes or when the position is not known.
     pub fn consumed_tx_order(&self) -> Option<u32> {
         self.note.state().consumed_tx_order()
     }

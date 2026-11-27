@@ -68,7 +68,7 @@ impl InputNoteCursor {
         self.consumed_block_height
     }
 
-    /// Returns the per-account position of the consuming transaction within the block.
+    /// Returns the position of the consuming transaction in its block.
     pub fn consumed_tx_order(&self) -> u32 {
         self.consumed_tx_order
     }

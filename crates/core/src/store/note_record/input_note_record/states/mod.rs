@@ -139,8 +139,7 @@ impl InputNoteState {
         }
     }
 
-    /// Returns the per-account position of the consuming transaction within the account's execution
-    /// chain for the block, if available.
+    /// Returns the position of the consuming transaction in its block, if known.
     pub fn consumed_tx_order(&self) -> Option<u32> {
         match self {
             InputNoteState::ConsumedAuthenticatedLocal(s) => s.consumed_tx_order,

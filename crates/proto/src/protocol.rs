@@ -21,7 +21,7 @@ use miden_protocol::note::{
 use miden_protocol::protocol_config::ProtocolConfig;
 use miden_protocol::transaction::TransactionScript;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::{Felt, MastForest, MastNodeId, Word};
+use miden_protocol::{MastForest, MastNodeId, Word};
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -212,18 +212,6 @@ impl ProtobufValue for ProtocolConfig {
 
     fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
         Ok(message.decode_and_verify()?)
-    }
-}
-
-impl ProtobufValue for Felt {
-    type Message = objects::primitives::Felt;
-
-    fn to_proto(&self) -> Self::Message {
-        self.into()
-    }
-
-    fn from_proto(message: Self::Message) -> Result<Self, ProtoDecodeError> {
-        Ok(message.try_into()?)
     }
 }
 

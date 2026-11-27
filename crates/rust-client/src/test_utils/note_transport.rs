@@ -5,7 +5,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use miden_client_proto::{self as proto, ProtoDecodeError, ProtobufValue, required};
 use miden_protocol::block::BlockNumber;
 use miden_protocol::note::{NoteHeader, NoteId, NoteInclusionProof, NoteTag};
 use miden_tx::utils::serde::Serializable;
@@ -178,64 +177,39 @@ impl Default for MockNoteTransportNode {
     }
 }
 
-// SERIALIZATION
+// SNAPSHOT
 // ================================================================================================
 
-// The encoding carries the stored notes with their cursors, the nonce and the next sequence. The
-// batch cap and the proven notes are not part of it.
-impl ProtobufValue for MockNoteTransportNode {
-    type Message = proto::MockNoteTransportNode;
+/// Snapshot of the stored state of a [`MockNoteTransportNode`].
+///
+/// The snapshot carries the stored notes with their cursors, the nonce and the next sequence. The
+/// batch cap and the proven notes are not part of it.
+#[derive(Clone, Debug)]
+pub struct MockNoteTransportNodeSnapshot {
+    pub notes: BTreeMap<NoteTag, Vec<(NoteInfo, NoteTransportCursor)>>,
+    pub nonce: u64,
+    pub next_sequence: u64,
+}
 
-    fn to_proto(&self) -> Self::Message {
-        use proto::mock_note_transport_node::{Entry, TagNotes};
-
-        Self::Message {
-            notes: self
-                .notes
-                .iter()
-                .map(|(tag, notes)| TagNotes {
-                    tag: tag.as_u32(),
-                    notes: notes
-                        .iter()
-                        .map(|(note, cursor)| Entry {
-                            note: Some(note.to_proto()),
-                            cursor: Some(cursor.to_proto()),
-                        })
-                        .collect(),
-                })
-                .collect(),
+impl MockNoteTransportNode {
+    /// Returns a snapshot of the stored notes, nonce and next sequence.
+    pub fn snapshot(&self) -> MockNoteTransportNodeSnapshot {
+        MockNoteTransportNodeSnapshot {
+            notes: self.notes.clone(),
             nonce: self.nonce,
             next_sequence: self.next_sequence,
         }
     }
 
-    fn from_proto(node: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "mock note transport entry";
-
-        let notes = node
-            .notes
-            .into_iter()
-            .map(|tag_notes| {
-                let notes = tag_notes
-                    .notes
-                    .into_iter()
-                    .map(|entry| {
-                        let info = NoteInfo::from_proto(required(entry.note, MESSAGE, "note")?)?;
-                        let cursor = required(entry.cursor, MESSAGE, "cursor")?;
-                        Ok((info, NoteTransportCursor::from_proto(cursor)?))
-                    })
-                    .collect::<Result<Vec<_>, ProtoDecodeError>>()?;
-                Ok((NoteTag::from(tag_notes.tag), notes))
-            })
-            .collect::<Result<BTreeMap<_, _>, ProtoDecodeError>>()?;
-
-        Ok(Self {
-            notes,
-            nonce: node.nonce,
-            next_sequence: node.next_sequence,
+    /// Rebuilds a [`MockNoteTransportNode`] from a snapshot.
+    pub fn from_snapshot(snapshot: MockNoteTransportNodeSnapshot) -> Self {
+        Self {
+            notes: snapshot.notes,
+            nonce: snapshot.nonce,
+            next_sequence: snapshot.next_sequence,
             max_batch: None,
             proven_notes: BTreeMap::default(),
-        })
+        }
     }
 }
 

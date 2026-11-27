@@ -4,6 +4,7 @@
 
 ### Features
 
+* [FEATURE][rust] Added `MockNoteTransportNodeSnapshot`, `MockNoteTransportNode::snapshot`, and `MockNoteTransportNode::from_snapshot` under the `testing` feature so callers can snapshot and restore mock note transport state without a protobuf schema.
 * [FEATURE][cli] `network-note-status` shows the fee sponsorship notes that the node binds to the network note, with their fee asset, reclaim height, commit block and last execution error ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] `miden-client-proto` implements `ProtobufValue` for `ExecutedTransaction`. The `TransactionResult` and `TransactionStoreUpdate` messages hold it as an `ExecutedTransaction` message, because the protocol removed the native serialization of the type ([#2804](https://github.com/0xMiden/rust-sdk/pull/2804)).
 * [FEATURE][rust] Added `NodeRpcClient::get_transaction_logs` and the `miden_client_grpc::v1::GetTransactionLogs` method, which fetch the logs of a committed transaction from the node's `GetTransactionLogs` endpoint. The result is a `TransactionLogsInfo`, with the logs of a public account or the logs commitment of a private account ([#2808](https://github.com/0xMiden/rust-sdk/pull/2808)).
@@ -34,7 +35,7 @@
 * [FEATURE][rust] Added `RpcMethod`, `GrpcClient::call` and the `miden_client_grpc::v1` module, with one type per node RPC endpoint, to call an endpoint of a specific API version ([#2763](https://github.com/0xMiden/rust-sdk/pull/2763)).
 * [FEATURE][rust] Added protobuf serialization for `TransactionRequest`. Added the `TransactionRequest::expiration_delta` getter ([#2654](https://github.com/0xMiden/rust-sdk/pull/2654)).
 * [FEATURE][rust] Added `AccountComponentCode`, `AccountComponentNameError`, `ComponentMetadataError`, and `RoleSymbolError` to `miden_client::account::component`, and `AuthSchemeError` to `miden_client::auth` ([#2678](https://github.com/0xMiden/rust-sdk/pull/2678)).
-* [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource` and `NoteInfo`. `miden-client` encodes `TransactionResult`, `SyncSummary` and `ChainAnchor` with `miden-client-proto`, and `MockNoteTransportNode` under its `testing` feature ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
+* [FEATURE][rust] `miden-client-proto` encodes `NoteTagSource`. `miden-client` encodes `TransactionResult` and `ChainAnchor` with `miden-client-proto` ([#2749](https://github.com/0xMiden/rust-sdk/pull/2749)).
 * [FEATURE][cli] Added the repeatable `--init-slot <slot::name>=<value>` flag to `new-wallet` and `new-account`. Each use sets one init storage value and overrides the matching entry of the `--init-storage-data-path` file ([#2641](https://github.com/0xMiden/rust-sdk/pull/2641)).
 * [FEATURE][rust] Added `NodeRpcClient::get_account_details_at`, which fetches a public account at a given block and also returns the witness that commits to it ([#2601](https://github.com/0xMiden/rust-sdk/pull/2601)).
 * [FEATURE][rust] Added `Client::prune_chain_anchors`, which deletes the stored MMR peaks at the past sync heights up to a block number ([#2740](https://github.com/0xMiden/rust-sdk/pull/2740)).
@@ -42,6 +43,7 @@
 
 ### Breaking Changes
 
+* [BREAKING][removal][rust] Removed the `SyncSummary`, `NoteInfo`, and `MockNoteTransportNode` protobuf messages from `miden-client-proto`, the `ProtobufValue` implementations of `SyncSummary` and `MockNoteTransportNode` from `miden-client`, and the unused `ProtobufValue` implementation of `Felt` from `miden-client-proto`. Use `MockNoteTransportNode::snapshot` and `MockNoteTransportNode::from_snapshot` under `testing` instead.
 * [BREAKING][type][rust,store] Added the `StoreError::StaleUpdate` variant and the `StaleUpdate` enum, so exhaustive matches on `StoreError` must handle it. `SqliteStore` returns it instead of `StoreError::DatabaseError` when an account update is not based on the stored account state ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][param][rust] `StateSyncUpdate::from_parts` takes `block_from`, the sync height that the update was built from, as its first argument. `Client::apply_state_sync` and `Client::apply_chain_updates` return `StaleUpdate::SyncHeightMismatch` if the store is at a different sync height ([#2538](https://github.com/0xMiden/rust-sdk/pull/2538)).
 * [BREAKING][removal][rust] Removed `ChainAnchor`, `ChainAnchorError`, `Client::execute_transaction_at`, `Client::chain_anchor_for_request`, `ClientDataStore::with_chain_anchor` and `ClientError::ChainAnchorError`. A transaction always executes against the sync height of the client.

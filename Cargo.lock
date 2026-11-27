@@ -2999,7 +2999,6 @@ version = "0.18.2"
 dependencies = [
  "miden-client",
  "miden-client-core",
- "miden-client-proto",
  "miden-client-sqlite-store",
  "miden-debug",
  "miden-protocol",

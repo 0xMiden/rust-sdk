@@ -1255,3 +1255,17 @@ async fn discarded_transaction_releases_its_input_notes(#[case] authenticated: b
     assert!(record.is_consumed(), "the note should be consumed, got: {}", record.state());
     assert_eq!(record.consumer_transaction_id(), Some(&second_tx_id));
 }
+
+#[tokio::test]
+async fn execute_for_summary_rejects_a_transaction_that_needs_no_signatures() {
+    let (mut client, rpc_api) = Box::pin(create_test_client()).await;
+    let (wallet, faucet) = client.setup_wallet_and_faucet(AccountType::Private).await.unwrap();
+    let note = client.mint_note(wallet.id(), faucet.id(), NoteType::Private).await.unwrap().1;
+    rpc_api.prove_block();
+    client.sync_state().await.unwrap();
+
+    let request = TransactionRequestBuilder::new().build_consume_notes(vec![note]).unwrap();
+    let err = Box::pin(client.execute_for_summary(wallet.id(), request)).await.unwrap_err();
+
+    assert!(matches!(err, ClientError::NoSignaturesRequired));
+}

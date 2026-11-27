@@ -1,0 +1,159 @@
+// The subset of the Guardian gRPC API that this crate uses. Field numbers and names must match the
+// Guardian service.
+syntax = "proto3";
+
+package guardian;
+
+service Guardian {
+  // Registers an account with its initial state.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+
+  // Returns the commitment of the key that Guardian signs with.
+  rpc GetPubkey(GetPubkeyRequest) returns (GetPubkeyResponse);
+
+  // Returns the account state that Guardian holds.
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
+
+  // Submits a proposal with the signature of its proposer.
+  rpc PushDeltaProposal(PushDeltaProposalRequest) returns (PushDeltaProposalResponse);
+
+  // Returns a proposal by its commitment.
+  rpc GetDeltaProposal(GetDeltaProposalRequest) returns (GetDeltaProposalResponse);
+
+  // Asks Guardian to prove and submit a signed proposal.
+  rpc ExecuteDeltaProposal(ExecuteDeltaProposalRequest) returns (ExecuteDeltaProposalResponse);
+
+  // Returns the latest execution of a proposal.
+  rpc GetDeltaProposalExecution(GetDeltaProposalExecutionRequest) returns (GetDeltaProposalExecutionResponse);
+}
+
+// REGISTRATION
+// ================================================================================================
+
+message AuthConfig {
+  oneof auth_type {
+    MidenFalconRpoAuth miden_falcon_rpo = 1;
+  }
+}
+
+message MidenFalconRpoAuth {
+  repeated string cosigner_commitments = 1;
+}
+
+message ConfigureRequest {
+  string account_id = 1;
+  AuthConfig auth = 2;
+  // JSON string.
+  string initial_state = 3;
+}
+
+message ConfigureResponse {
+  bool success = 1;
+  string message = 2;
+  string error_code = 5;
+}
+
+message GetPubkeyRequest {
+  optional string scheme = 1;
+}
+
+message GetPubkeyResponse {
+  string pubkey = 1;
+}
+
+// ACCOUNT STATE
+// ================================================================================================
+
+message GetStateRequest {
+  string account_id = 1;
+}
+
+message GetStateResponse {
+  bool success = 1;
+  string message = 2;
+  AccountState state = 3;
+}
+
+message AccountState {
+  string account_id = 1;
+  string state_json = 2;
+  string commitment = 3;
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+// PROPOSALS
+// ================================================================================================
+
+message DeltaObject {
+  // JSON string.
+  string delta_payload = 4;
+}
+
+message PushDeltaProposalRequest {
+  string account_id = 1;
+  uint64 nonce = 2;
+  // JSON string.
+  string delta_payload = 3;
+}
+
+message PushDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  string commitment = 4;
+  string error_code = 5;
+}
+
+message GetDeltaProposalRequest {
+  string account_id = 1;
+  string commitment = 2;
+}
+
+message GetDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  DeltaObject proposal = 3;
+  string error_code = 4;
+}
+
+// EXECUTION
+// ================================================================================================
+
+message ExecutionError {
+  string code = 1;
+  string message = 2;
+  optional string meta_json = 3;
+}
+
+message ExecutionEnvelope {
+  string account_id = 1;
+  string proposal_id = 2;
+  // One of "pending", "proving", "submitted", "committed", "failed".
+  string state = 3;
+  optional ExecutionError error = 4;
+  optional uint64 delta_nonce = 5;
+  bool newly_accepted = 6;
+  bool proposal_exists = 7;
+  uint32 ignored_signatures = 8;
+  string updated_at = 9;
+}
+
+message ExecuteDeltaProposalRequest {
+  string account_id = 1;
+  string proposal_id = 2;
+  reserved 3;
+  reserved "allow_private_note";
+}
+
+message ExecuteDeltaProposalResponse {
+  ExecutionEnvelope execution = 1;
+}
+
+message GetDeltaProposalExecutionRequest {
+  string account_id = 1;
+  string proposal_id = 2;
+}
+
+message GetDeltaProposalExecutionResponse {
+  ExecutionEnvelope execution = 1;
+}

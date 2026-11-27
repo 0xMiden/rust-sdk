@@ -1,8 +1,8 @@
 //! Protobuf conversion of sync values.
 
-use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+use miden_client_core::sync::NoteTagSource;
 use miden_objects::DecodeMessageExt;
-use miden_protocol::note::{NoteDetailsCommitment, NoteTag};
+use miden_protocol::note::NoteDetailsCommitment;
 
 use crate as proto;
 use crate::{ProtoDecodeError, ProtobufValue, required};
@@ -36,39 +36,20 @@ impl ProtobufValue for NoteTagSource {
     }
 }
 
-impl ProtobufValue for NoteTagRecord {
-    type Message = proto::NoteTagRecord;
-
-    fn to_proto(&self) -> Self::Message {
-        Self::Message {
-            tag: self.tag.as_u32(),
-            source: Some(self.source.to_proto()),
-        }
-    }
-
-    fn from_proto(record: Self::Message) -> Result<Self, ProtoDecodeError> {
-        let source = required(record.source, "note tag record", "source")?;
-        Ok(NoteTagRecord {
-            tag: NoteTag::from(record.tag),
-            source: NoteTagSource::from_proto(source)?,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+    use miden_client_core::sync::NoteTagSource;
     use miden_objects::proto::primitives;
     use miden_protocol::Word;
     use miden_protocol::account::AccountId;
-    use miden_protocol::note::{NoteDetailsCommitment, NoteTag};
+    use miden_protocol::note::NoteDetailsCommitment;
     use miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE;
 
     use crate as proto;
-    use crate::{ProtoDecodeError, ProtobufValue, decode, encode};
+    use crate::{ProtoDecodeError, decode, encode};
 
     #[test]
-    fn note_tag_record_round_trips_with_every_source() {
+    fn note_tag_source_round_trips_with_every_variant() {
         let account_id =
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap();
         let word = Word::from([1u32, 2, 3, 4]);
@@ -79,24 +60,20 @@ mod tests {
             NoteTagSource::User,
             NoteTagSource::Subscription(word),
         ] {
-            let record = NoteTagRecord { tag: NoteTag::new(0x0102_0304), source };
-            assert_eq!(decode::<NoteTagRecord>(&encode(&record)).unwrap(), record);
+            assert_eq!(decode::<NoteTagSource>(&encode(&source)).unwrap(), source);
         }
     }
 
     #[test]
-    fn note_tag_record_rejects_a_malformed_note_commitment() {
-        let message = proto::NoteTagRecord {
-            tag: 0,
-            source: Some(proto::NoteTagSource {
-                source: Some(proto::note_tag_source::Source::Note(primitives::Word {
-                    encoded: vec![0; 31],
-                })),
-            }),
+    fn note_tag_source_rejects_a_malformed_note_commitment() {
+        let message = proto::NoteTagSource {
+            source: Some(proto::note_tag_source::Source::Note(primitives::Word {
+                encoded: vec![0; 31],
+            })),
         };
 
         assert!(matches!(
-            NoteTagRecord::from_proto(message),
+            decode::<NoteTagSource>(&prost::Message::encode_to_vec(&message)),
             Err(ProtoDecodeError::Conversion(_))
         ));
     }

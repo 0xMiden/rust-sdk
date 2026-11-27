@@ -10,11 +10,7 @@ import "block_number.proto";
 import "note.proto";
 import "primitives.proto";
 import "transaction.proto";
-import "transaction_effects.proto";
 import "transaction_inputs.proto";
-import "client/input_note.proto";
-import "client/output_note.proto";
-import "client/sync.proto";
 
 // Status of a transaction the client tracks.
 message TransactionStatus {
@@ -220,59 +216,4 @@ message AccountStorageRequirements {
   }
 
   repeated SlotKeys slots = 1;
-}
-
-// The parts of an executed transaction that the store records. It does not carry the transaction
-// inputs.
-message TransactionOutcome {
-  .transaction.TransactionEffects effects = 1;
-  // Header of the account after the transaction. It must commit to the final state commitment of
-  // the effects.
-  account.AccountHeader final_account = 2;
-  // Script that the transaction executed. It is absent when the transaction has no script.
-  .transaction.TransactionScript tx_script = 3;
-  // Header of the account before the transaction. For an existing account, it must commit to the
-  // initial state commitment of the effects. For a new account, the effects hold the empty word
-  // and the header has nonce zero.
-  account.AccountHeader initial_account = 4;
-}
-
-// Store changes that an executed transaction makes.
-message TransactionStoreUpdate {
-  // Field 1 must not get a new meaning. An encoding that uses it has no `transaction` field, so it
-  // does not decode.
-  reserved 1;
-  reserved "executed_transaction";
-
-  TransactionOutcome transaction = 7;
-  // Block at which the transaction was submitted.
-  blockchain.BlockNumber submission_height = 2;
-  repeated ExpectedFutureNote future_notes = 3;
-  repeated InputNoteUpdate input_notes = 4;
-  repeated OutputNoteUpdate output_notes = 5;
-  repeated sync.NoteTagRecord new_tags = 6;
-}
-
-// How the store writes a note record.
-enum NoteUpdateType {
-  // The type is absent. Decoding rejects a value with this type.
-  NOTE_UPDATE_TYPE_UNSPECIFIED = 0;
-  // The note is new.
-  NOTE_UPDATE_TYPE_INSERT = 1;
-  // The note is tracked already.
-  NOTE_UPDATE_TYPE_UPDATE = 2;
-  // A tracked expected note is committed now.
-  NOTE_UPDATE_TYPE_INSERT_COMMITTED = 3;
-}
-
-// An input note record to write, and how to write it.
-message InputNoteUpdate {
-  input_note.InputNoteRecord note = 1;
-  NoteUpdateType update_type = 2;
-}
-
-// An output note record to write, and how to write it.
-message OutputNoteUpdate {
-  output_note.OutputNoteRecord note = 1;
-  NoteUpdateType update_type = 2;
 }

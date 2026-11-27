@@ -33,6 +33,4 @@ protox        = { workspace = true }
 
 [dev-dependencies]
 miden-standards = { features = ["testing"], workspace = true }
-miden-testing   = { default-features = false, workspace = true }
 rand            = { workspace = true }
-tokio           = { workspace = true }

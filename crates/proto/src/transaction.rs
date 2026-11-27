@@ -7,15 +7,6 @@ use miden_client_core::rpc::domain::account::{
     StorageMapFetch,
     VaultFetch,
 };
-use miden_client_core::store::{
-    InputNoteRecord,
-    InputNoteUpdate,
-    NoteUpdateType,
-    NoteUpdates,
-    OutputNoteRecord,
-    OutputNoteUpdate,
-};
-use miden_client_core::sync::NoteTagRecord;
 use miden_client_core::transaction::{
     DiscardCause,
     ForeignAccount,
@@ -25,25 +16,17 @@ use miden_client_core::transaction::{
     RequestInputNote,
     RequestTransactionScript,
     TransactionDetails,
-    TransactionOutcome,
     TransactionRequest,
     TransactionRequestBuilder,
     TransactionStatus,
-    TransactionStoreUpdate,
 };
 use miden_objects::DecodeMessageExt;
 use miden_protocol::Word;
-use miden_protocol::account::{
-    AccountCodeUpgrade,
-    AccountHeader,
-    PartialAccount,
-    StorageMapKey,
-    StorageSlotName,
-};
+use miden_protocol::account::{AccountCodeUpgrade, PartialAccount, StorageMapKey, StorageSlotName};
 use miden_protocol::block::account_tree::AccountWitness;
 use miden_protocol::crypto::merkle::store::MerkleStore;
 use miden_protocol::note::{Note, NoteDetails, NoteRecipient, NoteTag};
-use miden_protocol::transaction::{AccountInputs, TransactionEffects, TransactionScript};
+use miden_protocol::transaction::{AccountInputs, TransactionScript};
 use miden_protocol::vm::AdviceMap;
 
 use crate as proto;
@@ -646,187 +629,11 @@ impl ProtobufValue for (NoteDetails, NoteTag) {
     }
 }
 
-// TRANSACTION OUTCOME
-// ================================================================================================
-
-/// Decoding checks that the account headers agree with the effects. The store compares the initial
-/// header with the stored state and writes the final header as the new state, so a header for
-/// another state would corrupt the account.
-impl ProtobufValue for TransactionOutcome {
-    type Message = proto::TransactionOutcome;
-
-    fn to_proto(&self) -> Self::Message {
-        Self::Message {
-            effects: Some(self.effects().into()),
-            initial_account: Some(self.initial_account().into()),
-            final_account: Some(self.final_account().into()),
-            tx_script: self.tx_script().map(Into::into),
-        }
-    }
-
-    fn from_proto(outcome: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "transaction outcome";
-
-        let effects: TransactionEffects =
-            required(outcome.effects, MESSAGE, "effects")?.decode_and_verify()?;
-        let initial_account: AccountHeader =
-            required(outcome.initial_account, MESSAGE, "initial account")?.decode_and_verify()?;
-        let final_account: AccountHeader =
-            required(outcome.final_account, MESSAGE, "final account")?.decode_and_verify()?;
-        let tx_script: Option<TransactionScript> =
-            outcome.tx_script.map(DecodeMessageExt::decode_and_verify).transpose()?;
-
-        let account_id = effects.account_patch().id();
-        if initial_account.id() != account_id || final_account.id() != account_id {
-            return Err(ProtoDecodeError::InvalidValue(
-                "account headers and account patch name different accounts".to_string(),
-            ));
-        }
-        if final_account.to_commitment() != effects.final_state_commitment() {
-            return Err(ProtoDecodeError::InvalidValue(
-                "final account header does not commit to the final state of the effects"
-                    .to_string(),
-            ));
-        }
-        // The effects of a transaction against a new account hold the empty word as the initial
-        // state commitment.
-        let initial_matches = if effects.initial_state_commitment() == Word::empty() {
-            initial_account.nonce().as_canonical_u64() == 0
-        } else {
-            initial_account.to_commitment() == effects.initial_state_commitment()
-        };
-        if !initial_matches {
-            return Err(ProtoDecodeError::InvalidValue(
-                "initial account header does not match the initial state of the effects"
-                    .to_string(),
-            ));
-        }
-
-        Ok(TransactionOutcome::new(effects, initial_account, final_account, tx_script))
-    }
-}
-
-// TRANSACTION STORE UPDATE
-// ================================================================================================
-
-impl ProtobufValue for TransactionStoreUpdate {
-    type Message = proto::TransactionStoreUpdate;
-
-    fn to_proto(&self) -> Self::Message {
-        let note_updates = self.note_updates();
-        Self::Message {
-            transaction: Some(self.transaction().to_proto()),
-            submission_height: Some(self.submission_height().into()),
-            future_notes: self.future_notes().iter().map(ProtobufValue::to_proto).collect(),
-            input_notes: note_updates
-                .input_notes()
-                .iter()
-                .map(|update| proto::InputNoteUpdate {
-                    note: Some(update.inner().to_proto()),
-                    update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
-                })
-                .collect(),
-            output_notes: note_updates
-                .output_notes()
-                .iter()
-                .map(|update| proto::OutputNoteUpdate {
-                    note: Some(update.inner().to_proto()),
-                    update_type: proto::NoteUpdateType::from(*update.update_type()).into(),
-                })
-                .collect(),
-            new_tags: self.new_tags().iter().map(ProtobufValue::to_proto).collect(),
-        }
-    }
-
-    fn from_proto(update: Self::Message) -> Result<Self, ProtoDecodeError> {
-        const MESSAGE: &str = "transaction store update";
-
-        let transaction =
-            TransactionOutcome::from_proto(required(update.transaction, MESSAGE, "transaction")?)?;
-        let submission_height = required(update.submission_height, MESSAGE, "submission height")?
-            .decode_and_verify()?;
-        let future_notes = update
-            .future_notes
-            .into_iter()
-            .map(<(NoteDetails, NoteTag)>::from_proto)
-            .collect::<Result<_, _>>()?;
-        let input_notes = update
-            .input_notes
-            .into_iter()
-            .map(|update| {
-                Ok(InputNoteUpdate::new(
-                    InputNoteRecord::from_proto(required(
-                        update.note,
-                        "input note update",
-                        "note",
-                    )?)?,
-                    proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
-                ))
-            })
-            .collect::<Result<_, ProtoDecodeError>>()?;
-        let output_notes = update
-            .output_notes
-            .into_iter()
-            .map(|update| {
-                Ok(OutputNoteUpdate::new(
-                    OutputNoteRecord::from_proto(required(
-                        update.note,
-                        "output note update",
-                        "note",
-                    )?)?,
-                    proto::NoteUpdateType::try_from(update.update_type)?.try_into()?,
-                ))
-            })
-            .collect::<Result<_, ProtoDecodeError>>()?;
-        let new_tags = update
-            .new_tags
-            .into_iter()
-            .map(NoteTagRecord::from_proto)
-            .collect::<Result<_, _>>()?;
-
-        Ok(TransactionStoreUpdate::new(
-            transaction,
-            submission_height,
-            NoteUpdates::new(input_notes, output_notes),
-            future_notes,
-            new_tags,
-        ))
-    }
-}
-
-impl From<NoteUpdateType> for proto::NoteUpdateType {
-    fn from(update_type: NoteUpdateType) -> Self {
-        match update_type {
-            NoteUpdateType::Insert => Self::Insert,
-            NoteUpdateType::Update => Self::Update,
-            NoteUpdateType::InsertCommitted => Self::InsertCommitted,
-        }
-    }
-}
-
-/// The unspecified value is rejected, because the type decides how the store writes the note.
-impl TryFrom<proto::NoteUpdateType> for NoteUpdateType {
-    type Error = ProtoDecodeError;
-
-    fn try_from(update_type: proto::NoteUpdateType) -> Result<Self, Self::Error> {
-        match update_type {
-            proto::NoteUpdateType::Insert => Ok(Self::Insert),
-            proto::NoteUpdateType::Update => Ok(Self::Update),
-            proto::NoteUpdateType::InsertCommitted => Ok(Self::InsertCommitted),
-            proto::NoteUpdateType::Unspecified => {
-                Err(ProtoDecodeError::InvalidValue("note update type is unspecified".to_string()))
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use miden_client_core::store::{InputNoteRecord, OutputNoteRecord};
-    use miden_client_core::sync::NoteTagSource;
     use miden_client_core::transaction::{
         ForeignAccount,
         TransactionRequest,
@@ -837,7 +644,6 @@ mod tests {
         Account,
         AccountBuilder,
         AccountCode,
-        AccountHeader,
         AccountId,
         AccountType,
         StorageMapKey,
@@ -859,124 +665,10 @@ mod tests {
     use miden_standards::account::auth::{Approver, AuthSingleSig, MultisigAuthArgs};
     use miden_standards::note::P2idNote;
     use miden_standards::testing::account_component::MockAccountComponent;
-    use miden_testing::{Auth, MockChainBuilder, MockTransactionInput};
     use rand::RngExt;
 
-    use super::{
-        AccountFetch,
-        AccountStorageRequirements,
-        InputNoteUpdate,
-        NoteTagRecord,
-        NoteUpdateType,
-        NoteUpdates,
-        OutputNoteUpdate,
-        StorageMapFetch,
-        TransactionOutcome,
-        TransactionStoreUpdate,
-        VaultFetch,
-        proto,
-    };
-    use crate::{ProtoDecodeError, decode, encode};
-
-    /// A store update with an executed transaction, every note update type, an output note and
-    /// every tag source.
-    #[tokio::test]
-    async fn transaction_store_update_round_trips() {
-        let sender_id = AccountId::try_from(ACCOUNT_ID_SENDER).unwrap();
-        let faucet_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
-        let asset = FungibleAsset::new(faucet_id, 100).unwrap().into();
-
-        let mut builder = MockChainBuilder::new();
-        let account = builder.add_existing_mock_account(Auth::IncrNonce).unwrap();
-        let note = builder
-            .add_p2id_note(sender_id, account.id(), &[asset], NoteType::Public)
-            .unwrap();
-        let mut chain = builder.build().unwrap();
-        chain.prove_next_block().unwrap();
-        let executed_transaction = Box::pin(
-            chain
-                .build_transaction(MockTransactionInput::Account(account.clone()))
-                .unauthenticated_input_note(note.clone())
-                .build()
-                .unwrap()
-                .execute(),
-        )
-        .await
-        .unwrap();
-
-        let input_record = InputNoteRecord::from(note.clone());
-        let output_record = OutputNoteRecord::from_full_note(note.clone(), BlockNumber::from(9u32));
-        let note_updates = NoteUpdates::new(
-            vec![
-                InputNoteUpdate::new(input_record.clone(), NoteUpdateType::Insert),
-                InputNoteUpdate::new(input_record.clone(), NoteUpdateType::Update),
-                InputNoteUpdate::new(input_record, NoteUpdateType::InsertCommitted),
-            ],
-            vec![OutputNoteUpdate::new(output_record, NoteUpdateType::Insert)],
-        );
-        let tag = NoteTag::with_account_target(account.id());
-        let new_tags = vec![
-            NoteTagRecord::with_note_source(tag, note.details_commitment()),
-            NoteTagRecord::with_account_source(tag, account.id()),
-            NoteTagRecord { tag, source: NoteTagSource::User },
-            NoteTagRecord {
-                tag,
-                source: NoteTagSource::Subscription(Word::from([3u32; 4])),
-            },
-        ];
-
-        let outcome = TransactionOutcome::from(&executed_transaction);
-        assert_eq!(outcome.initial_account(), &AccountHeader::from(&account));
-        assert_ne!(outcome.initial_account(), outcome.final_account());
-
-        // A header of the other account state does not match the effects.
-        let swapped_final = TransactionOutcome::new(
-            outcome.effects().clone(),
-            outcome.initial_account().clone(),
-            outcome.initial_account().clone(),
-            None,
-        );
-        let swapped_initial = TransactionOutcome::new(
-            outcome.effects().clone(),
-            outcome.final_account().clone(),
-            outcome.final_account().clone(),
-            None,
-        );
-        for mismatched in [swapped_final, swapped_initial] {
-            assert!(matches!(
-                decode::<TransactionOutcome>(&encode(&mismatched)),
-                Err(ProtoDecodeError::InvalidValue(_))
-            ));
-        }
-
-        let update = TransactionStoreUpdate::new(
-            outcome,
-            BlockNumber::from(42u32),
-            note_updates,
-            vec![(note.into(), tag)],
-            new_tags,
-        );
-
-        assert_eq!(decode::<TransactionStoreUpdate>(&encode(&update)).unwrap(), update);
-    }
-
-    #[test]
-    fn transaction_store_update_without_transaction_is_rejected() {
-        let bytes = prost::Message::encode_to_vec(&proto::TransactionStoreUpdate::default());
-
-        assert!(matches!(
-            decode::<TransactionStoreUpdate>(&bytes),
-            Err(ProtoDecodeError::MissingField {
-                message: "transaction store update",
-                field: "transaction"
-            })
-        ));
-    }
-
-    #[test]
-    fn note_update_type_unspecified_is_rejected() {
-        assert!(NoteUpdateType::try_from(proto::NoteUpdateType::Unspecified).is_err());
-    }
+    use super::{AccountFetch, AccountStorageRequirements, StorageMapFetch, VaultFetch, proto};
+    use crate::{decode, encode};
 
     #[test]
     fn account_fetch_round_trips() {

@@ -22,9 +22,3 @@ message NoteTagSource {
     primitives.Word subscription = 4;
   }
 }
-
-// A note tag that the client tracks, with the reason it tracks the tag.
-message NoteTagRecord {
-  fixed32 tag = 1;
-  NoteTagSource source = 2;
-}

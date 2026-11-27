@@ -31,7 +31,7 @@ pub struct StateSyncUpdate {
     note_updates: NoteUpdates,
     /// Committed and discarded transactions after the sync.
     transaction_updates: TransactionUpdates,
-    /// Public account updates and mismatched private accounts after the sync.
+    /// Account rollbacks, public updates, and private account locks after the sync.
     account_updates: AccountUpdates,
     /// The protocol configuration active at `block_num`. The node sends it when the sync starts at
     /// genesis, or when the starting block and `block_num` commit to different configurations.
@@ -278,19 +278,18 @@ impl PublicAccountUpdate {
 // ACCOUNT UPDATES
 // ================================================================================================
 
-/// Contains account changes to apply to the store after a sync request.
+/// Contains the account changes to apply to the store after a sync.
+///
+/// Each account can have several local states to undo and at most one network state to apply. The
+/// store applies the rollbacks before the network state as part of a [`StateSyncUpdate`].
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct AccountUpdates {
+    states_to_undo: Vec<(AccountId, Word)>,
     /// Updated public accounts, either as full state replacements or incremental patches.
     updated_public_accounts: Vec<PublicAccountUpdate>,
-    /// Account commitments received from the network that don't match the currently locally-tracked
-    /// state of the private accounts.
-    ///
-    /// These updates may represent a stale account commitment (meaning that the latest local state
-    /// hasn't been committed). If this is not the case, the account may be locked until the state
-    /// is restored manually.
-    mismatched_private_accounts: Vec<(AccountId, Word)>,
+    /// Private accounts that the sync determined must become locked.
+    accounts_to_lock: Vec<AccountId>,
     /// Witnesses validated at the target block, for the accounts the sync queried anyway. Kept so
     /// that the witness refresh does not request them a second time.
     account_witnesses: Vec<(AccountId, AccountWitness)>,
@@ -300,13 +299,22 @@ impl AccountUpdates {
     /// Creates a new instance of `AccountUpdates`.
     pub fn new(
         updated_public_accounts: Vec<PublicAccountUpdate>,
-        mismatched_private_accounts: Vec<(AccountId, Word)>,
+        accounts_to_lock: Vec<AccountId>,
     ) -> Self {
         Self {
+            states_to_undo: Vec::new(),
             updated_public_accounts,
-            mismatched_private_accounts,
+            accounts_to_lock,
             account_witnesses: Vec::new(),
         }
+    }
+
+    /// Specifies the local states to undo when constructing a sync update from terminal transaction
+    /// records. Reconciliation supplies these states for pending transactions.
+    #[must_use]
+    pub fn with_states_to_undo(mut self, states: Vec<(AccountId, Word)>) -> Self {
+        self.states_to_undo = states;
+        self
     }
 
     /// Attaches the account witnesses the sync validated at its target block.
@@ -319,14 +327,19 @@ impl AccountUpdates {
         self
     }
 
+    /// Returns the local account states to undo before the store applies the network states.
+    pub fn states_to_undo(&self) -> &[(AccountId, Word)] {
+        &self.states_to_undo
+    }
+
     /// Returns the updated public accounts.
     pub fn updated_public_accounts(&self) -> &[PublicAccountUpdate] {
         &self.updated_public_accounts
     }
 
-    /// Returns the mismatched private accounts.
-    pub fn mismatched_private_accounts(&self) -> &[(AccountId, Word)] {
-        &self.mismatched_private_accounts
+    /// Returns the private accounts that this sync locks.
+    pub fn accounts_to_lock(&self) -> &[AccountId] {
+        &self.accounts_to_lock
     }
 
     /// Returns the account witnesses validated at the sync's target block.

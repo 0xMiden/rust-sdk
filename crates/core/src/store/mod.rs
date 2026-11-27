@@ -610,9 +610,8 @@ pub trait Store: Send + Sync {
     ///   [`Store::get_input_note_after`]) work correctly.
     /// - Removing note tags that are no longer relevant.
     /// - Updating transactions in the store, marking as `committed` or `discarded`.
-    ///   - In turn, validating private account's state transitions. If a private account's
-    ///     commitment locally does not match the `StateSyncUpdate` information, the account may be
-    ///     locked.
+    /// - Undoing the local states in [`AccountUpdates::states_to_undo`](crate::sync::AccountUpdates::states_to_undo) before applying public account updates.
+    /// - Locking the accounts in [`AccountUpdates::accounts_to_lock`](crate::sync::AccountUpdates::accounts_to_lock). Preserve each lock in account history so a rollback keeps it.
     /// - Storing new MMR authentication nodes.
     /// - Updating the tracked public accounts.
     /// - Storing the protocol configuration the update carries, before the sync height advances.

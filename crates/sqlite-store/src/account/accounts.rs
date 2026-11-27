@@ -34,7 +34,7 @@ use miden_protocol::crypto::merkle::MerkleError;
 use miden_protocol::errors::AccountError;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use miden_protocol::{EMPTY_WORD, Felt, Word};
-use rusqlite::{Connection, Transaction, named_params, params};
+use rusqlite::{Connection, Transaction, params};
 
 use crate::account::rows::{
     StoredAccountHeader,
@@ -969,30 +969,24 @@ impl SqliteStore {
         Self::apply_account_patch(tx, smt_forest, init_header, new_header, patch)
     }
 
-    /// Locks the account if the mismatched digest doesn't belong to a previous account state (stale
-    /// data).
-    pub(crate) fn lock_account_on_unexpected_commitment(
+    /// Locks the current and historical states of the account.
+    pub(crate) fn lock_account(
         tx: &Transaction<'_>,
-        account_id: &AccountId,
-        mismatched_digest: &Word,
+        account_id: AccountId,
     ) -> Result<(), StoreError> {
-        // Mismatched digests may be due to stale network data. If the mismatched digest is tracked
-        // in the db and corresponds to the mismatched account, it means we got a past update and
-        // shouldn't lock the account.
-        const LOCK_CONDITION: &str = "WHERE id = :account_id AND NOT EXISTS (SELECT 1 FROM historical_account_headers WHERE id = :account_id AND account_commitment = :digest)";
         let account_id_bytes = account_id.to_bytes();
-        let digest_bytes = mismatched_digest.as_bytes();
-        let params = named_params! {
-            ":account_id": account_id_bytes,
-            ":digest": digest_bytes
-        };
+        tx.execute(
+            "UPDATE latest_account_headers SET locked = true WHERE id = ?",
+            params![&account_id_bytes],
+        )
+        .into_store_error()?;
 
-        let query = format!("UPDATE latest_account_headers SET locked = true {LOCK_CONDITION}");
-        tx.execute(&query, params).into_store_error()?;
-
-        // Also lock historical rows so that undo_account_state preserves the lock.
-        let query = format!("UPDATE historical_account_headers SET locked = true {LOCK_CONDITION}");
-        tx.execute(&query, params).into_store_error()?;
+        // Also lock the historical rows so that `undo_account_state` preserves the lock.
+        tx.execute(
+            "UPDATE historical_account_headers SET locked = true WHERE id = ?",
+            params![&account_id_bytes],
+        )
+        .into_store_error()?;
 
         Ok(())
     }

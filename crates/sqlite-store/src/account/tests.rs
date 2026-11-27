@@ -29,13 +29,21 @@ use miden_client::address::RoutingParameters;
 use miden_client::assembly::CodeBuilder;
 use miden_client::asset::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
 use miden_client::auth::{AuthSchemeId, PublicKeyCommitment};
-use miden_client::block::AccountWitness;
+use miden_client::block::{AccountWitness, BlockNumber};
 use miden_client::note::NoteTag;
 use miden_client::testing::common::{ACCOUNT_ID_REGULAR, create_test_store_path};
 use miden_client::{EMPTY_WORD, Felt, ONE, Serializable, Word, ZERO};
 use miden_client_core::errors::{StaleUpdate, StoreError};
-use miden_client_core::store::{AccountUpdate, ClientAccountType, Store};
-use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
+use miden_client_core::store::{AccountUpdate, ClientAccountType, NoteUpdates, Store};
+use miden_client_core::sync::{
+    AccountUpdates,
+    NoteTagRecord,
+    NoteTagSource,
+    PartialBlockchainUpdates,
+    StateSyncUpdate,
+    TransactionUpdates,
+};
+use miden_client_core::transaction::{TransactionDetails, TransactionRecord, TransactionStatus};
 use miden_protocol::account::{
     AccountComponentMetadata,
     StorageMapPatch,
@@ -50,6 +58,7 @@ use miden_protocol::testing::account_id::{
     ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
 };
 use miden_protocol::testing::constants::NON_FUNGIBLE_ASSET_DATA;
+use miden_protocol::transaction::{RawOutputNotes, TransactionId};
 use miden_standards::account::auth::Approver;
 use rusqlite::{OptionalExtension, params};
 
@@ -1651,8 +1660,7 @@ async fn undo_account_state_deletes_account_entirely() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Verifies that `lock_account_on_unexpected_commitment` sets `locked = true` in both the latest
-/// and historical tables so that the lock survives undo/rebuild.
+/// A lock in a sync update applies to both the current and historical account states.
 #[tokio::test]
 async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     let store = create_test_store().await;
@@ -1710,16 +1718,16 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
     let m = get_storage_metrics(&store).await;
     assert_eq!(m.historical_account_headers, 1);
 
-    // Lock the account with a fake mismatched digest (not matching any historical commitment)
-    let fake_digest =
-        [Felt::from(999u32), Felt::from(888u32), Felt::from(777u32), Felt::from(666u32)].into();
     store
-        .interact_with_connection(move |conn| {
-            let tx = conn.transaction().into_store_error()?;
-            SqliteStore::lock_account_on_unexpected_commitment(&tx, &account_id, &fake_digest)?;
-            tx.commit().into_store_error()?;
-            Ok(())
-        })
+        .apply_state_sync(StateSyncUpdate::from_parts(
+            BlockNumber::GENESIS,
+            BlockNumber::GENESIS,
+            PartialBlockchainUpdates::default(),
+            NoteUpdates::default(),
+            TransactionUpdates::default(),
+            AccountUpdates::new(vec![], vec![account_id]),
+            None,
+        ))
         .await?;
 
     // Latest should be locked
@@ -1747,6 +1755,55 @@ async fn lock_account_affects_latest_and_historical() -> anyhow::Result<()> {
         .await?;
     assert_eq!(historical_locked.len(), 1, "Should have 1 historical entry (old nonce-1 state)");
     assert!(historical_locked[0], "Historical nonce-1 should be locked");
+
+    Ok(())
+}
+
+/// Verifies that discarding a transaction that leaves the account state unchanged keeps the state
+/// that the transaction ran on.
+#[tokio::test]
+async fn discarded_state_preserving_transaction_keeps_the_account_state() -> anyhow::Result<()> {
+    let store = create_test_store().await;
+    let map_slot_name =
+        StorageSlotName::new("test::discard::state_preserving").expect("valid name");
+    let mut account = setup_account_with_map(&store, 3, &map_slot_name).await?;
+    let account_id = account.id();
+    apply_single_entry_update(&store, &mut account, &map_slot_name, 2).await?;
+    let current_commitment = account.to_commitment();
+
+    let details = TransactionDetails {
+        account_id,
+        init_account_state: current_commitment,
+        final_account_state: current_commitment,
+        input_note_nullifiers: vec![],
+        output_notes: RawOutputNotes::new(vec![])?,
+        block_num: BlockNumber::from(1u32),
+        submission_height: BlockNumber::from(1u32),
+        expiration_block_num: BlockNumber::from(5u32),
+        creation_timestamp: 0,
+    };
+    let transaction = TransactionRecord::new(
+        TransactionId::from_raw(Word::from([7u32; 4])),
+        details,
+        None,
+        TransactionStatus::Discarded(miden_client_core::transaction::DiscardCause::Expired),
+    );
+    let transaction_updates = TransactionUpdates::new([transaction]);
+
+    store
+        .apply_state_sync(StateSyncUpdate::from_parts(
+            BlockNumber::GENESIS,
+            BlockNumber::from(0u32),
+            PartialBlockchainUpdates::default(),
+            NoteUpdates::default(),
+            transaction_updates,
+            AccountUpdates::default(),
+            None,
+        ))
+        .await?;
+
+    let (header, _) = store.get_account_header(account_id).await?.expect("account should exist");
+    assert_eq!(header.to_commitment(), current_commitment);
 
     Ok(())
 }

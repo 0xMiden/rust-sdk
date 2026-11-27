@@ -20,6 +20,10 @@
 
 ### Fixes
 
+* [FIX][rust,store] Sync discarded losing transactions and kept account states confirmed by a different transaction, and preserved pending transactions that depend on those states. Public accounts recover the winning state during the same sync, including when recovery needs a patch ([#2772](https://github.com/0xMiden/rust-sdk/issues/2772), [#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+* [FIX][rust] Sync ordered passthrough transactions at their execution state. Discarding a passthrough preserves that state and independent transactions that use it ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+* [FIX][rust] `SyncSummary::locked_accounts` reports the private accounts newly locked after sync checked their proven commitment against local history ([#2118](https://github.com/0xMiden/rust-sdk/issues/2118), [#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+
 * [FIX][cli] `timeout_ms` is optional in the `[rpc]` and `[note_transport]` sections of the config file. A missing value defaults to `10000` milliseconds, so a `[note_transport]` section added by hand with only `endpoint` loads ([#2790](https://github.com/0xMiden/rust-sdk/pull/2790)).
 
 ### Enhancements
@@ -62,6 +66,8 @@
 * [BREAKING][type][rust] Added the `RpcEndpoint::BlockSubscription` and `RpcError::SubscriberLagged` variants. `NodeRpcClient` implementations must implement `subscribe_blocks` ([#2823](https://github.com/0xMiden/rust-sdk/pull/2823)).
 * [BREAKING][type][rust] Added the `RpcEndpoint::ProofSubscription` variant. `NodeRpcClient` implementations must implement `subscribe_proofs`.
 * [BREAKING][type][rust,store] `StateSyncUpdate` takes finalized `TransactionUpdates`. Custom syncs can call `miden_client::sync::TransactionUpdateTracker::into_transaction_updates` or build `TransactionUpdates` from terminal records. Construct `AccountUpdates` from all account changes together. The client now collects them in an internal tracker and `AccountUpdates::extend` has been removed ([#2826](https://github.com/0xMiden/rust-sdk/pull/2826)).
+* [BREAKING][type][rust] Replaced the individual discard methods on `TransactionUpdateTracker` with `pending_by_account` and `PendingAccountTransactions::discard_where`. Custom callers supply a discard cause for each affected transaction and the account states confirmed on chain ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
+* [BREAKING][type][rust,store] `AccountUpdates::accounts_to_lock` supplies the exact private accounts a store must lock. Stores apply `AccountUpdates::states_to_undo` before public account updates. Custom sync callers supply account statuses and a lookup for unfamiliar private account commitments ([#2660](https://github.com/0xMiden/rust-sdk/pull/2660)).
 * [BREAKING][behavior][rust] `GrpcClient` no longer sends the crate version in the `accept` header. Nodes from 0.18 ignore it because the RPC API is versioned by its protobuf package, so `AcceptHeaderError::NoSupportedMediaRange` now only means a genesis commitment mismatch.
 * [BREAKING][removal][rust] Removed `AcceptHeaderContext::client_version`.
 * [BREAKING][behavior][rust] `GrpcClient` now rejects node responses that do not match the request with `RpcError::InvalidResponse`. Before, only `VerifyingRpcClient` did.

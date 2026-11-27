@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 
 use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
@@ -14,9 +13,16 @@ use miden_protocol::crypto::merkle::MerklePath;
 use miden_protocol::crypto::merkle::mmr::{InOrderIndex, MmrDelta, PartialMmr};
 use miden_protocol::note::{NoteId, NoteTag, Nullifier};
 use miden_protocol::protocol_config::ProtocolConfig;
+use miden_protocol::transaction::TransactionHeader;
 use tracing::info;
 
-use super::account_update_tracker::AccountUpdateTracker;
+use super::account_update_tracker::{
+    AccountSyncState,
+    AccountUpdateTracker,
+    DiscardConditions,
+    PublicAccountReconciliation,
+    TrackedAccount,
+};
 use super::state_sync_update::build_account_patch;
 use super::{
     NoteObserver,
@@ -41,7 +47,7 @@ use crate::rpc::domain::sync::{ChainMmrInfo, SyncTarget};
 use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
 use crate::rpc::{AccountStateAt, NodeRpcClient, RpcError};
 use crate::store::input_note_states::UnverifiedNoteState;
-use crate::store::{InputNoteRecord, OutputNoteRecord, StoreError};
+use crate::store::{AccountStatus, InputNoteRecord, OutputNoteRecord, StoreError};
 use crate::sync::{NoteContentFetch, ResolvedSyncNotesBlock, SyncedNote, sync_notes_with_content};
 use crate::transaction::TransactionRecord;
 
@@ -50,16 +56,6 @@ pub(crate) const MAX_CONCURRENT_ACCOUNT_FETCHES: usize = 4;
 
 // STATE UPDATE DATA
 // ================================================================================================
-
-/// How a node snapshot of a public account should be reconciled against the local state.
-enum PublicAccountSync {
-    /// Node is newer — apply its state to the store.
-    Apply(Box<PublicAccountUpdate>),
-    /// Same nonce but different state — the local transaction lost the race and must be discarded.
-    Superseded,
-    /// Node is behind the local (potentially optimistic) state — leave the local state untouched.
-    Ignore,
-}
 
 /// Data fetched from the node needed to sync the client to the chain tip.
 ///
@@ -130,8 +126,8 @@ impl NoteBlockRelevance {
 /// Use [`Client::build_sync_input()`](`crate::Client::build_sync_input()`) to build a default input
 /// from the client state, or construct this struct manually for custom sync scenarios.
 pub struct StateSyncInput {
-    /// Headers of the tracked accounts to follow during the sync.
-    pub accounts: Vec<AccountHeader>,
+    /// Headers and statuses of the accounts to follow during sync.
+    pub accounts: Vec<(AccountHeader, AccountStatus)>,
     /// Note tags that the node uses to filter which note inclusions to return.
     pub note_tags: BTreeSet<NoteTag>,
     /// Input notes whose lifecycle should be followed during sync.
@@ -282,28 +278,25 @@ impl StateSync {
     /// mutable reference so callers can keep it in memory across syncs; it is only modified once
     /// every check has passed.
     ///
-    /// During the sync process, the following steps are performed:
-    /// 1. Fetch sync data from the node (MMR delta, note inclusions, transactions).
-    /// 2. Update account states (fetch updated public accounts, flag mismatched private ones).
-    /// 3. Screen note inclusions via the configured [`OnNoteReceived`] callback.
-    /// 4. Process transaction inclusions (commit local txs, record external consumers, discard
-    ///    stale/expired txs, commit output notes).
-    /// 5. Recover the public notes a tracked account consumed but the client never tracked.
-    /// 6. Detect consumed notes via nullifier sync (optional, see
-    ///    [`Self::disable_nullifier_sync`]).
-    /// 7. Advance the partial MMR to the chain tip and track the screened blocks that still hold an
-    ///    unspent note.
+    /// The history lookup returns whether the caller retains the specified account state. Sync
+    /// calls it only for a proven private commitment outside the unlocked account's local pending
+    /// branch and current state.
     ///
-    /// Steps 1-2 are [`Self::fetch_state`], 3-5 [`Self::derive_state_updates`], 6
-    /// [`Self::fetch_nullifiers`] and 7 [`Self::build_update`]; each can be driven separately.
+    /// [`Self::fetch_state`] records transaction inclusions and authenticates account states.
+    /// [`Self::derive_state_updates`] screens received notes and recovers consumed public notes.
+    /// [`Self::fetch_nullifiers`] checks for spent inputs when nullifier sync is enabled.
+    /// [`Self::build_update`] reconciles pending transactions, releases their notes as needed, and
+    /// advances the partial MMR. Callers can drive each phase separately.
     pub async fn sync_state(
         &self,
         current_partial_mmr: &mut PartialMmr,
         input: StateSyncInput,
+        is_known_private_state: impl AsyncFn(AccountId, Word) -> Result<bool, StoreError>,
     ) -> Result<StateSyncUpdate, ClientError> {
         let block_num = block_num_from_forest(current_partial_mmr)?;
 
-        let mut chain_sync_data = self.fetch_state(block_num, input).await?;
+        let mut chain_sync_data =
+            self.fetch_state(block_num, input, is_known_private_state).await?;
         self.derive_state_updates(&mut chain_sync_data).await?;
         self.fetch_nullifiers(&mut chain_sync_data).await?;
 
@@ -318,15 +311,15 @@ impl StateSync {
     /// Fetches the node's view of everything that changed since `block_from`: the MMR delta, the
     /// note inclusions, the transactions, and the account states.
     ///
-    /// Every node call that does not depend on note screening happens here, so a caller can run
-    /// this concurrently with another sync's fetch. Interpreting the response is
-    /// [`Self::derive_state_updates`]'s, and the nullifier check [`Self::fetch_nullifiers`]'s. Both
-    /// run afterwards so a caller syncing more than one source can write the other source first,
-    /// and check nullifiers once across all of them.
+    /// This phase records inclusions by transaction ID and fetches the account proofs needed for
+    /// reconciliation. It calls `is_known_private_state` for each unlocked private account whose
+    /// proven commitment matches neither the local header nor a pending ancestor. Callers can
+    /// screen notes from other sources before checking nullifiers.
     pub async fn fetch_state(
         &self,
         block_from: BlockNumber,
         input: StateSyncInput,
+        is_known_private_state: impl AsyncFn(AccountId, Word) -> Result<bool, StoreError>,
     ) -> Result<ChainSyncData, ClientError> {
         let StateSyncInput {
             accounts,
@@ -337,11 +330,11 @@ impl StateSync {
         } = input;
 
         let note_tags = Arc::new(note_tags);
-        let account_ids: Vec<AccountId> = accounts.iter().map(AccountHeader::id).collect();
+        let account_ids: Vec<AccountId> = accounts.iter().map(|(header, _)| header.id()).collect();
 
-        let note_updates = NoteUpdateTracker::new(input_notes, output_notes);
-        let transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
-        let mut account_updates = AccountUpdateTracker::default();
+        let mut note_updates = NoteUpdateTracker::new(input_notes, output_notes);
+        let mut account_updates = AccountUpdateTracker::new(accounts, &uncommitted_transactions);
+        let mut transaction_updates = TransactionUpdateTracker::new(uncommitted_transactions);
 
         let Some(sync_data) = self.fetch_sync_data(block_from, &account_ids, &note_tags).await?
         else {
@@ -349,7 +342,6 @@ impl StateSync {
             return Ok(ChainSyncData {
                 block_from,
                 advance: None,
-                superseded_states: Vec::new(),
                 note_updates,
                 transaction_updates,
                 account_updates,
@@ -364,17 +356,43 @@ impl StateSync {
             protocol_config,
         } = sync_data;
 
-        let new_commitments = derive_account_commitments(&transactions);
-        let superseded_states = self
-            .account_state_sync(
-                &mut account_updates,
-                &accounts,
-                &new_commitments,
-                block_from,
-                &chain_tip_header,
-            )
+        for record in &transactions {
+            transaction_updates.apply_transaction_inclusion(
+                record.block_num,
+                &record.transaction_header,
+                u64::from(chain_tip_header.timestamp()),
+            );
+        }
+        let pending_accounts: BTreeSet<_> = transaction_updates
+            .pending_transactions()
+            .map(|tx| tx.details.account_id)
+            .collect();
+        for (account_id, headers) in ordered_account_transactions(&transactions)? {
+            if let Some(last) = headers.last() {
+                account_updates.apply_commitment_update(account_id, last.final_state_commitment());
+            }
+            let has_pending = pending_accounts.contains(&account_id);
+            for header in headers {
+                if has_pending {
+                    account_updates.observe_transition(header);
+                }
+                note_updates.record_input_note_order(header.input_notes());
+            }
+        }
+        self.sync_public_accounts(&mut account_updates, block_from, &chain_tip_header)
+            .await?;
+        self.sync_private_accounts(&mut account_updates, &chain_tip_header, is_known_private_state)
             .await?;
 
+        let height = chain_tip_header.block_num();
+        let discard_conditions = DiscardConditions {
+            height,
+            stale_before: self
+                .tx_discard_delta
+                .and_then(|delta| height.checked_sub(delta))
+                .unwrap_or_default(),
+            spent_inputs: BTreeSet::new(),
+        };
         Ok(ChainSyncData {
             block_from,
             advance: Some(ChainAdvance {
@@ -383,40 +401,26 @@ impl StateSync {
                 note_blocks_awaiting_screening: note_blocks,
                 transactions,
                 relevant_note_blocks: Vec::new(),
+                discard_conditions,
                 protocol_config,
             }),
-            superseded_states,
             note_updates,
             transaction_updates,
             account_updates,
         })
     }
 
-    /// Turns the node's raw response into note and transaction updates.
-    ///
-    /// Discards the local transactions the node superseded, screens the received notes for
-    /// relevance, applies the transaction inclusions, and recovers the public notes the tracked
-    /// accounts consumed, fetching those by id.
+    /// Screens received notes, applies output note inclusions, and recovers the public notes that
+    /// tracked accounts consumed.
     pub async fn derive_state_updates(
         &self,
         chain_sync_data: &mut ChainSyncData,
     ) -> Result<(), ClientError> {
-        let ChainSyncData {
-            advance,
-            superseded_states,
-            note_updates,
-            transaction_updates,
-            ..
-        } = chain_sync_data;
+        let ChainSyncData { advance, note_updates, .. } = chain_sync_data;
 
         let Some(advance) = advance.as_mut() else {
             return Ok(());
         };
-
-        // Discard the local transactions whose result lost a same-nonce race against the network.
-        for superseded_state in core::mem::take(superseded_states) {
-            transaction_updates.apply_superseded_account_state(superseded_state);
-        }
 
         advance.relevant_note_blocks = self
             .screen_note_blocks(
@@ -425,12 +429,7 @@ impl StateSync {
             )
             .await?;
 
-        self.apply_transactions_and_nullifiers(
-            &advance.chain_tip_header,
-            &advance.transactions,
-            note_updates,
-            transaction_updates,
-        )?;
+        Self::apply_transaction_notes(&advance.transactions, note_updates)?;
 
         self.recover_consumed_public_notes(note_updates, &advance.transactions).await?;
 
@@ -450,10 +449,16 @@ impl StateSync {
             block_from,
             advance,
             mut note_updates,
-            transaction_updates,
-            account_updates,
+            mut transaction_updates,
+            mut account_updates,
             ..
         } = chain_sync_data;
+
+        if let Some(advance) = &advance {
+            for pending in transaction_updates.pending_by_account() {
+                account_updates.reconcile_pending(pending, &advance.discard_conditions);
+            }
+        }
 
         // Release notes after the nullifier check. Keep notes consumed on chain in their consumed
         // state.
@@ -534,18 +539,14 @@ impl StateSync {
             return Ok(());
         }
 
-        let Some(chain_tip) = chain_sync_data
-            .advance
-            .as_ref()
-            .map(|advance| advance.chain_tip_header.block_num())
-        else {
+        let Some(advance) = &mut chain_sync_data.advance else {
             return Ok(());
         };
 
         self.nullifiers_state_sync(
             &mut chain_sync_data.note_updates,
-            &mut chain_sync_data.transaction_updates,
-            chain_tip,
+            &chain_sync_data.transaction_updates,
+            &mut advance.discard_conditions,
             chain_sync_data.block_from,
         )
         .await
@@ -936,28 +937,11 @@ impl StateSync {
         Ok(())
     }
 
-    /// Extends the note tracker with newly-observed nullifiers, applies transaction inclusions, and
-    /// walks each transaction to apply output-note inclusion proofs and mark same-batch-erased
-    /// output notes as consumed.
-    fn apply_transactions_and_nullifiers(
-        &self,
-        chain_tip_header: &BlockHeader,
+    /// Records output note inclusions and same-batch note erasures.
+    fn apply_transaction_notes(
         transactions: &[RpcTransactionRecord],
         note_updates: &mut NoteUpdateTracker,
-        transaction_updates: &mut TransactionUpdateTracker,
     ) -> Result<(), ClientError> {
-        note_updates.extend_nullifiers(compute_ordered_nullifiers(transactions));
-
-        for record in transactions {
-            transaction_updates.apply_transaction_inclusion(
-                record.block_num,
-                &record.transaction_header,
-                u64::from(chain_tip_header.timestamp()),
-            ); //TODO: Change timestamps from u64 to u32
-        }
-        transaction_updates
-            .apply_sync_height_update(chain_tip_header.block_num(), self.tx_discard_delta);
-
         for transaction in transactions {
             // Transition tracked output notes to Committed using inclusion proofs from the
             // transaction sync response. This covers output notes regardless of whether their tags
@@ -986,88 +970,55 @@ impl StateSync {
         }
     }
 
-    /// Compares the state of tracked accounts with the updates received from the node. The method
-    /// Updates the `account_updates` with the details of the accounts that need to be updated.
+    /// Queries the node for the on-chain commitment of each diverging private account and applies
+    /// it to `account_updates`.
     ///
-    /// The account updates might include:
-    /// * Public accounts that have been updated in the node (full or delta-based).
-    /// * Network accounts that have been updated in the node and are being tracked by the client.
-    /// * Private accounts that have been marked as mismatched because the current commitment
-    ///   doesn't match the one received from the node. The client will need to handle these cases
-    ///   as they could be a stale account state or a reason to lock the account.
-    ///
-    /// Returns the local states that were superseded by a same-nonce network transaction; the
-    /// caller must discard the transactions that produced them.
-    async fn account_state_sync(
+    /// The node reports the commitments of `sync_transactions` without a proof. The sync proves
+    /// each commitment with an account witness before the tracker can lock the account.
+    async fn sync_private_accounts(
         &self,
         account_updates: &mut AccountUpdateTracker,
-        accounts: &[AccountHeader],
-        account_commitment_updates: &[(AccountId, Word)],
-        block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<Vec<Word>, ClientError> {
-        // "Public" here includes both Public and Network accounts, since both have their state
-        // stored on-chain and follow the same sync path.
-        let (public_accounts, private_accounts): (Vec<_>, Vec<_>) =
-            accounts.iter().partition(|header| !header.id().is_private());
-
-        let superseded_states = self
-            .sync_public_accounts(
-                account_updates,
-                account_commitment_updates,
-                &public_accounts,
-                block_from,
-                chain_tip_header,
-            )
-            .await?;
-
-        // If a private account commitment differs between the node and local then we verify the
-        // commitment from the node before flagging the account as mismatched.
-        let diverging_private_accounts: Vec<&AccountHeader> = private_accounts
-            .into_iter()
-            .filter(|header| {
-                let local_commitment = header.to_commitment();
-                account_commitment_updates
-                    .iter()
-                    .any(|(id, digest)| *id == header.id() && *digest != local_commitment)
-            })
-            .collect();
+        is_known_private_state: impl AsyncFn(AccountId, Word) -> Result<bool, StoreError>,
+    ) -> Result<(), ClientError> {
+        let diverging_accounts: Vec<AccountId> =
+            account_updates.diverging_private_accounts().map(AccountHeader::id).collect();
 
         let proven_commitments: Vec<Option<Word>> =
-            futures::stream::iter(diverging_private_accounts.iter().map(|header| {
-                self.verify_private_account_mismatch(
-                    header.id(),
-                    header.to_commitment(),
-                    chain_tip_header,
-                )
+            futures::stream::iter(diverging_accounts.iter().map(|account_id| {
+                self.fetch_private_account_commitment(*account_id, chain_tip_header)
             }))
             .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
             .try_collect()
             .await?;
 
-        for (header, commitment) in diverging_private_accounts.into_iter().zip(proven_commitments) {
-            if let Some(commitment) = commitment {
-                account_updates.apply_private_account_commitment(header.id(), commitment);
+        for (account_id, proven_commitment) in
+            diverging_accounts.into_iter().zip(proven_commitments)
+        {
+            if let Some(proven_commitment) = proven_commitment {
+                account_updates
+                    .apply_private_account_commitment(
+                        account_id,
+                        proven_commitment,
+                        &is_known_private_state,
+                    )
+                    .await?;
             }
         }
 
-        Ok(superseded_states)
+        Ok(())
     }
 
-    /// Verifies a private account commitment against an account witness from the node.
-    ///
-    /// Assumes `local_commitment` is a private account commitment that diverges from the
-    /// `sync_transactions` records.
+    /// Fetches the on-chain commitment of a private account and proves it with an account witness.
     ///
     /// Fetches the account witness via `get_account` at `chain_tip_header`'s block and checks the
     /// root it computes against `chain_tip_header`'s account root.
     ///
-    /// Returns `Some(proven_commitment)` only when the proven on-chain commitment differs from
-    /// `local_commitment`.
-    async fn verify_private_account_mismatch(
+    /// Returns `None` when the account is absent on chain, or when the witness is for a different
+    /// account at the same prefix.
+    async fn fetch_private_account_commitment(
         &self,
         account_id: AccountId,
-        local_commitment: Word,
         chain_tip_header: &BlockHeader,
     ) -> Result<Option<Word>, ClientError> {
         let chain_tip = chain_tip_header.block_num();
@@ -1093,95 +1044,65 @@ impl StateSync {
             )));
         }
 
-        // Check if the witness is for a different account at this prefix, the account is absent on
-        // chain, or the proven commitment matches local.
-        if witness_id != account_id
-            || proven_commitment == Word::empty()
-            || proven_commitment == local_commitment
-        {
+        // Check if the witness is for a different account at this prefix, or the account is absent
+        // on chain.
+        if witness_id != account_id || proven_commitment == Word::empty() {
             return Ok(None);
         }
 
         Ok(Some(proven_commitment))
     }
 
-    /// Queries the node for updated public accounts and populates `account_updates`.
+    /// Queries the node for the diverging public accounts and applies their network states to
+    /// `account_updates`.
     ///
-    /// For each public account whose commitment changed, an updated snapshot is fetched with a
-    /// single `get_account` call that requests every storage map and the vault.
+    /// For each diverging public account, an updated snapshot is fetched with a single
+    /// `get_account` call that requests every storage map and the vault.
     ///
     /// Accounts whose vault or maps are too large to fit in a single response fall back to the
-    /// incremental [`PublicAccountUpdate::Delta`] path, which fetches vault and storage map updates
+    /// incremental [`PublicAccountUpdate::Patch`] path, which fetches vault and storage map updates
     /// over the synced block range.
     async fn sync_public_accounts(
         &self,
         account_updates: &mut AccountUpdateTracker,
-        commitment_updates: &[(AccountId, Word)],
-        current_public_accounts: &[&AccountHeader],
         block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<Vec<Word>, ClientError> {
-        let local_headers: BTreeMap<AccountId, &AccountHeader> =
-            current_public_accounts.iter().map(|header| (header.id(), *header)).collect();
+    ) -> Result<(), ClientError> {
+        let synced_accounts: Vec<_> = futures::stream::iter(
+            account_updates
+                .diverging_public_accounts()
+                .map(|account| self.sync_public_account(account, block_from, chain_tip_header)),
+        )
+        .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
+        .try_collect()
+        .await?;
 
-        // Tracked accounts whose local commitment diverges from the network's. `commitment_updates`
-        // holds at most one entry per account, so no account is fetched twice.
-        let diverging_accounts: Vec<(AccountId, &AccountHeader)> = commitment_updates
-            .iter()
-            .filter_map(|(id, commitment)| {
-                let local_header = local_headers.get(id).copied()?;
-                (local_header.to_commitment() != *commitment).then_some((*id, local_header))
-            })
-            .collect();
-
-        // Ordered fan-out: responses are folded in `commitment_updates` order regardless of
-        // completion order, so the resulting updates do not depend on response timing.
-        let synced_accounts: Vec<(AccountWitness, PublicAccountSync)> =
-            futures::stream::iter(diverging_accounts.iter().map(|(id, local_header)| {
-                self.sync_public_account(*id, local_header, block_from, chain_tip_header)
-            }))
-            .buffered(MAX_CONCURRENT_ACCOUNT_FETCHES)
-            .try_collect()
-            .await?;
-
-        // Local states that lost a same-nonce race; their transactions must be discarded.
-        let mut superseded_states = Vec::new();
-        for ((account_id, local_header), (witness, synced_account)) in
-            diverging_accounts.iter().zip(synced_accounts)
-        {
-            account_updates.insert_account_witness(*account_id, witness);
-
-            match synced_account {
-                PublicAccountSync::Apply(public_update) => {
-                    account_updates.apply_public_account_update(*public_update);
-                },
-                PublicAccountSync::Superseded => {
-                    superseded_states.push(local_header.to_commitment());
-                },
-                PublicAccountSync::Ignore => {},
-            }
+        for (witness, state) in synced_accounts {
+            account_updates.record_public_account(witness, state);
         }
 
-        Ok(superseded_states)
+        Ok(())
     }
 
     // SYNC PUBLIC ACCOUNTS HELPERS
     // --------------------------------------------------------------------------------------------
 
-    /// Fetches a single public account at the sync target, returning the witness that proves it and
-    /// how its state should be reconciled against the local one.
+    /// Fetches a single public account at the sync target. Returns the witness that proves it and
+    /// the network state, when that state replaces the local state.
     ///
     /// The witness holds in every outcome, including the ones that leave the local state alone.
     ///
-    /// Must only be called when the local commitment for the account is known to differ from the
-    /// network's, so an equal nonce always means a genuine fork.
+    /// [`TrackedAccount::reconcile_public_account`] decides whether the network state replaces
+    /// `local_header`. A network state that does not replace the local state is not built, so the
+    /// sync makes no more requests for that account.
     async fn sync_public_account(
         &self,
-        account_id: AccountId,
-        local_header: &AccountHeader,
+        account: &TrackedAccount,
         block_from: BlockNumber,
         chain_tip_header: &BlockHeader,
-    ) -> Result<(AccountWitness, PublicAccountSync), ClientError> {
+    ) -> Result<(AccountWitness, AccountSyncState), ClientError> {
+        let local_header = &account.local_header;
+        let account_id = local_header.id();
         let target_block_num = chain_tip_header.block_num();
 
         // A single request fetches the full snapshot: every storage map's entries plus the vault,
@@ -1203,20 +1124,19 @@ impl StateSync {
         let (witness, details) =
             Self::validate_account_proof(proof, proof_block_num, account_id, chain_tip_header)?;
 
-        match details
-            .header
-            .nonce()
-            .as_canonical_u64()
-            .cmp(&local_header.nonce().as_canonical_u64())
-        {
-            // Node is behind us: our own transaction was committed yet (will expire naturally
-            // eventually).
-            Ordering::Less => return Ok((witness, PublicAccountSync::Ignore)),
-            // Same height but different state: our transaction definitively lost, drop it.
-            Ordering::Equal => return Ok((witness, PublicAccountSync::Superseded)),
-            // Node moved past us: adopt its state, built below.
-            Ordering::Greater => {},
-        }
+        let reconciliation = account.reconcile_public_account(&details.header);
+        let local_code_commitment = match reconciliation {
+            // The node holds the local state, or the node did not include every local pending
+            // transaction yet. A pending transaction expires if the node never includes it.
+            PublicAccountReconciliation::Keep => return Ok((witness, AccountSyncState::Unchanged)),
+            // The network state is a later state of the confirmed local state. The update builds on
+            // the local state.
+            PublicAccountReconciliation::Apply => Some(local_header.code_commitment()),
+            // The network state is on another branch. The store can roll the account back to a
+            // state before the local pending transactions before it applies the update. The code of
+            // that state is unknown here, so a patch must carry the code.
+            PublicAccountReconciliation::Supersede => None,
+        };
 
         let vault_oversized = details.vault_details.is_too_many_assets();
         let any_map_oversized = details
@@ -1230,15 +1150,21 @@ impl StateSync {
         // `sync_storage_maps` and `sync_account_vault`, even if not needed.
         let public_update = if vault_oversized || any_map_oversized {
             // Some part of the account is oversized — use incremental endpoints.
-            self.build_patch_update(account_id, local_header, &details, block_from, proof_block_num)
-                .await?
+            self.build_patch_update(
+                account_id,
+                local_code_commitment,
+                &details,
+                block_from,
+                proof_block_num,
+            )
+            .await?
         } else {
             // The single response carries the full vault and every map's entries.
             let account = Account::try_from(&details).map_err(ClientError::RpcError)?;
             PublicAccountUpdate::Full(account)
         };
 
-        Ok((witness, PublicAccountSync::Apply(Box::new(public_update))))
+        Ok((witness, reconciliation.with_update(public_update)))
     }
 
     /// Validates that a `get_account` proof is bound to the sync target `chain_tip_header`: it must
@@ -1283,8 +1209,9 @@ impl StateSync {
     /// Builds a [`PublicAccountUpdate::Patch`] by fetching incremental storage map and vault
     /// updates over the synced range and assembling the absolute [`AccountPatch`] from them.
     ///
-    /// `local_header` is the state of the account in the store. If the on-chain code commitment is
-    /// different, the account upgraded its code and the patch carries the new code.
+    /// `local_code_commitment` is the code commitment of the account state that the store applies
+    /// the patch to, or `None` if that state is unknown. If the on-chain code commitment is
+    /// different, the patch carries the on-chain code.
     ///
     /// # Security
     ///
@@ -1300,7 +1227,7 @@ impl StateSync {
     async fn build_patch_update(
         &self,
         account_id: AccountId,
-        local_header: &AccountHeader,
+        local_code_commitment: Option<Word>,
         details: &AccountDetails,
         block_from: BlockNumber,
         block_to: BlockNumber,
@@ -1332,7 +1259,7 @@ impl StateSync {
             map_info.map_entries,
             vault_info.vault_patch,
             details.code.clone(),
-            local_header.code_commitment(),
+            local_code_commitment,
         )
         .map_err(StoreError::AccountPatchError)?;
 
@@ -1423,12 +1350,12 @@ impl StateSync {
     /// the `sync_nullifiers` endpoint to check if there are new nullifiers for these notes. It then
     /// processes the nullifiers to apply the state transitions on the note updates.
     ///
-    /// The `transaction_updates` parameter will be updated to track the new discarded transactions.
+    /// Records spent inputs for transaction reconciliation.
     async fn nullifiers_state_sync(
         &self,
         note_updates: &mut NoteUpdateTracker,
-        transaction_updates: &mut TransactionUpdateTracker,
-        chain_tip: BlockNumber,
+        transaction_updates: &TransactionUpdateTracker,
+        conditions: &mut DiscardConditions,
         current_block_num: BlockNumber,
     ) -> Result<(), ClientError> {
         // To receive information about added nullifiers, we reduce them to the higher 16 bits. Note
@@ -1436,6 +1363,7 @@ impl StateSync {
         // only returns nullifiers from current_block_num + 1 until chain_tip).
 
         // Check for new nullifiers for input notes that were updated
+        let chain_tip = conditions.height;
         let nullifiers_tags: Vec<u16> =
             note_updates.unspent_nullifiers().map(|nullifier| nullifier.prefix()).collect();
 
@@ -1465,10 +1393,7 @@ impl StateSync {
                 transaction_updates.committed_transactions(),
             )?;
 
-            // Process nullifiers and track the updates of local tracked transactions that were
-            // discarded because the notes that they were processing were nullified by an another
-            // transaction.
-            transaction_updates.apply_input_note_nullified(consumption.nullifier);
+            conditions.spent_inputs.insert(consumption.nullifier.as_word());
         }
 
         Ok(())
@@ -1489,15 +1414,13 @@ pub struct ChainSyncData {
     /// What the node reported beyond `block_from`, or `None` when the client was already at the
     /// chain tip.
     advance: Option<ChainAdvance>,
-    /// Account states the node superseded, to be applied to the transaction updates.
-    superseded_states: Vec<Word>,
     /// Notes as the sync found them. A caller that wrote notes of its own after the sync input was
     /// built has to track them here, or this sync's verdicts have no record to apply to.
     pub(crate) note_updates: NoteUpdateTracker,
     transaction_updates: TransactionUpdateTracker,
-    /// Account updates as the sync derived them. The client adds the witnesses of the accounts it
-    /// keeps fresh, which the sync only queries when their state changed.
-    pub(super) account_updates: AccountUpdateTracker,
+    /// Account states and witnesses used to reconcile pending transactions in
+    /// [`StateSync::build_update`].
+    pub(crate) account_updates: AccountUpdateTracker,
 }
 
 impl ChainSyncData {
@@ -1510,6 +1433,7 @@ impl ChainSyncData {
 
 /// The part of a [`ChainSyncData`] that only exists when the node reported progress.
 struct ChainAdvance {
+    discard_conditions: DiscardConditions,
     /// Header of the chain tip the sync advanced to.
     chain_tip_header: BlockHeader,
     /// MMR delta from `block_from` to the chain tip, excluding the chain-tip leaf.
@@ -1572,114 +1496,70 @@ pub(crate) fn block_num_from_forest(partial_mmr: &PartialMmr) -> Result<BlockNum
         .into())
 }
 
-/// Groups transaction records by `(account_id, block_num)`.
-fn group_txs_by_account_block(
-    transaction_records: &[RpcTransactionRecord],
-) -> BTreeMap<(AccountId, BlockNumber), Vec<&RpcTransactionRecord>> {
-    let mut groups: BTreeMap<(AccountId, BlockNumber), Vec<&RpcTransactionRecord>> =
-        BTreeMap::new();
-    for record in transaction_records {
-        let account_id = record.transaction_header.account_id();
-        groups.entry((account_id, record.block_num)).or_default().push(record);
+/// Returns the transaction headers for each account in execution order.
+fn ordered_account_transactions(
+    records: &[RpcTransactionRecord],
+) -> Result<BTreeMap<AccountId, Vec<&TransactionHeader>>, ClientError> {
+    let mut by_block = BTreeMap::<_, Vec<_>>::new();
+    for record in records {
+        let header = &record.transaction_header;
+        by_block
+            .entry((header.account_id(), record.block_num))
+            .or_default()
+            .push(header);
     }
-    groups
+
+    let mut by_account = BTreeMap::<_, Vec<_>>::new();
+    for ((account_id, _), block) in by_block {
+        by_account.entry(account_id).or_default().extend(walk_execution_chain(&block)?);
+    }
+    Ok(by_account)
 }
 
-/// Walks a group of transaction records in execution order.
-///
-/// Same-block transactions for the same account form an execution chain: each tx's
-/// `final_state_commitment` is the next tx's `initial_state_commitment`. This finds the chain start
-/// and walks forward, yielding each tx in execution order.
+/// Orders the records for one account in one block. Transactions that preserve a state run before
+/// the transaction that leaves it. Their relative order uses the order of the RPC records.
 fn walk_execution_chain<'a>(
-    txs: &'a [&'a RpcTransactionRecord],
-) -> impl Iterator<Item = &'a RpcTransactionRecord> + 'a {
-    let (self_loops, chained): (Vec<&RpcTransactionRecord>, Vec<&RpcTransactionRecord>) =
-        txs.iter().copied().partition(|tx| {
-            tx.transaction_header.initial_state_commitment()
-                == tx.transaction_header.final_state_commitment()
+    txs: &[&'a TransactionHeader],
+) -> Result<Vec<&'a TransactionHeader>, ClientError> {
+    let mut outgoing = BTreeMap::new();
+    let mut reached = BTreeSet::new();
+    let mut passthroughs: BTreeMap<Word, Vec<&TransactionHeader>> = BTreeMap::new();
+    let invalid_chain = || {
+        ClientError::ChainValidationError(
+            "transactions for one account and block do not form a single chain".into(),
+        )
+    };
+    for &tx in txs {
+        let initial = tx.initial_state_commitment();
+        let result = tx.final_state_commitment();
+        if initial == result {
+            passthroughs.entry(initial).or_default().push(tx);
+        } else if outgoing.insert(initial, tx).is_some() || !reached.insert(result) {
+            return Err(invalid_chain());
+        }
+    }
+
+    let start = if outgoing.is_empty() {
+        passthroughs.keys().next()
+    } else {
+        outgoing.keys().find(|state| !reached.contains(*state))
+    }
+    .copied();
+    let mut ordered = Vec::with_capacity(txs.len());
+    let mut current = start;
+    while let Some(state) = current {
+        if let Some(records) = passthroughs.remove(&state) {
+            ordered.extend(records);
+        }
+        current = outgoing.remove(&state).map(|tx| {
+            ordered.push(tx);
+            tx.final_state_commitment()
         });
-
-    let final_states: BTreeSet<Word> = chained
-        .iter()
-        .map(|tx| tx.transaction_header.final_state_commitment())
-        .collect();
-
-    let mut init_to_tx: BTreeMap<Word, &RpcTransactionRecord> = chained
-        .iter()
-        .map(|tx| (tx.transaction_header.initial_state_commitment(), *tx))
-        .collect();
-
-    let start = chained
-        .iter()
-        .find(|tx| !final_states.contains(&tx.transaction_header.initial_state_commitment()))
-        .copied();
-
-    assert!(start.is_some() || chained.is_empty(), "cannot walk cyclic execution chain");
-
-    let mut current =
-        start.and_then(|tx| init_to_tx.remove(&tx.transaction_header.initial_state_commitment()));
-    let mut self_loops_iter = self_loops.into_iter();
-
-    core::iter::from_fn(move || {
-        if let Some(tx) = current {
-            current = init_to_tx.remove(&tx.transaction_header.final_state_commitment());
-            return Some(tx);
-        }
-        self_loops_iter.next()
-    })
-}
-
-/// Derives account commitment updates from transaction records.
-///
-/// For each unique account, returns the `final_state_commitment` from the final transaction with
-/// the highest `block_num`.
-fn derive_account_commitments(
-    transaction_records: &[RpcTransactionRecord],
-) -> Vec<(AccountId, Word)> {
-    let mut latest_by_account: BTreeMap<AccountId, (BlockNumber, Word)> = BTreeMap::new();
-
-    for ((account_id, block_num), txs) in &group_txs_by_account_block(transaction_records) {
-        let terminal_state = walk_execution_chain(txs)
-            .last()
-            .expect("account must have a final state")
-            .transaction_header
-            .final_state_commitment();
-
-        latest_by_account
-            .entry(*account_id)
-            .and_modify(|(existing_block, existing_state)| {
-                if *block_num > *existing_block {
-                    *existing_block = *block_num;
-                    *existing_state = terminal_state;
-                }
-            })
-            .or_insert((*block_num, terminal_state));
     }
-
-    latest_by_account
-        .into_iter()
-        .map(|(account_id, (_, state))| (account_id, state))
-        .collect()
-}
-
-/// Returns nullifiers ordered by consuming transaction position, per account.
-///
-/// Groups RPC transaction records by (`account_id`, `block_num`), chains them using
-/// `initial_state_commitment` / `final_state_commitment`, and collects each transaction's input
-/// note nullifiers in execution order. Nullifiers from the same account are in execution order;
-/// ordering across different accounts is arbitrary.
-fn compute_ordered_nullifiers(transaction_records: &[RpcTransactionRecord]) -> Vec<Nullifier> {
-    let mut result = Vec::new();
-
-    for txs in group_txs_by_account_block(transaction_records).values() {
-        for tx in walk_execution_chain(txs) {
-            for commitment in tx.transaction_header.input_notes().iter() {
-                result.push(commitment.nullifier());
-            }
-        }
+    if ordered.len() != txs.len() {
+        return Err(invalid_chain());
     }
-
-    result
+    Ok(ordered)
 }
 
 #[cfg(all(test, feature = "testing"))]
@@ -1691,6 +1571,7 @@ mod tests {
     use miden_protocol::account::{
         Account,
         AccountStorageHeader,
+        AccountType,
         StorageMap,
         StorageMapKey,
         StorageSlot,
@@ -1723,15 +1604,16 @@ mod tests {
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
         ACCOUNT_ID_SENDER,
     };
-    use miden_protocol::transaction::{InputNotes, RawOutputNote, TransactionHeader};
+    use miden_protocol::transaction::{InputNotes, RawOutputNote};
     use miden_protocol::{EMPTY_WORD, Felt, Word, ZERO};
     use miden_standards::code_builder::CodeBuilder;
     use miden_standards::note::{NetworkAccountTarget, NoteExecutionHint};
-    use miden_testing::{MockChainBuilder, MockTransactionInput};
+    use miden_standards::testing::account_component::MockAccountComponent;
+    use miden_testing::{AccountState, MockChainBuilder, MockTransactionInput};
 
     use super::*;
     use crate::rpc::domain::account::{AccountProofError, AccountVaultDetails};
-    use crate::store::{OutputNoteRecord, OutputNoteState};
+    use crate::store::{AccountStatus, OutputNoteRecord, OutputNoteState};
     use crate::test_utils::mock::MockRpcApi;
 
     /// Mock note screener that discards all notes, for minimal test setup.
@@ -1832,33 +1714,29 @@ mod tests {
         // there yet), so the node snapshot must be ignored.
         let local_header =
             AccountHeader::new(account.id(), Felt::from(2u32), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
-        let current_public_accounts = vec![&local_header];
-        let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdateTracker::default();
+        let mut account_updates =
+            AccountUpdateTracker::new([(local_header, AccountStatus::Tracked)], &[]);
+        account_updates.apply_commitment_update(account.id(), account.to_commitment());
 
-        let superseded = state_sync
-            .sync_public_accounts(
-                &mut account_updates,
-                &commitment_updates,
-                &current_public_accounts,
-                BlockNumber::GENESIS,
-                &chain_tip_header,
-            )
+        state_sync
+            .sync_public_accounts(&mut account_updates, BlockNumber::GENESIS, &chain_tip_header)
             .await
             .unwrap();
 
+        let account_updates = account_updates.into_account_updates();
         assert!(
-            account_updates.into_account_updates().updated_public_accounts().is_empty(),
+            account_updates.updated_public_accounts().is_empty(),
             "public account sync should ignore node snapshots that are older than local"
         );
-        assert!(
-            superseded.is_empty(),
-            "an older node snapshot must not supersede the local state"
+        assert_eq!(
+            account_updates.account_witnesses().len(),
+            1,
+            "the witness of the fetched account holds although the local state stays"
         );
     }
 
     #[tokio::test]
-    async fn sync_public_accounts_marks_same_nonce_mismatch_as_superseded() {
+    async fn sync_public_accounts_recovers_same_nonce_mismatch() {
         let mut builder = MockChainBuilder::new();
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
@@ -1871,30 +1749,21 @@ mod tests {
         // where the local transaction lost the race and must be discarded.
         let local_header =
             AccountHeader::new(account.id(), account.nonce(), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
-        let current_public_accounts = vec![&local_header];
-        let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdateTracker::default();
+        let mut account_updates =
+            AccountUpdateTracker::new([(local_header.clone(), AccountStatus::Tracked)], &[]);
+        account_updates.apply_commitment_update(account.id(), account.to_commitment());
 
-        let superseded = state_sync
-            .sync_public_accounts(
-                &mut account_updates,
-                &commitment_updates,
-                &current_public_accounts,
-                BlockNumber::GENESIS,
-                &chain_tip_header,
-            )
+        state_sync
+            .sync_public_accounts(&mut account_updates, BlockNumber::GENESIS, &chain_tip_header)
             .await
             .unwrap();
 
-        assert!(
-            account_updates.into_account_updates().updated_public_accounts().is_empty(),
-            "a same-nonce fork must not overwrite the account while its tx is still pending"
-        );
-        assert_eq!(
-            superseded,
-            vec![local_header.to_commitment()],
-            "the superseded local state should be reported so its transaction is discarded"
-        );
+        let account_updates = account_updates.into_account_updates();
+        let [PublicAccountUpdate::Full(recovered)] = account_updates.updated_public_accounts()
+        else {
+            panic!("a same-nonce fork must produce the network account state");
+        };
+        assert_eq!(recovered.to_commitment(), account.to_commitment());
     }
 
     // PRIVATE ACCOUNT LOCK VERIFICATION TESTS
@@ -1930,64 +1799,81 @@ mod tests {
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
 
-    /// A forged `sync_transactions` commitment must not lock the account when the witness proves
-    /// the on-chain commitment still matches the local one.
-    #[tokio::test]
-    async fn verify_private_account_mismatch_ignores_forged_commitment() {
+    /// A private account on the mock chain, the header of the chain tip, and a sync component that
+    /// reads that chain.
+    fn private_account_setup() -> (Account, BlockHeader, StateSync) {
         let mut builder = MockChainBuilder::new();
-        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
+        let account_builder = Account::builder([7; 32])
+            .account_type(AccountType::Private)
+            .with_component(MockAccountComponent::with_empty_slots());
+        let account = builder
+            .add_account_from_builder(
+                miden_testing::Auth::IncrNonce,
+                account_builder,
+                AccountState::Exists,
+            )
+            .unwrap();
+        assert!(account.id().is_private());
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
         let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
-        let on_chain_commitment = account.to_commitment();
         let validator_config = genesis_validator_config(&rpc_api);
         let state_sync =
             StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
-        let result = state_sync
-            .verify_private_account_mismatch(account.id(), on_chain_commitment, &chain_tip_header)
+        (account, chain_tip_header, state_sync)
+    }
+
+    /// A forged `sync_transactions` commitment must not lock the account when the witness proves
+    /// the on-chain commitment still matches the local one.
+    #[tokio::test]
+    async fn sync_private_accounts_ignores_forged_commitment() {
+        let (account, chain_tip_header, state_sync) = private_account_setup();
+
+        let mut account_updates = AccountUpdateTracker::new(
+            [(AccountHeader::from(&account), AccountStatus::Tracked)],
+            &[],
+        );
+        account_updates.apply_commitment_update(account.id(), word(0xdead_beef));
+
+        state_sync
+            .sync_private_accounts(&mut account_updates, &chain_tip_header, async |_, _| Ok(false))
             .await
             .unwrap();
 
         assert!(
-            result.is_none(),
+            account_updates.into_account_updates().accounts_to_lock().is_empty(),
             "an unproven commitment must not lock an account whose on-chain state matches local"
         );
     }
 
-    /// When the witness proves a commitment that differs from the local one, the account is
-    /// reported as mismatched with the proven commitment.
+    /// A proven commitment outside local history locks the private account.
     #[tokio::test]
-    async fn verify_private_account_mismatch_reports_proven_divergence() {
-        let mut builder = MockChainBuilder::new();
-        let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
-        let rpc_api = MockRpcApi::new(builder.build().unwrap());
-        let chain_tip_header = rpc_api.mock_chain.read().latest_block_header();
+    async fn sync_private_accounts_reports_proven_divergence() {
+        let (account, chain_tip_header, state_sync) = private_account_setup();
         let on_chain_commitment = account.to_commitment();
-        let validator_config = genesis_validator_config(&rpc_api);
-        let state_sync =
-            StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
-        let stale_local_commitment = word(0xdead_beef);
 
-        let result = state_sync
-            .verify_private_account_mismatch(
-                account.id(),
-                stale_local_commitment,
-                &chain_tip_header,
-            )
+        let stale_local_header =
+            AccountHeader::new(account.id(), account.nonce(), EMPTY_WORD, EMPTY_WORD, EMPTY_WORD);
+        let mut account_updates =
+            AccountUpdateTracker::new([(stale_local_header, AccountStatus::Tracked)], &[]);
+        account_updates.apply_commitment_update(account.id(), on_chain_commitment);
+
+        state_sync
+            .sync_private_accounts(&mut account_updates, &chain_tip_header, async |_, _| Ok(false))
             .await
             .unwrap();
 
         assert_eq!(
-            result,
-            Some(on_chain_commitment),
-            "a proven divergence should return the proven commitment to lock with"
+            account_updates.into_account_updates().accounts_to_lock(),
+            [account.id()],
+            "a proven unfamiliar state must lock the account"
         );
     }
 
     /// A witness that doesn't verify against the chain tip's account root is a misbehaving node and
     /// must abort the sync rather than lock the account.
     #[tokio::test]
-    async fn verify_private_account_mismatch_rejects_unverifiable_proof() {
+    async fn fetch_private_account_commitment_rejects_unverifiable_proof() {
         let mut builder = MockChainBuilder::new();
         let account = builder.add_existing_mock_account(miden_testing::Auth::IncrNonce).unwrap();
         let rpc_api = MockRpcApi::new(builder.build().unwrap());
@@ -2015,11 +1901,7 @@ mod tests {
         );
 
         let result = state_sync
-            .verify_private_account_mismatch(
-                account.id(),
-                account.to_commitment(),
-                &tampered_header,
-            )
+            .fetch_private_account_commitment(account.id(), &tampered_header)
             .await;
         assert!(matches!(result, Err(ClientError::ChainValidationError(_))));
     }
@@ -2063,22 +1945,15 @@ mod tests {
         let state_sync =
             StateSync::new(Arc::new(rpc_api), Arc::new(MockScreener), None, validator_config);
 
-        let current_public_accounts = vec![&local_header];
-        let commitment_updates = vec![(account.id(), account.to_commitment())];
-        let mut account_updates = AccountUpdateTracker::default();
+        let mut account_updates =
+            AccountUpdateTracker::new([(local_header, AccountStatus::Tracked)], &[]);
+        account_updates.apply_commitment_update(account.id(), account.to_commitment());
 
-        let superseded = state_sync
-            .sync_public_accounts(
-                &mut account_updates,
-                &commitment_updates,
-                &current_public_accounts,
-                BlockNumber::GENESIS,
-                &sync_target_header,
-            )
+        state_sync
+            .sync_public_accounts(&mut account_updates, BlockNumber::GENESIS, &sync_target_header)
             .await
             .unwrap();
 
-        assert!(superseded.is_empty(), "the transaction must not be superseded");
         assert!(
             account_updates.into_account_updates().updated_public_accounts().is_empty(),
             "the target state must not overwrite the local account"
@@ -2284,197 +2159,89 @@ mod tests {
         );
     }
 
-    // COMPUTE NULLIFIER TX ORDER TESTS
+    // TRANSACTION EXECUTION ORDER TESTS
     // --------------------------------------------------------------------------------------------
 
-    mod compute_nullifiers_tests {
-        use alloc::vec;
+    mod transaction_order_tests {
+        use miden_protocol::transaction::InputNoteCommitment;
 
-        use miden_protocol::Word;
-        use miden_protocol::block::BlockNumber;
-        use miden_protocol::block::code_tree::CodePatch;
-        use miden_protocol::note::Nullifier;
-        use miden_protocol::transaction::{InputNoteCommitment, InputNotes, TransactionHeader};
+        use super::*;
 
-        use super::word;
-        use crate::rpc::domain::transaction::TransactionRecord as RpcTransactionRecord;
-
-        fn make_rpc_tx(
-            init_state: u64,
-            final_state: u64,
-            nullifier_vals: &[u64],
-            block_number: u32,
+        fn record(
+            account: AccountId,
+            block: u32,
+            initial: u64,
+            result: u64,
+            input: u64,
         ) -> RpcTransactionRecord {
-            let account_id = miden_protocol::account::AccountId::try_from(
-                miden_protocol::testing::account_id::ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+            let inputs = InputNotes::new_unchecked(vec![InputNoteCommitment::from(
+                Nullifier::from_raw(word(input)),
+            )]);
+            let header = TransactionHeader::new(
+                account,
+                word(initial),
+                word(result),
+                inputs,
+                vec![],
+                Word::empty(),
+                CodePatch::default().commitment(),
             )
             .unwrap();
+            RpcTransactionRecord::new(block.into(), header, vec![], vec![], vec![])
+        }
 
-            let input_notes = InputNotes::new_unchecked(
-                nullifier_vals
-                    .iter()
-                    .map(|v| InputNoteCommitment::from(Nullifier::from_raw(word(*v))))
-                    .collect(),
+        #[test]
+        fn orders_each_account_by_block_and_execution_state() {
+            let a = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let b = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
+            let records = [
+                record(a, 6, 3, 4, 40),
+                record(b, 5, 10, 10, 50),
+                record(a, 5, 2, 3, 30),
+                record(a, 5, 1, 2, 20),
+            ];
+
+            let by_account = ordered_account_transactions(&records).unwrap();
+            assert_eq!(by_account.len(), 2);
+            let [last, passthrough, second, first] = &records;
+            assert_eq!(
+                by_account[&a],
+                [&first.transaction_header, &second.transaction_header, &last.transaction_header]
             );
-
-            RpcTransactionRecord::new(
-                BlockNumber::from(block_number),
-                TransactionHeader::new(
-                    account_id,
-                    word(init_state),
-                    word(final_state),
-                    input_notes,
-                    vec![],
-                    Word::empty(),
-                    CodePatch::default().commitment(),
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            )
+            assert_eq!(by_account[&b], [&passthrough.transaction_header]);
         }
 
         #[test]
-        fn chains_rpc_transactions_by_state_commitment() {
-            // Chain: tx_a (state 1->2) -> tx_b (state 2->3) -> tx_c (state 3->4)
-            //
-            // Passed in reverse order to verify chaining uses state, not insertion order.
-            let tx_a = make_rpc_tx(1, 2, &[10], 5);
-            let tx_b = make_rpc_tx(2, 3, &[20], 5);
-            let tx_c = make_rpc_tx(3, 4, &[30], 5);
+        fn orders_passthroughs_before_the_transaction_that_leaves_their_state() {
+            let id = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let records = [
+                record(id, 5, 3, 3, 60),
+                record(id, 5, 2, 2, 30),
+                record(id, 5, 2, 3, 50),
+                record(id, 5, 1, 2, 20),
+                record(id, 5, 2, 2, 40),
+                record(id, 5, 1, 1, 10),
+            ];
 
-            let result = super::super::compute_ordered_nullifiers(&[tx_c, tx_a, tx_b]);
-
-            assert_eq!(result[0], Nullifier::from_raw(word(10)));
-            assert_eq!(result[1], Nullifier::from_raw(word(20)));
-            assert_eq!(result[2], Nullifier::from_raw(word(30)));
+            let by_account = ordered_account_transactions(&records).unwrap();
+            let nullifiers: Vec<_> = by_account[&id]
+                .iter()
+                .flat_map(|header| header.input_notes().iter().map(InputNoteCommitment::nullifier))
+                .collect();
+            assert_eq!(nullifiers, [10, 20, 30, 40, 50, 60].map(|n| Nullifier::from_raw(word(n))));
         }
 
         #[test]
-        fn groups_independently_by_account_and_block() {
-            // Account A, block 5: two chained txs.
-            let tx_a1 = make_rpc_tx(1, 2, &[10], 5);
-            let tx_a2 = make_rpc_tx(2, 3, &[20], 5);
-
-            // Account A, block 6: independent chain.
-            let tx_a3 = make_rpc_tx(3, 4, &[30], 6);
-
-            // Account B, block 5: independent chain.
-            let account_b = miden_protocol::account::AccountId::try_from(
-                miden_protocol::testing::account_id::ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
-            )
-            .unwrap();
-
-            let tx_b1 = RpcTransactionRecord::new(
-                BlockNumber::from(5u32),
-                TransactionHeader::new(
-                    account_b,
-                    word(100),
-                    word(200),
-                    InputNotes::new_unchecked(vec![InputNoteCommitment::from(
-                        Nullifier::from_raw(word(40)),
-                    )]),
-                    vec![],
-                    Word::empty(),
-                    CodePatch::default().commitment(),
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            );
-
-            let result = super::super::compute_ordered_nullifiers(&[tx_a2, tx_b1, tx_a3, tx_a1]);
-
-            // Nullifiers are ordered by chain position within each (account, block) group. The
-            // exact global indices depend on BTreeMap iteration order of the groups.
-            let pos = |val: u64| -> usize {
-                result.iter().position(|n| *n == Nullifier::from_raw(word(val))).unwrap()
-            };
-
-            // Within the same group, chain order is preserved.
-            assert!(pos(10) < pos(20)); // A, block 5: pos 0 < pos 1
-            // Nullifiers from different groups are all present.
-            assert!(result.contains(&Nullifier::from_raw(word(30)))); // A, block 6
-            assert!(result.contains(&Nullifier::from_raw(word(40)))); // B, block 5
+        fn rejects_disconnected_transactions_in_one_block() {
+            let id = ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
+            let records = [record(id, 5, 1, 2, 10), record(id, 5, 3, 3, 20)];
+            assert!(ordered_account_transactions(&records).is_err());
         }
 
         #[test]
-        fn multiple_nullifiers_per_transaction_are_consecutive() {
-            // Single tx consuming 3 notes — all should appear consecutively.
-            let tx = make_rpc_tx(1, 2, &[10, 20, 30], 5);
-
-            let result = super::super::compute_ordered_nullifiers(&[tx]);
-
-            assert_eq!(result.len(), 3);
-            assert!(result.contains(&Nullifier::from_raw(word(10))));
-            assert!(result.contains(&Nullifier::from_raw(word(20))));
-            assert!(result.contains(&Nullifier::from_raw(word(30))));
+        fn empty_range_has_no_account_transactions() {
+            assert!(ordered_account_transactions(&[]).unwrap().is_empty());
         }
-
-        #[test]
-        fn empty_input_returns_empty_vec() {
-            let result = super::super::compute_ordered_nullifiers(&[]);
-            assert!(result.is_empty());
-        }
-    }
-
-    // DERIVE ACCOUNT COMMITMENTS TESTS
-    // --------------------------------------------------------------------------------------------
-
-    /// `derive_account_commitments` must walk the execution chain to get the final commitment when
-    /// several transactions for the same account land in the same block.
-    ///
-    /// Test scenario:
-    /// - Account A, block 5: chain 1 - 2 - 3 (older group; must be dominated by block 6).
-    /// - Account A, block 6: chain 3 - 4 - 5 (final state = 5).
-    /// - Account B, block 6: single tx 10 - 20 (final state = 20).
-    #[test]
-    fn derive_account_commitments_walks_chains_per_account() {
-        let make_tx = |account: AccountId, init_state: u64, final_state: u64, block_num: u32| {
-            RpcTransactionRecord::new(
-                BlockNumber::from(block_num),
-                TransactionHeader::new(
-                    account,
-                    word(init_state),
-                    word(final_state),
-                    InputNotes::new_unchecked(vec![]),
-                    vec![],
-                    Word::empty(),
-                    CodePatch::default().commitment(),
-                )
-                .unwrap(),
-                vec![],
-                vec![],
-                vec![],
-            )
-        };
-
-        let account_a: AccountId =
-            ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE.try_into().unwrap();
-        let account_b: AccountId = ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET.try_into().unwrap();
-
-        let tx_a_b5_1 = make_tx(account_a, 1, 2, 5);
-        let tx_a_b5_2 = make_tx(account_a, 2, 3, 5);
-        let tx_a_b6_1 = make_tx(account_a, 3, 4, 6);
-        let tx_a_b6_2 = make_tx(account_a, 4, 5, 6);
-        let tx_b_b6 = make_tx(account_b, 10, 20, 6);
-
-        // Insert transactions not ordered by execution order.
-        let result = super::derive_account_commitments(&[
-            tx_a_b6_1, tx_b_b6, tx_a_b5_2, tx_a_b6_2, tx_a_b5_1,
-        ]);
-
-        assert_eq!(result.len(), 2, "one entry per account");
-        assert!(
-            result.contains(&(account_a, word(5))),
-            "account A: must walk block 6's chain, not return block 5 or an intermediate",
-        );
-        assert!(
-            result.contains(&(account_b, word(20))),
-            "account B: must be resolved independently of account A",
-        );
     }
 
     // CONSUMED NOTE ORDERING INTEGRATION TESTS
@@ -2572,14 +2339,17 @@ mod tests {
 
         let account_id = account.id();
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(&account)],
+            accounts: vec![(AccountHeader::from(&account), AccountStatus::Tracked)],
             note_tags,
             input_notes,
             output_notes: vec![],
             uncommitted_transactions: vec![],
         };
 
-        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, sync_input, async |_, _| Ok(false))
+            .await
+            .unwrap();
 
         let updated_notes = update.note_updates().input_notes();
 
@@ -2628,7 +2398,10 @@ mod tests {
         assert_eq!(partial_mmr.forest().num_leaves(), 1);
 
         // First sync
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), async |_, _| Ok(false))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_1);
         let forest_1 = partial_mmr.forest();
@@ -2639,7 +2412,10 @@ mod tests {
         mock_rpc.advance_blocks(2);
         let chain_tip_2 = mock_rpc.get_chain_tip_block_num();
 
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), async |_, _| Ok(false))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         let forest_2 = partial_mmr.forest();
@@ -2647,7 +2423,10 @@ mod tests {
         assert_eq!(forest_2.num_leaves(), chain_tip_2.as_u32() as usize + 1);
 
         // Third sync (no new blocks)
-        let update = state_sync.sync_state(&mut partial_mmr, empty()).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, empty(), async |_, _| Ok(false))
+            .await
+            .unwrap();
 
         assert_eq!(update.block_num(), chain_tip_2);
         assert_eq!(partial_mmr.forest(), forest_2);
@@ -2774,7 +2553,10 @@ mod tests {
                 .with_note_observer(Arc::new(AlwaysRelevantObserver));
         input.note_tags = note_tags;
 
-        let update = state_sync.sync_state(&mut partial_mmr, input).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, input, async |_, _| Ok(false))
+            .await
+            .unwrap();
         let observed_non_tip_block = BlockNumber::from(1u32);
 
         assert!(
@@ -3054,14 +2836,20 @@ mod tests {
         let mut partial_mmr = PartialMmr::from_peaks(genesis_peaks);
 
         let sync_input = StateSyncInput {
-            accounts: vec![AccountHeader::from(&sender_account), network_header],
+            accounts: vec![
+                (AccountHeader::from(&sender_account), AccountStatus::Tracked),
+                (network_header, AccountStatus::Tracked),
+            ],
             note_tags: BTreeSet::new(),
             input_notes: vec![],
             output_notes: vec![output_note],
             uncommitted_transactions: vec![],
         };
 
-        let update = state_sync.sync_state(&mut partial_mmr, sync_input).await.unwrap();
+        let update = state_sync
+            .sync_state(&mut partial_mmr, sync_input, async |_, _| Ok(false))
+            .await
+            .unwrap();
 
         // The output note record should transition to consumed.
         let updated_output = update

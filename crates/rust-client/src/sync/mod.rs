@@ -79,6 +79,7 @@ use crate::rpc::AccountStateAt;
 use crate::rpc::domain::account::GetAccountRequest;
 use crate::store::{NoteFilter, StaleUpdate, StoreError, TransactionFilter};
 use crate::{Client, ClientError};
+mod account_update_tracker;
 mod block_header;
 
 pub use miden_client_core::sync::{NoteTagRecord, NoteTagSource};
@@ -105,10 +106,9 @@ pub(crate) use state_sync::{
     block_num_from_forest,
     validate_account_witness,
 };
-mod account_update_tracker;
 mod state_sync_update;
 mod transaction_update_tracker;
-pub use transaction_update_tracker::TransactionUpdateTracker;
+pub use transaction_update_tracker::{PendingAccountTransactions, TransactionUpdateTracker};
 
 /// Untracks the given block leaves from `partial_mmr`, returning the authentication-node indices
 /// that are no longer needed by any remaining tracked leaf.
@@ -182,7 +182,15 @@ where
         let input = self.build_sync_input().await?;
         let block_from = block_num_from_forest(&self.get_current_partial_mmr().await?)?;
 
-        let mut chain_sync_data = state_sync.fetch_state(block_from, input).await?;
+        let mut chain_sync_data = state_sync
+            .fetch_state(block_from, input, async |id, commitment| {
+                Ok(self
+                    .store
+                    .get_account_header_by_commitment(commitment)
+                    .await?
+                    .is_some_and(|header| header.id() == id))
+            })
+            .await?;
         self.collect_account_witnesses(&mut chain_sync_data).await?;
 
         Ok(chain_sync_data)
@@ -336,13 +344,7 @@ where
     /// This includes all tracked account headers, all unique note tags, all unspent input and
     /// output notes, and all uncommitted transactions.
     pub async fn build_sync_input(&self) -> Result<StateSyncInput, ClientError> {
-        let accounts = self
-            .store
-            .get_account_headers()
-            .await?
-            .into_iter()
-            .map(|(header, _status)| header)
-            .collect();
+        let accounts = self.store.get_account_headers().await?;
 
         let note_tags = self.store.get_unique_note_tags().await?;
 
@@ -501,6 +503,7 @@ where
 
         let mut to_fetch = Vec::new();
         for account_id in account_ids {
+            // The sync already validated a witness of this account at the target block.
             if chain_sync_data.account_updates.has_account_witness(account_id) {
                 continue;
             }
@@ -525,8 +528,8 @@ where
             .try_collect()
             .await?;
 
-        for (id, witness) in witnesses {
-            chain_sync_data.account_updates.insert_account_witness(id, witness);
+        for (account_id, witness) in witnesses {
+            chain_sync_data.account_updates.insert_account_witness(account_id, witness);
         }
 
         Ok(())
@@ -581,7 +584,10 @@ pub struct SyncSummary {
     pub consumed_notes: Vec<NoteId>,
     /// IDs of on-chain accounts that have been updated.
     pub updated_accounts: Vec<AccountId>,
-    /// IDs of private accounts that have been locked.
+    /// IDs of the private accounts that this sync locked.
+    ///
+    /// The list excludes accounts that were already locked and mismatches that a stale network
+    /// commitment caused.
     pub locked_accounts: Vec<AccountId>,
     /// IDs of committed transactions.
     pub committed_transactions: Vec<TransactionId>,

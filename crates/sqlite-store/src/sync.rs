@@ -5,7 +5,6 @@ use std::vec::Vec;
 
 use miden_client_core::errors::StoreError;
 use miden_client_core::sync::{NoteTagRecord, NoteTagSource, PublicAccountUpdate, StateSyncUpdate};
-use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::address::Address;
 use miden_protocol::block::BlockNumber;
@@ -171,13 +170,7 @@ impl SqliteStore {
                 upsert_transaction_record(db_tx, transaction_record)?;
             }
 
-            // Remove the accounts that are originated from the discarded transactions
-            let discarded_states: Vec<(AccountId, Word)> = transaction_updates
-                .discarded_transactions()
-                .map(|tx| (tx.details.account_id, tx.details.final_account_state))
-                .collect();
-
-            Self::undo_account_state(db_tx, &mut smt_forest, &discarded_states)?;
+            Self::undo_account_state(db_tx, &mut smt_forest, account_updates.states_to_undo())?;
 
             // Update public accounts on the db that have been updated onchain
             for update in account_updates.updated_public_accounts() {
@@ -191,8 +184,8 @@ impl SqliteStore {
                 }
             }
 
-            for (account_id, digest) in account_updates.mismatched_private_accounts() {
-                Self::lock_account_on_unexpected_commitment(db_tx, account_id, digest)?;
+            for account_id in account_updates.accounts_to_lock() {
+                Self::lock_account(db_tx, *account_id)?;
             }
 
             // Writes only land for accounts registered for witness prefetching; the rest are

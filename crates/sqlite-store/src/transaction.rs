@@ -8,22 +8,14 @@ use miden_client_core::errors::StoreError;
 use miden_client_core::store::{TransactionFilter, TransactionFilterQuery};
 use miden_client_core::transaction::{
     BatchStoreUpdate,
-    TransactionDetails,
+    TransactionOutcome,
     TransactionRecord,
-    TransactionStatus,
     TransactionStatusVariant,
     TransactionStoreUpdate,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
-use miden_protocol::transaction::{
-    ExecutedTransaction,
-    LogTopic,
-    ToInputNoteCommitments,
-    TransactionId,
-    TransactionLog,
-    TransactionLogs,
-};
+use miden_protocol::transaction::{LogTopic, TransactionId, TransactionLog, TransactionLogs};
 use miden_protocol::utils::serde::{Deserializable, DeserializationError, Serializable};
 use miden_protocol::{Felt, Word};
 use rusqlite::{Connection, ToSql, Transaction, params};
@@ -245,11 +237,11 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         with_write_tx(conn, |tx| {
             let mut forest = ScopedAccountForest::new(SqliteForestBackend::new(tx))?;
-            for executed_transaction in batch_update.executed_transactions() {
+            for transaction in batch_update.transactions() {
                 Self::insert_transaction_in_txn(
                     tx,
                     &mut forest,
-                    executed_transaction,
+                    transaction,
                     batch_update.submission_height(),
                 )?;
             }
@@ -273,7 +265,7 @@ impl SqliteStore {
         Self::insert_transaction_in_txn(
             db_tx,
             smt_forest,
-            tx_update.executed_transaction(),
+            tx_update.transaction(),
             tx_update.submission_height(),
         )?;
 
@@ -296,50 +288,27 @@ impl SqliteStore {
     fn insert_transaction_in_txn(
         db_tx: &Transaction<'_>,
         smt_forest: &mut ScopedAccountForest<'_, '_>,
-        executed_transaction: &ExecutedTransaction,
+        transaction: &TransactionOutcome,
         submission_height: BlockNumber,
     ) -> Result<(), StoreError> {
-        let account_patch = executed_transaction.account_patch();
-
-        // Build transaction record
-        let nullifiers: Vec<Word> = executed_transaction
-            .input_notes()
-            .iter()
-            .map(|x| x.nullifier().as_word())
-            .collect();
-
-        let output_notes = executed_transaction.output_notes();
-
-        let details = TransactionDetails {
-            account_id: executed_transaction.account_id(),
-            init_account_state: executed_transaction.initial_account().initial_commitment(),
-            final_account_state: executed_transaction.final_account().to_commitment(),
-            input_note_nullifiers: nullifiers,
-            output_notes: output_notes.clone(),
-            block_num: executed_transaction.block_header().block_num(),
+        let effects = transaction.effects();
+        let transaction_record = TransactionRecord::from_outcome(
+            transaction,
             submission_height,
-            expiration_block_num: executed_transaction.expiration_block_num(),
-            creation_timestamp: super::current_timestamp_u64(),
-        };
-
-        let transaction_record = TransactionRecord::new(
-            executed_transaction.id(),
-            details,
-            executed_transaction.tx_args().tx_script().cloned(),
-            TransactionStatus::Pending,
+            super::current_timestamp_u64(),
         );
 
         // Insert transaction data
         upsert_transaction_record(db_tx, &transaction_record)?;
-        insert_transaction_logs(db_tx, executed_transaction.id(), executed_transaction.logs())?;
+        insert_transaction_logs(db_tx, transaction.id(), effects.logs())?;
 
         // Account Data
         Self::apply_account_patch(
             db_tx,
             smt_forest,
-            &executed_transaction.initial_account().into(),
-            executed_transaction.final_account(),
-            account_patch,
+            transaction.initial_account(),
+            transaction.final_account(),
+            effects.account_patch(),
         )
     }
 }

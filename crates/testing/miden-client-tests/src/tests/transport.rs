@@ -1695,7 +1695,7 @@ async fn committed_private_note_recipient(
     (client, private_note, mock_transport_node)
 }
 
-/// The encoding carries the stored notes with their cursors, so the decoded mock serves the same
+/// The snapshot carries the stored notes with their cursors, so the restored mock serves the same
 /// page from the same position.
 #[test]
 fn mock_note_transport_node_round_trips() {
@@ -1716,9 +1716,7 @@ fn mock_note_transport_node_round_trips() {
     }
     let tag = NoteTag::with_account_target(target);
 
-    let decoded =
-        miden_client_proto::decode::<MockNoteTransportNode>(&miden_client_proto::encode(&mock))
-            .unwrap();
+    let decoded = MockNoteTransportNode::from_snapshot(mock.snapshot());
 
     let (notes, cursor) = mock.get_notes(&[tag], None);
     let (decoded_notes, decoded_cursor) = decoded.get_notes(&[tag], None);

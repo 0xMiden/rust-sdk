@@ -45,6 +45,10 @@ let bytes = encode_output_note_state_without_script(note.state());
 let state = decode_output_note_state_without_script(&bytes, script)?;
 ```
 
+## Scope
+
+This crate encodes only values that stores persist and values that separate clients exchange on the wire (such as `TransactionRequest`). Types that cross only inside one process or between a web worker and its main thread, and test mocks such as `MockNoteTransportNode`, do not belong in this crate.
+
 ## Schema changes
 
 Stored bytes must stay readable after a schema change:

@@ -5,10 +5,7 @@ syntax = "proto3";
 package client.sync;
 
 import "account.proto";
-import "block_number.proto";
-import "note.proto";
 import "primitives.proto";
-import "transaction.proto";
 
 // The reason the client tracks a note tag.
 message NoteTagSource {
@@ -24,22 +21,4 @@ message NoteTagSource {
     // Key of a long-lived subscription.
     primitives.Word subscription = 4;
   }
-}
-
-// A note tag that the client tracks, with the reason it tracks the tag.
-message NoteTagRecord {
-  fixed32 tag = 1;
-  NoteTagSource source = 2;
-}
-
-// What a state sync changed.
-message SyncSummary {
-  blockchain.BlockNumber block_num = 1;
-  repeated note.NoteId new_public_notes = 2;
-  repeated note.NoteId new_private_notes = 3;
-  repeated note.NoteId committed_notes = 4;
-  repeated note.NoteId consumed_notes = 5;
-  repeated account.AccountId updated_accounts = 6;
-  repeated account.AccountId locked_accounts = 7;
-  repeated .transaction.TransactionId committed_transactions = 8;
 }

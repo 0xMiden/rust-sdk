@@ -19,6 +19,7 @@ use miden_client::transaction::{
     BatchStoreUpdate,
     LocalTransactionProver,
     PaymentNoteDescription,
+    TransactionOutcome,
     TransactionRequestBuilder,
     TransactionStoreUpdate,
 };
@@ -165,7 +166,7 @@ async fn apply_transaction_batch_rolls_back_on_mid_batch_failure() {
 
     let chain_tip = rpc_api.get_chain_tip_block_num();
     let batch_update = BatchStoreUpdate::new(
-        vec![executed_a, executed_b],
+        vec![TransactionOutcome::from(&executed_a), TransactionOutcome::from(&executed_b)],
         chain_tip,
         NoteUpdates::default(),
         vec![],
@@ -232,7 +233,7 @@ async fn apply_transaction_rejects_account_note_tag() {
 
     let account_tag = Address::new(account_id).to_note_tag();
     let update = TransactionStoreUpdate::new(
-        executed_tx,
+        TransactionOutcome::from(&executed_tx),
         rpc_api.get_chain_tip_block_num(),
         NoteUpdates::default(),
         vec![],
